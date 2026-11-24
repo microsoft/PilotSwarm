@@ -2,7 +2,10 @@ import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-
 import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
-import { killProcessTree, killShellProcessScope, shellProcessScope, taskProcessAlive, type ListedShell, type ShellProcessScope } from "./process-tree.js";
+import {
+    bindShellProcess, defaultProcessHost, killProcessTree, killShellProcessScopes, taskProcessAlive,
+    type ListedShell, type ProcessHost, type ProcessIdentity, type ShellProcessScope,
+} from "./process-tree.js";
 import { fenceControlBridge } from "./control-bridge-fence.js";
 import { COPILOT_RUNTIME_EXIT_MARKER, copilotRuntimeExitMessage, isCopilotTransportLossMessage, type CopilotRuntimeExit, type CopilotRuntimeWatch } from "./copilot-runtime-monitor.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
@@ -633,10 +636,10 @@ function acknowledgeTurnBoundary(action: string): string {
  * The busy check and the release use this one test, so a finished shell
  * neither blocks a workspace change nor gets another process killed.
  */
-function backgroundTaskRuns(task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }): boolean {
+function backgroundTaskRuns(task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }, host?: ProcessHost): boolean {
     if (task.type !== "shell" && task.type !== "agent") return false;
     if (task.status !== "running" && task.status !== "idle") return false;
-    if (task.type === "shell" && typeof task.pid === "number") return taskProcessAlive(task.pid, task.startedAt);
+    if (task.type === "shell" && typeof task.pid === "number") return taskProcessAlive(task.pid, task.startedAt, host);
     return true;
 }
 
@@ -5309,7 +5312,7 @@ export class ManagedSession {
     async activeBackgroundTasks(): Promise<Array<{ id: string; type: string }>> {
         const tasks = (await this.copilotSession.rpc.tasks.list()).tasks ?? [];
         return tasks
-            .filter(backgroundTaskRuns)
+            .filter((task) => backgroundTaskRuns(task, this.processHost))
             .map((task: any) => ({ id: String(task.id), type: String(task.type) }));
     }
 
@@ -5381,6 +5384,9 @@ export class ManagedSession {
         this.recordedOpened = key;
     }
 
+    /** The host's process table, for the shell kills below. Tests inject a fake. @internal */
+    processHost?: ProcessHost;
+
     /**
      * Cancel every background shell (attached or detached) and agent task
      * that is running or idle, then list again until none remain.
@@ -5391,6 +5397,14 @@ export class ManagedSession {
      * Returns how many cancels were sent. Throws if tasks remain after the
      * last round.
      *
+     * The cancels of one round are sent together and waited for at most
+     * `cancelWaitMs`, so one that never answers holds back neither the
+     * others nor the kills. `deadline` (ms since the epoch) bounds the whole
+     * call: after it nothing more is listed, waited for or signalled, even
+     * when the caller has stopped waiting, and the call throws. A process is
+     * signalled only while its pid runs the process bound when the shell was
+     * listed (same start time); when that cannot be told, nothing is killed.
+     *
      * `startedWithin` ({ since, until }, ms since the epoch) limits the
      * cancel to tasks the CLI reports as started in that window, for example
      * the tasks of one stopped turn. The upper bound keeps a slow task list,
@@ -5400,8 +5414,8 @@ export class ManagedSession {
      * any of them. `select` (a workflow script state's own tasks, by id or
      * start time; E1c) replaces `startedWithin` when given.
      */
-    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin, select }: {
-        rounds?: number; pauseMs?: number;
+    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, cancelWaitMs = 2_000, deadline = Number.POSITIVE_INFINITY, startedWithin, select }: {
+        rounds?: number; pauseMs?: number; cancelWaitMs?: number; deadline?: number;
         startedWithin?: { since: number; until: number } | ReadonlyArray<{ since: number; until: number }>;
         select?: (task: { id: string; startedAt?: unknown }) => boolean;
     } = {}): Promise<number> {
@@ -5413,35 +5427,84 @@ export class ManagedSession {
                 : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
             return Number.isFinite(at) && windows.some(window => at >= window.since && at <= window.until);
         };
-        const active = (task: { id?: unknown; type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task)
+        const active = (task: { id?: unknown; type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task, host)
             && (select ? select({ id: String(task.id), startedAt: task.startedAt }) : startedInScope(task));
+        const host = this.processHost ?? defaultProcessHost();
+        const left = () => Math.max(0, deadline - host.now());
+        const wait = (work: Promise<unknown> | null, ms: number) => new Promise<void>((resolve) => {
+            if (!Number.isFinite(ms)) {
+                void work?.then(() => resolve(), () => resolve());
+                return;
+            }
+            const timer = setTimeout(resolve, ms);
+            void work?.then(() => { clearTimeout(timer); resolve(); }, () => { clearTimeout(timer); resolve(); });
+        });
+        const list = async () => {
+            if (left() <= 0) throw new Error("background task cancel passed its deadline");
+            const listing = Promise.resolve(this.copilotSession.rpc.tasks.list());
+            if (Number.isFinite(deadline)) {
+                let settled = false;
+                void listing.then(() => { settled = true; }, () => { settled = true; });
+                // A timer may fire a moment before the clock reaches the deadline: wait again rather than for ever.
+                while (!settled && left() > 0) await wait(listing, left());
+                if (!settled) throw new Error("background task cancel passed its deadline");
+            }
+            return ((await listing).tasks ?? []).filter(active);
+        };
+        // Bound once per task, while its shell runs; a later round reuses the binding.
+        const bindings = new Map<string, { pid: number; identity?: ProcessIdentity; scope?: ShellProcessScope }>();
+        // Cancels the CLI confirmed in a round that did not pause after them. If one is still listed, the CLI has not
+        // caught up yet: pause once and list again, rather than spend a round on it.
+        const unsettled = new Set<string>();
+        const settledList = async () => {
+            const tasks = await list();
+            const lagging = tasks.some((task) => unsettled.has(String(task.id)));
+            unsettled.clear();
+            if (!lagging) return tasks;
+            await wait(null, Math.min(pauseMs, left()));
+            return list();
+        };
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
-            const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
+            const tasks = await settledList();
             if (tasks.length === 0) return cancelled;
             // Taken before the cancel: once the shell dies it leaves the list, and its descendants that left its tree
             // would be out of reach.
-            const scopes = new Map<number, ShellProcessScope>();
-            for (const task of tasks) {
+            const unbound = tasks.filter((task) => {
                 const pid = (task as { pid?: unknown }).pid;
-                const scope = task.type === "shell" ? shellProcessScope(pid, task.startedAt) : undefined;
-                if (scope) scopes.set(scope.id, scope);
-                let stopped = false;
-                try {
-                    stopped = (await this.copilotSession.rpc.tasks.cancel({ id: task.id }))?.cancelled === true;
-                } catch { /* listed again below */ }
+                return task.type === "shell" && typeof pid === "number" && bindings.get(String(task.id))?.pid !== pid;
+            });
+            const snapshot = unbound.length > 0 ? host.snapshot() : undefined;
+            for (const task of unbound) {
+                const pid = (task as { pid?: unknown }).pid as number;
+                bindings.set(String(task.id), { pid, ...bindShellProcess(pid, task.startedAt, { host, snapshot }) });
+            }
+            const confirmed = tasks.map(() => false);
+            const answers = tasks.map((task, i) => (async () => {
+                confirmed[i] = (await this.copilotSession.rpc.tasks.cancel({ id: task.id }))?.cancelled === true;
+            })().catch(() => { /* listed again below */ }));
+            await wait(Promise.all(answers), Math.min(cancelWaitMs, left()));
+            const answered = [...confirmed];
+            const bound = tasks.map((task) => (task.type === "shell" ? bindings.get(String(task.id)) : undefined));
+            const trees = bound.some((binding, i) => !answered[i] && binding?.identity) ? host.snapshot() : undefined;
+            const scopes = new Map<number, ShellProcessScope>();
+            for (let i = 0; i < tasks.length; i++) {
+                const binding = bound[i];
+                if (binding?.scope) scopes.set(binding.scope.id, binding.scope);
                 // CLI 1.0.83: after session.abort(), tasks.cancel answers
                 // { cancelled: false } and the shell keeps running. Kill the
-                // shell and every process below it, by the pid the CLI reports.
-                if (!stopped && task.type === "shell") stopped = killProcessTree(pid);
-                if (stopped) cancelled++;
+                // shell and every process below it, while its pid still runs
+                // the process bound above.
+                if (answered[i] || (binding?.identity && trees
+                    && killProcessTree(binding.identity.pid, { identity: binding.identity, deadline, host, snapshot: trees }))) cancelled++;
             }
-            await new Promise((resolve) => setTimeout(resolve, pauseMs));
             // The cancel ends the shell, not a daemon it started (re-parented to init). Kill what is left of the
-            // shell's own session or process group.
-            for (const scope of scopes.values()) killShellProcessScope(scope);
+            // shell's own session or process group, once the CLI has had a moment to act on the cancel.
+            if (scopes.size > 0 || answered.some((ok) => !ok)) await wait(null, Math.min(pauseMs, left()));
+            else for (const task of tasks) unsettled.add(String(task.id));
+            if (scopes.size > 0) killShellProcessScopes([...scopes.values()], { deadline, host });
         }
-        const remaining = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
+        const remaining = await settledList();
         if (remaining.length > 0) {
             throw new Error(`${remaining.length} background task(s) still active after ${rounds} cancel rounds`);
         }
@@ -5454,13 +5517,15 @@ export class ManagedSession {
      * with killListedShells: a tool shell runs in its own session and outlives its runtime (#331).
      */
     async listBackgroundShells(): Promise<ListedShell[]> {
-        const shells: ListedShell[] = [];
-        for (const task of (await this.copilotSession.rpc.tasks.list()).tasks ?? []) {
-            const pid = (task as { pid?: unknown }).pid;
-            if (task.type !== "shell" || typeof pid !== "number" || !backgroundTaskRuns(task)) continue;
-            shells.push({ pid, startedAt: task.startedAt, scope: shellProcessScope(pid, task.startedAt) });
-        }
-        return shells;
+        const host = this.processHost ?? defaultProcessHost();
+        const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter((task) =>
+            task.type === "shell" && typeof (task as { pid?: unknown }).pid === "number" && backgroundTaskRuns(task, host));
+        if (tasks.length === 0) return [];
+        const snapshot = host.snapshot();
+        return tasks.map((task) => {
+            const pid = (task as { pid?: unknown }).pid as number;
+            return { pid, startedAt: task.startedAt, ...bindShellProcess(pid, task.startedAt, { host, snapshot }) };
+        });
     }
 
     /**

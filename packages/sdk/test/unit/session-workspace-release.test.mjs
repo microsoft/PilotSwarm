@@ -9,7 +9,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -170,11 +170,23 @@ test("a shell the CLI will not cancel (after an abort) is killed with every proc
     const shell = spawn("sh", ["-c", "sleep 30 & echo $!; wait"], { stdio: ["ignore", "pipe", "ignore"] });
     const childPid = Number(await new Promise((resolve) => shell.stdout.once("data", (chunk) => resolve(String(chunk).trim()))));
     t.after(() => { for (const pid of [shell.pid, childPid]) { try { process.kill(pid, "SIGKILL"); } catch {} } });
-    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    // A killed orphan waits as a zombie until it is reaped; it no longer runs.
+    const alive = (pid) => {
+        if (process.platform === "linux") {
+            try {
+                const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+                return !["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0]);
+            } catch {
+                return false;
+            }
+        }
+        try { process.kill(pid, 0); return true; } catch { return false; }
+    };
     assert.equal(alive(childPid), true);
     const exited = new Promise((resolve) => shell.once("exit", resolve));
     const h = fixture(t, {
-        tasks: [{ id: "sh-1", type: "shell", status: "running", pid: shell.pid }],
+        // The shell is bound to its task by its start time: a kill needs both.
+        tasks: [{ id: "sh-1", type: "shell", status: "running", pid: shell.pid, startedAt: new Date().toISOString() }],
         cancelAnswer: { cancelled: false },
     });
     await open(h);
