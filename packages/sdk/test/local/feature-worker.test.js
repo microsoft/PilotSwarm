@@ -18,7 +18,7 @@ async function workerFixture(interval = 0) {
         _catalog: { workerHeartbeat: vi.fn(async () => {}), close: vi.fn(async () => {}) },
         _buildRegistrarInfo: () => ({ consumes: ["feature-flags"] }), _collectWorkerHealth: () => ({}),
         _workerPhase: "ready", _loadedSystemAgents: [],
-        sessionManager: { shutdown: vi.fn(async () => {}) }, refreshAgentPackages: vi.fn(async () => {}),
+        sessionManager: { beginDrain: vi.fn(), shutdown: vi.fn(async () => {}) }, refreshAgentPackages: vi.fn(async () => {}),
     });
     return { worker, cache, revisions, catalog: worker._catalog, set(value) { enabled = value; revision++; } };
 }

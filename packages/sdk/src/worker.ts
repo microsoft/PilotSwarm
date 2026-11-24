@@ -740,6 +740,7 @@ export class PilotSwarmWorker {
         this._stopRequested = false;
         // Workflow tools are available again after a stop of this worker (E1-R4).
         this.sessionManager.startWorkflowTools();
+        this.sessionManager.startGeneration();
 
         const trace = this.config.traceWriter ?? (() => {});
         const store = this.config.store;
@@ -1218,6 +1219,8 @@ export class PilotSwarmWorker {
 
     async stop(): Promise<void> {
         this._stopRequested = true;
+        // Before the runtime drain: a turn the drain cancels from here on is cut, not saved (session-proxy runTurn).
+        this.sessionManager.beginDrain();
         this._stopProviderPolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
@@ -1307,6 +1310,8 @@ export class PilotSwarmWorker {
      */
     async gracefulShutdown(): Promise<void> {
         this._stopRequested = true;
+        // Before the runtime drain: a turn the drain cancels from here on is cut, not saved (session-proxy runTurn).
+        this.sessionManager.beginDrain();
         this._stopProviderPolling();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;

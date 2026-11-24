@@ -33,12 +33,26 @@ No CMS migration and no session orchestration or Workflow controller version cha
   shutting down now fails its attempt before the turn result is written back or
   committed. Events already recorded and tool effects remain. The
   workspace-moves test M3b reproduces the cut deterministically.
+- Do not save a turn that the worker's drain cancelled either. During a
+  graceful shutdown the runtime cancels a turn still running at the end of the
+  drain budget; runTurn saved it as `cancelled`, the worker then released its
+  workspace as idle, and the next worker adopted the saved `cancelled` result
+  and never ran the turn again (the workspace-moves M4 failures: "the cut turn's
+  session was not released", or a 240 s wait). A cancellation seen once the
+  worker's runtime generation drains is now a cut: runTurn checks for it
+  before each model send, before the CMS writeback and before the snapshot
+  commit, and from that check on writes back and commits nothing; neither the
+  idle release nor the eviction sweep releases that session. A model request
+  or write already started when the cancellation lands is not undone. A lock
+  steal outside a drain is unchanged. The workspace-moves test M4b forces the
+  race.
 
 ### Workflows off: a request for a Workflow is the user's agreement
 
 - Base V2 rule 11 and the paragraph a session gets while Workflows are off now say that a user who asks to build, save,
-  start or change a Workflow has already agreed: the session calls `enable_workflows` without asking first. Mechanical
-  work for which the user named no Workflow still gets a one-sentence suggestion and a question first.
+  start or change a Workflow has already agreed: the session calls `enable_workflows` at once. A repeated task that
+  names no Workflow is not such a request: it still gets a one-sentence suggestion and a question first, which rule 11
+  marks as an exception to rule 7.
 
 ### CI: the Azure runner and the release gate
 

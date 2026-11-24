@@ -1107,6 +1107,12 @@ export class SessionManager {
     private sessions = new Map<string, ManagedSession>();
     /** How many times shutdown() has begun; see shutdownCount(). */
     private shutdownsBegun = 0;
+    /** This manager's runtime generation: one per worker start. See isDraining(). */
+    private generation = 0;
+    /** The generation whose drain has begun, or -1. */
+    private drainingGeneration = -1;
+    /** Sessions whose turn a shutdown or drain cut, with that turn's generation: not released or evicted in that generation. */
+    private cutTurns = new Map<string, number>();
     private workflowBindingRecords = new Map<string, { recordSessionId: string; read: Promise<Record<string, unknown> | null> }>();
     private workflowSnapshots = new Map<string, {
         key: string; epoch?: number; snapshot: WorkflowCapabilitySnapshot | null; loaded: boolean; checked: boolean;
@@ -2113,6 +2119,7 @@ export class SessionManager {
         let reclaimed = 0;
         for (const sessionId of candidates) {
             if (this.sessionLocks.has(sessionId)) continue; // busy — never race a turn
+            if (this.isTurnCut(sessionId)) continue; // a cut turn: the next worker must see this worker as a dead holder
             const sessionDir = path.join(this.sessionStateDir, sessionId);
             const lastTouched = this.sessionLastTouchedAt.get(sessionId);
             if (lastTouched == null || now - lastTouched < evictAfterMs) continue;
@@ -4153,7 +4160,7 @@ export class SessionManager {
             ...this.workspaceHeld.keys(),
         ]);
         const results = await Promise.all([...ids]
-            .filter((sessionId) => !this.sessionLocks.has(sessionId))
+            .filter((sessionId) => !this.sessionLocks.has(sessionId) && !this.isTurnCut(sessionId))
             .map((sessionId) => this.releaseWorkspace(sessionId, opts).catch(() => null)));
         return results.filter((result) => result?.released).length;
     }
@@ -4262,6 +4269,43 @@ export class SessionManager {
      */
     shutdownCount(): number {
         return this.shutdownsBegun;
+    }
+
+    /** A start of the worker: a new runtime generation, which is not draining and has no cut turn. */
+    startGeneration(): void {
+        this.generation += 1;
+        // Older generations' markers no longer apply; an old attempt cannot add one (markTurnCut).
+        this.cutTurns.clear();
+    }
+
+    /** The current runtime generation; a runTurn attempt reads it when it starts. */
+    currentGeneration(): number {
+        return this.generation;
+    }
+
+    /** The worker's drain (stop or graceful shutdown) has begun: the runtime may now cancel the running turns of this generation. */
+    beginDrain(): void {
+        this.drainingGeneration = this.generation;
+    }
+
+    /**
+     * Whether the drain of `generation` has begun, whenever the attempt started: a cancellation of its turns is then a cut.
+     * A retired generation stays draining, so a later start or drain never makes an old attempt look uncancelled.
+     */
+    isDraining(generation: number): boolean {
+        return generation <= this.drainingGeneration || generation < this.generation;
+    }
+
+    /**
+     * A turn of this session was cut by a shutdown or drain: its workspace stays held and the session is not evicted here, so
+     * the next worker sees this one as a dead holder. A late attempt of an older generation changes nothing in this one.
+     */
+    markTurnCut(sessionId: string, generation: number): void {
+        if (generation === this.generation) this.cutTurns.set(sessionId, generation);
+    }
+
+    private isTurnCut(sessionId: string): boolean {
+        return this.cutTurns.get(sessionId) === this.generation;
     }
 
     /** Final worker cleanup, after the durable runtime has drained. */

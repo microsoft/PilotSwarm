@@ -381,9 +381,11 @@ export async function runTurnCommit(
     // base — leaving the store one ahead so every later turn fails the CAS
     // (zombie-duplicate fence: "expected N, found N+1"). Skip the commit and
     // leave the .ps-turn-inprogress sentinel in place so the next preamble
-    // re-hydrates the base version and discards this partial turn. (Drain and
-    // lock-steal classify as "cancelled", not "stopped", and DO commit so their
-    // same-turnKey re-run adopts the already-committed snapshot.)
+    // re-hydrates the base version and discards this partial turn. (A lock
+    // steal outside a drain classifies as "cancelled", not "stopped", and DOES
+    // commit, so its same-turnKey re-run adopts the already-committed snapshot.
+    // A turn the worker's drain cancels never reaches this commit: runTurn
+    // treats it as a cut and throws before it.)
     if ((result as any)?.type === "stopped") {
         ctx.trace(
             `session=${ctx.sessionId} user-stopped turn: skipping snapshot commit at ` +
