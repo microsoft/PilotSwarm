@@ -102,7 +102,7 @@ import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
-/** How long summarizeSession waits for its one-shot title prompt before it uses the fallback title. */
+/** How long summarizeSession's one-shot (runtime start, session create and title prompt together) may take before it uses the fallback title. */
 export const SUMMARIZE_SESSION_TIMEOUT_MS = 60_000;
 
 /** The trimmed agent definition both resolution paths hand to their callers. */
@@ -6455,8 +6455,22 @@ export function registerActivities(
             const sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) }, defaultProvider?.sdkProvider, defaultProvider?.toolCatalog);
             let title = "";
             let source: "llm" | "fallback" = "llm";
+            // One budget for the whole one-shot: a runtime that stays alive but
+            // stops answering must not hold the start, the create or the prompt.
+            const deadlineAt = Date.now() + SUMMARIZE_SESSION_TIMEOUT_MS;
+            const remainingMs = () => Math.max(0, deadlineAt - Date.now());
+            const withinBudget = <T>(work: Promise<T>, what: string): Promise<T> => {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                work.catch(() => {});
+                return Promise.race([
+                    work,
+                    new Promise<never>((_, reject) => {
+                        timer = setTimeout(() => reject(new Error(`the title ${what} timed out`)), remainingMs());
+                    }),
+                ]).finally(() => { if (timer) clearTimeout(timer); });
+            };
             try {
-                await sdk.start();
+                await withinBudget(sdk.start(), "runtime start");
                 // Resolve the default model + provider from the registry
                 const sessionOpts: any = {
                     ...textOnlyCopilotSessionOptions(),
@@ -6471,15 +6485,22 @@ export function registerActivities(
                     activityCtx.traceInfo("[summarizeSession] no provider and no GitHub token — skipping");
                     return "";
                 }
-                const tempSession = await sdk.createSession(sessionOpts);
-                title = await sendCopilotPrompt(tempSession, summaryPrompt, SUMMARIZE_SESSION_TIMEOUT_MS);
+                const tempSession = await withinBudget(sdk.createSession(sessionOpts), "session create");
+                title = await sendCopilotPrompt(tempSession, summaryPrompt, remainingMs());
             } catch (err: any) {
                 activityCtx.traceInfo(`[summarizeSession] failed: ${err.message}`);
                 title = buildFallbackSummaryTitle();
                 source = "fallback";
             } finally {
                 // The one-shot runtime must not outlive the activity, whatever happened above.
-                await stopCopilotClient(sdk);
+                // A spent budget means the runtime stopped answering: force it instead of
+                // waiting up to another stop timeout for a graceful stop.
+                if (remainingMs() === 0) {
+                    try { await sdk.forceStop(); }
+                    catch (err: any) { activityCtx.traceInfo(`[summarizeSession] force-stop failed: ${err?.message ?? err}`); }
+                } else {
+                    await stopCopilotClient(sdk);
+                }
             }
             // Storage failures must fail the activity, not trigger an unguarded
             // fallback or turn a failed write into a successful summary.

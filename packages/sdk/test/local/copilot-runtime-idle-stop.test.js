@@ -25,6 +25,7 @@ import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { messageText } from "../helpers/scripted-model.mjs";
 import { waitFor } from "../helpers/stop-turn-readiness.mjs";
+import { processAlive, readProcess } from "../../src/process-tree.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 240_000;
@@ -33,6 +34,8 @@ const WAIT = 120_000;
 afterEach(() => { vi.restoreAllMocks(); });
 
 const pooledClients = (manager) => [...new Set(manager.clients.values())];
+/** A process that still runs: present and not a zombie (an exited child waiting to be reaped runs nothing). */
+const processRuns = (pid) => processAlive(pid) && readProcess(pid)?.zombie !== true;
 
 /** Reclaims the session through the worker's eviction sweep, once its turn has released the session lock. */
 async function evict(manager, sessionId) {
@@ -64,12 +67,17 @@ describe("issue 331: idle Copilot runtimes stop and teardown ends tool shells", 
                 const pooled = pooledClients(manager);
                 expect(pooled).toHaveLength(1);
                 const [oldClient] = pooled;
+                const oldPid = manager.runtimeMonitor.pid(oldClient);
+                expect(oldPid).toBeGreaterThan(0);
+                expect(processRuns(oldPid)).toBe(true);
                 const stop = vi.spyOn(oldClient, "stop");
 
                 expect(await evict(manager, sessionId)).toBe(true);
                 expect(await waitFor(() => manager.clients.size === 0, 30_000, 100)).toBe(true);
                 expect(await waitFor(() => stop.mock.calls.length > 0, 30_000, 100)).toBe(true);
                 expect(stop).toHaveBeenCalledTimes(1);
+                // The stop ends the old runtime's process, not only its pool entry.
+                expect(await waitFor(() => !processRuns(oldPid), 30_000, 100)).toBe(true);
 
                 // The next turn starts a fresh runtime for the same key and resumes the snapshot.
                 expect(await session.sendAndWait("IDL-SECOND after the stop", WAIT)).toContain("answered IDL-SECOND");
@@ -95,12 +103,17 @@ describe("issue 331: idle Copilot runtimes stop and teardown ends tool shells", 
 
     // Tool shells run in their own session (setsid); POSIX process groups and sessions are not on Windows.
     describe.skipIf(process.platform === "win32")("background shells of a session with no workspace", () => {
-        /** The turn starts a detached shell that writes `heartbeat` and leaves a re-parented daemon writing `daemon`. */
+        /**
+         * The turn starts a detached shell that writes `heartbeat` and leaves a re-parented daemon writing `daemon`.
+         * Both loops run only while their folder exists, so removing it ends them even when the teardown under
+         * test fails to.
+         */
         const startShells = (heartbeat, daemon) => (_body, position) => {
             if (!position.lastUserText.includes("start the shells")) return { content: "ok" };
             if (position.step > 0) return { content: "started" };
-            const command = `( while true; do date +%s >> '${daemon}'; sleep 0.2; done & ) ; `
-                + `while true; do date +%s >> '${heartbeat}'; sleep 0.2; done`;
+            const dir = path.dirname(heartbeat);
+            const command = `( while [ -d '${dir}' ]; do date +%s >> '${daemon}'; sleep 0.2; done & ) ; `
+                + `while [ -d '${dir}' ]; do date +%s >> '${heartbeat}'; sleep 0.2; done`;
             return { tools: [{ name: "bash", args: { command, description: "heartbeat", mode: "async", detach: true } }] };
         };
 

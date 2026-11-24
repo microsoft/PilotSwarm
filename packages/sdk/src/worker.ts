@@ -161,15 +161,30 @@ export function resolveWorkerTurnTimeoutMs(
     return parseNonNegativeInt(envValue) ?? DEFAULT_TURN_TIMEOUT_MS;
 }
 
-/** @internal Resolve the idle-runtime stop delay: explicit option > deployment env > SDK default (0 = never). */
+/**
+ * @internal Resolve the idle-runtime stop delay: explicit option > deployment env > SDK default (0 = never).
+ * Only a whole number of milliseconds is accepted; anything else ("30s", "1e3", -1) is ignored with a warning.
+ */
 export function resolveCopilotClientIdleStopMs(
     explicitValue: unknown,
     envValue: unknown = process.env.PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS,
 ): number {
-    if (explicitValue !== undefined) {
-        return parseNonNegativeInt(explicitValue) ?? DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS;
-    }
-    return parseNonNegativeInt(envValue) ?? DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS;
+    const strict = (raw: unknown): number | undefined => {
+        if (typeof raw === "number") return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : undefined;
+        if (typeof raw === "string" && /^\s*\d+\s*$/.test(raw)) return Math.min(Number(raw.trim()), Number.MAX_SAFE_INTEGER);
+        return undefined;
+    };
+    const [raw, name] = explicitValue !== undefined
+        ? [explicitValue, "copilotClientIdleStopMs"]
+        : [envValue, "PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS"];
+    if (raw === undefined || raw === null || raw === "") return DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS;
+    const ms = strict(raw);
+    if (ms !== undefined) return ms;
+    console.warn(
+        `[PilotSwarmWorker] ignoring ${name}=${JSON.stringify(raw)}: expected a whole number of milliseconds (0 disables); ` +
+        `using the default ${DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS} ms.`,
+    );
+    return DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS;
 }
 
 export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
