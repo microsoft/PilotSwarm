@@ -87,7 +87,7 @@ export function workflowAwareSchedulingTool<T extends { name?: string; descripti
 /** While Workflows are off in a session, its instructions carry only this paragraph, in the guidance's place. */
 export const WORKFLOW_CONTEXT_STUB = `## Workflows
 
-Workflows are off in this session. When the work is mechanical, repetitive or prescriptive (a repeated or scheduled check, the same steps for each item, a fixed procedure with waits), say in one sentence that a Workflow suits it and ask the user to turn Workflows on; call \`enable_workflows\` only after they agree. A user who asks to build, save, start or change a Workflow has already agreed: call \`enable_workflows\` (not \`load_skill\`) at once. A repeated task that names no Workflow is not such a request. A Workflow runs a fixed procedure without model turns, except at agent nodes.`;
+Workflows are off in this session. A Workflow runs a fixed procedure (steps, waits, repeated checks) without model turns, except at agent nodes that need judgment. When the user asks for a Workflow, call \`enable_workflows\` (not \`load_skill\`): this session gets the Workflow tools and guidance, and your task continues. When a Workflow would suit the task (a fixed procedure, a repeated check a script could do), suggest it in one sentence and ask; call \`enable_workflows\` only after the user agrees.`;
 
 export const ENABLE_WORKFLOWS_TOOL = "enable_workflows";
 

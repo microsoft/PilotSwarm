@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Workflows: back to the 0.8.14 rule
+
+- Base V2 rule 11 and the paragraph a session gets while Workflows are off are back to their 0.8.14 text. Rule 11 no
+  longer sends mechanical, repetitive or prescriptive work to a Workflow or asks the user to turn Workflows on. The
+  paragraph again says: when the user asks for a Workflow, call `enable_workflows`; when one would suit the task,
+  suggest it in one sentence and ask. This reverts the consent wording of 0.8.15 and 0.8.16 (PRs 355, 363 and 366).
+  On a 0.8.16 test cluster, a real model asked the user to turn Workflows on for "a dad joke every 40s", then answered
+  "no workflows" with "I can't automate this" instead of using `cron`.
+- The `workflow-decision` and `workflow-schedules` skills and their pointers from 0.8.15 stay.
+
 ## 0.8.16 — 2026-11-23
 
 No CMS migration and no session orchestration or Workflow controller version change.
