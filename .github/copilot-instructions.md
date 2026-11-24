@@ -638,7 +638,8 @@ baseline and real HorizonDB coverage, publishes three GitHub Release package tar
 plus checksums, then deploys the same tested source commit to the Azure test
 environment. Separate **Create dev release** (`release-dev.yml`) pins a repository `source_branch`
 before approval, then allocates the next `0.0.0-dev.N` beyond remote tags and
-releases (including drafts) under separate `release-dev` concurrency. Both workflows
+visible releases (tagged drafts included; untagged drafts cannot reserve numbers
+with the read-only token) under separate `release-dev` concurrency. Both workflows
 run from main; blank `source_branch` uses captured main and explicit branches
 select source only. Approval trusts source code with CI credentials, not branch
 workflow controls. Packing runs without the GitHub write token and publication

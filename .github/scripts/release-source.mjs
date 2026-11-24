@@ -57,15 +57,21 @@ export function prepareDevSnapshot(version, sourceSha, { root = process.cwd(), g
     throw new Error('Checkout differs from the source commit selected before approval.');
   }
   if (gitFn(['-C', root, 'status', '--porcelain', '--untracked-files=no'])) throw new Error('Snapshot preparation requires a clean source checkout.');
-  const manifests = packagePaths.map(path => JSON.parse(readFileSync(resolve(root, path, 'package.json'), 'utf8')));
-  const lock = JSON.parse(readFileSync(resolve(root, 'package-lock.json'), 'utf8'));
+  const manifestTexts = packagePaths.map(path => readFileSync(resolve(root, path, 'package.json'), 'utf8'));
+  const manifests = manifestTexts.map(text => JSON.parse(text));
+  const lockText = readFileSync(resolve(root, 'package-lock.json'), 'utf8');
+  const lock = JSON.parse(lockText);
   stampDevVersion(version, manifests, lock);
   const changelog = `## [${version}]\n\nDevelopment snapshot of source commit ${sourceSha}.\n\n` +
     readFileSync(resolve(root, 'CHANGELOG.md'), 'utf8');
   validateRelease(version, manifests, lock, changelog);
   const files = packagePaths.map(path => `${path}/package.json`);
-  for (const [index, path] of files.entries()) writeFileSync(resolve(root, path), JSON.stringify(manifests[index], null, 2) + '\n');
-  writeFileSync(resolve(root, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n');
+  for (const [index, path] of files.entries()) {
+    const indent = manifestTexts[index].match(/^([ \t]+)"/m)?.[1] ?? 2;
+    writeFileSync(resolve(root, path), JSON.stringify(manifests[index], null, indent) + '\n');
+  }
+  const lockIndent = lockText.match(/^([ \t]+)"/m)?.[1] ?? 2;
+  writeFileSync(resolve(root, 'package-lock.json'), JSON.stringify(lock, null, lockIndent) + '\n');
   writeFileSync(resolve(root, 'CHANGELOG.md'), changelog);
   gitFn(['-C', root, 'add', ...files, 'package-lock.json', 'CHANGELOG.md']);
   gitFn(['-C', root, '-c', 'user.name=github-actions[bot]',

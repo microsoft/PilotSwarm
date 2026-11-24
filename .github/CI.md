@@ -35,8 +35,9 @@ gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref main \
 ```
 
 After approval, release concurrency serializes allocation of `0.0.0-dev.N`,
-starting at 1 and advancing beyond the highest remote tag or release (including
-drafts), without filling gaps. A version-only snapshot commit updates manifests,
+starting at 1 and advancing beyond the highest remote tag or visible release
+(including tagged drafts), without filling gaps. Untagged drafts invisible to
+the read-only token cannot reserve dev numbers. A version-only snapshot commit updates manifests,
 internal dependencies, the lockfile and changelog. Tests and the tag use that
 commit; the source branch is unchanged and release notes record both SHAs.
 Dispatch a new run instead of rerunning dev selection/preparation.

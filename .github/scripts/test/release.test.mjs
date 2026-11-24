@@ -29,7 +29,7 @@ function releaseFixture(t) {
   const paths = ['sdk', 'horizon-store', 'app'];
   const fixtureLock = structuredClone(lock);
   paths.forEach((path, index) => {
-    writeFileSync(join(root, 'packages', path, 'package.json'), JSON.stringify(manifests[index], null, 2) + '\n');
+    writeFileSync(join(root, 'packages', path, 'package.json'), JSON.stringify(manifests[index], null, 4) + '\n');
     fixtureLock.packages[`packages/${path}`] = structuredClone(manifests[index]);
   });
   writeFileSync(join(root, 'package-lock.json'), JSON.stringify(fixtureLock, null, 2) + '\n');
@@ -297,6 +297,12 @@ test('dev snapshot commit changes only release metadata and preserves the select
     ['CHANGELOG.md', 'package-lock.json', 'packages/app/package.json', 'packages/horizon-store/package.json', 'packages/sdk/package.json']);
   assert.equal(JSON.parse(gitFn(['-C', root, 'show', `${sourceSha}:packages/sdk/package.json`])).version, version);
   assert.equal(JSON.parse(readFileSync(join(root, 'packages/sdk/package.json'), 'utf8')).version, '0.0.0-dev.1');
+  for (const path of ['sdk', 'horizon-store', 'app']) {
+    const file = `packages/${path}/package.json`;
+    assert.equal(gitFn(['-C', root, 'diff', '--numstat', 'HEAD^', 'HEAD', '--', file]), `2\t2\t${file}`);
+    assert.match(readFileSync(join(root, file), 'utf8'), /^\{\n {4}"name":/);
+  }
+  assert.match(readFileSync(join(root, 'package-lock.json'), 'utf8'), /^\{\n {2}"packages":/);
   assert.throws(() => prepareDevSnapshot('0.0.0-dev.2', sourceSha, { root, gitFn }), /selected before approval/);
   writeFileSync(join(root, 'CHANGELOG.md'), 'unexpected edit');
   assert.throws(() => prepareDevSnapshot('0.0.0-dev.2', snapshotSha, { root, gitFn }), /clean source/);
