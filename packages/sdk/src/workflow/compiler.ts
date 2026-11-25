@@ -1,5 +1,5 @@
 import { isScalar, parseDocument, visit, type Document } from "yaml";
-import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
+import { bindingExpressionsOf, bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { parseWorkflowAgentModels } from "./agent-models.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
 import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefusal, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
@@ -1561,7 +1561,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
 }
 
 /** The binding templates a compiled state holds, by field (for checks over every binding). */
-function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
+export function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
     const templates: Array<[string, JsonValue]> = [];
     const add = (field: string, value: JsonValue | undefined): void => { if (value !== undefined && value !== null) templates.push([field, value]); };
     if (node.type === "terminal") { if (node.hasOutput) add("output", node.output); return templates; }
@@ -1588,6 +1588,22 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
         }
     }
     return templates;
+}
+
+/** Distinct state ids referenced by `${states.<id>.output}` expressions on a node. */
+export function referencedStateIdsOfNode(node: WorkflowIRNode): string[] {
+    const ids = new Set<string>();
+    for (const [field, template] of nodeTemplates(node)) {
+        try {
+            for (const { expression } of bindingExpressionsOf(template, `states.${node.id}.${field}`)) {
+                if (expression.root === "states" && expression.segments.length >= 2
+                    && typeof expression.segments[0] === "string" && expression.segments[1] === "output") {
+                    ids.add(expression.segments[0]);
+                }
+            }
+        } catch { /* reported at compile time */ }
+    }
+    return [...ids];
 }
 
 /**
@@ -2170,6 +2186,36 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 if (/\$\{\s*branch\s*\.\s*name\b/.test(JSON.stringify(template))) {
                     diagnostics.error("WORKFLOW_BINDING_INVALID", `states.${parallel}.body.states.${node.id}.${field}`,
                         "branch.name is bound only in a parallel state with branches; in a For each, use branch.index or branch.item.");
+                }
+            }
+        }
+        // `states`: only `${states.<id>.output}` (with optional nested path / `??`), naming a declared state.
+        if (Object.hasOwn(root, "initialInput")) {
+            try {
+                if (bindingRootsOf(root.initialInput).has("states")) {
+                    diagnostics.error("WORKFLOW_BINDING_INVALID", "initialInput", "states is not bound in initialInput; no state has finished yet.");
+                }
+            } catch { /* reported by its own check */ }
+        }
+        for (const node of Object.values(nodes)) {
+            const parallel = bodyOf.get(node.id);
+            const nodePath = parallel !== undefined ? `states.${parallel}.body.states.${node.id}` : `states.${node.id}`;
+            for (const [field, template] of nodeTemplates(node)) {
+                let expressions: ReturnType<typeof bindingExpressionsOf>;
+                try { expressions = bindingExpressionsOf(template, `${nodePath}.${field}`); } catch { continue; }
+                for (const { path: exprPath, expression } of expressions) {
+                    if (expression.root !== "states") continue;
+                    const targetId = expression.segments[0];
+                    const member = expression.segments[1];
+                    if (typeof targetId !== "string" || member !== "output") {
+                        diagnostics.error("WORKFLOW_BINDING_INVALID", exprPath,
+                            "states bindings must use ${states.<id>.output} (only .output is supported).");
+                        continue;
+                    }
+                    if (!Object.hasOwn(nodes, targetId)) {
+                        diagnostics.error("WORKFLOW_BINDING_INVALID", exprPath,
+                            `states.${targetId} does not name a state in this workflow.`);
+                    }
                 }
             }
         }

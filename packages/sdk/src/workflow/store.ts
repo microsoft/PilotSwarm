@@ -4450,6 +4450,36 @@ export class WorkflowStore {
         return rows.map(nodeFrom);
     }
 
+    /**
+     * Latest finished business output per referenced state id in `runId`, visible from `scopeId`
+     * (its own branch scope or root scope). States without a finished business visit get `{}` so
+     * `${states.<id>.output}` resolves to `null` (or its `??` default).
+     */
+    async latestStateOutputs(runId: string, scopeId: string, nodeIds: readonly string[]): Promise<Record<string, { output?: JsonValue }>> {
+        if (!nodeIds.length) return {};
+        const distinct = [...new Set(nodeIds)];
+        const out: Record<string, { output?: JsonValue }> = Object.fromEntries(distinct.map(id => [id, {}]));
+        const { rows } = await this.pool.query(
+            `SELECT DISTINCT ON (node_id) node_id, output
+             FROM ${this.t.nodes}
+             WHERE run_id = $1
+               AND state = 'completed'
+               AND result_kind = 'business'
+               AND node_id = ANY($2::text[])
+               AND (scope_id = $3 OR scope_id = $4)
+             ORDER BY node_id,
+               CASE WHEN scope_id = $3 THEN 0 ELSE 1 END,
+               ordinal DESC,
+               completed_at DESC NULLS LAST,
+               node_execution_id DESC`,
+            [runId, distinct, scopeId, "root"],
+        );
+        for (const row of rows) {
+            out[str(row, "node_id")] = { output: jsonOrNull(row, "output") };
+        }
+        return out;
+    }
+
     // ─── Read pages (design 04 read_workflow "bounded history pagination"; R01) ───
     //
     // Each page lists a run's rows newest first in one stable order (an immutable key, then a unique id, so rows written

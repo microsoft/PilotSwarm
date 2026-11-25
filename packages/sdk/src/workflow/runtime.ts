@@ -73,7 +73,7 @@ import {
     RECEIVE_RECEIVED,
     REQUEST_DECLINED,
     REQUEST_RESPONDED,
-    SPAWN_STARTED, WAIT_ELAPSED, WORKFLOW_ENDED_CONTRACT,
+    referencedStateIdsOfNode, SPAWN_STARTED, WAIT_ELAPSED, WORKFLOW_ENDED_CONTRACT,
     WAIT_MAX_SECONDS,
     STATE_TIMEOUT_MAX_SECONDS,
     workflowClockWaitWords,
@@ -1817,10 +1817,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             after = page[page.length - 1].nodeExecutionId;
         }
     };
-    /** The bindings of a state: its run's inputs, its incoming value, its pinned KV, the runtime error, and a branch's own `branch`. */
-    const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue, branch: BranchBinding | null = null): BindingScope => ({
+    /** The bindings of a state: its run's inputs, its incoming value, its pinned KV, the runtime error, a branch's own `branch`, and frozen `states`. */
+    const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue, branch: BranchBinding | null = null,
+        states: JsonValue | null = null): BindingScope => ({
         inputs: run.inputs, input: incoming, kv: isJsonObject(kv) ? kv : {}, runtime: { error: runtimeErrorValue },
         ...(branch !== null ? { branch: branchBindingValue(branch) } : {}),
+        ...(states !== null ? { states } : {}),
     });
     /**
      * The `branch` binding of a node execution's scope: its item in the
@@ -2174,9 +2176,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if ("failure" in arrived) immediate = arrived.failure;
             else {
                 value = arrived.incoming;
+                const stateRefs = referencedStateIdsOfNode(node);
+                const stateOutputs = stateRefs.length ? await store.latestStateOutputs(current.runId, scopeId, stateRefs) : null;
+                const entryScope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch, stateOutputs);
                 if (current.controllerVersion !== null && workflowControllerFeatures(current.controllerVersion).carry
                     && node.type !== "terminal" && node.carry !== undefined) {
-                    try { carryText = evaluateCarry(node.carry, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.carry`); }
+                    try { carryText = evaluateCarry(node.carry, entryScope, `states.${nodeId}.carry`); }
                     catch (error) {
                         if (!(error instanceof WorkflowBindingError) && !(error instanceof WorkflowJsonError)) throw error;
                         immediate = runtimeError("invalid_input", error.message);
@@ -2185,7 +2190,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 if (!immediate && node.type === "spawn") {
                     if (node.hasInputs) {
                         try {
-                            const evaluated = evaluateBindingTemplate(node.inputs, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.inputs`);
+                            const evaluated = evaluateBindingTemplate(node.inputs, entryScope, `states.${nodeId}.inputs`);
                             if (!isJsonObject(evaluated)) immediate = runtimeError("invalid_input", "spawn inputs must evaluate to a JSON object.");
                             else value = evaluated;
                         } catch (error) {
@@ -2194,7 +2199,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         }
                     } else value = {};
                 } else if (!immediate && node.type !== "terminal" && node.type !== "parallel" && node.type !== "spawn" && node.hasInput) {
-                    try { value = evaluateBindingTemplate(node.input, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.input`); }
+                    try { value = evaluateBindingTemplate(node.input, entryScope, `states.${nodeId}.input`); }
                     catch (error) {
                         if (!(error instanceof WorkflowBindingError)) throw error;
                         immediate = runtimeError("invalid_input", error.message);
@@ -2215,7 +2220,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                     }
                     try {
-                        const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch);
+                        const scope = entryScope;
                         if (immediate) { /* refused above */ }
                         else if (node.branches !== undefined) {
                             manifest = node.branches.map(item => (item.hasInput
@@ -2241,7 +2246,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     // Its own time limit is read once, here, as a wait's seconds; the store counts them from its own clock
                     // (a test run's from its virtual clock) when it accepts the admission.
                     if (!immediate && node.timeoutSeconds !== undefined) {
-                        const seconds = waitSeconds(node.timeoutSeconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch),
+                        const seconds = waitSeconds(node.timeoutSeconds, entryScope,
                             `states.${nodeId}.timeoutSeconds`);
                         if (typeof seconds === "number") waitFor = seconds;
                         else immediate = seconds;
@@ -2251,24 +2256,23 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 // from its own clock when it accepts the admission (store.enterNode).
                 if (!immediate && node.type === "wait" && node.at) waitAt = node.at;
                 else if (!immediate && node.type === "wait" && node.seconds !== null) {
-                    const seconds = waitSeconds(node.seconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.seconds`, WAIT_MAX_SECONDS);
+                    const seconds = waitSeconds(node.seconds, entryScope, `states.${nodeId}.seconds`, WAIT_MAX_SECONDS);
                     if (typeof seconds === "number") waitFor = seconds;
                     else immediate = seconds;
                 }
                 // A receive's sender, correlation and wait are resolved once, here, and frozen for this occurrence.
                 if (!immediate && node.type === "messaging" && node.mode === "receive") {
-                    const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch);
-                    const resolved = await resolveReceive(node, current, scope);
+                    const resolved = await resolveReceive(node, current, entryScope);
                     if ("failure" in resolved) immediate = resolved.failure;
                     else if (node.waitSeconds !== null) {
-                        const seconds = waitSeconds(node.waitSeconds, scope, `states.${nodeId}.wait.seconds`);
+                        const seconds = waitSeconds(node.waitSeconds, entryScope, `states.${nodeId}.wait.seconds`);
                         if (typeof seconds === "number") { waitFor = seconds; receive = resolved.spec; }
                         else immediate = seconds;
                     } else receive = resolved.spec;
                 }
                 // A send's recipient and message are resolved once, here, and frozen for this occurrence.
                 if (!immediate && node.type === "messaging" && node.mode === "send") {
-                    const resolved = await resolveSend(node, current, ir, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), value);
+                    const resolved = await resolveSend(node, current, ir, entryScope, value);
                     if ("failure" in resolved) immediate = resolved.failure;
                     else send = { recipient: resolved.recipient, contract: node.contract, payloadText: resolved.payloadText, correlationText: resolved.correlationText };
                 }
@@ -2276,7 +2280,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 // occurrence: its input as a script's, its seconds as a wait's, its child's id
                 // derived from this node execution, and the workflow's parent as its controlling agent.
                 if (!immediate && node.type === "agent") {
-                    const seconds = waitSeconds(node.timeoutSeconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.timeoutSeconds`);
+                    const seconds = waitSeconds(node.timeoutSeconds, entryScope, `states.${nodeId}.timeoutSeconds`);
                     if (typeof seconds !== "number") immediate = seconds;
                     else {
                         const definition = await store.readDefinition(current.workflowSessionId);
@@ -2307,7 +2311,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 // (design workflow-messaging-request.md 2): its seconds as a wait's, its response
                 // schema the one its contract declares.
                 if (!immediate && node.type === "messaging" && node.mode === "request") {
-                    const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch);
+                    const scope = entryScope;
                     const resolved = await resolveSend(node, current, ir, scope, value);
                     const seconds = "failure" in resolved ? null : waitSeconds(node.timeoutSeconds, scope, `states.${nodeId}.timeoutSeconds`);
                     const responseSchema = ir.contracts[node.contract]?.response?.schema;
@@ -2627,8 +2631,10 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 const predecessor = executed.predecessorId ? await store.readNodeExecution(executed.predecessorId) : null;
                 const errorValue = predecessor?.resultKind === "runtime_error" ? predecessor.error : null;
                 try {
+                    const stateRefs = node.hasOutput ? referencedStateIdsOfNode(node) : [];
+                    const stateOutputs = stateRefs.length ? await store.latestStateOutputs(run.runId, executed.scopeId, stateRefs) : null;
                     const output = node.hasOutput
-                        ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue, await kvOf(run.runId, executed.kvRevision)), `states.${node.id}.output`)
+                        ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue, await kvOf(run.runId, executed.kvRevision), null, stateOutputs), `states.${node.id}.output`)
                         : null;
                     // A terminal's own schema adds to the workflow contract; it never replaces it.
                     const contracts = [node.outputSchema, node.outcome === "succeeded" ? ir.outputSchema : null]
@@ -3942,8 +3948,10 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             const errorValue = predecessor?.resultKind === "runtime_error" ? predecessor.error : null;
             let result: NodeResultInput;
             try {
+                const stateRefs = node.hasOutput ? referencedStateIdsOfNode(node) : [];
+                const stateOutputs = stateRefs.length ? await store.latestStateOutputs(run.runId, executed.scopeId, stateRefs) : null;
                 const output = node.hasOutput
-                    ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue, await kvOf(run.runId, executed.kvRevision), branch),
+                    ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue, await kvOf(run.runId, executed.kvRevision), branch, stateOutputs),
                         `states.${node.id}.output`)
                     : null;
                 const problems = node.outputSchema ? schemaSetFor(run.irSha256, ir.schemaDefs).validate(node.outputSchema, output) : [];
