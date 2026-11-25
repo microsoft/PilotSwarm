@@ -33,6 +33,11 @@ const frozenVersions = {
         handler: "workflowEffect_1_1_0",
         sha256: "e0ee6958eea7579d46d16b58cdfb4e229ebe4b9bc0b372fd1614c3f5c1ffac31",
     },
+    "1.2.0": {
+        directory: "workflow/effect_1_2_0",
+        handler: "workflowEffect_1_2_0",
+        sha256: "af678610986ca2b53861ed785a1e25050c0559326b745a45ae77ad0719d9fb2e",
+    },
 };
 
 function sourceFiles(dir = "") {

@@ -15,7 +15,7 @@ import { assertJsonValue, isJsonObject, type JsonValue } from "./json.js";
  * outside JSON strings: a quoted key or a string default may contain them.
  */
 
-export const BINDING_ROOTS = ["inputs", "input", "kv", "runtime", "branch"] as const;
+export const BINDING_ROOTS = ["inputs", "input", "kv", "runtime", "branch", "states"] as const;
 export type BindingRoot = typeof BINDING_ROOTS[number];
 
 function isBindingRoot(value: string | undefined): value is BindingRoot {
@@ -36,6 +36,8 @@ export interface BindingScope {
     runtime: JsonValue;
     /** A parallel branch's `{ item, index }` (and a named branch's `name`); absent (null) outside a branch. */
     branch?: JsonValue;
+    /** Latest finished business output of referenced states in the run: `{ [stateId]: { output?: JsonValue } }`. */
+    states?: JsonValue;
 }
 
 export class WorkflowBindingError extends Error {
@@ -186,17 +188,37 @@ export function validateBindingTemplate(template: unknown, path: string): JsonVa
 
 function resolvePath(scope: BindingScope, expression: BindingExpression, path: string): JsonValue {
     let current: JsonValue = scope[expression.root] ?? null;
-    for (const segment of expression.segments) {
+    for (let index = 0; index < expression.segments.length; index += 1) {
+        const segment = expression.segments[index];
         if (typeof segment === "number") {
             if (Array.isArray(current) && segment < current.length) { current = current[segment]; continue; }
         } else if (isJsonObject(current) && Object.hasOwn(current, segment)) {
             current = current[segment];
+            continue;
+        } else if (expression.root === "states" && index === 1 && segment === "output") {
+            // A declared state with no finished visit in this run/branch resolves to null (or the expression default).
+            if (index === expression.segments.length - 1) return expression.hasDefault ? expression.defaultValue : null;
+            current = null;
             continue;
         }
         if (expression.hasDefault) return expression.defaultValue;
         throw new WorkflowBindingError(`could not resolve '${String(segment)}' of ${expression.root}`, path);
     }
     return current;
+}
+
+/** All parsed binding expressions in a template, with their paths. */
+export function bindingExpressionsOf(template: unknown, path = "$"): Array<{ path: string; expression: BindingExpression }> {
+    const expressions: Array<{ path: string; expression: BindingExpression }> = [];
+    const visit = (value: unknown, at: string): void => {
+        if (typeof value === "string") {
+            const expression = parseBindingExpression(value, at);
+            if (expression) expressions.push({ path: at, expression });
+        } else if (Array.isArray(value)) value.forEach((item, index) => visit(item, `${at}[${index}]`));
+        else if (isJsonObject(value)) for (const [key, item] of Object.entries(value)) visit(item, `${at}.${key}`);
+    };
+    visit(template, path);
+    return expressions;
 }
 
 /** The roots a template's expressions use (a plain value uses none). */

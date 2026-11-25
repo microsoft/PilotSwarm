@@ -159,7 +159,7 @@ const interception = (nodeExecutionId, question) => ({
 });
 
 test("decision is a test operation: its fixture names its state and carries the raw provider body", () => {
-    const expected = ["tool.call", "decision", "agent", "send", "request", "approval"];
+    const expected = ["tool.call", "decision", "agent", "send", "request", "approval", "spawn"];
     assert.deepEqual([...WORKFLOW_TEST_OPERATIONS], expected, JSON.stringify(WORKFLOW_TEST_OPERATIONS));
     assert.equal(workflowTestInterceptionId("nx-1", "decision"), "nx-1/decision");
     const fixtures = parseTestFixtures([{ operation: "decision", state: "route", response: { kind: "success", value: RAW_BILLING } }]);

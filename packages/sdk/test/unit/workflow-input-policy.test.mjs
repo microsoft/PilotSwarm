@@ -16,15 +16,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    assertWorkflowHumanInputAllowed, isAgentInput, spawnNesting, workflowInputCapabilities, workflowMaxNestingLevel,
-    WORKFLOW_ASK_USER_REFUSAL, WORKFLOW_HUMAN_INPUT_DENIED, WORKFLOW_MAX_DESCENDANT_LEVEL,
+    assertWorkflowHumanInputAllowed, computeSessionLevel, isAgentInput, SESSION_MAX_NESTING_LEVEL, spawnNesting, workflowInputCapabilities,
+    WORKFLOW_ASK_USER_REFUSAL, WORKFLOW_HUMAN_INPUT_DENIED,
 } from "../../dist/workflow/input-policy.js";
 
 const ROOT = { childSessionId: "C", nodeExecutionId: "nx-1", workflowSessionId: "W", controllingSessionId: "P", distance: 0 };
 const LINEAGES = {
     P: { sessionId: "P", level: 0, agentRoot: null },
-    C: { sessionId: "C", level: 2, agentRoot: ROOT },
-    G: { sessionId: "G", level: 3, agentRoot: { ...ROOT, distance: 1 } },
+    C: { sessionId: "C", level: 1, agentRoot: ROOT },
+    G: { sessionId: "G", level: 2, agentRoot: { ...ROOT, distance: 1 } },
     lost: { sessionId: "lost", level: null, agentRoot: ROOT },
 };
 
@@ -71,16 +71,45 @@ test("capabilities refuse prompts, answers and steers only in an agent state's s
     assert.match(WORKFLOW_ASK_USER_REFUSAL, /needs_input/);
 });
 
-test("a spawn in an agent state's subtree counts its stored level up to level 3; elsewhere the ordinary rule is unchanged", () => {
-    assert.equal(WORKFLOW_MAX_DESCENDANT_LEVEL, 3);
-    assert.equal(workflowMaxNestingLevel(LINEAGES.C), 3);
-    assert.equal(workflowMaxNestingLevel(LINEAGES.P), null);
-    // An agent state's child at level 2 may spawn its child at level 3, whatever nesting level it was given.
-    assert.deepEqual(spawnNesting(0, 2, LINEAGES.C), { childNestingLevel: 3, maxNestingLevel: 3 });
-    // That child may not spawn.
+test("T1 & T2: level rule computes every chain in section 7.5 and caps every session at level 2", () => {
+    assert.equal(SESSION_MAX_NESTING_LEVEL, 2);
+    const chain = (specs) => {
+        const nodes = specs.map((spec, i) => ({
+            sessionId: spec[0], parentSessionId: i === 0 ? null : specs[i - 1][0], isAgentStep: Boolean(spec[1]),
+        }));
+        return nodes.reverse();
+    };
+    // 1. Chat, sub-agent, sub-agent -> 0, 1, 2
+    assert.equal(computeSessionLevel(chain([["chat"]])), 0);
+    assert.equal(computeSessionLevel(chain([["chat"], ["s1"]])), 1);
+    assert.equal(computeSessionLevel(chain([["chat"], ["s1"], ["s2"]])), 2);
+    // 2. Chat, Workflow, agent step, sub-agent -> 0, 1, 1, 2
+    assert.equal(computeSessionLevel(chain([["chat"], ["wf1"]])), 1);
+    assert.equal(computeSessionLevel(chain([["chat"], ["wf1"], ["step1", true]])), 1);
+    assert.equal(computeSessionLevel(chain([["chat"], ["wf1"], ["step1", true], ["sub"]])), 2);
+    // 3. Chat, sub-agent, Workflow, agent step -> 0, 1, 2, 2
+    assert.equal(computeSessionLevel(chain([["chat"], ["s1"], ["wf2"]])), 2);
+    assert.equal(computeSessionLevel(chain([["chat"], ["s1"], ["wf2"], ["step2", true]])), 2);
+    // 4. Chat, Workflow, child Workflow, agent step -> 0, 1, 2, 2
+    assert.equal(computeSessionLevel(chain([["chat"], ["wf1"], ["wf2"]])), 2);
+    assert.equal(computeSessionLevel(chain([["chat"], ["wf1"], ["wf2"], ["step2", true]])), 2);
+    // 5. Chat, Workflow, child Workflow, child Workflow -> 3 (refused)
+    assert.equal(computeSessionLevel(chain([["chat"], ["wf1"], ["wf2"], ["wf3"]])), 3);
+    // 6. Chat, sub-agent, Workflow, child Workflow -> 3 (refused)
+    assert.equal(computeSessionLevel(chain([["chat"], ["s1"], ["wf2"], ["wf3"]])), 3);
+    // Empty, missing root, or cyclic -> null
+    assert.equal(computeSessionLevel([]), null);
+    assert.equal(computeSessionLevel([{ sessionId: "orphan", parentSessionId: "missing" }]), null);
+    assert.equal(computeSessionLevel([{ sessionId: "x", parentSessionId: "y" }, { sessionId: "y", parentSessionId: "x" }]), null);
+
+    // T2: agent step of a level-1 Workflow (level 1) may spawn a sub-agent (level 2 <= 2); its sub-agent (level 2) may not (level 3 > 2).
+    assert.deepEqual(spawnNesting(0, 2, LINEAGES.C), { childNestingLevel: 2, maxNestingLevel: 2 });
     const deepest = spawnNesting(1, 2, LINEAGES.G);
-    assert.deepEqual(deepest, { childNestingLevel: 4, maxNestingLevel: 3 });
+    assert.deepEqual(deepest, { childNestingLevel: 3, maxNestingLevel: 2 });
     assert.ok(deepest.childNestingLevel > deepest.maxNestingLevel);
+    // Agent step of a level-2 child Workflow (level 2) cannot spawn a sub-agent (level 3 > 2).
+    const childWfStep = spawnNesting(2, 2, { sessionId: "C2", level: 2, agentRoot: { ...ROOT, childSessionId: "C2", workflowSessionId: "W2" } });
+    assert.deepEqual(childWfStep, { childNestingLevel: 3, maxNestingLevel: 2 });
     // An unreadable level in the subtree, and every ordinary lineage, keep the ordinary rule.
     assert.deepEqual(spawnNesting(2, 2, LINEAGES.lost), { childNestingLevel: 3, maxNestingLevel: 2 });
     assert.deepEqual(spawnNesting(1, 2, LINEAGES.P), { childNestingLevel: 2, maxNestingLevel: 2 });

@@ -88,8 +88,8 @@ test("the model is declared what a 1.0.83 turn's handlers take; every other sess
     assert.equal(named(production, "update_workflow").description, UPDATE_WORKFLOW_TOOL_SPEC.description);
     assert.equal(named(production, "update_workflow").parameters, UPDATE_WORKFLOW_TOOL_SPEC.parameters);
     assert.equal(named(production, "read_workflow").description, READ_WORKFLOW_TOOL_SPEC.description);
-    assert.deepEqual(names(ManagedSession.subAgentToolDefs({ workflowAgentChild: true })).filter(name => name !== COMPLETE_WORKFLOW_NODE_TOOL),
-        names(production), "the child flag adds only the completion tool");
+    assert.deepEqual(names(ManagedSession.subAgentToolDefs({ workflowAgentChild: true })).filter(name => name !== COMPLETE_WORKFLOW_NODE_TOOL && name !== "child_workflows"),
+        names(production), "the child flag adds only the completion and child_workflows tools");
 
     const milestone = ManagedSession.subAgentToolDefs({ workflowMilestone: true });
     assert.equal(named(milestone, "spawn_workflow"), undefined);
@@ -104,7 +104,7 @@ test("the model is declared what a 1.0.83 turn's handlers take; every other sess
     const child = ManagedSession.subAgentToolDefs({ workflowMilestone: true, workflowAgentChild: true });
     assert.equal(named(child, COMPLETE_WORKFLOW_NODE_TOOL).description, COMPLETE_WORKFLOW_NODE_TOOL_SPEC.description);
     assert.equal(named(child, COMPLETE_WORKFLOW_NODE_TOOL).parameters, COMPLETE_WORKFLOW_NODE_TOOL_SPEC.parameters);
-    assert.deepEqual(names(child).filter(name => name !== COMPLETE_WORKFLOW_NODE_TOOL), names(milestone));
+    assert.deepEqual(names(child).filter(name => name !== COMPLETE_WORKFLOW_NODE_TOOL && name !== "child_workflows"), names(milestone));
     // The workspace flag still adds what it did.
     assert.deepEqual(names(ManagedSession.subAgentToolDefs({ workspaceTools: true, workflowMilestone: true })),
         names(ManagedSession.subAgentToolDefs({ workflowMilestone: true })));

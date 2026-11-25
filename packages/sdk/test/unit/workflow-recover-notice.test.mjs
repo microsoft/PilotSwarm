@@ -25,6 +25,9 @@ function fakeHost({ run = completed, controller = "Completed", notifier = "NotFo
         recordSessionEvents: async () => {},
         // R2-RT-2: an ended run's session row is put right first (its own test is in workflow-control).
         repairEndedRunSessionRow: async () => ({ repaired: false }),
+        readSessionLink: async () => null,
+        listChildWorkflows: async () => [],
+        listBareChildWorkflowClaims: async () => [],
     };
     const duroxideClient = {
         getStatus: async (instance) => ({ status: instance === "ctl-1" ? controller : instance.startsWith("wfn-") ? notifier : "NotFound" }),

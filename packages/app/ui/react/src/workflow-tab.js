@@ -1042,6 +1042,10 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                 : h(StateChip, { state }),
             phone ? null : h("span", { className: "ps-wf-bar-text", title: headerTitle || undefined },
                 [revisionWords, started, took].filter(Boolean).join(" · ")),
+            child?.spawnedBy ? h("button", { type: "button", className: "ps-mini-button", "data-field": "spawned-by",
+                "data-session": child.spawnedBy.workflowId,
+                onClick: () => controller.loadSession(child.spawnedBy.workflowId).catch(() => {}) },
+                `Spawned by ${child.spawnedBy.stateId} #${child.spawnedBy.visit}`) : null,
             // Owner, 2026-11-06T13:43Z (F1): icons; a refused or waiting control explains why in its tooltip.
             h("span", { className: "ps-wf-bar-actions" },
                 pause ? h(WorkflowToolButton, { label: pause.label, glyph: "pause", "data-operation": "pause", disabled: !pause.enabled,
@@ -1295,6 +1299,12 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
  */
 export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null, visits = null }) {
     const { sessionId, view, projection } = child;
+    const sessionName = React.useCallback(id => {
+        if (typeof child.sessionName === "function") return child.sessionName(id);
+        const byId = typeof controller?.getState === "function" ? controller.getState()?.sessions?.byId : null;
+        const title = byId?.[id]?.title;
+        return typeof title === "string" && title.trim() ? title.trim() : null;
+    }, [child.sessionName, controller]);
     // OF-S2-8: the script and samples come from the YAML of the revision this Workflow runs, read once, when allowed.
     const code = useWorkflowRevisionYaml(controller, sessionId, view, child.workflowModel ?? child.readModel ?? null, Boolean(selected));
     const [branchPick, setBranchPick] = React.useState(null);
@@ -1315,7 +1325,7 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
         !replayFrame ? h(WorkflowApprovalDetails, { key: selected.current?.id ?? selected.id, controller, sessionId,
             approval: workflowApprovalView(child.workflowModel ?? child.readModel, selected.current) }) : null,
         h(WorkflowNodeSummary, {
-            selected, nodes: child.nodes, runId,
+            selected, nodes: child.nodes, runId, sessionName,
             // An agent node's visits, with its session, are in its Log (finding 8).
             onLog: selected.kind === "agent" ? onLog : null,
             sections: h(NodeCodeSections, { node: selected, yaml: code.yaml, pending: code.pending, hidden: code.hidden }),

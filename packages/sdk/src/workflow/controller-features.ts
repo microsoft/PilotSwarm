@@ -21,6 +21,7 @@ const CONTROLLER_FEATURES: Readonly<Record<WorkflowControllerVersion, Readonly<W
     "1.0.0": NO_CONTROLLER_FEATURES,
     "1.1.0": CARRY_AND_APPROVAL_FEATURES,
     "1.2.0": CARRY_AND_APPROVAL_FEATURES,
+    "1.3.0": CARRY_AND_APPROVAL_FEATURES,
 });
 
 export function isWorkflowControllerVersion(version: unknown): version is WorkflowControllerVersion {

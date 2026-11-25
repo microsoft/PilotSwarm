@@ -22,7 +22,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    clientWorkflowAgentChildCreator, createWorkflowAgentNodeHost, sessionLevel, WORKFLOW_AGENT_PROMPT_SENDER, WORKFLOW_MAX_DESCENDANT_LEVEL,
+    clientWorkflowAgentChildCreator, createWorkflowAgentNodeHost, sessionLevel, SESSION_MAX_NESTING_LEVEL, WORKFLOW_AGENT_PROMPT_SENDER,
 } from "../../dist/workflow/agent-host.js";
 
 const OWNER = { provider: "test", subject: "alice", email: null, displayName: null };
@@ -68,7 +68,7 @@ test("a session's level counts its parents; a missing or cyclic lineage has none
     assert.equal(await sessionLevel(get, "missing"), null);
     assert.equal(await sessionLevel(get, "X"), null);
     assert.equal(await sessionLevel(async id => (id === "Z" ? { parentSessionId: "gone" } : null), "Z"), null);
-    assert.equal(WORKFLOW_MAX_DESCENDANT_LEVEL, 3);
+    assert.equal(SESSION_MAX_NESTING_LEVEL, 2);
 });
 
 test("an inline prompt's child is the workflow's child one level down, owned by the lineage, with the controlling agent's model", async () => {
@@ -76,7 +76,7 @@ test("an inline prompt's child is the workflow's child one level down, owned by 
     assert.deepEqual(await host.spawn(request()), { spawned: true });
     assert.equal(resolved.length, 0);
     assert.deepEqual(created, [{
-        sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, model: "azure-openai:gpt-test", reasoningEffort: "high",
+        sessionId: "child-1", parentSessionId: "W", nestingLevel: 1, owner: OWNER, model: "azure-openai:gpt-test", reasoningEffort: "high",
         title: "Workflow step: review", prompt: "[SYSTEM: wrapper]\n{}", clientMessageId: "workflow:W:run-1:agent:nx-1",
         sender: { kind: "agent", sessionId: "W", display: WORKFLOW_AGENT_PROMPT_SENDER },
     }]);
@@ -107,16 +107,16 @@ test("an agent node receives the Workflow's Start-time workspace, including pinn
 });
 
 test("a child deeper than the descendant limit, or of an unreadable lineage, is refused and nothing is created", async () => {
-    // A workflow at level 3 (its parent at level 2): its agent's child would be at level 4.
+    // A workflow at level 3: its agent step would be at level 3 (above max 2) and is refused.
     const deep = hostOver(rows({ A: { parentSessionId: null }, B: { parentSessionId: "A" }, C: { parentSessionId: "B" }, D: { parentSessionId: "C" } }));
     const refused = await deep.host.spawn(request({ workflowSessionId: "D" }));
     assert.equal(refused.refused.code, "forbidden");
-    assert.match(refused.refused.message, /level 4/);
+    assert.match(refused.refused.message, /level 3/);
     assert.equal(deep.created.length, 0);
-    // A workflow at level 2: its agent's child is at level 3, the last allowed.
+    // A workflow at level 2 (e.g. a child Workflow): its agent step is at level 2, the last allowed.
     const last = hostOver(rows({ A: { parentSessionId: null }, B: { parentSessionId: "A" }, C: { parentSessionId: "B" } }));
     assert.deepEqual(await last.host.spawn(request({ workflowSessionId: "C" })), { spawned: true });
-    assert.equal(last.created[0].nestingLevel, 3);
+    assert.equal(last.created[0].nestingLevel, 2);
     const lost = hostOver({});
     assert.equal((await lost.host.spawn(request())).refused.code, "unavailable");
     assert.equal(lost.created.length, 0);
@@ -198,7 +198,7 @@ test("the client-based creator starts a client, creates the child, titles it and
     });
     const catalog = { updateSession: async (id, update) => { calls.push(["title", id, update]); } };
     const spec = {
-        sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, model: "azure-openai:gpt-test", title: "Workflow step: review",
+        sessionId: "child-1", parentSessionId: "W", nestingLevel: 1, owner: OWNER, model: "azure-openai:gpt-test", title: "Workflow step: review",
         prompt: "wrapper", clientMessageId: "cm-1", sender: { kind: "agent", sessionId: "W", display: WORKFLOW_AGENT_PROMPT_SENDER },
         boundAgentName: "kit:reviewer", toolNames: ["read_file"], agentId: "reviewer",
         workspace: { schema: 1, root: "repos", folder: "project" },
@@ -208,7 +208,7 @@ test("the client-based creator starts a client, creates the child, titles it and
     assert.deepEqual(calls, [
         "start",
         // Review DRR-1: the child is never brought back from a deletion.
-        ["create", { sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, refuseDeleted: true, model: "azure-openai:gpt-test",
+        ["create", { sessionId: "child-1", parentSessionId: "W", nestingLevel: 1, owner: OWNER, refuseDeleted: true, model: "azure-openai:gpt-test",
             workspace: spec.workspace, workspaceDefaults: spec.workspaceDefaults,
             boundAgentName: "kit:reviewer", agentId: "reviewer", toolNames: ["read_file"] }],
         ["title", "child-1", { title: "Workflow step: review" }],

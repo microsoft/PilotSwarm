@@ -28,6 +28,8 @@ const NODE_GLYPHS = {
     parallel: () => glyph(h("rect", { x: "3", y: "8", width: "13", height: "11", rx: "2" }), h("path", { d: "M7 8V5h13v11h-4" })),
     // A flowchart decision: a diamond with a fork inside (one way in, two ways out).
     decision: () => glyph(h("path", { d: "M12 2l10 10-10 10L2 12z" }), h("path", { d: "M12 16.5V13l-2.5-3.5M12 13l2.5-3.5" })),
+    // A child workflow spawn: parent node branching out to a launched child diamond.
+    spawn: () => glyph(h("circle", { cx: "6", cy: "6", r: "2.5" }), h("path", { d: "M6 8.5v7a2 2 0 0 0 2 2h4" }), h("path", { d: "M16 12.5l4.5 4.5-4.5 4.5-4.5-4.5z" })),
 };
 
 /**

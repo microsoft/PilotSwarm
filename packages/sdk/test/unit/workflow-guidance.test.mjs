@@ -17,10 +17,10 @@ const skill = name => fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKIL
 test("the guidance keeps its rules in about 2,000 characters, whatever the turn and worker add", () => {
     // UXP-AD-01 (owner 2026-11-09T03:25Z) added the person's control sentence (254 characters).
     // I1 (owner 2026-11-09T06:40Z; UXP-AC-01) added the step types; the static Decision line adds 91 characters (agent-decide-tool.md).
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2400, `core: ${WORKFLOW_SESSION_GUIDANCE.length}`);
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.length <= 2410, `core: ${WORKFLOW_SESSION_GUIDANCE.length}`);
     // The default: test mode off, scripts on, a 1.0.83 turn (clock waits and respond_session_request).
     const usual = workflowSessionGuidance(false, { scripts: true, clockWaits: true, requests: true });
-    assert.ok(usual.length <= 2550, `default: ${usual.length}`);
+    assert.ok(usual.length <= 2560, `default: ${usual.length}`);
     for (const testMode of [false, true]) for (const scripts of [false, true]) for (const turn of [false, true]) for (const inside of [false, true]) {
         const text = workflowSessionGuidance(testMode, { scripts, clockWaits: turn, requests: turn, insideWorkflow: inside });
         assert.ok(text.length <= 2850, `test mode ${testMode}, scripts ${scripts}, 1.0.83 ${turn}, inside ${inside}: ${text.length}`);
@@ -30,9 +30,9 @@ test("the guidance keeps its rules in about 2,000 characters, whatever the turn 
 // I1 (owner 2026-11-09T06:40Z; UXP-AC-01: a real user's session invented state types and said there was no script node): the
 // guidance names the real state types, exactly the compiler's, and says there is no other.
 test("I1: the guidance names every state type the compiler takes, and only those", async () => {
-    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `approval`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `decision`, `parallel` or `terminal`."), WORKFLOW_SESSION_GUIDANCE);
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("A state's `type` is `script`, `wait`, `approval`, `messaging` (`mode: send`, `request` or `receive`), `agent`, `decision`, `spawn`, `parallel` or `terminal`."), WORKFLOW_SESSION_GUIDANCE);
     const { compileWorkflow } = await import("../../dist/workflow/compiler.js");
-    const named = ["script", "wait", "approval", "messaging", "agent", "decision", "parallel", "terminal"];
+    const named = ["script", "wait", "approval", "messaging", "agent", "decision", "spawn", "parallel", "terminal"];
     for (const type of [...named, "send", "receive", "request", "http", "task", "join"]) {
         const result = compileWorkflow(`apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: t, version: "1.0.0" }\ninitial: a\n`
             + `states:\n  a: { type: ${type} }\n  done: { type: terminal, outcome: succeeded }\n`);

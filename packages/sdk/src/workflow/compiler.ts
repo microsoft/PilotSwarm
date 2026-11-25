@@ -1,5 +1,6 @@
 import { isScalar, parseDocument, visit, type Document } from "yaml";
-import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
+import { bindingExpressionsOf, bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
+import { parseWorkflowAgentModels } from "./agent-models.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
 import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefusal, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 import { schemaPlaceWords, schemaPointerParts } from "./schema-words.js";
@@ -84,7 +85,17 @@ export const RUNTIME_ERROR_CODES = [
 /** The catch route a runtime error takes when its own code has no route. */
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
-export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "decision", "parallel", "terminal"] as const;
+export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "decision", "spawn", "parallel", "terminal"] as const;
+/** Outcome of a spawn state once the child Workflow run is admitted. */
+export const SPAWN_STARTED = "started";
+/** Built-in contract sent by the runtime to a parent Workflow when a child Workflow ends. */
+export const WORKFLOW_ENDED_CONTRACT = "WorkflowEnded@1";
+/** Maximum number of distinct contracts in a multi-contract receive state's contract list. */
+export const WORKFLOW_RECEIVE_MAX_CONTRACTS = 8;
+/** Outcome emitted when a non-terminal state reaches visit maxVisits + 1 without running its effect. */
+export const STATE_EXHAUSTED = "exhausted";
+/** Maximum per-state maxVisits limit (matches WORKFLOW_MAX_NODE_EXECUTIONS). */
+export const STATE_MAX_VISITS = WORKFLOW_MAX_NODE_EXECUTIONS;
 /** A state type that is named but not compiled: refused as unsupported rather than unknown. */
 const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 
@@ -164,6 +175,8 @@ interface WorkflowIRAnnotations {
 interface WorkflowIRCarrying extends WorkflowIRAnnotations {
     carry?: { [key: string]: JsonValue };
     routeNotes?: Record<string, string>;
+    /** Visit cap (1..10000); visit maxVisits + 1 finishes at entry with outcome `exhausted`. */
+    maxVisits?: number;
 }
 
 export interface WorkflowIRScript extends WorkflowIRCarrying {
@@ -246,19 +259,26 @@ export interface WorkflowIRReceive extends WorkflowIRCarrying {
     type: "messaging";
     description: string | null;
     mode: "receive";
-    /** A root contract name; the message payload must satisfy its schema. */
-    contract: string;
+    /** One root contract name (single-contract form), or 2..8 distinct contract names (list form). */
+    contract: string | string[];
     /** The parent, or a session id (literal or one whole-string binding); null accepts any sender allowed to send this workflow input. */
     from: WorkflowIRSender | null;
     /** A JSON template of correlation values evaluated on entry; a message's correlation must equal it. Null is {}. */
     correlate: JsonValue;
     /** The seconds of the wait that races the message, as a wait state's seconds; null for no wait. */
     waitSeconds: number | string | null;
+    /** Total seconds across all visits of this receive state counted from visit 1's entry; mutually exclusive with waitSeconds. */
+    waitTotalSeconds?: number | string | null;
     /** The value the state passes on when its wait elapses; without an input binding, the value that arrived. */
     hasInput: boolean;
     input: JsonValue;
     /** Route label -> target node: received, elapsed (with a wait), and runtime routes. */
     next: Record<string, string>;
+}
+
+/** All contract names accepted by a receive state (one for single form, 2..8 for list form). */
+export function receiveContractsOf(node: Pick<WorkflowIRReceive, "contract">): string[] {
+    return Array.isArray(node.contract) ? node.contract : [node.contract];
 }
 
 export interface WorkflowIRSend extends WorkflowIRCarrying {
@@ -453,7 +473,25 @@ export interface WorkflowIRContract {
     response?: { schema: string };
 }
 
-export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRDecision | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
+/** A spawn state: starts another Workflow Definition as a child of this Workflow and continues with outcome started. */
+export interface WorkflowIRSpawn extends WorkflowIRCarrying {
+    id: string;
+    type: "spawn";
+    description: string | null;
+    /** Literal name of a definition of the definition owner, or <package>/<name>. Never a binding. */
+    definition: string;
+    /** Whether explicit inputs were provided; absent means {}. */
+    hasInputs: boolean;
+    inputs: JsonValue;
+    /** Fixed revision number; absent means newest valid revision when entered. */
+    revision?: number;
+    /** Optional per-state model overrides for the child Workflow. */
+    agentModels?: Record<string, { model: string; reasoningEffort?: string; contextTier?: string }>;
+    /** Route label -> target node: started, and runtime routes. */
+    next: Record<string, string>;
+}
+
+export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRDecision | WorkflowIRSpawn | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
 
 export interface WorkflowIR extends WorkflowIRAnnotations {
     irVersion: typeof WORKFLOW_IR_VERSION;
@@ -643,7 +681,8 @@ function schemaClosureBytes(defs: Record<string, JsonValue>, name: string): numb
 }
 
 /** A state's transition.next: route label -> target state. */
-function compileRoutes(raw: Record<string, unknown>, path: string, what: string, nodeIds: ReadonlySet<string>, diagnostics: Diagnostics): Record<string, string> {
+function compileRoutes(raw: Record<string, unknown>, path: string, what: string, nodeIds: ReadonlySet<string>, diagnostics: Diagnostics,
+    options: { allowContractRoutes?: boolean } = {}): Record<string, string> {
     const next: Record<string, string> = {};
     if (!isJsonObject(raw.transition)) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.transition`, `${what} needs transition.next.`);
@@ -656,7 +695,8 @@ function compileRoutes(raw: Record<string, unknown>, path: string, what: string,
             diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.transition.next`, "transition.next must map at least one route label to a state.");
         } else {
             for (const [label, target] of Object.entries(raw.transition.next)) {
-                if (!ID_PATTERN.test(label)) diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`, "route labels use a letter followed by letters, digits, '_' or '-'.");
+                const validLabel = ID_PATTERN.test(label) || (options.allowContractRoutes === true && CONTRACT_NAME_PATTERN.test(label));
+                if (!validLabel) diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`, "route labels use a letter followed by letters, digits, '_' or '-'.");
                 if (Array.isArray(target)) {
                     // Arrow shorthand (next: [a, b]) is not built (owner 2026-11-08): say what runs several nodes at once.
                     diagnostics.error("WORKFLOW_TARGET_INVALID", `${path}.transition.next.${label}`,
@@ -889,10 +929,17 @@ function senderField(value: unknown, path: string, diagnostics: Diagnostics, fie
     return typeof bindingValue(sessionId, path, diagnostics) === "string" ? { sessionId } : null;
 }
 
-/** A messaging state's contract: a declared root contract name, or null with a diagnostic. */
-function contractField(value: unknown, path: string, contracts: ReadonlySet<string>, diagnostics: Diagnostics): string | null {
+/** A messaging state's contract: a declared root contract name (or built-in WorkflowEnded@1 on receive), or null with a diagnostic. */
+function contractField(value: unknown, path: string, contracts: ReadonlySet<string>, diagnostics: Diagnostics,
+    options: { allowBuiltInEnded?: boolean } = {}): string | null {
     if (typeof value !== "string" || !CONTRACT_NAME_PATTERN.test(value)) {
         diagnostics.error("WORKFLOW_FIELD_INVALID", path, "contract must name a root contract, such as BuildEvent@1.");
+        return null;
+    }
+    if (value === WORKFLOW_ENDED_CONTRACT) {
+        if (options.allowBuiltInEnded) return value;
+        diagnostics.error("WORKFLOW_CONTRACT_RESERVED", path,
+            `contract '${WORKFLOW_ENDED_CONTRACT}' is sent by the runtime when a child Workflow ends; a definition cannot send it.`);
         return null;
     }
     if (!contracts.has(value)) {
@@ -1022,7 +1069,33 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
         return null;
     }
     checkKeys(raw, ["type", "description", "mode", "contract", "from", "correlate", "wait", "input", "transition"], path, diagnostics);
-    const contract = contractField(raw.contract, `${path}.contract`, contracts, diagnostics);
+    let contract: string | string[] | null = null;
+    const isListContract = Array.isArray(raw.contract);
+    if (isListContract) {
+        const items = raw.contract as unknown[];
+        if (items.length < 2 || items.length > WORKFLOW_RECEIVE_MAX_CONTRACTS) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.contract`,
+                `a receive contract list must contain 2 to ${WORKFLOW_RECEIVE_MAX_CONTRACTS} distinct contract names.`);
+        } else {
+            const seen = new Set<string>();
+            const list: string[] = [];
+            let ok = true;
+            for (let i = 0; i < items.length; i += 1) {
+                const name = contractField(items[i], `${path}.contract[${i}]`, contracts, diagnostics, { allowBuiltInEnded: true });
+                if (name === null) { ok = false; continue; }
+                if (seen.has(name)) {
+                    diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.contract[${i}]`, `duplicate contract '${name}' in receive contract list.`);
+                    ok = false;
+                    continue;
+                }
+                seen.add(name);
+                list.push(name);
+            }
+            if (ok) contract = list;
+        }
+    } else {
+        contract = contractField(raw.contract, `${path}.contract`, contracts, diagnostics, { allowBuiltInEnded: true });
+    }
     const from = raw.from === undefined ? null : senderField(raw.from, `${path}.from`, diagnostics);
     let correlate: JsonValue = null;
     if (raw.correlate !== undefined) {
@@ -1030,36 +1103,48 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
         else correlate = bindingValue(raw.correlate, `${path}.correlate`, diagnostics);
     }
     let waitSeconds: number | string | null = null;
+    let waitTotalSeconds: number | string | null = null;
     if (raw.wait !== undefined) {
-        if (!isJsonObject(raw.wait)) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.wait`, "wait must be { seconds: <seconds> }.");
+        if (!isJsonObject(raw.wait)) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.wait`, "wait must be { seconds: <seconds> } or { totalSeconds: <seconds> }.");
         else {
-            checkKeys(raw.wait, ["seconds", "tool"], `${path}.wait`, diagnostics);
+            checkKeys(raw.wait, ["seconds", "totalSeconds", "tool"], `${path}.wait`, diagnostics);
             if (raw.wait.tool !== undefined && raw.wait.tool !== "wait") {
                 diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.wait.tool`, "wait.tool must be 'wait' when given: a receive races the workflow's durable wait.");
             }
-            waitSeconds = secondsField(raw.wait.seconds, `${path}.wait.seconds`, diagnostics);
+            const hasSeconds = Object.hasOwn(raw.wait, "seconds") && raw.wait.seconds !== undefined;
+            const hasTotal = Object.hasOwn(raw.wait, "totalSeconds") && raw.wait.totalSeconds !== undefined;
+            if ((hasSeconds && hasTotal) || (!hasSeconds && !hasTotal)) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.wait`, "wait must set exactly one of seconds or totalSeconds.");
+            } else if (hasSeconds) {
+                waitSeconds = secondsField(raw.wait.seconds, `${path}.wait.seconds`, diagnostics);
+            } else {
+                waitTotalSeconds = secondsField(raw.wait.totalSeconds, `${path}.wait.totalSeconds`, diagnostics, "totalSeconds");
+            }
         }
     }
     const hasInput = Object.hasOwn(raw, "input");
     const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
-    const next = compileRoutes(raw, path, "a messaging state", nodeIds, diagnostics);
-    const outcomes = raw.wait === undefined ? [RECEIVE_RECEIVED] : [RECEIVE_RECEIVED, WAIT_ELAPSED];
-    for (const label of Object.keys(next)) {
-        if (!outcomes.includes(label) && !isRuntimeRoute(label)) {
-            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`,
-                `this receive's outcomes are ${outcomes.join(" and ")}${raw.wait === undefined ? " (elapsed needs a wait)" : ""}; its other routes must be runtime error codes or '${FAILURE_ROUTE}'.`);
+    const next = compileRoutes(raw, path, "a messaging state", nodeIds, diagnostics, { allowContractRoutes: isListContract });
+    const baseOutcomes = isListContract ? (Array.isArray(contract) ? contract : []) : [RECEIVE_RECEIVED];
+    const outcomes = raw.wait === undefined ? baseOutcomes : [...baseOutcomes, WAIT_ELAPSED];
+    if (!isListContract || Array.isArray(contract)) {
+        for (const label of Object.keys(next)) {
+            if (!outcomes.includes(label) && !isRuntimeRoute(label)) {
+                diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`,
+                    `this receive's outcomes are ${outcomes.join(", ")}${raw.wait === undefined ? " (elapsed needs a wait)" : ""}; its other routes must be runtime error codes or '${FAILURE_ROUTE}'.`);
+            }
         }
-    }
-    if (isJsonObject(raw.transition) && isJsonObject(raw.transition.next)) {
-        for (const outcome of outcomes) {
-            if (!Object.hasOwn(next, outcome)) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `a receive needs a '${outcome}' route.`);
+        if (isJsonObject(raw.transition) && isJsonObject(raw.transition.next)) {
+            for (const outcome of outcomes) {
+                if (!Object.hasOwn(next, outcome)) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `a receive needs a '${outcome}' route.`);
+            }
         }
     }
     warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
-    if (contract === null || (raw.wait !== undefined && waitSeconds === null) || (raw.from !== undefined && from === null)) return null;
+    if (contract === null || (raw.wait !== undefined && waitSeconds === null && waitTotalSeconds === null) || (raw.from !== undefined && from === null)) return null;
     return {
         id, type: "messaging", description: optionalText(raw.description, `${path}.description`, diagnostics), mode: "receive",
-        contract, from, correlate, waitSeconds, hasInput, input, next,
+        contract, from, correlate, waitSeconds, ...(waitTotalSeconds !== null ? { waitTotalSeconds } : {}), hasInput, input, next,
     };
 }
 
@@ -1242,6 +1327,89 @@ function compileDecision(id: string, raw: Record<string, unknown>, nodeIds: Read
     };
 }
 
+const SPAWN_DEFINITION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$/;
+
+function compileSpawnAgentModels(value: unknown, path: string, diagnostics: Diagnostics)
+    : Record<string, { model: string; reasoningEffort?: string; contextTier?: string }> | undefined | null {
+    if (value === undefined) return undefined;
+    try {
+        const parsed = parseWorkflowAgentModels(value);
+        if (!parsed) return undefined;
+        for (const [stateId, choice] of Object.entries(parsed)) {
+            if (choice.model.includes("${")) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.${stateId}.model`, "model must be a literal provider:model string.");
+                return null;
+            }
+        }
+        return parsed;
+    } catch (error) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", path, error instanceof Error ? error.message : String(error));
+        return null;
+    }
+}
+
+function isStoredSpawnAgentModels(value: unknown): value is Record<string, { model: string; reasoningEffort?: string; contextTier?: string }> {
+    try {
+        return parseWorkflowAgentModels(value) !== null;
+    } catch {
+        return false;
+    }
+}
+
+function compileSpawn(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, hasCatchAll: boolean,
+    diagnostics: Diagnostics): WorkflowIRSpawn | null {
+    const path = `states.${id}`;
+    checkKeys(raw, ["type", "description", "definition", "inputs", "revision", "agentModels", "transition"], path, diagnostics);
+    let definition: string | null = null;
+    if (typeof raw.definition !== "string" || !raw.definition.trim()) {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.definition`, "a spawn state needs a literal definition name (or <package>/<name>).");
+    } else if (raw.definition.includes("${")) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.definition`, "definition must be a literal definition name, never a binding.");
+    } else if (!SPAWN_DEFINITION_PATTERN.test(raw.definition)) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.definition`,
+            "definition must be a literal definition name (letters, digits, dot, dash, underscore) or <package>/<name>.");
+    } else {
+        definition = raw.definition;
+    }
+    const hasInputs = Object.hasOwn(raw, "inputs");
+    let inputs: JsonValue = null;
+    if (hasInputs) {
+        if (!isJsonObject(raw.inputs)) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.inputs`, "inputs must be an object mapping input names to values or bindings.");
+        } else {
+            inputs = bindingValue(raw.inputs, `${path}.inputs`, diagnostics);
+        }
+    }
+    let revision: number | undefined;
+    let revisionValid = true;
+    if (raw.revision !== undefined) {
+        if (typeof raw.revision !== "number" || !Number.isSafeInteger(raw.revision) || raw.revision < 1) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.revision`, "revision must be a literal positive integer.");
+            revisionValid = false;
+        } else revision = raw.revision;
+    }
+    const agentModels = compileSpawnAgentModels(raw.agentModels, `${path}.agentModels`, diagnostics);
+    const next = compileRoutes(raw, path, "a spawn", nodeIds, diagnostics);
+    for (const label of Object.keys(next)) {
+        if (label !== SPAWN_STARTED && !isRuntimeRoute(label)) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`,
+                `a spawn has one outcome, '${SPAWN_STARTED}'; its other routes must be runtime error codes or '${FAILURE_ROUTE}'.`);
+        }
+    }
+    if (isJsonObject(raw.transition) && isJsonObject(raw.transition.next) && !Object.hasOwn(next, SPAWN_STARTED)) {
+        diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `a spawn needs a '${SPAWN_STARTED}' route.`);
+    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    if (definition === null || !revisionValid || agentModels === null) return null;
+    return {
+        id, type: "spawn", description: optionalText(raw.description, `${path}.description`, diagnostics),
+        definition, hasInputs, inputs,
+        ...(revision !== undefined ? { revision } : {}),
+        ...(agentModels !== undefined ? { agentModels } : {}),
+        next,
+    };
+}
+
 /** An agent definition's name, or its package's: a letter or digit, then up to 127 letters, digits, '_', '.' or '-'. */
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
@@ -1410,7 +1578,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
 }
 
 /** The binding templates a compiled state holds, by field (for checks over every binding). */
-function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
+export function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
     const templates: Array<[string, JsonValue]> = [];
     const add = (field: string, value: JsonValue | undefined): void => { if (value !== undefined && value !== null) templates.push([field, value]); };
     if (node.type === "terminal") { if (node.hasOutput) add("output", node.output); return templates; }
@@ -1421,18 +1589,42 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
         for (const branch of node.branches ?? []) if (branch.hasInput) add(`branches.${branch.name}.input`, branch.input);
         return templates;
     }
+    if (node.type === "spawn") {
+        if (node.hasInputs) add("inputs", node.inputs);
+        return templates;
+    }
     if (node.hasInput) add("input", node.input);
     if (node.type === "wait") add("seconds", node.seconds);
     if (node.type === "agent") add("timeoutSeconds", node.timeoutSeconds);
     if (node.type === "messaging") {
         add("correlate", node.correlate);
-        if (node.mode === "receive") { add("wait.seconds", node.waitSeconds); if (node.from && "sessionId" in node.from) add("from", node.from.sessionId); }
+        if (node.mode === "receive") {
+            add("wait.seconds", node.waitSeconds);
+            add("wait.totalSeconds", node.waitTotalSeconds);
+            if (node.from && "sessionId" in node.from) add("from", node.from.sessionId);
+        }
         else {
             if ("sessionId" in node.recipient) add("recipient", node.recipient.sessionId);
             if (node.mode === "request") add("timeoutSeconds", node.timeoutSeconds);
         }
     }
     return templates;
+}
+
+/** Distinct state ids referenced by `${states.<id>.output}` expressions on a node. */
+export function referencedStateIdsOfNode(node: WorkflowIRNode): string[] {
+    const ids = new Set<string>();
+    for (const [field, template] of nodeTemplates(node)) {
+        try {
+            for (const { expression } of bindingExpressionsOf(template, `states.${node.id}.${field}`)) {
+                if (expression.root === "states" && expression.segments.length >= 2
+                    && typeof expression.segments[0] === "string" && expression.segments[1] === "output") {
+                    ids.add(expression.segments[0]);
+                }
+            }
+        } catch { /* reported at compile time */ }
+    }
+    return [...ids];
 }
 
 /**
@@ -1648,7 +1840,7 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
         if (node.type !== "parallel" || node.branches === undefined || node.timeoutSeconds !== undefined) continue;
         for (const branch of node.branches) {
             const slow = branch.states.map(member => ir.nodes[member]).find(state => state?.type === "agent"
-                || (state?.type === "messaging" && state.mode === "receive" && state.waitSeconds === null));
+                || (state?.type === "messaging" && state.mode === "receive" && state.waitSeconds === null && (state.waitTotalSeconds ?? null) === null));
             if (slow === undefined) continue;
             diagnostics.warning("WORKFLOW_BRANCH_UNBOUNDED", `states.${node.id}.branches.${branch.name}`,
                 `branch '${branch.name}' has ${slow.type === "agent" ? "agent" : "receive"} state '${slow.id}'${slow.type === "agent" ? "" : " with no wait"}, `
@@ -1792,6 +1984,11 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 diagnostics.error("WORKFLOW_CONTRACT_NAME", path, "contract names are a name, '@' and a version number, such as BuildEvent@1.");
                 continue;
             }
+            if (contractName === WORKFLOW_ENDED_CONTRACT) {
+                diagnostics.error("WORKFLOW_CONTRACT_RESERVED", path,
+                    `contract '${WORKFLOW_ENDED_CONTRACT}' is built in and sent by the runtime; do not declare it under contracts.`);
+                continue;
+            }
             declaredContracts.add(contractName);
             if (!isJsonObject(definition) || !Object.hasOwn(definition, "schema")) {
                 diagnostics.error("WORKFLOW_FIELD_INVALID", path, "a contract must be { schema: <JSON Schema> }.");
@@ -1873,6 +2070,48 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             if (!isJsonObject(carry)) into.error("WORKFLOW_FIELD_INVALID", `${path}.carry`, "carry must be an object template of named fields.");
             delete stateFields.carry;
         }
+        let maxVisits: number | undefined;
+        let exhaustedTarget: string | undefined;
+        if (Object.hasOwn(rawNode, "maxVisits")) {
+            if (type === "terminal") {
+                into.error("WORKFLOW_FIELD_INVALID", `${path}.maxVisits`, "a terminal state cannot set maxVisits.");
+            } else {
+                const rawLimit = rawNode.maxVisits;
+                if (typeof rawLimit !== "number" || !Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > STATE_MAX_VISITS) {
+                    into.error("WORKFLOW_FIELD_INVALID", `${path}.maxVisits`, `maxVisits must be an integer from 1 to ${STATE_MAX_VISITS}.`);
+                } else {
+                    maxVisits = rawLimit;
+                }
+            }
+            delete stateFields.maxVisits;
+        }
+        if (maxVisits !== undefined && type !== "terminal") {
+            if (Array.isArray(rawNode.outcomes) && rawNode.outcomes.includes(STATE_EXHAUSTED)) {
+                into.error("WORKFLOW_FIELD_INVALID", `${path}.outcomes`,
+                    `outcome '${STATE_EXHAUSTED}' collides with maxVisits, which reserves '${STATE_EXHAUSTED}' for the visit limit.`);
+            }
+            if (type === "decision" && isJsonObject(rawNode.question) && isJsonObject(rawNode.question.criteria)
+                && Object.hasOwn(rawNode.question.criteria, STATE_EXHAUSTED)) {
+                into.error("WORKFLOW_FIELD_INVALID", `${path}.question.criteria.${STATE_EXHAUSTED}`,
+                    `choice label '${STATE_EXHAUSTED}' collides with maxVisits, which reserves '${STATE_EXHAUSTED}' for the visit limit.`);
+            }
+            const rawNext = isJsonObject(rawNode.transition) && isJsonObject(rawNode.transition.next) ? rawNode.transition.next : null;
+            if (rawNext !== null) {
+                if (!Object.hasOwn(rawNext, STATE_EXHAUSTED)) {
+                    into.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `state '${id}' with maxVisits needs an '${STATE_EXHAUSTED}' route.`);
+                } else {
+                    const target = rawNext[STATE_EXHAUSTED];
+                    if (typeof target !== "string" || !nodeIds.has(target)) {
+                        into.error("WORKFLOW_TARGET_INVALID", `${path}.transition.next.${STATE_EXHAUSTED}`, `route '${STATE_EXHAUSTED}' targets unknown state '${String(target)}'.`);
+                    } else {
+                        exhaustedTarget = target;
+                    }
+                    const strippedNext = { ...rawNext };
+                    delete strippedNext[STATE_EXHAUSTED];
+                    stateFields.transition = { ...(rawNode.transition as Record<string, unknown>), next: strippedNext };
+                }
+            }
+        }
         // The catch-all state takes the outer graph's unhandled runtime errors only: in a body, one ends the branch.
         const catchAllApplies = body === null && hasCatchAll;
         if (type === "script") {
@@ -1895,6 +2134,9 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             if (node) nodes[id] = node;
         } else if (type === "decision") {
             const node = compileDecision(id, stateFields, nodeIds, schemas, catchAllApplies, into);
+            if (node) nodes[id] = node;
+        } else if (type === "spawn") {
+            const node = compileSpawn(id, stateFields, nodeIds, catchAllApplies, into);
             if (node) nodes[id] = node;
         } else if (type === "terminal") {
             const node = compileTerminal(id, stateFields, schemas, into);
@@ -1942,6 +2184,10 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 + (meant ? ` Did you mean ${meant}?` : ""));
         }
         const compiled = nodes[id];
+        if (compiled && compiled.type !== "terminal" && maxVisits !== undefined) {
+            compiled.maxVisits = maxVisits;
+            if (exhaustedTarget !== undefined) compiled.next[STATE_EXHAUSTED] = exhaustedTarget;
+        }
         if (compiled && notes !== undefined) compiled.notes = notes;
         if (compiled && compiled.type !== "terminal" && isJsonObject(rawNode.transition) && Object.hasOwn(rawNode.transition, "notes")) {
             const routeNotes = rawNode.transition.notes;
@@ -2010,6 +2256,49 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 }
             }
         }
+        // `states`: only `${states.<id>.output}` (with optional nested path / `??`), naming a declared state.
+        if (Object.hasOwn(root, "initialInput")) {
+            try {
+                if (bindingRootsOf(root.initialInput).has("states")) {
+                    diagnostics.error("WORKFLOW_BINDING_INVALID", "initialInput", "states is not bound in initialInput; no state has finished yet.");
+                }
+            } catch { /* reported by its own check */ }
+        }
+        for (const node of Object.values(nodes)) {
+            const parallel = bodyOf.get(node.id);
+            const readerBranch = branchOfState.get(node.id);
+            const nodePath = parallel !== undefined
+                ? (readerBranch !== undefined ? `states.${parallel}.branches.${readerBranch}.states.${node.id}` : `states.${parallel}.body.states.${node.id}`)
+                : `states.${node.id}`;
+            for (const [field, template] of nodeTemplates(node)) {
+                let expressions: ReturnType<typeof bindingExpressionsOf>;
+                try { expressions = bindingExpressionsOf(template, `${nodePath}.${field}`); } catch { continue; }
+                for (const { path: exprPath, expression } of expressions) {
+                    if (expression.root !== "states") continue;
+                    const targetId = expression.segments[0];
+                    const member = expression.segments[1];
+                    if (typeof targetId !== "string" || member !== "output") {
+                        diagnostics.error("WORKFLOW_BINDING_INVALID", exprPath,
+                            "states bindings must use ${states.<id>.output} (only .output is supported).");
+                        continue;
+                    }
+                    if (!Object.hasOwn(nodes, targetId)) {
+                        diagnostics.error("WORKFLOW_BINDING_INVALID", exprPath,
+                            `states.${targetId} does not name a state in this workflow.`);
+                        continue;
+                    }
+                    const targetParallel = bodyOf.get(targetId);
+                    const targetBranch = branchOfState.get(targetId);
+                    if (targetParallel !== undefined && (parallel !== targetParallel || readerBranch !== targetBranch)) {
+                        const segs = exprPath.split(/\.|\[|\]/).filter(Boolean).map(p => (/^\d+$/.test(p) ? Number(p) : p));
+                        const ast = document.getIn(segs, true) as { range?: [number, number, number] } | null | undefined;
+                        diagnostics.error("WORKFLOW_BINDING_INVALID", exprPath,
+                            `state '${targetId}' is inside parallel state '${targetParallel}'${targetBranch !== undefined ? ` (branch '${targetBranch}')` : ""} and is only visible inside its branch.`,
+                            lineOf(yaml, ast?.range?.[0]));
+                    }
+                }
+            }
+        }
     }
     const initial = typeof root.initial === "string" ? root.initial : "";
     if (!initial || !(isJsonObject(root.states) && Object.hasOwn(root.states, initial))) {
@@ -2054,7 +2343,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             }
         }
     }
-    const received = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
+    const received = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? receiveContractsOf(node) : []));
     const sent = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "send" ? [node.contract] : []));
     const requested = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "request" ? [node.contract] : []));
     for (const contractName of Object.keys(contracts)) {
@@ -2421,8 +2710,9 @@ function isStoredDecisionInput(value: unknown, path: string): boolean {
     try { validateBindingTemplate(value, path); return true; } catch { return false; }
 }
 
-function storedDecisionRoutesValid(question: WorkflowIRDecisionQuestion, confidence: boolean, next: Record<string, string>): boolean {
+function storedDecisionRoutesValid(question: WorkflowIRDecisionQuestion, confidence: boolean, next: Record<string, string>, hasMaxVisits = false): boolean {
     const expected = new Set(decisionBusinessRoutes(question, confidence));
+    if (hasMaxVisits) expected.add(STATE_EXHAUSTED);
     return [...expected].every(route => Object.hasOwn(next, route))
         && Object.keys(next).every(route => expected.has(route) || isRuntimeRoute(route));
 }
@@ -2561,22 +2851,35 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         } else if (node.type === "messaging") {
             const from = node.from;
             const waitSeconds = node.waitSeconds;
+            const waitTotalSeconds = node.waitTotalSeconds;
+            const validWaitTotal = waitTotalSeconds === undefined || waitTotalSeconds === null
+                || typeof waitTotalSeconds === "number" || typeof waitTotalSeconds === "string";
             const validFrom = from === null || (isJsonObject(from) && Object.keys(from).length === 1
                 && (from.parent === true || typeof from.sessionId === "string"));
-            need(node.mode === "receive" && typeof node.contract === "string" && Object.hasOwn(contracts, node.contract)
+            const validSingleContract = typeof node.contract === "string"
+                && (Object.hasOwn(contracts, node.contract) || node.contract === WORKFLOW_ENDED_CONTRACT);
+            const validListContract = Array.isArray(node.contract)
+                && node.contract.length >= 2 && node.contract.length <= WORKFLOW_RECEIVE_MAX_CONTRACTS
+                && node.contract.every((c): c is string => typeof c === "string" && (Object.hasOwn(contracts, c) || c === WORKFLOW_ENDED_CONTRACT))
+                && new Set(node.contract).size === node.contract.length;
+            need(node.mode === "receive" && (validSingleContract || validListContract)
                 && validFrom && Object.hasOwn(node, "correlate")
                 && (waitSeconds === null || typeof waitSeconds === "number" || typeof waitSeconds === "string")
+                && validWaitTotal && !(waitSeconds !== null && waitTotalSeconds !== undefined && waitTotalSeconds !== null)
                 && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && stringMap(node.next),
                 `stored IR messaging state ${id} is invalid`);
             const sender: WorkflowIRSender | null = from === null ? null
                 : isJsonObject(from) && typeof from.sessionId === "string" ? { sessionId: from.sessionId } : { parent: true };
+            const storedContract: string | string[] = validListContract ? [...(node.contract as string[])] : (node.contract as string);
             nodes[id] = {
-                id, type: "messaging", description: node.description, mode: "receive", contract: node.contract, from: sender,
-                correlate: node.correlate, waitSeconds, hasInput: node.hasInput, input: node.input, next: node.next,
+                id, type: "messaging", description: node.description, mode: "receive", contract: storedContract, from: sender,
+                correlate: node.correlate, waitSeconds,
+                ...(waitTotalSeconds !== undefined && waitTotalSeconds !== null ? { waitTotalSeconds: waitTotalSeconds as number | string } : {}),
+                hasInput: node.hasInput, input: node.input, next: node.next,
             };
         } else if (node.type === "decision") {
             const allowed = new Set(["id", "type", "description", "hasInput", "input", "inputSchema", "question", "confidence", "timeoutSeconds",
-                "next", "notes", "routeNotes", "carry"]);
+                "next", "notes", "routeNotes", "carry", "maxVisits"]);
             const question = isStoredDecisionQuestion(node.question) ? node.question : null;
             const rawConfidence = node.confidence;
             const confidenceValid = rawConfidence === undefined || (isJsonObject(rawConfidence) && Object.keys(rawConfidence).length === 1
@@ -2589,13 +2892,34 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && typeof node.timeoutSeconds === "number" && Number.isSafeInteger(node.timeoutSeconds)
                 && node.timeoutSeconds >= 1 && node.timeoutSeconds <= DECISION_MAX_TIMEOUT_SECONDS
                 && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(storedNodes, target))
-                && storedDecisionRoutesValid(question, rawConfidence !== undefined, node.next),
+                && storedDecisionRoutesValid(question, rawConfidence !== undefined, node.next, node.maxVisits !== undefined),
             `stored IR decision state ${id} is invalid`);
             nodes[id] = {
                 id, type: "decision", description: node.description, hasInput: node.hasInput, input: node.input,
                 inputSchema: node.inputSchema, question: copyDecisionQuestion(question),
                 ...(rawConfidence !== undefined ? { confidence: { minimumProbability: (rawConfidence as { minimumProbability: number }).minimumProbability } } : {}),
                 timeoutSeconds: node.timeoutSeconds, next: node.next,
+            };
+        } else if (node.type === "spawn") {
+            const allowed = new Set(["id", "type", "description", "definition", "hasInputs", "inputs", "revision", "agentModels",
+                "next", "notes", "routeNotes", "carry", "maxVisits"]);
+            const validRevision = node.revision === undefined || (typeof node.revision === "number" && Number.isSafeInteger(node.revision) && node.revision >= 1);
+            const validModels = node.agentModels === undefined || isStoredSpawnAgentModels(node.agentModels);
+            need(Object.keys(node).every(key => allowed.has(key))
+                && typeof node.definition === "string" && SPAWN_DEFINITION_PATTERN.test(node.definition)
+                && typeof node.hasInputs === "boolean" && Object.hasOwn(node, "inputs")
+                && (node.hasInputs ? isJsonObject(node.inputs) : node.inputs === null)
+                && validRevision && validModels
+                && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(storedNodes, target))
+                && Object.hasOwn(node.next, SPAWN_STARTED)
+                && Object.keys(node.next).every(label => label === SPAWN_STARTED || (node.maxVisits !== undefined && label === STATE_EXHAUSTED) || isRuntimeRoute(label)),
+                `stored IR spawn state ${id} is invalid`);
+            nodes[id] = {
+                id, type: "spawn", description: node.description, definition: node.definition,
+                hasInputs: node.hasInputs, inputs: node.inputs,
+                ...(node.revision !== undefined ? { revision: node.revision as number } : {}),
+                ...(node.agentModels !== undefined ? { agentModels: node.agentModels as WorkflowIRSpawn["agentModels"] } : {}),
+                next: node.next,
             };
         } else if (node.type === "agent") {
             const invoke = node.invoke;
@@ -2707,6 +3031,13 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             need(compiled.type !== "terminal" && isJsonObject(node.carry), `stored IR carry of ${id} is not a nonterminal object template`);
             validateBindingTemplate(node.carry, `states.${id}.carry`);
             compiled.carry = node.carry;
+        }
+        if (Object.hasOwn(node, "maxVisits")) {
+            const compiled = nodes[id];
+            need(compiled.type !== "terminal" && typeof node.maxVisits === "number" && Number.isSafeInteger(node.maxVisits)
+                && node.maxVisits >= 1 && node.maxVisits <= STATE_MAX_VISITS && Object.hasOwn(compiled.next, STATE_EXHAUSTED),
+                `stored IR maxVisits of ${id} is invalid`);
+            compiled.maxVisits = node.maxVisits;
         }
     }
     need(Object.hasOwn(nodes, value.initial), "stored IR initial state is missing");

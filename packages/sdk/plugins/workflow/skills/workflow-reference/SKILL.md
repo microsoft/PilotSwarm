@@ -36,7 +36,9 @@ Schema fields: inline, or `$ref` to `schemas`.
 A binding is one whole string `"${root.path}"` or `"${root.path ?? <JSON literal>}"`.
 Roots: `inputs`, `input`, `kv`, `runtime` (`runtime.error`), `branch`
 (`branch.item`, `branch.index`; `branch.name` in named branches; branch
-states only). Path segments: `.name`,
+states only), `states` (`${states.<id>.output}`: latest result of `<id>` — failed visits
+don't replace it; same branch or root only, else compile error; `null` if none;
+frozen at entry). Path segments: `.name`,
 `[index]`, `["any key"]`. A template is any JSON value whose strings may be
 bindings.
 
@@ -56,11 +58,10 @@ Each note: at most 16 KiB UTF-8, no NUL/lone surrogates, never executed.
 Notes are shared with graph readers; no secrets. Absent keys stay absent;
 editing notes makes a new revision/hash, not a run change.
 
-Nonterminals except approval may set `carry: { name: "${input.field}" }`. Before input
-mapping, entry freezes that object (64 KiB). Each route then brings
-`{ carry: snapshot, result: outputOrError }` (256 KiB combined);
-`runtime.error` stays raw. No carry: no wrapper. Failures, parallel states
-and an example: load `workflow-carry`. New 1.1.0 runs only, not 1.0.0.
+Nonterminals take `maxVisits` (1–10,000; forbids business outcome `exhausted`):
+visit N+1 skips carry/input/effect and ends at entry with `exhausted` (route
+required) and incoming value as output.
+Nonterminals except approval take `carry`: load `workflow-carry`.
 
 ### approval
 
@@ -98,22 +99,22 @@ Outcome: `elapsed` (route required). Output: its input.
 
 | Field | Rule |
 |---|---|
-| `contract` | Required. A root contract. |
-| `from` | Optional: `{ parent: true }`, a session id, or `{ sessionId }` (may be a binding). Without it, any permitted sender. |
+| `contract` | Required. One root contract (or `WorkflowEnded@1`), or a list of 2–8 distinct names. |
+| `from` | Optional: `{ parent: true }`, session id, or `{ sessionId }` (binding ok); default any permitted sender. |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
-| `wait` | Optional `{ seconds }` (1 to 86,400, or a binding): the receive races a durable timer. |
+| `wait` | Optional `{ seconds }` (per visit) or `{ totalSeconds }` (never resets in a run/branch execution; binding read once on first start; use `seconds` in outer loops), 1–86,400; never both. |
 | `input` | Optional template. |
 
-Outcomes: `received` (output: the message payload) and, with `wait`,
-`elapsed` (output: its input). Routes for both are required. A message given
-before the state starts is taken too.
+One name: `received` (payload). List: each contract is an outcome (no `received`),
+output `{ contract, from, payload }`, earliest match. With `wait`, `elapsed`
+(input) is required; spent `totalSeconds` fires `elapsed` at entry.
 
 ### messaging, mode send
 
 | Field | Rule |
 |---|---|
 | `contract` | Required. |
-| `recipient` | Required: `{ parent: true }`, a session id, or `{ sessionId }` (may be a binding). |
+| `recipient` | Required: `{ parent: true }`, session id, or `{ sessionId }` (binding ok). |
 | `correlate` | Optional template object. |
 | `input` | Optional template; the message. At most 16 KB, valid for the contract. |
 
@@ -268,17 +269,11 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   step's result was saved, and kept, but its next step never started). `cancelledBy` is `failFast`, `join` or `timeout`. `late` marks a
   success saved after the time limit. A report too large to store drops
   every `output` and `error` and adds `truncated: true`.
-- With `timeoutSeconds`: a success counts only when it was saved at or
-  before the time limit. A branch step due at the time limit ends just
-  after it and does not count. When the time limit passes with k such
-  successes, the state still joins. With fewer, it ends with the runtime error
-  `timed_out`, whose `details` is the same report with `timedOut: true`;
-  if k could already no longer happen then, it is `blocked` with
-  `timedOut: true` instead.
-- Worker slots: each running script holds one of the worker's slots
-  (`PILOTSWARM_WORKER_CONCURRENCY`; the duroxide default is 2) for its whole
-  run, and the controller needs one too: keep `concurrency` well below the
-  slot count.
+- With `timeoutSeconds`, only timely successes count; fewer than k ends `timed_out` (or `blocked` if k was already unreachable) with `timedOut: true`. Keep `concurrency` below `PILOTSWARM_WORKER_CONCURRENCY`.
+
+### spawn
+
+`definition` (literal name or `<package>/<name>`), `inputs` (object template), `revision` (fixed positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (use `from: "${states.<spawn>.output.workflowId}"`). Child end sends built-in `WorkflowEnded@1` while parent is active (inbox order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; >16 KiB sets `outputTruncated: true`). Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
 
 ### terminal
 
@@ -308,34 +303,19 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 | Effect | On a retry or a worker restart |
 |---|---|
 | script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. Canvas: absolute ticks and `put`s; a `CONFLICT` where `get` shows your value is success; draw once, then tick. |
-| decision | Effect entries 1 and 2 may call the provider; entry 3 records `unavailable` without a call. Duroxide records an activity result before the existing pending-only completion CAS; a recorded result, lifecycle deadline or cancellation keeps its first stored winner. A worker crash after sending before history commits can redeliver the non-mutating provider call. |
+| decision | Attempts 1–2 call the provider; attempt 3 records `unavailable`. First stored result wins. |
+| spawn | Keyed Start (`spawn:<nodeExecutionId>`): retries replay the same child; never creates a second child. |
 | agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones are refused. |
 | send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
 | request | At least once, one id. First answer decides; none after deadline. |
 | receive | Takes each message once, in the order the run accepted it. |
 | wait | Elapses once, by the store's clock. |
 
-- **Timers.** Wait/receive/request/agent/parallel/run deadlines are durable,
-  fixed at state/run start; restarts and pauses do not stop them.
-- **Joins.** Read `forEach` once at entry; at most `concurrency` branches
-  run. Only timely stored successes count. Stopping scripts is best-effort:
-  a cancelled branch may finish, but its result does not count.
-- **Pause.** No starts or routing until `resume`. Started work keeps its
-  result; expired deadlines route after resume.
-- **Stop.** No new starts. Started work settles; then `stopped`. Grace
-  expiry cancels pending work.
-- **Cancel, delete.** The run ends when it is accepted: pending visits are
-  cancelled, then scripts are stopped and agent sessions ended. A delete tells
-  no one.
-- **Run deadline.** Pending work is cancelled and the run fails `timed_out`,
-  paused or not.
-- **Failure.** A runtime error takes its code's route, else `failure`, else
-  `catchAll` (once per run; a later route to it fails the run), else the
-  run fails. In a branch it ends the branch without success. A run whose
-  controller stopped shows `needsRecovery`; `recover` ends it failed.
-- **Versions.** Started revisions and named-agent versions stay pinned.
-  Changes need a new Workflow. Only variables change (`set_vars`), read at
-  step start.
+- **Timers.** Deadlines are durable from start; restarts and pauses do not stop them.
+- **Joins.** `forEach` runs up to `concurrency` branches; only timely successes count.
+- **Pause / Stop / Cancel.** Pause holds new admissions; stop drains active work until grace expiry; cancel/delete end pending work and active child Workflows.
+- **Failure.** Errors route by code, then `failure`, then `catchAll` once, else fail the run.
+- **Versions.** Started revisions and agent pins stay fixed; only variables (`set_vars`) change.
 
 ## Not supported: do not write
 
@@ -368,4 +348,29 @@ states:
   done: { type: terminal, outcome: succeeded }
   blocked: { type: terminal, outcome: blocked }
   failed: { type: terminal, outcome: failed }
+```
+
+## Example: child Workflow
+
+```yaml
+# example: child-dispatch
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: child-dispatch, version: "1.0.0" }
+initial: go
+states:
+  go:
+    type: spawn
+    definition: worker-task
+    inputs: { item: "alpha" }
+    transition: { next: { started: wait, failure: fail } }
+  wait:
+    type: messaging
+    mode: receive
+    contract: WorkflowEnded@1
+    from: "${states.go.output.workflowId}"
+    wait: { seconds: 300 }
+    transition: { next: { received: done, elapsed: fail, failure: fail } }
+  done: { type: terminal, outcome: succeeded, output: "${input}" }
+  fail: { type: terminal, outcome: failed, output: "${runtime.error}" }
 ```

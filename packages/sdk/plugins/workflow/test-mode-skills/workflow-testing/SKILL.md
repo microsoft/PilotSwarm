@@ -212,7 +212,7 @@ that output in a Decision fixture.
 ### Matching and limits
 
 - `operation` is `tool.call` (the default), `decision`, `agent`, `send`,
-  `request` or `approval`. A tool-call fixture names its `tool`; the others
+  `request`, `approval` or `spawn`. A tool-call fixture names its `tool`; the others
   name their `state`.
 - `arguments` matches exact input. A tool-call fixture matches its tool and
   exact call arguments. A `decision`, `agent`, `send`, `request` or `approval`

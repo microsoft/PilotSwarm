@@ -215,6 +215,10 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
             h("strong", { className: "ps-workflow-main-title" }, icon, h("span", { className: "ps-workflow-main-name", title }, title)),
             // Review 19:27Z (D-W13): one word; its detail ("Canceled at once", why it is not certain) is its tooltip.
             h("span", { className: "ps-workflow-status", ...(flow?.status?.detail ? { title: flow.status.detail } : {}) }, status),
+            flow?.spawnedBy ? h("button", { type: "button", className: "ps-mini-button", "data-field": "spawned-by",
+                "data-session": flow.spawnedBy.workflowId,
+                onClick: () => controller.loadSession(flow.spawnedBy.workflowId).catch(() => {}) },
+                `Spawned by ${flow.spawnedBy.stateId} #${flow.spawnedBy.visit}`) : null,
             flow ? h("div", { className: "ps-workflow-main-tabs", role: "tablist", "aria-label": "Workflow view", onKeyDown: onTabKey },
                 MAIN_TABS.map(([id, label]) => h("button", { key: id, id: `${tabsId}-${id}`, type: "button", role: "tab", "aria-selected": mainTab === id,
                     "aria-controls": `${tabsId}-${id}-panel`, tabIndex: mainTab === id ? 0 : -1, onClick: () => setTab(id) }, label))) : null,
