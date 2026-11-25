@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start
 them. Do not roll the workers.** New Workflow runs start at Workflow controller
