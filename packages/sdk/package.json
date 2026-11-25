@@ -106,7 +106,7 @@
         "duroxide": "0.2.4",
         "eventsource-parser": "3.0.8",
         "fflate": "^0.8.3",
-        "file-type": "^20.5.0",
+        "file-type": "^22.3.0",
         "pg": "^8.18.0",
         "yaml": "^2.9.0"
     },
