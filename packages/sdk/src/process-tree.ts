@@ -9,8 +9,9 @@
  *     leader, so a group kill misses its children
  *   - after the process dies, the CLI still lists the task as running
  *
- *   - after a detached shell ends by itself, the CLI still lists it as
- *     running with its pid, which the host may give to another process
+ *   - after a detached shell ended by itself, CLI 1.0.83 kept listing it as
+ *     running with its pid, which the host may give to another process;
+ *     CLI 1.0.112 reports it completed
  *
  * Verified on SDK 1.0.34 (Linux): the reported pid's parent is a wrapper
  * that leads a new session and process group, below the CLI process.

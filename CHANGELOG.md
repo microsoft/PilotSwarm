@@ -88,10 +88,12 @@ The client leaves the pool before it stops; if `stop()` fails or is late, the
 worker force-stops it. The next session for that key starts a fresh runtime and
 resumes from its saved state. Set `copilotClientIdleStopMs` or
 `PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS` to change the period, or `0` to keep
-idle runtimes; the env var takes a whole number of milliseconds, and any other
-value logs a warning and uses the default. A session that moves to another
-credential or workspace key releases its old runtime, and a client the caller
-supplied is never stopped for being idle.
+idle runtimes. Both take a whole number of milliseconds and are parsed alike;
+a numeric option is rounded down. Any other value (such as `30s`, `1e3` or
+`-1`) logs a warning and uses the default. An invalid option does not fall
+back to the env var. A session that moves to another credential or workspace
+key releases its old runtime, and a client the caller supplied is never
+stopped for being idle.
 
 ### Session teardown ends tool shells
 
@@ -101,19 +103,21 @@ a dead or replaced session, a state reset, an epoch start and a model rebind.
 A worker shutdown lists them (within 5 seconds) before it stops each runtime
 and kills them once that runtime has stopped, so a turn still running is ended
 by the stop alone, as before.
-Before, only workspace sessions and a user Stop cancelled them, and stopping a
-runtime never did, because tool shells run in their own process session. On
-POSIX systems the worker also kills each shell's process session (on Linux) or
-process group, so processes the shell left behind stop too, including when the
-worker is PID 1 of its container. A process is signalled only while its pid
-still runs the process bound when the shell was listed (the exact start time),
-never when that cannot be read, never on Windows, and never after the
-teardown's 20-second deadline. Killed processes whose parent has gone are
-reaped only when the container runs a reaping init (such as `tini`) as PID 1;
-without one they remain zombies that hold only a PID slot. Sessions in one
-eviction sweep are torn down concurrently. **Behavior change:** a detached
-shell no longer survives its session's eviction or dehydrate, or its worker's
-shutdown. The default agent prompts say so.
+Before, only workspace sessions, a user Stop and a Workflow's script tasks
+cancelled them, and stopping a runtime never did, because tool shells run in
+their own process session. On POSIX systems the worker also kills each shell's
+process session (on Linux) or process group, so processes the shell left
+behind stop too, including when the worker is PID 1 of its container. A
+process is signalled only while its pid still runs the process bound when the
+shell was listed (the exact start time), never when that cannot be read, never
+on Windows, and never after a teardown's deadline (20 seconds; 5 seconds when
+the runtime may be gone, as after a lost connection). A shutdown's kills have
+no deadline: they run right after each runtime's stop. Killed processes whose
+parent has gone are reaped only when the container runs a reaping init (such
+as `tini`) as PID 1; without one they remain zombies that hold only a PID slot.
+Sessions in one eviction sweep are torn down concurrently. **Behavior change:**
+a detached shell no longer survives its session's eviction or dehydrate, or its
+worker's shutdown. The default agent prompts say so.
 
 ### Title summaries are bounded
 

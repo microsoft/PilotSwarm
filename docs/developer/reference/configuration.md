@@ -331,9 +331,10 @@ Duroxide runtime concurrency, and process-wide worker limits.
   runtimes running. The value must be a whole number of milliseconds; any
   other value (for example `30s` or `1e3`) logs a warning and the default
   applies. A period above `2147483647` (about 24.8 days) is waited as that
-  limit. An explicit
-  `PilotSwarmWorker({ copilotClientIdleStopMs })` option takes precedence over
-  the env var.
+  limit. An explicit `PilotSwarmWorker({ copilotClientIdleStopMs })` option
+  takes precedence over the env var. It is parsed the same way, except that a
+  number is rounded down. An invalid option logs a warning and uses the
+  default, not the env var.
 - Duroxide lock settings. Each has a matching `PilotSwarmWorker` option
   (`workerLockTimeoutMs`, `workerLockRenewalBufferMs`, `orchestratorLockTimeoutMs`,
   `orchestratorLockRenewalBufferMs`, `sessionLockTimeoutMs`,
