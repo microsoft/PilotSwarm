@@ -44,6 +44,8 @@ continue-as-new. Models and batches below name the paths of the commit they were
 | Re-run on v0.8.10 (2026-11-08, `8aaf5435`, `packages/sdk/src` identical to `bb162ed8`) | so2 16 of 16, so3 36 of 36, so5b 48 of 48 as expected (and fork-join fj3 91 of 91) |
 | Latest-1.0.83 batch (2026-11-08, `5d8eaa46` to `4ffbf909`) | 50 cases of `VersionHandoff`, `RollingDeploy`, `DigestWindow`, `MergeRule`, `ForcedRefresh` and `IntakeDrain` with 1.0.83 as the latest version: every case as expected across seven runs (TLC 2.19, two workers, an isolated machine); no new code finding open |
 | Batches so4b, so5, so5b (2026-11-08) | The late-cancel give-back fixes in 1.0.83 (`CarriedGiveBack`): so4b found three gaps, so5 and so5b check their fixes; so5b, 48 cases at `bb162ed8` (`packages/sdk/src` identical at `8aaf5435` on v0.8.10): 48 of 48 as expected |
+| Batch rl1 (2026-11-23 at `936bd2a2`; re-run 2026-11-24 at `261ea6c7`, then at `f4ef5cd8` on main `1f6af957`) | 15 cases of `RuntimeLoss` (issue #329: the Copilot runtime child dies during a turn or between turns): 15 of 15 as expected (3 PASS, 12 expected violations); the fix holds, and the four defects of main (`45a01a81`; the same paths at `ac86a39e`) are reproduced; no orchestration change |
+| Batch rl2 (2026-11-24, `dd1029c6`; re-run at `0b338528` on main `1f6af957`) | 8 more cases of `RuntimeLoss` for review M1 of #376 (the store's head before the turn, the eviction sweep and the legacy publish guard): 23 of 23 as expected with rl1; the sweep that published a lost first turn's dirty dir is reproduced on the code before the guard and holds with it |
 
 1.0.83 (`src/orchestration/`, the durable Workflow intake) is the latest
 version: new sessions start at it, and every continue-as-new targets it. 1.0.82
@@ -87,6 +89,7 @@ by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
 | `MergeRule.tla` | decide's prompt batching with the rule that a person's words never share a turn with an agent's or the runtime's prompt, decided by the sender (every runtime enqueue stamps one; a client cannot set one); a prompt with no sender that starts with a runtime header (a runtime prompt queued on 1.0.82, or a person's words quoting one) is of unknown author and merges with nothing | 15 (including 5 references to earlier code, 1 design limit) |
 | `ForcedRefresh.tla` | A turn that ends with a forced continue-as-new (turning Workflows on in a session, `use_package`, loading or unloading an agent, a failed model switch) keeps everything the session holds, an intake write that is due included | 6 (including 3 faults) |
 | `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, close). As written, each step is started even after the deadline, with a zero budget, and only its wait is abandoned, so later steps can overlap a still-running one and the close can cut a legacy upload; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 11 (including 2 faults, 1 comparison and 4 witnesses) |
+| `RuntimeLoss.tla` | Issue #329: the Copilot runtime child behind a pooled client dies during a turn or between turns. The turn settles at the child's exit, not at the inactivity watchdog; the lost turn's local dir is not committed and its turn sentinel stays dirty, so the retry hydrates the last commit; the dead warm session and the dead client are dropped, so the retry starts a fresh runtime, on this worker or on another one; the turn commits when there are fewer deaths than attempts. Batch rl2 adds the store's head before the turn (none, legacy or versioned), the eviction sweep and the legacy publish paths (dehydrate and checkpoint) with the guard that refuses to publish a dir whose turn sentinel is dirty | 23 (including 4 faults, 7 comparisons and 5 witnesses) |
 
 ## 2. The code these models are bound to
 
@@ -128,9 +131,26 @@ Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 |---|---|
 | `CarriedGiveBack` | `queue.ts`: `markCarriedWork` 456 (called at 1346), `giveBackCarriedWork` 413 (same pass), `observedChronology` 485, `giveBackDroppedPromptWork` 506 (decide-merge 1589-1590, decide-fifo 1703-1705), `peekNextDispatchFifoItem` 259 and the sweep before the pop (1685-1690); `lifecycle.ts` `restorePendingChildDigest` 486-512 |
 
+Bound to `f4ef5cd8` (`CORRESPONDENCE-f4ef5cd8-rl1.md`, on main `1f6af957`, 0.8.18; mode `"main"` is bound to main `ac86a39e`,
+0.8.17, and `1f6af957` changes none of the code it models):
+
+| Module | Code (`packages/sdk/src/`) |
+|---|---|
+| `RuntimeLoss` | `copilot-runtime-monitor.ts` (the spawn claim and the per-child exit watch 185-201); `session-manager.ts` `ensureClient` 1779-1781, `_startClient` 1847-1869, `_evictClient` 1872, `_onRuntimeLost` 1886, the warm-session drop 3503-3515; `managed-session.ts` the turn's race with the exit 4592-4605 and its catch 4917-4932; `session-proxy.ts` the transport-loss drop 5139-5152 and `snapshot_unpublished` 5462-5474; `session-lifecycle.ts` `runTurnPreamble` 248-365 and `runTurnCommit` 376 (the transport-loss skip 415-427); `orchestration/turn.ts` `handleConnectionClosedRetry` 128-213 (unchanged); `@github/copilot-sdk` 1.0.34 |
+
+Bound to `0b338528` (`CORRESPONDENCE-0b338528-rl2.md`, which re-binds every rl1 row; mode `"main"` stays bound to
+`ac86a39e`). The later commits `bc339020` (the control-bridge fence, review S5), `a62fc500` (a test), `d74443b0`
+(these notes), `fc898539` (a merge of main), `a108c67d` (the canvas fence recheck) and `056eb496` (a merge of main
+bringing in #405, whose model-step continuation races the same runtime-exit guard; it moves the cited
+`managed-session.ts` lines, as the correspondence file records) change no modelled path:
+
+| Module | Code (`packages/sdk/src/`) |
+|---|---|
+| `RuntimeLoss` (rl2) | `session-manager.ts` `sweepIdleSessions` 2209 (a locked or cut session is skipped 2224-2225; the committed marker 2252-2255 and the versioned probe 2262-2267 delete a cache; the guard deletes a dirty dir 2268-2273; otherwise the legacy dehydrate 2274-2277), `_legacyPublishBlocker` 3866, `_dehydrateUnlocked` 3870 (the guard 3889-3904), `checkpoint` 4418 (the guard 4425-4429); `session-proxy.ts` `snapshot_unpublished { reason: "dirty_turn" }` 6015-6038; `session-store.ts` the versioned fences of `dehydrate` 898-907 and `checkpoint` 964-971; the rl1 paths at their `0b338528` lines |
+
 ## 3. Case taxonomy and expected results
 
-`cases.tsv` lists all 175 cases with their module; `cases.json` gives each case
+`cases.tsv` lists all 207 cases with their module; `cases.json` gives each case
 its `mode`, expected result, `meaning`, constants, invariants and properties.
 `expected` is `PASS`, or `safety` or `liveness` when a violation is expected.
 
@@ -159,6 +179,15 @@ proposed late-cancel fix in 1.0.83 and are to be bound to the fix's commit once 
 The 34 `CarriedGiveBack` cases and the two `impl.rn-late-give-back-83` cases come from batch so5b. `impl` cases are
 bound to `bb162ed8`; `ref.*` cases model earlier code (`67fe212c`, `3eebc211`) and must fail; `cg.old-code*` model the
 code before any give-back; design limits are the markers dropped for size and the accepted older-notice case.
+
+The 15 `RuntimeLoss` cases (batch rl1) are `rl.*` holds (PASS), `comparison.rl-main-*` cases that model main
+`ac86a39e` (meaning `code-main`) and must fail on the rule each names, `fault.rl-*` cases that remove one protection of
+the fix, and `wit.rl-*` witnesses that show a recovery is reachable.
+
+The 8 `RuntimeLoss` cases of batch rl2 use the same modes. `comparison.rl-pr-*` cases model the #376 code before
+review M1's guard (`deb02556`, before the rebase `ce74d928`; meaning `code-before-fix`) and must fail; the `rl.*` holds and the `wit.rl-*`
+witnesses run with the store's head set to none (a first turn), legacy or versioned, and the sweep and the legacy
+publish paths turned on.
 
 ## 4. Results
 
@@ -327,6 +356,80 @@ set (`cms_update_session` does not write it). A 1.0.83 turn on a worker with the
 deletion first and runs no model and no tool (review DR2-001, `session-proxy.ts` 2517-2535), so that first message is
 dropped; a frozen version's turn, or a worker without the Workflow store, has no such guard. For a Workflow agent session the same guard is checked by
 `fix.cc-dr2-001-*` and `impl.cc-final-live` in `../workflow/continued-session/`.
+
+### Batch rl1 (2026-11-23, bound to `f4ef5cd8`): a Copilot runtime that dies (issue #329)
+
+First run on 2026-11-23 at `936bd2a2` (main `45a01a81`). Re-run on 2026-11-24 after the rebase onto main `ac86a39e`
+(0.8.17), with the code bound to `261ea6c7`: the same 15 results and the same state counts. #367 moved the bound
+lines and did not change the modelled paths. Re-run again on 2026-11-24 after the rebase onto main `1f6af957` (#392,
+0.8.18), with the code bound to `f4ef5cd8` (`261ea6c7` rebased): the same 15 results and the same PASS state counts.
+`1f6af957` changes no modelled code: it gives a session without native tasks an empty `customAgents` list (session
+configuration), which moves the later `session-manager.ts` lines by 4, and edits doc comments in `types.ts`
+(`CORRESPONDENCE-f4ef5cd8-rl1.md`).
+
+15 cases of `RuntimeLoss`, TLC 2.19 (tla2tools v1.7.4), Java 21, `-workers 2 -Xmx2g`, 300 s per case: 15 of 15 as
+expected, no PARTIAL, no VOID. SANY accepted the module.
+
+| Case | Result |
+|---|---|
+| `rl.safety`, `rl.live`, `rl.live-one-worker` | PASS (107, 107 and 63 distinct states) |
+| `comparison.rl-main-torn`, `-dead-warm`, `-watchdog`, `-sentinel` | safety violation, as expected: main commits the torn dir, reuses the dead warm session, settles at the watchdog and clears the sentinel |
+| `comparison.rl-main-live` | liveness violation, as expected: on one worker, main's retries reuse the dead warm session and the turn never commits |
+| `fault.rl-commit-on-loss`, `-reuse-warm`, `-keep-dead-client`, `-no-exit-watch` | safety violation, as expected: each protection of the fix is needed |
+| `wit.rl-turn-loss-recovered`, `-moved-recovery`, `-idle-loss-recovered` | witness reached, as expected |
+
+Bounds: at most 4 attempts and 3 deaths, a death between turns allowed, at most one move to another worker; one
+session and one turn after a committed one. Fairness: weak fairness on `Start`, `Finish`, `SettleOnExit`,
+`SettleByWatchdog` and `Postamble`; deaths and moves are free.
+
+Not covered: the orchestration's retry count and its lossy hand-off (`OwnedRetry`; the fix does not change them), a
+runtime that hangs without exiting (it still settles at the 300 s watchdog), the bounded wait for the dead session's
+destroy, a first turn with an empty store (batch rl2 covers it), a session that returns to the worker it left, and other sessions on the
+same client (in main a single session's retry reaches its dead warm session before the pool, so the pool rule is
+checked by `fault.rl-keep-dead-client`).
+
+Not changed by the model, and reported with the fix: on one worker the lossy hand-off at `turn.ts` 165-213 resets
+`retryCount` to 0, so a runtime that dies on every attempt is retried without end (each round a lossy hand-off). With
+the fix a death no longer repeats by itself, because each retry starts a fresh runtime.
+
+### Batch rl2 (2026-11-24, bound to `0b338528`): the legacy publish guard (review M1 of #376)
+
+Batch rl1 left out a first turn with an empty store. There the eviction sweep found no committed marker and no
+versioned snapshot, so it took the legacy path and archived the lost turn's dirty local dir over the store, after
+the dehydrate activity had reported the turn unpublished (review M1). The legacy archive excludes the turn sentinel,
+so the next hydration found a clean dir and resumed the torn turn. The fix, `_legacyPublishBlocker`, refuses every
+legacy publish (the sweep, the dehydrate activity, the drain's dehydrate and the safety checkpoint) while the
+session's turn sentinel is dirty; the sweep deletes such a dir and the store keeps its last commit
+(`CORRESPONDENCE-0b338528-rl2.md`).
+
+8 new cases of `RuntimeLoss`, run with the 15 of rl1 under the same settings (TLC 2.19, tla2tools v1.7.4, Java 21,
+`-workers 2 -Xmx2g`, 300 s per case): 23 of 23 as expected, no PARTIAL, no VOID. SANY accepted the module. The rl1
+cases keep their results and state counts. First run at `dd1029c6` on main `ac86a39e`; re-run on 2026-11-24 after the
+rebase onto main `1f6af957`, bound to `0b338528` (`dd1029c6` rebased): the same 23 results, each violation on the same
+invariant, and the PASS cases keep their state counts (an exhaustive search). A violation's or a witness's count is
+where the two-worker search stopped, so it varies by a few states from run to run (9 of the 19 differ from the first
+run; `comparison.rl-pr-sweep-publishes`, for example, gave 52, and five more runs gave 50 to 51, where one worker
+gives 38 every time). The branch's later commits change no modelled path: `bc339020` adds the control-bridge fence
+checks (review S5; an inline control-tool effect, not modelled), `a62fc500` adds a test, `fc898539` merges main,
+`a108c67d` rechecks the fence before each canvas write (the same unmodelled effect) and `056eb496` merges main (#405;
+its continuation races the same runtime-exit guard).
+
+| Case | Result |
+|---|---|
+| `rl.first-turn-safety`, `rl.legacy-head-safety`, `rl.versioned-head-sweep-safety` | PASS (754, 446 and 248 distinct states) |
+| `rl.first-turn-live` | PASS (754 distinct states; `Prop_TurnCommits`) |
+| `comparison.rl-pr-sweep-publishes` | safety violation, as expected: before the guard the sweep publishes a lost first turn's dir over an empty store (`Inv_StoreNeverTorn`, 50 to 53 distinct states with two workers, 38 with one) |
+| `comparison.rl-pr-publish-dirty` | safety violation, as expected: before the guard a dehydrate or checkpoint publishes a dirty dir over a legacy head (`Inv_StoreNeverTorn`, 43 distinct states) |
+| `wit.rl-first-turn-swept`, `wit.rl-refused-publish-recovered` | witness reached, as expected: a swept dirty first turn and a refused publish both still lead to a commit |
+
+Bounds: as rl1 (at most 4 attempts and 3 deaths, a death between turns, at most one move; no move in
+`wit.rl-first-turn-swept`), with the sweep and the legacy publish allowed at any moment the session lock is free.
+
+Not covered: the sweep's idle clock, a sweep with no session store, the drain's turn cut (a cut session is not
+swept), the blob store's own steps (it keeps the same versioned fences as the filesystem store), and the rest of rl1's
+list apart from the first turn. Other sessions on the killed runtime's client and a capture after the parent's
+runtime died are covered by `runtime-loss.test.js` and `orchestration-composition-rebuild.test.js`, not by the
+model.
 
 ## 5. How to run
 

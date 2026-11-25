@@ -3,7 +3,7 @@ import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -262,7 +262,12 @@ describe("Copilot runtime 1.0.112 migration", () => {
         });
     });
 
-    it("refuses a resume while another process owns an active turn", { timeout: 45_000 }, async () => {
+    // The runtime writes inuse.<pid>.lock but does not fence a second owner: once the
+    // active turn's events are on disk, another process can resume the session. A resume
+    // that races the first events.jsonl flush fails only as "Session not found". PilotSwarm
+    // must therefore never open a second owner itself; this records the runtime's behavior
+    // so a runtime that adds fencing is noticed.
+    it("does not fence a second process from resuming an active turn", { timeout: 45_000 }, async () => {
         const home = mkdtempSync(join(tmpdir(), "ps-runtime-active-"));
         let release;
         let requestStarted;
@@ -289,10 +294,18 @@ describe("Copilot runtime 1.0.112 migration", () => {
             const session = await first.createSession({ sessionId, model: MODEL, provider, onPermissionRequest: () => ({ kind: "approved" }) });
             const turn = session.sendAndWait({ prompt: "Hold this turn." }, 20_000);
             await blockedRequest;
-            await expect(second.resumeSession(sessionId, { model: MODEL, provider, onPermissionRequest: () => ({ kind: "approved" }) }))
-                .rejects.toThrow();
+            const sessionDirectory = join(home, "session-state", sessionId);
+            const eventsFile = join(sessionDirectory, "events.jsonl");
+            const deadline = Date.now() + 10_000;
+            while (!(existsSync(eventsFile) && readFileSync(eventsFile, "utf8").includes("\"assistant.turn_start\""))) {
+                if (Date.now() > deadline) throw new Error("the active turn was not persisted within 10 s");
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            expect(readdirSync(sessionDirectory).some(name => /^inuse\.\d+\.lock$/.test(name))).toBe(true);
+            const resumed = await second.resumeSession(sessionId, { model: MODEL, provider, onPermissionRequest: () => ({ kind: "approved" }) });
+            expect(resumed.sessionId).toBe(sessionId);
             release();
-            await turn;
+            expect((await turn).data.content).toBe("done");
         } finally {
             release();
             await first.stop().catch(() => undefined);

@@ -193,6 +193,7 @@ test("packed SDK telemetry preload exports actual worker turn usage without repo
     const pilotswarmMetrics = metrics.filter(metric => metric.name.startsWith("pilotswarm."));
     const pilotswarmNames = [...new Set(pilotswarmMetrics.map(metric => metric.name))].sort();
     const allowedPilotSwarmCounters = [
+        "pilotswarm.copilot_runtime.exits",
         "pilotswarm.lifecycle.operations",
         "pilotswarm.tokens",
         "pilotswarm.tool.calls",

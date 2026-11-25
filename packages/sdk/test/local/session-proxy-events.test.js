@@ -605,6 +605,28 @@ describe("session-proxy CMS prompt classification", () => {
         });
     });
 
+    it("review M1 (#376): a dehydrate that refused to publish an uncommitted turn records snapshot_unpublished, not dehydrated", async () => {
+        const { dehydrateSession, recordedEvents, sessionManager, catalog } = makeHarness();
+        sessionManager.dehydrate = vi.fn(async () => ({ unpublished: "dirty_turn" }));
+
+        await expect(dehydrateSession(
+            { traceInfo: () => {} },
+            { sessionId: "session-dirty", reason: "idle", eventData: { detail: "idle handoff" } },
+        )).resolves.toBeUndefined();
+
+        expect(recordedEvents).toContainEqual({
+            eventType: "session.snapshot_unpublished",
+            data: expect.objectContaining({
+                detail: "idle handoff",
+                reason: "dirty_turn",
+                dehydrateReason: "idle",
+                modelMemoryCommitted: false,
+            }),
+        });
+        expect(recordedEvents.some((event) => event.eventType === "session.dehydrated")).toBe(false);
+        expect(catalog.upsertSessionMetricSummary).not.toHaveBeenCalled();
+    });
+
     it("records snapshot size in the summary update when the session store provides it", async () => {
         const sessionStore = {
             getSnapshotSizeBytes: vi.fn(async () => 4096),

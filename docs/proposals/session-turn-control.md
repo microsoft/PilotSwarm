@@ -1491,9 +1491,12 @@ The evidence is local: the stopped turn's in-progress sentinel is still in
 the session directory, names a different turn, and records that its turn
 started on a conversation created fresh with nothing saved and not by a
 lossy replay (`freshChain`);
-the marker has no saved version, and the store is empty. Without that
-evidence (a store that lost saved turns, a retry of the same turn, a legacy
-directory, or the next turn on another worker) the lossy replay still runs. Before this rule the next
+the marker has no saved version, and the store is empty. On a worker without
+that directory, the stopped turn's own `session.snapshot_unpublished` record
+carries the same `freshChain` evidence (#376). Without that evidence (a store
+that lost saved turns, a retry of the same turn, a legacy directory, a record
+written by an older worker, or a failed read of the records) the lossy replay
+still runs. Before this rule the next
 turn recorded a lossy handoff on `main` too. PilotSwarm's auto-titling
 ignores `[SYSTEM: ...]` notices; it never reads the Copilot CLI's own
 `session.title_changed` event.
