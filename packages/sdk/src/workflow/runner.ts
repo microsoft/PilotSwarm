@@ -39,6 +39,13 @@ const STREAM_TAIL_BYTES = 16 * 1024;
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"];
 
 /**
+ * Node 24's permission model does not limit the network. Node 26's does, which would also cut a script off from
+ * its own loopback endpoint. Where the flag exists, grant the network so a script can reach the network on both
+ * (Node 26 then prints an experimental-flag warning on the script's stderr).
+ */
+const NETWORK_GRANT = process.allowedNodeEnvironmentFlags.has("--allow-net") ? ["--allow-net"] : [];
+
+/**
  * "invalid": the script reported a result that is not plain JSON
  * (through setResult, the endpoint or its final stdout line). "not_started":
  * the caller's entry boundary refused to start the script.
@@ -503,7 +510,7 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
         const start = (context: Record<string, unknown>): void => {
             if (launch.exited) throw new WorkflowExecutionError(`Script state '${node.id}' was started twice.`);
             launch.exited = new Promise<number | null>((resolve, reject) => {
-                const args = ["--permission", `--allow-fs-read=${workDir}`, `--allow-fs-write=${workDir}`, scriptPath];
+                const args = ["--permission", `--allow-fs-read=${workDir}`, `--allow-fs-write=${workDir}`, ...NETWORK_GRANT, scriptPath];
                 // Stage 2.4 (PR 235 6e2a1fec): on POSIX the script leads its own process group, so stopping it, or its end,
                 // also ends what it started that left its process tree (a daemon reparented to init).
                 const groupLeader = process.platform !== "win32";

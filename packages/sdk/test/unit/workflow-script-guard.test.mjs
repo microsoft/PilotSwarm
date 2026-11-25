@@ -29,7 +29,8 @@ const run = source => runScriptNode({
 test("the runner runs every script on the worker's own Node with the permission model, and has no other mode", () => {
     const runner = readFileSync(new URL("../../src/workflow/runner.ts", import.meta.url), "utf8");
     assert.match(runner, /const executable = process\.execPath;/);
-    assert.match(runner, /const args = \["--permission", `--allow-fs-read=\$\{workDir\}`, `--allow-fs-write=\$\{workDir\}`, scriptPath\];/);
+    assert.match(runner, /const args = \["--permission", `--allow-fs-read=\$\{workDir\}`, `--allow-fs-write=\$\{workDir\}`, \.\.\.NETWORK_GRANT, scriptPath\];/);
+    assert.match(runner, /const NETWORK_GRANT = process\.allowedNodeEnvironmentFlags\.has\("--allow-net"\) \? \["--allow-net"\] : \[\];/);
     assert.doesNotMatch(runner, /guardedNode|strictJson|executables/);
 });
 

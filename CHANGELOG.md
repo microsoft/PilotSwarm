@@ -4,6 +4,17 @@
 
 **Upgrade: deploy the workers.** No migration and no orchestration version.
 
+### Workflow scripts run on Node 26
+
+On Node 26 the permission model also limits the network, so a workflow script
+could not reach its own loopback endpoint: every script node that called
+`setResult` or a tool failed with `fetch failed` (`ERR_ACCESS_DENIED`), and
+only scripts that reported through their final stdout line or exit code were
+unaffected. The runner now passes `--allow-net` where
+the worker's Node has that flag, so a script reaches the network on Node 26 as
+it does on Node 24, as documented. Node 26 prints an experimental-flag warning
+on the script's stderr.
+
 ### A dead Copilot runtime is not reused
 
 When a worker's Copilot runtime process dies during a turn (an OOM kill, for

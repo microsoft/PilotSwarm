@@ -240,7 +240,7 @@ Common entry points:
 
 ## Requirements
 
-- Node.js 24.22.1+ within 24.x, or 26.12.1+ (CI and images pin 24.22.1 LTS)
+- Node.js 24.22.1+ within 24.x, or 26.12.1+ (CI and images pin 24.22.1 LTS; one CI job also runs the workflow script tests on 26.13.0)
 - PostgreSQL
 - GitHub Copilot access token (worker-side only)
 - Azure Blob Storage (optional, for session dehydration across nodes)

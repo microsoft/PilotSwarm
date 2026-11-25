@@ -21,7 +21,9 @@ Use databases dedicated to tests. The harness creates and removes schemas and
 cleans stale test state. Never point it at a portal or production database.
 
 CI pins Node 24.22.1 exactly rather than `24`, which can select an older cached
-runtime. Package engine requirements and the deployment tests enforce the
+runtime. One PR-checks job also pins Node 26.13.0 to run the workflow script
+tests under Node 26's permission model, which limits the network. Package
+engine requirements and the deployment tests enforce the
 [October 2026 security baseline](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
 Protected PR integration tests take runner setup from trusted **main**, not the
 candidate workflow. A Node pin change must reach main before those runs can
