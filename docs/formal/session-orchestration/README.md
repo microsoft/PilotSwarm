@@ -139,8 +139,8 @@ Bound to `f4ef5cd8` (`CORRESPONDENCE-f4ef5cd8-rl1.md`, on main `1f6af957`, 0.8.1
 | `RuntimeLoss` | `copilot-runtime-monitor.ts` (the spawn claim and the per-child exit watch 185-201); `session-manager.ts` `ensureClient` 1779-1781, `_startClient` 1847-1869, `_evictClient` 1872, `_onRuntimeLost` 1886, the warm-session drop 3503-3515; `managed-session.ts` the turn's race with the exit 4592-4605 and its catch 4917-4932; `session-proxy.ts` the transport-loss drop 5139-5152 and `snapshot_unpublished` 5462-5474; `session-lifecycle.ts` `runTurnPreamble` 248-365 and `runTurnCommit` 376 (the transport-loss skip 415-427); `orchestration/turn.ts` `handleConnectionClosedRetry` 128-213 (unchanged); `@github/copilot-sdk` 1.0.34 |
 
 Bound to `0b338528` (`CORRESPONDENCE-0b338528-rl2.md`, which re-binds every rl1 row; mode `"main"` stays bound to
-`ac86a39e`). The later commits `bc339020` (the control-bridge fence, review S5) and `a62fc500` (a test) change no
-modelled path:
+`ac86a39e`). The later commits `bc339020` (the control-bridge fence, review S5), `a62fc500` (a test), `d74443b0`
+(these notes), `fc898539` (a merge of main) and `a108c67d` (the canvas fence recheck) change no modelled path:
 
 | Module | Code (`packages/sdk/src/`) |
 |---|---|
@@ -408,7 +408,8 @@ invariant, and the PASS cases keep their state counts (an exhaustive search). A 
 where the two-worker search stopped, so it varies by a few states from run to run (9 of the 19 differ from the first
 run; `comparison.rl-pr-sweep-publishes`, for example, gave 52, and five more runs gave 50 to 51, where one worker
 gives 38 every time). The branch's later commits change no modelled path: `bc339020` adds the control-bridge fence
-checks (review S5; an inline control-tool effect, not modelled) and `a62fc500` adds a test.
+checks (review S5; an inline control-tool effect, not modelled), `a62fc500` adds a test, `fc898539` merges main and
+`a108c67d` rechecks the fence before each canvas write (the same unmodelled effect).
 
 | Case | Result |
 |---|---|

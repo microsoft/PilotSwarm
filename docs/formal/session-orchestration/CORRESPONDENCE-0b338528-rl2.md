@@ -26,6 +26,10 @@ the formal model (batch rl2 itself, under `docs/formal/`).
 inline control-tool effect after the loss, not modelled (below); it moves the later `session-proxy.ts` lines.
 `a62fc500` adds a test (`turn-control-run-turn.test.js`) and docs. `orchestration/turn.ts` and
 `orchestration/utils.ts` are unchanged since `ac86a39e`.
+`d74443b0` changes only this folder's notes. `fc898539` merges main (#375: `workflow/runner.ts`, its test and docs,
+outside the modelled paths). `a108c67d` (Copilot review) checks the fence again before each canvas write
+(`canvas-operations.ts`, `canvas-kv.ts`, a test and docs): the same unmodelled inline control-tool effect; it changes no
+`session-proxy.ts` line. The binding therefore holds at `a108c67d` too.
 
 This file supersedes the rl1 table for the model's current text: every rl1 row is re-bound below to the lines at
 `0b338528`. The rl1 file stays as the record of batch rl1.
