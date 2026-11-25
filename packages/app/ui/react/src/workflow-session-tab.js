@@ -155,12 +155,10 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
             rest,
             wraps ? null : modes),
         listLine,
-        latest ? h("p", { className: "ps-wf-line ps-wf-latest", role: "status", "data-field": "latest-workflow" }, `${latest.text} · `,
-            h("button", { type: "button", className: "ps-link-button", "data-action": "view-latest", "aria-label": `View Workflow #${latest.number}`,
-                onClick: () => openWorkflow(latest.sessionId) }, "View it")) : null,
         view === "definition"
             ? h(SessionDefinitionView, { key: definition.definitionId, controller, ownerId, definition, revision, tab, setTab, mobile, phone, displayMode,
                 ownerTitle: ownerSession?.title ?? null, ownerWorking: ownerSession ? workflowParentWorking(ownerSession) : false,
+                latest, onOpenLatest: openWorkflow,
                 onStarted: openWorkflow, onDeleted: () => setTab({ sessionDefinitionId: null, sessionRevision: null, definitionPanel: null }),
                 onChooseDefinition: chooseDefinition })
             : workflow
@@ -215,7 +213,7 @@ function startControlOf(definition, revision, read) {
 
 /** The Definition view of a session's definition: the revision picker, its graph or YAML, Compare, Start… and Delete…. */
 function SessionDefinitionView({ controller, ownerId, definition, revision, tab, setTab, mobile, phone = false, displayMode = "normal", ownerTitle = null, ownerWorking = false,
-    onStarted, onDeleted, onChooseDefinition = null }) {
+    latest = null, onOpenLatest = null, onStarted, onDeleted, onChooseDefinition = null }) {
     const { read, retry } = useSessionRevisionRead(controller, ownerId, definition.definitionId, revision);
     const value = read?.value ?? null;
     const model = React.useMemo(() => sessionRevisionReadModel(definition, value), [definition.definitionId, definition.name, value]);
@@ -289,13 +287,20 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
         if (result?.ok) setTab({ sessionRevision: "newest" });
         else setPackageNotice(sessionRefusal("Update refused", result, "the newer version was not taken."));
     };
+    const removeButton = commands ? h(WorkflowToolButton, { label: "Delete…", glyph: "delete", "data-action": "delete", disabled: !deleteEnabled, title: deleteTitle,
+        onClick: () => setDeleting(true) }) : null;
     return h("div", { className: "ps-wf-body", "data-session-revision": revision ?? undefined },
+        latest ? h("div", { className: "ps-wf-line ps-wf-latest", role: "status", "data-field": "latest-workflow" },
+            h("span", { className: "ps-wf-latest-text" },
+                `${latest.text} · `,
+                h("button", { type: "button", className: "ps-link-button", "data-action": "view-latest", "aria-label": `View Workflow #${latest.number}`,
+                    onClick: () => onOpenLatest?.(latest.sessionId) }, "View it")),
+            removeButton ? h("span", { className: "ps-wf-info-actions" }, removeButton) : null) : null,
         // OF-S2-8 (owner, 2026-11-07T23:18Z): the dimmed line under the pickers: who saved the revision shown, when, its version,
-        // newest, not valid, a package's "from <package> <version> · locked" and Make a copy; its last test; Delete… at its end.
+        // newest, not valid, a package's "from <package> <version> · locked" and Make a copy; its last test; Delete… when no latest row.
         h(SessionRevisionInfo, { definition, revision, lastTest: lastTest ? { words: lastTest, verdict: shownRevision.lastTest.verdict } : null,
             locked: Boolean(packageWords), update: packageWords?.update ?? null, mayChange, packageBusy, onCopy: copy, onUseNewer: useNewer,
-            remove: commands ? h(WorkflowToolButton, { label: "Delete…", glyph: "delete", "data-action": "delete", disabled: !deleteEnabled, title: deleteTitle,
-                onClick: () => setDeleting(true) }) : null }),
+            remove: latest ? null : removeButton }),
         packageNotice ? h("p", { className: "ps-wf-line is-error", role: "alert", "data-field": "package-notice" }, packageNotice) : null,
         // Formal L1: a copy says what it was copied from.
         copiedWords ? h("p", { className: "ps-wf-line is-quiet", role: "status", "data-field": "copied-from" }, copiedWords) : null,
@@ -389,7 +394,7 @@ function SessionRevisionInfo({ definition, revision, lastTest = null, locked = f
             title: "The session tests a revision only when you ask it to. A test is not a Workflow." }, lastTest.words));
     }
     if (!items.length && !remove) return null;
-    return h("div", { className: "ps-wf-line is-quiet ps-wf-info", role: "status", "data-field": "revision-info",
+    return h("div", { className: `ps-wf-line is-quiet ps-wf-info${remove ? " has-remove" : ""}`, role: "status", "data-field": "revision-info",
         "data-session-definition": locked ? "locked" : undefined },
         h("span", { className: "ps-wf-info-text" }, items),
         remove ? h("span", { className: "ps-wf-info-actions" }, remove) : null);
