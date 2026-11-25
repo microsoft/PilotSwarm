@@ -1,59 +1,104 @@
-# Snapshot-owned state for platform-managed remote sandboxes
+# Remote-compute state modes: store-owned and snapshot-owned sandboxes
 
-**Status:** proposal and draft PR for discussion.
+**Status:** proposal and draft PR for discussion (revision 2 — reframed around two supported state modes for worker-separated compute providers).
 
-**What exists today:** The generic managed-reference core state machine (`managed-runtime.ts`, `managed-admission.ts`, `managed-turn.ts`) has been prototyped and verified in isolation (TypeScript compile + 208 unit tests across 5 local suites on a separate prototype branch). It is **not** wired into `main`, Worker/CMS, or orchestration yet.
+**What exists today:**
+- **Mode 1 (`statePolicy: "store-owned"`):** Extends PilotSwarm's shipped `store-wins` durability model ([`docs/proposals/snapshot-store-wins.md`](./snapshot-store-wins.md)) to separated remote compute providers using opaque, size-bounded session-state archives (never extracted on the worker). Being prototyped on a separate branch alongside Mode 2.
+- **Mode 2 (`statePolicy: "managed"`):** The generic managed-reference core state machine (`managed-runtime.ts`, `managed-admission.ts`, `managed-turn.ts`, `managed-worker.ts`) is prototyped and verified in isolation (TypeScript compile + 243/243 Vitest tests across 8 suites on a separate prototype branch), and Turn 1 has been exercised end-to-end against a real remote sandbox provider with worker-side model key brokering. Automatic worker-loss replacement recovery remains disabled (`restoreQualification: "unproven"`) until provider snapshot retention and stale-executor retirement are independently qualified (sections 5 and 6).
 
-**What is deliberately not in Phase 1:** Automatic worker-loss replacement recovery, cross-worker takeover, stale-executor physical fencing, and worker-side filesystem archive fallback. Replacement recovery stays disabled until a provider's snapshot retention, post-resume durability, and old-executor retirement semantics are independently qualified (sections 5 and 6).
-
-**Date:** 2026-11-25, revision 1. Companion to [`docs/proposals/compute-providers.md`](./compute-providers.md) and [`docs/proposals/snapshot-store-wins.md`](./snapshot-store-wins.md). Nothing in this design names a specific cloud, vendor, or sandbox product; it defines the generic PilotSwarm contract for any compute provider that owns native session state through provider-side snapshots.
+**Date:** 2026-11-25, revision 2. Companion to [`docs/proposals/compute-contract-foundation.md`](./compute-contract-foundation.md) and [`docs/proposals/snapshot-store-wins.md`](./snapshot-store-wins.md). Nothing in this design names a specific cloud, vendor, or sandbox product; it defines the generic PilotSwarm contract for separated worker + remote compute providers.
 
 ---
 
-## High-level design
+## High-level design: two modes on one shared foundation
 
-**The problem.** When PilotSwarm runs a session's agent runtime inside a platform-created remote sandbox, the sandbox holds both the native CLI conversation files and the session workspace. Today, PilotSwarm's default durability model tars a local session directory on the worker and uploads those bytes to a blob store after every turn. Extending that byte-archive model to remote sandboxes forces the worker to pull native state bytes out of untrusted compute on every turn, duplicates what snapshot-capable sandbox platforms already do natively, and leaves workspace state split across two mechanisms.
+**The problem.** When PilotSwarm separates the trusted worker (orchestration, CMS, facts, artifacts, model API keys) from an untrusted remote sandbox (Copilot CLI, shell, file tools), the deployment must decide **who owns authoritative session state between turns**.
+- Relying exclusively on **provider-managed VM/container snapshots** preserves full disk and workspace state without transferring archive bytes through the worker, but ties failover and durability to provider-specific snapshot immutability, retention TTL, and garbage-collection guarantees (which empirical testing showed can fail after resume + idle auto-suspend; section 5).
+- Relying exclusively on **store-owned session archives** gives immediate self-healing worker failover across *any* compute provider (including providers with no snapshot API at all), but does not automatically persist arbitrary OS/build files outside the CLI session directory and requires strict untrusted-archive boundaries on the worker.
 
-**The solution.** Let a snapshot-capable compute provider own the native sandbox state (conversation files, workspace, and supported runtime state) inside provider-managed snapshots, while PilotSwarm's trusted control plane owns the **accepted snapshot reference**, turn ordering, execution admission, model credentials, and CMS history.
+**The solution.** Support **two explicit `statePolicy` modes** on top of **one shared remote-compute foundation** (mutual TLS + per-binding handshake, strict native CLI client, worker-side model key brokerage, CMS/Duroxide orchestration):
 
-**Concrete example.**
-1. Turn 1 runs in a platform-created sandbox `A` and writes `proof.txt` in the workspace.
-2. At the safe turn boundary, PilotSwarm stops admitting new model or tool work to `A`, asks the provider to stop and snapshot `A`, validates the returned snapshot identity against `A`, and atomically publishes an **accepted snapshot reference** (`version: 1`, bound to `turnKey` and the worker's owner capability) into PilotSwarm's conditional reference store.
-3. Turn 2 runs on the same sandbox `A` after re-establishing current-generation admission and reads `proof.txt`.
-4. In Phase 2 (once provider retention and retirement are qualified), if the worker or sandbox `A` is lost after Turn 1 is accepted, a replacement worker verifies that `A` can no longer act, creates a fresh sandbox `B` from the accepted snapshot reference, bootstraps fresh transport and credentials, and runs Turn 2 without restoring obsolete credentials or control-plane ownership from the snapshot.
+1. **Mode 1 — Store-Owned Remote Compute (`statePolicy: "store-owned"`, universal default):**
+   - **Blob Storage + CMS own authoritative session state** under PilotSwarm's `store-wins` protocol (`If-Match` ETag CAS + `turnKey` idempotency).
+   - The remote sandbox is a **disposable warm cache**. Between turns on the same worker, a warm sandbox whose local cache marker matches `(version, contentHash)` skips hydration. If the worker restarts, the sandbox dies, or the provider evicts it, any worker allocates a fresh sandbox and hydrates the CLI session-state archive from the store.
+   - **Untrusted-archive boundary:** The worker moves only **opaque, size-bounded compressed bytes** (e.g. `<= 16 MiB`) between the authenticated guest channel and Blob Storage—**the worker never untars or parses guest archive bytes on the worker filesystem**. Only an untrusted sandbox extracts them using a hardened unpacker (no `..`, no absolute paths, no symlinks/hardlinks/device nodes, strict entry and expanded-byte caps). Idempotent `turnKey` retries read a separate **worker-owned trusted turn-commit record**, never from the guest archive.
+   - **Workspace durability** stays cleanly separated from conversation memory via PilotSwarm's session workspaces, git clones, and artifacts (or best-effort warm sandbox cache).
+
+2. **Mode 2 — Provider-Snapshot-Owned Remote Compute (`statePolicy: "managed"`, opt-in full-disk tier):**
+   - **A snapshot-capable compute provider owns full native sandbox state** (conversation files, workspace, installed tools, build caches) inside provider-managed snapshots, while PilotSwarm's trusted control plane stores only a small **accepted snapshot reference** (`~2 KiB` JSON head) in the conditional reference store.
+   - **Zero guest archive bytes ever cross back into worker storage**, at the cost of a stricter write-ahead state machine and hard provider snapshot-retention prerequisites before automatic cross-sandbox failover can be enabled.
+
+| Dimension | Mode 1: `store-owned` (Universal Default) | Mode 2: `managed` (Opt-In Full-Disk Tier) |
+|---|---|---|
+| **Authoritative session state** | Blob Storage (session archive) + CMS (`store-wins`) | Provider snapshot + conditional JSON reference head in Blob |
+| **Role of the remote sandbox** | Disposable warm cache (reuse, pause, or replace freely) | State authority (snapshots back durability) |
+| **What crosses back to worker** | Bounded `cli-home` archive (`<= 16 MiB` opaque bytes; never extracted on worker) | Small JSON reference record (`~2 KiB`; opaque snapshot ID only) |
+| **Worker crash / sandbox loss** | **Self-healing immediately** (fresh sandbox hydrates from Blob) | **Gated on Phase 2** (verified snapshot retention + physical fencing) |
+| **Compute provider requirements** | Minimal: create, exec/connect, delete (works on any container/VM/sandbox provider) | Strict: immutable snapshots surviving resume/idle/delete, documented TTL, GC API |
+| **Workspace & installed tools** | Ephemeral on sandbox replacement unless paired with durable workspaces / artifacts | Preserved automatically inside provider snapshot |
+| **Control-plane complexity** | Low: reuses existing `snapshot-store-wins` (no 32-turn cap, works at epoch 0 or >= 1) | High: write-ahead CAS phases, 32-turn ledger, owner tokens, `restoreQualification` gate |
+| **Model keys & control-plane creds** | **Worker-only** (brokered; zero secrets in sandbox) | **Worker-only** (brokered; zero secrets in sandbox or snapshots) |
 
 ```mermaid
 flowchart LR
   subgraph T["Trusted: PilotSwarm Control Plane"]
-    RS[("Conditional Reference Store<br/>(authoritative accepted head)")]
-    LS[("Lifecycle Facet Store<br/>(sdk.managed-state CAS record)")]
-    CMS[("CMS & Orchestration<br/>(idempotent mirror, turn history)")]
-    W["Worker<br/>turn state machine, model key broker,<br/>process-local owner capability"]
+    BS[("Blob / Reference Store<br/>Mode 1: opaque .tar.br + trusted turn-commit<br/>Mode 2: conditional JSON reference head")]
+    LS[("Lifecycle Facet Store<br/>Mode 2 only: sdk.managed-state CAS")]
+    CMS[("CMS & Orchestration<br/>idempotent mirror, turn history")]
+    W["Worker<br/>turn orchestration, model key broker,<br/>shared mTLS + binding handshake"]
   end
-  P["Snapshot-Capable Compute Provider"]
+  P["Remote Compute Provider<br/>(containers, VMs, or snapshot sandboxes)"]
   subgraph U["Untrusted: Remote Sandbox"]
-    S["Sandbox Allocation<br/>native CLI conversation & workspace"]
-    SNAP[("Provider Snapshot<br/>opaque provider-owned ID")]
+    S["Sandbox Allocation<br/>native Copilot CLI + local workspace"]
+    SNAP[("Mode 2 only: Provider Snapshot<br/>opaque provider-owned ID")]
   end
 
-  W -- "CAS continuation record<br/>(before each effect)" --> LS
-  W -- "conditional head publish<br/>(reference + result + receipt + owner digest)" --> RS
+  W -- "Mode 1: store-wins opaque archive CAS<br/>Mode 2: conditional reference head" --> BS
+  W -- "Mode 2: write-ahead CAS" --> LS
   W -- "idempotent activity outcome" --> CMS
-  W -- "create / stop+snapshot / resume / delete" --> P
+  W -- "create / connect / delete<br/>(+ Mode 2 stop/snapshot/resume)" --> P
   P -- "manages" --> S
-  P -- "captures / restores" --> SNAP
-  W == "authenticated channel<br/>(turn input, tool calls, brokered model requests)" ==> S
+  P -. "Mode 2: captures / restores" .-> SNAP
+  W == "authenticated channel<br/>(brokered model calls + Mode 1 opaque hydrate/dehydrate)" ==> S
 ```
 
-> **Core rule:** The sandbox owns the bytes; the trusted control plane owns acceptance. A provider snapshot ID returned by `stop` is never an accepted checkpoint until PilotSwarm conditionally publishes it to the reference store. Model keys, provider API credentials, and control-plane leases never enter the sandbox or the snapshot.
+> **Shared invariant across both modes:** Model API keys, provider control-plane tokens, and worker leases never enter the sandbox or any snapshot/archive.
 
-**Main design choices**
+---
+
+## 0. Mode 1 architecture: Store-Owned Remote Compute (`statePolicy: "store-owned"`)
+
+### 0.1 Concrete two-turn failover example
+
+1. Turn 1 runs in remote sandbox `A`. Model calls are brokered through the worker (zero model keys in `A`).
+2. At turn end, the guest quiesces/stops the Copilot CLI, packs **only** `cli-home/session-state/<sessionId>` (excluding markers/sentinels and rejecting symlinks/special files) into a size-capped compressed stream, and sends the opaque bytes over the authenticated channel.
+3. The worker verifies the byte cap, computes `contentHash`, writes the trusted `{ turnKey, result }` record, and commits the opaque archive to Blob Storage at `version: 1` via standard `store-wins` conditional Put (`If-Match` / `If-None-Match`). The worker never extracts the archive.
+4. Sandbox `A` is deleted (or the worker restarts).
+5. Turn 2 starts on any worker. The worker probes Blob (`version: 1`), allocates a fresh sandbox `B`, streams the opaque archive to `B`, runs `B`'s hardened guest unpacker into `cli-home`, boots Copilot CLI, resumes the exact conversation, and commits `version: 2`.
+
+### 0.2 Warm-cache fast path and `store-wins` conflict safety
+
+- **Warm hit:** If the same worker still holds warm sandbox `A` whose local cache marker matches Blob's `(version, contentHash)`, the worker skips downloading and hydrating the archive and runs Turn 2 directly on `A`.
+- **Idempotent retry:** If Duroxide retries a turn whose `turnKey` already matches Blob's `psturnkey`, the worker returns the stored result from its **worker-owned trusted turn-commit record** with zero sandbox contact and zero archive parsing.
+- **412 conflict (`store-wins`):** If another writer advanced Blob between preamble and commit, the conditional Put returns `412`. The worker invalidates its warm cache marker, emits `session.snapshot_unpublished`, and does **not** brick the session; the next turn rehydrates whatever won.
+- **Oversized archive refusal:** If the guest returns more than `REMOTE_SNAPSHOT_ARCHIVE_MAX_BYTES` (default `16 MiB` compressed), the worker rejects the stream before touching Blob Storage and surfaces a bounded error.
+
+---
+
+## High-level design (Mode 2: Snapshot-Owned Managed Sandboxes)
+
+**Concrete example (Mode 2).**
+1. Turn 1 runs in a platform-created sandbox `A` and writes `proof.txt` in the workspace.
+2. At the safe turn boundary, PilotSwarm stops admitting new model or tool work to `A`, quiesces the guest runtime, asks the provider to stop and snapshot `A`, validates the returned snapshot identity against `A`, and atomically publishes an **accepted snapshot reference** (`version: 1`, bound to `turnKey` and the worker's owner capability) into PilotSwarm's conditional reference store.
+3. Turn 2 runs on the same sandbox `A` after re-establishing current-generation admission and reads `proof.txt`.
+4. In Phase 2 (once provider retention and retirement are qualified), if the worker or sandbox `A` is lost after Turn 1 is accepted, a replacement worker verifies that `A` can no longer act, creates a fresh sandbox `B` from the accepted snapshot reference, bootstraps fresh transport and credentials, and runs Turn 2 without restoring obsolete credentials or control-plane ownership from the snapshot.
+
+**Main design choices (Mode 2)**
 
 | Choice | Instead of | Why |
 |---|---|---|
 | Conditional reference head is authoritative; CMS mirrors idempotently | Assuming a cross-store transaction between provider, reference store, and CMS | External providers, blob/reference stores, and PostgreSQL do not share atomic transactions; a single conditional head write lets lost replies recover idempotently. |
-| Opt-in sibling policy (`statePolicy: "managed"`) | Changing default worker sessions or user-supplied static hosts | Ordinary sessions and user-supplied static resources (where the user owns lifecycle and disk state) stay untouched. |
-| No silent fallback to worker-side archive capture | Falling back to tarring native bytes when a snapshot fails | Mixing two state authorities hides retention bugs and breaks trust-boundary expectations. |
+| Explicit mode selection (`statePolicy: "store-owned"` vs `"managed"`) | Silently falling back from Mode 2 to Mode 1 on snapshot error | Mixing two state authorities inside one session hides retention bugs and breaks trust-boundary expectations. Each session chooses one mode explicitly. |
 | Separate checkpoint acceptance from restore qualification | Treating every accepted snapshot ID as proven restorable | Empirical testing showed that a provider can return a valid snapshot ID that later becomes unrestorable under certain lifecycle sequences (section 5). |
 | Write-ahead continuation record before every side effect | Recording state only after an effect returns | A crash or lost response between invoking an external provider and recording the outcome must fail closed (`held`), never silently replay or double-allocate. |
 
@@ -61,16 +106,18 @@ flowchart LR
 
 ## 1. Scope, non-goals, and relationship to other modes
 
-PilotSwarm distinguishes three remote-execution models:
+PilotSwarm distinguishes three execution models:
 
 1. **Default worker sessions (unchanged):** Agent runtime runs locally on the worker; session directory is archived to the snapshot store under the store-wins protocol ([`snapshot-store-wins.md`](./snapshot-store-wins.md)).
-2. **User-supplied static hosts (unchanged):** The user provisions and owns the host's lifecycle and disk state; PilotSwarm attaches to it over a brokered connection without creating, stopping, snapshotting, restoring, or deleting the host.
-3. **Platform-managed snapshot-owned sandboxes (this proposal):** PilotSwarm creates and manages the sandbox allocation through a compute provider, uses explicit opt-in `statePolicy: "managed"`, and stores typed snapshot references rather than native filesystem archives.
+2. **Mode 1 — Store-owned remote compute (`statePolicy: "store-owned"`, this proposal):** PilotSwarm creates and manages remote sandboxes through a compute provider, runs Copilot CLI remotely with worker-side model key brokerage, and persists bounded `cli-home` session archives in Blob Storage under `store-wins` (never extracted on the worker).
+3. **Mode 2 — Snapshot-owned managed sandboxes (`statePolicy: "managed"`, this proposal):** PilotSwarm creates and manages remote sandboxes through a snapshot-capable compute provider and stores typed conditional snapshot references rather than native filesystem archives.
+
+*(User-supplied static hosts are intentionally outside the scope of this proposal.)*
 
 **Non-goals in this proposal:**
 - Defining a specific vendor's REST API, authentication setup, or cloud networking topology.
 - Making provider snapshots roll back external tool side effects (database writes, API calls, emails). External side effects require their own operation journals and reconciliation.
-- Enabling automatic failover or multi-worker takeover before provider snapshot durability and physical fencing are independently proven.
+- Enabling Mode 2 automatic failover or multi-worker takeover before provider snapshot durability and physical fencing are independently proven.
 
 ---
 
@@ -220,18 +267,19 @@ Automatic failover after worker or sandbox loss is deferred to Phase 2 and requi
 
 ## 7. Phased rollout and qualification criteria
 
-| Phase | Deliverable | Qualification gate |
+| Track / Phase | Deliverable | Qualification gate |
 |---|---|---|
-| **Phase 0 (complete in prototype)** | Generic managed-reference core (`managed-runtime.ts`, `managed-admission.ts`, `managed-turn.ts`) with write-ahead acquisition, 3-valued publication, bounded 4 KiB state / 2 KiB receipt, and non-evicting 32-turn ledger | Isolated TypeScript compile (`tsc --noEmit` exit 0) and 5 local Vitest suites (**208/208 tests passing**); zero changes to default or static-host paths. |
-| **Phase 1 (next implementation milestone)** | Opt-in `statePolicy: "managed"` wiring in Worker/CMS/SessionManager, dedicated `transcriptEpoch: 1` initialization (without regeneration metadata), and provider composition | One live platform-created sandbox completes **two real-model turns** through normal Worker/CMS, Turn 2 reads a file written in Turn 1, model keys remain worker-side, and both turns publish accepted snapshot references (`restoreQualification: "unproven"`, replacement recovery off). |
-| **Provider qualification gate** | Provider contract confirmation + controlled retention & post-delete experiments | Verified answers on snapshot TTL, resume/auto-suspend retention, post-delete survival, and snapshot cleanup/garbage collection. |
-| **Phase 2 (recovery & fencing)** | Replacement-worker takeover, cross-sandbox restore from accepted reference, stale-executor retirement/fencing, and store-level turn journal (lifting the 32-turn cap) | Controlled worker-loss failover test proving Turn 2 resumes the exact Turn 1 conversation on a fresh sandbox, plus a stale-executor test proving the old execution cannot produce accepted model, state, or control-plane effects after takeover. |
+| **Mode 1 (`store-owned` remote compute)** | Opaque-archive `store-wins` CAS (`commitSnapshotArchive` / `readSnapshotArchive` + worker-owned trusted turn-commit), `RemoteStoreOwnedExecutor`, `statePolicy: "store-owned"` routing, and hardened guest-side pack/unpack over the shared mTLS bridge | Isolated `tsc --noEmit` + Vitest tests proving zero worker-side untar, warm-cache hit, 412 `store-wins` non-bricking conflict, oversized archive refusal, and **cross-sandbox failover** (Turn 1 on Sandbox A → destroy A → Turn 2 on fresh Sandbox B hydrates from Blob and continues the conversation). |
+| **Mode 2 Phase 0 (complete in prototype)** | Generic managed-reference core (`managed-runtime.ts`, `managed-admission.ts`, `managed-turn.ts`) with write-ahead acquisition, 3-valued publication, bounded 4 KiB state / 2 KiB receipt, and non-evicting 32-turn ledger | Isolated TypeScript compile (`tsc --noEmit` exit 0) and 5 local Vitest suites (**208/208 tests passing**); zero changes to default or static-host paths. |
+| **Mode 2 Phase 1 (in live validation)** | Opt-in `statePolicy: "managed"` wiring in Worker/CMS/SessionManager, dedicated `transcriptEpoch: 1` initialization (without regeneration metadata), and provider composition | Isolated **243/243** Vitest tests passed; live Turn 1 passed end-to-end with real model calls and accepted snapshot reference v1 (`restoreQualification: "unproven"`). Turn-2 same-sandbox rebind quiesce fix in progress. |
+| **Mode 2 provider qualification gate** | Provider contract confirmation + controlled retention & post-delete experiments | Verified answers on snapshot TTL, resume/auto-suspend retention, post-delete survival, and snapshot cleanup/garbage collection. |
+| **Mode 2 Phase 2 (recovery & fencing)** | Replacement-worker takeover, cross-sandbox restore from accepted reference, stale-executor retirement/fencing, and store-level turn journal (lifting the 32-turn cap) | Controlled worker-loss failover test proving Turn 2 resumes the exact Turn 1 conversation on a fresh sandbox, plus a stale-executor test proving the old execution cannot produce accepted model, state, or control-plane effects after takeover. |
 
 ---
 
 ## 8. Open questions
 
-1. **Snapshot retention and lifecycle contract:** For target sandbox providers, does idle auto-suspend overwrite the prior `stop` snapshot (one active snapshot per sandbox), or does `resume` schedule delayed deletion of the prior snapshot? What retention window and post-delete guarantees are supported?
-2. **Snapshot garbage collection:** What API or retention policy removes superseded snapshots once a newer accepted reference is published (while never deleting snapshots whose publication outcome is `unknown`)?
-3. **Store-level turn journal:** Should the 32-turn cap in `sdk.managed-state` be lifted via a dedicated append/lookup turn-key journal in the reference store before Phase 1 leaves experimental status?
-4. **Hybrid fallback vs. provider-native recovery:** If a provider cannot guarantee immutable checkpoints across source resume/idle, should PilotSwarm adopt Option B (restore-per-turn without resuming the source) or Option C (hybrid durable conversation metadata + provider warm resume)?
+1. **Default remote-compute mode:** Should `statePolicy: "store-owned"` be the recommended default for separated compute providers (maximizing portability and immediate worker-failover safety), with `statePolicy: "managed"` reserved for opt-in full-disk workspace persistence on providers with qualified snapshot contracts?
+2. **Mode 1 archive size cap & transport:** Is `16 MiB` compressed (checked on the worker before Blob upload, never extracted on the worker) the right default cap for `cli-home` session archives, and should large workspace files always stay in PilotSwarm session workspaces / artifacts rather than session archives?
+3. **Mode 2 snapshot retention and lifecycle contract:** For snapshot-capable providers, does idle auto-suspend overwrite the prior `stop` snapshot (one active snapshot per sandbox), or does `resume` schedule delayed deletion of the prior snapshot? What retention window, post-delete guarantee, and snapshot GC API are supported?
+4. **Mode 2 store-level turn journal:** Should the 32-turn cap in `sdk.managed-state` be lifted via a dedicated append/lookup turn-key journal in the reference store before Mode 2 leaves experimental status?
