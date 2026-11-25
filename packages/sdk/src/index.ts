@@ -101,6 +101,25 @@ export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
+// Opaque-archive `store-wins` contract (state policy "store-owned"): the store holds bytes the worker never unpacks.
+export {
+    OpaqueArchiveError,
+    REMOTE_SNAPSHOT_ARCHIVE_MAX_BYTES,
+    REMOTE_TURN_COMMIT_MAX_BYTES,
+    SnapshotConflictError,
+    fitTurnCommit,
+    isOpaqueArchiveError,
+    supportsOpaqueArchives,
+} from "./snapshot-protocol.js";
+export type {
+    OpaqueArchiveErrorCode,
+    OpaqueArchiveProbe,
+    SnapshotArchiveCommitInput,
+    SnapshotArchiveRead,
+    SnapshotArchiveReadOptions,
+    TrustedTurnCommit,
+    VersionedSnapshotStore,
+} from "./snapshot-protocol.js";
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 // Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
 export { horizonConfigFromEnv } from "./horizon-env.js";

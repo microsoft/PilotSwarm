@@ -16,12 +16,26 @@ import {
 } from "../api/src/artifact-content-types.js";
 import { artifactUri } from "../api/src/artifact-uri.js";
 import {
+    OpaqueArchiveError,
+    REMOTE_TURN_COMMIT_MAX_BYTES,
     SnapshotConflictError,
+    effectiveArchiveCap,
+    encodeTurnCommitRecord,
     isLegacyEpoch,
+    parseOpaqueObjectName,
+    parseTurnCommitRecord,
+    turnCommitObjectName,
+    turnCommitSuffix,
+    validateArchiveCommit,
+    type OpaqueArchiveProbe,
+    type SnapshotArchiveCommitInput,
+    type SnapshotArchiveRead,
+    type SnapshotArchiveReadOptions,
     type SnapshotCommitInput,
     type SnapshotCommitResult,
     type SnapshotHydrateResult,
     type SnapshotProbe,
+    type TrustedTurnCommit,
     type VersionedSnapshotStore,
 } from "./snapshot-protocol.js";
 
@@ -418,6 +432,19 @@ export function parseEpochSnapshotName(
     return null;
 }
 
+/**
+ * The local tar path acts only on tars. An object that carries the opaque-archive marker holds bytes the worker never unpacks (opaque archives live under their own
+ * names, so this only trips on an object put in the wrong place): the local commit and hydrate refuse it before anything is extracted or replaced.
+ */
+export function assertLocalArchiveHead(sessionId: string, probe: { exists: boolean; opaque?: boolean }): void {
+    if (probe.exists && probe.opaque) {
+        throw new OpaqueArchiveError(
+            "ARCHIVE_REPRESENTATION_CONFLICT",
+            `the stored tar of ${sessionId} is marked as an opaque sandbox archive; the worker never unpacks it and a local snapshot never replaces it`,
+        );
+    }
+}
+
 function buildMetadata(tarPath: string, sessionId: string, meta?: Record<string, unknown>): SessionMetadata {
     return {
         sessionId,
@@ -591,6 +618,25 @@ async function waitForSessionSnapshot(
     return checkSessionSnapshot(sessionStateDir, sessionId);
 }
 
+/** The meta of an opaque-chain head (filesystem store). */
+interface OpaqueMeta {
+    sessionId?: string;
+    dehydratedAt?: string;
+    worker?: string;
+    sizeBytes?: number;
+    rawSizeBytes?: number;
+    reason?: string;
+    version?: number;
+    turnKey?: string;
+    contentHash?: string;
+    codec?: string;
+    binFile?: string;
+    opaque?: boolean;
+    recSuffix?: string;
+    recSha?: string;
+    epoch?: number;
+}
+
 export class FilesystemSessionStore implements SessionStateStore, VersionedSnapshotStore {
     private storeDir: string;
     private sessionStateDir: string;
@@ -603,6 +649,14 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
 
     private tarPath(sessionId: string): string {
         return path.join(this.storeDir, tarFileName(sessionId));
+    }
+
+    private opaqueMetaPath(sessionId: string, epoch?: number): string {
+        return path.join(this.storeDir, isLegacyEpoch(epoch) ? `${sessionId}.sandbox.meta.json` : `${sessionId}.e${epoch}.sandbox.meta.json`);
+    }
+
+    private opaqueBinName(sessionId: string, epoch: number | undefined, version: number): string {
+        return isLegacyEpoch(epoch) ? `${sessionId}.sandbox.v${version}.bin` : `${sessionId}.e${epoch}.sandbox.v${version}.bin`;
     }
 
     private metaPath(sessionId: string, epoch?: number): string {
@@ -670,7 +724,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         }
     }
 
-    private readStoredMeta(sessionId: string, epoch?: number): (SessionMetadata & { version?: number; turnKey?: string; contentHash?: string; tarFile?: string }) | null {
+    private readStoredMeta(sessionId: string, epoch?: number): (SessionMetadata & { version?: number; turnKey?: string; contentHash?: string; tarFile?: string; opaque?: boolean }) | null {
         try {
             return JSON.parse(fs.readFileSync(this.metaPath(sessionId, epoch), "utf8"));
         } catch {
@@ -713,6 +767,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
             ...(meta?.contentHash ? { contentHash: String(meta.contentHash) } : {}),
             ...(Number.isFinite(Number(meta?.sizeBytes)) ? { sizeBytes: Number(meta?.sizeBytes) } : {}),
             ...(Number.isFinite(Number(meta?.rawSizeBytes)) ? { rawSizeBytes: Number(meta?.rawSizeBytes) } : {}),
+            ...(meta?.opaque === true ? { opaque: true as const } : {}),
             meta,
         };
     }
@@ -753,6 +808,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
 
             return await this.withCasLock(sessionId, () => {
                 const probe = this.probeUnlocked(sessionId, epoch);
+                assertLocalArchiveHead(sessionId, probe);
                 const storedTurnKey = probe.turnKey;
 
                 if (probe.exists && !probe.legacy) {
@@ -817,6 +873,205 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         }
     }
 
+    // ─── Opaque archives (state policy "store-owned") ───
+    //
+    // A separate chain from the local tar chain: its own versioned files (`<id>[.e<epoch>].sandbox.v<N>.bin`) and its own meta (`<id>[.e<epoch>].sandbox.meta.json`),
+    // under the same CAS lock. The meta rename is the commit point, exactly as for tars. The turn's record is written FIRST, create-only and scoped by the turn key, and
+    // the head stamps its digest; the worker never unpacks the bytes. The "ETag" of a head in this store is its content hash.
+
+    private readOpaqueMeta(sessionId: string, epoch?: number): OpaqueMeta | null {
+        try {
+            const meta = JSON.parse(fs.readFileSync(this.opaqueMetaPath(sessionId, epoch), "utf8")) as OpaqueMeta;
+            return meta && typeof meta === "object" ? meta : null;
+        } catch {
+            return null;
+        }
+    }
+
+    private opaqueHeadUnlocked(sessionId: string, epoch?: number): { exists: false; version: 0 } | (OpaqueArchiveProbe & { exists: true; meta: OpaqueMeta; binPath: string }) {
+        const meta = this.readOpaqueMeta(sessionId, epoch);
+        if (!meta) return { exists: false, version: 0 };
+        const version = Number(meta.version);
+        if (meta.opaque !== true || !Number.isInteger(version) || version < 1 || typeof meta.binFile !== "string") {
+            throw new OpaqueArchiveError("ARCHIVE_CORRUPT", `the sandbox archive meta of ${sessionId} is not valid`);
+        }
+        const binPath = path.join(this.storeDir, path.basename(meta.binFile));
+        if (!fs.existsSync(binPath)) throw new OpaqueArchiveError("ARCHIVE_CORRUPT", `the sandbox archive of ${sessionId} is missing`);
+        return {
+            exists: true,
+            version,
+            ...(meta.turnKey ? { turnKey: String(meta.turnKey) } : {}),
+            ...(meta.contentHash ? { contentHash: String(meta.contentHash), etag: String(meta.contentHash) } : {}),
+            ...(Number.isFinite(Number(meta.sizeBytes)) ? { sizeBytes: Number(meta.sizeBytes) } : {}),
+            ...(Number.isFinite(Number(meta.rawSizeBytes)) ? { rawSizeBytes: Number(meta.rawSizeBytes) } : {}),
+            codec: resolveSnapshotCodec(meta.codec),
+            meta,
+            binPath,
+        };
+    }
+
+    async probeSnapshotArchive(sessionId: string, epoch?: number): Promise<OpaqueArchiveProbe> {
+        const head = this.opaqueHeadUnlocked(sessionId, epoch);
+        if (!head.exists) return { exists: false, version: 0 };
+        const { meta: _meta, binPath: _binPath, ...probe } = head;
+        return probe;
+    }
+
+    /** Create-only write of a turn record (exclusive link). An existing file is an orphan of an earlier attempt of the same turn (a committed turn key returned before this): it is replaced. */
+    private putTurnCommitRecord(target: string, text: string): void {
+        const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        fs.writeFileSync(tmp, text, { flag: "wx" });
+        try {
+            try {
+                fs.linkSync(tmp, target);
+                return;
+            } catch (error: any) {
+                if (error?.code !== "EEXIST") throw error;
+            }
+            let same = false;
+            try { same = fs.readFileSync(target, "utf8") === text; } catch {}
+            if (!same) fs.renameSync(tmp, target);
+        } finally {
+            try { fs.unlinkSync(tmp); } catch {}
+        }
+    }
+
+    async commitSnapshotArchive(sessionId: string, input: SnapshotArchiveCommitInput, epoch?: number): Promise<SnapshotCommitResult> {
+        // Every input check runs before any storage access.
+        const valid = validateArchiveCommit(sessionId, input);
+        const staged = path.join(this.storeDir, `${sessionId}.staging-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.bin`);
+        try {
+            faultPoint("store.commit.before-write");
+            fs.writeFileSync(staged, valid.body);
+            return await this.withCasLock(sessionId, () => {
+                const head = this.opaqueHeadUnlocked(sessionId, epoch);
+                if (head.exists && head.version === input.baseVersion + 1 && head.turnKey === input.turnKey) {
+                    return {
+                        version: head.version,
+                        contentHash: head.contentHash ?? "",
+                        ...(head.rawSizeBytes !== undefined ? { rawSizeBytes: head.rawSizeBytes } : {}),
+                        alreadyCommitted: true,
+                    };
+                }
+                const storedVersion = head.exists ? head.version : 0;
+                const storedTurnKey = head.exists ? head.turnKey : undefined;
+                // A chain with no head only starts at 0: a deleted or lost head is never recreated at a later version.
+                if (storedVersion !== input.baseVersion) throw new SnapshotConflictError(sessionId, input.baseVersion, storedVersion, storedTurnKey);
+                if (input.expectedEtag !== undefined && (!head.exists || head.etag !== input.expectedEtag)) {
+                    throw new SnapshotConflictError(sessionId, input.baseVersion, storedVersion, storedTurnKey);
+                }
+                const version = storedVersion + 1;
+                // 1. The turn record, BEFORE the head: a crash after it leaves an orphan the next attempt of this turn replaces, never a head without its record.
+                let stamp: { recSuffix: string; recSha: string } | null = null;
+                if (valid.turnCommit) {
+                    const record = encodeTurnCommitRecord({ sessionId, epoch, version, contentHash: valid.contentHash, turnKey: input.turnKey }, valid.turnCommit.result);
+                    this.putTurnCommitRecord(path.join(this.storeDir, turnCommitObjectName(sessionId, epoch, input.turnKey)), record.text);
+                    stamp = { recSuffix: record.suffix, recSha: record.sha256 };
+                }
+                faultPoint("store.commit.record-written");
+                // 2. The archive, then the meta rename: the single commit point.
+                const binName = this.opaqueBinName(sessionId, epoch, version);
+                fs.renameSync(staged, path.join(this.storeDir, binName));
+                faultPoint("store.commit.tar-renamed");
+                const metadata: OpaqueMeta = {
+                    sessionId,
+                    dehydratedAt: new Date().toISOString(),
+                    worker: os.hostname(),
+                    sizeBytes: valid.body.length,
+                    reason: "turn-commit",
+                    version,
+                    turnKey: input.turnKey,
+                    contentHash: valid.contentHash,
+                    codec: valid.codec,
+                    ...(valid.rawSizeBytes !== undefined ? { rawSizeBytes: valid.rawSizeBytes } : {}),
+                    binFile: binName,
+                    opaque: true,
+                    ...(stamp ?? {}),
+                    ...(isLegacyEpoch(epoch) ? {} : { epoch }),
+                };
+                const tmpMeta = `${this.opaqueMetaPath(sessionId, epoch)}.tmp-${process.pid}-${Date.now()}`;
+                fs.writeFileSync(tmpMeta, JSON.stringify(metadata));
+                fs.renameSync(tmpMeta, this.opaqueMetaPath(sessionId, epoch));
+                faultPoint("store.commit.after-write");
+                // 3. Superseded objects (best-effort; never the ones just written).
+                if (head.exists) {
+                    if (head.binPath !== path.join(this.storeDir, binName)) { try { fs.unlinkSync(head.binPath); } catch {} }
+                    if (head.turnKey && head.turnKey !== input.turnKey) {
+                        try { fs.unlinkSync(path.join(this.storeDir, turnCommitObjectName(sessionId, epoch, head.turnKey))); } catch {}
+                    }
+                }
+                return {
+                    version,
+                    contentHash: valid.contentHash,
+                    sizeBytes: valid.body.length,
+                    ...(valid.rawSizeBytes !== undefined ? { rawSizeBytes: valid.rawSizeBytes } : {}),
+                    alreadyCommitted: false,
+                };
+            });
+        } finally {
+            try { fs.unlinkSync(staged); } catch {}
+        }
+    }
+
+    async readSnapshotArchive(sessionId: string, epoch?: number, options?: SnapshotArchiveReadOptions): Promise<SnapshotArchiveRead | null> {
+        const cap = effectiveArchiveCap(options?.maxBytes);
+        // Bytes and meta are read as one consistent unit against concurrent commits.
+        const found = await this.withCasLock(sessionId, () => {
+            const head = this.opaqueHeadUnlocked(sessionId, epoch);
+            if (!head.exists) return null;
+            if (fs.statSync(head.binPath).size > cap) throw new OpaqueArchiveError("ARCHIVE_TOO_LARGE", `the stored archive is over the ${cap}-byte cap; it was not read`);
+            return { head, bytes: fs.readFileSync(head.binPath) };
+        });
+        if (!found) return null;
+        const { head, bytes } = found;
+        const contentHash = crypto.createHash("sha256").update(bytes).digest("hex");
+        if (bytes.length === 0 || !head.contentHash || head.contentHash !== contentHash) {
+            throw new OpaqueArchiveError("ARCHIVE_CORRUPT", "the stored archive does not match its recorded SHA-256");
+        }
+        return {
+            version: head.version,
+            ...(head.turnKey ? { turnKey: head.turnKey } : {}),
+            contentHash,
+            codec: head.codec ?? resolveSnapshotCodec(undefined),
+            sizeBytes: bytes.length,
+            ...(head.rawSizeBytes !== undefined ? { rawSizeBytes: head.rawSizeBytes } : {}),
+            etag: contentHash,
+            archiveBytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length),
+        };
+    }
+
+    async readTrustedTurnCommit(sessionId: string, epoch?: number): Promise<TrustedTurnCommit | null> {
+        const head = this.opaqueHeadUnlocked(sessionId, epoch);
+        if (!head.exists || !head.turnKey || !head.contentHash || !head.meta.recSuffix || !head.meta.recSha) return null;
+        if (head.meta.recSuffix !== turnCommitSuffix(head.turnKey)) return null;
+        let text: string | null = null;
+        try {
+            const file = path.join(this.storeDir, turnCommitObjectName(sessionId, epoch, head.turnKey));
+            // A record over its bound is not a record this protocol wrote.
+            if (fs.statSync(file).size > REMOTE_TURN_COMMIT_MAX_BYTES + 4096) return null;
+            text = fs.readFileSync(file, "utf8");
+        } catch (error: any) {
+            if (error?.code !== "ENOENT") throw error;
+        }
+        return parseTurnCommitRecord(text, { sessionId, epoch, version: head.version, contentHash: head.contentHash, turnKey: head.turnKey }, head.meta.recSha);
+    }
+
+    /** Unlink the opaque chain's objects (archives, meta, turn records), optionally narrowed to one epoch; only names the fail-closed parser accepts. */
+    private deleteOpaqueObjects(sessionId: string, onlyEpoch?: number): void {
+        let names: string[];
+        try {
+            names = fs.readdirSync(this.storeDir);
+        } catch {
+            return;
+        }
+        for (const name of names) {
+            if (!name.startsWith(`${sessionId}.`)) continue;
+            const parsed = parseOpaqueObjectName(sessionId, name);
+            if (!parsed || (onlyEpoch !== undefined && parsed.epoch !== onlyEpoch)) continue;
+            try { fs.unlinkSync(path.join(this.storeDir, name)); } catch {}
+        }
+    }
+
     async hydrateSnapshot(sessionId: string, epoch?: number): Promise<SnapshotHydrateResult> {
         // Read tar + meta as one consistent unit vs. concurrent commits.
         const { stagedTar, meta } = await this.withCasLock(sessionId, () => {
@@ -826,6 +1081,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                     `Session archive not found: ${sessionId}${isLegacyEpoch(epoch) ? "" : ` (epoch ${epoch})`}`,
                 );
             }
+            assertLocalArchiveHead(sessionId, probe);
             const staged = path.join(os.tmpdir(), `ps-hydrate-${sessionId}-${process.pid}-${Date.now()}.tar`);
             fs.copyFileSync(this.currentTarPath(sessionId, probe.meta), staged);
             return { stagedTar: staged, meta: probe.meta };
@@ -952,6 +1208,7 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         if (!fs.existsSync(tarPath)) {
             throw new Error(`Session archive not found: ${sessionId}`);
         }
+        assertLocalArchiveHead(sessionId, { exists: true, ...(meta?.opaque === true ? { opaque: true } : {}) });
         if (fs.existsSync(sessionDir)) {
             fs.rmSync(sessionDir, { recursive: true, force: true });
         }
@@ -1018,17 +1275,20 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
     async delete(sessionId: string, epoch?: number): Promise<void> {
         if (!isLegacyEpoch(epoch)) {
             this.deleteEpochObjects(sessionId, epoch);
+            this.deleteOpaqueObjects(sessionId, epoch);
             return;
         }
         const meta = this.readStoredMeta(sessionId);
         try { fs.unlinkSync(this.currentTarPath(sessionId, meta)); } catch {}
         try { fs.unlinkSync(this.tarPath(sessionId)); } catch {}
         try { fs.unlinkSync(this.metaPath(sessionId)); } catch {}
+        this.deleteOpaqueObjects(sessionId, 0);
     }
 
     async deleteAllEpochs(sessionId: string): Promise<void> {
         await this.delete(sessionId);
         this.deleteEpochObjects(sessionId);
+        this.deleteOpaqueObjects(sessionId);
     }
 
     /**
@@ -1048,6 +1308,8 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
         }
         for (const name of names) {
             if (!name.startsWith(prefix)) continue;
+            // The opaque chain's objects are removed by deleteOpaqueObjects.
+            if (parseOpaqueObjectName(sessionId, name)) continue;
             const parsed = parseEpochSnapshotName(sessionId, name);
             if (!parsed) {
                 console.warn(

@@ -41,12 +41,28 @@ import os from "node:os";
 import path from "node:path";
 import { faultPoint } from "./fault-injection.js";
 import {
+    OpaqueArchiveError,
+    REMOTE_TURN_COMMIT_MAX_BYTES,
     SnapshotConflictError,
+    effectiveArchiveCap,
+    encodeTurnCommitRecord,
     isLegacyEpoch,
+    parseOpaqueObjectName,
+    parseTurnCommitRecord,
+    sandboxArchiveObjectName,
+    turnCommitObjectName,
+    turnCommitObjectPrefix,
+    turnCommitSuffix,
+    validateArchiveCommit,
+    type OpaqueArchiveProbe,
+    type SnapshotArchiveCommitInput,
+    type SnapshotArchiveRead,
+    type SnapshotArchiveReadOptions,
     type SnapshotCommitInput,
     type SnapshotCommitResult,
     type SnapshotHydrateResult,
     type SnapshotProbe,
+    type TrustedTurnCommit,
     type VersionedSnapshotStore,
 } from "./snapshot-protocol.js";
 import {
@@ -60,6 +76,7 @@ import {
     DEFAULT_SNAPSHOT_CODEC,
     archiveSessionDir,
     artifactAlreadyExistsError,
+    assertLocalArchiveHead,
     buildMetadata,
     extractSessionArchive,
     isBinaryArtifactContentType,
@@ -361,6 +378,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 blob: `${sessionId}.tar.gz`,
             });
             const response = await tarBlob.downloadToFile(tarPath);
+            assertLocalArchiveHead(sessionId, this.probeFromMetadata(response.metadata as Record<string, string> | undefined, undefined));
             const codec = resolveSnapshotCodec((response.metadata as Record<string, string> | undefined)?.pscodec);
             await extractSessionArchive(this.sessionStateDir, tarPath, codec);
             logBlobStore("info", sessionId, "hydrate complete", {
@@ -546,6 +564,8 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
                 // One blob per epoch chain, no meta.json mirror — nothing else to collect.
                 await this.containerClient.getBlockBlobClient(epochSnapshotBlobName(sessionId, epoch!)).deleteIfExists();
             }
+            // The opaque chain of the same epoch (its head and turn records), when there is one.
+            await this.deleteOpaqueChain(sessionId, epoch);
             logBlobStore("info", sessionId, "delete complete", {
                 container: this.containerName,
                 ...(isLegacyEpoch(epoch) ? {} : { epoch }),
@@ -569,7 +589,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         await this.delete(sessionId);
         const prefix = `${sessionId}.e`;
         for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
-            const parsed = parseEpochSnapshotName(sessionId, blob.name);
+            const parsed = parseEpochSnapshotName(sessionId, blob.name) ?? parseOpaqueObjectName(sessionId, blob.name);
             if (!parsed) {
                 logBlobStore("warn", sessionId, "deleteAllEpochs leaving unparseable name alone", {
                     container: this.containerName,
@@ -607,8 +627,9 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         const codec = resolveSnapshotCodec(metadata?.pscodec);
         const raw = Number(metadata?.psraw);
         const version = Number(metadata?.psver);
+        const opaque = metadata?.psopaque === "1" ? { opaque: true as const } : {};
         if (!Number.isFinite(version) || version < 1) {
-            return { exists: true, version: 0, legacy: true, codec, ...(etag ? { etag } : {}) };
+            return { exists: true, version: 0, legacy: true, ...opaque, codec, ...(etag ? { etag } : {}) };
         }
         return {
             exists: true,
@@ -616,6 +637,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             ...(metadata?.psturnkey ? { turnKey: metadata.psturnkey } : {}),
             ...(metadata?.pssha ? { contentHash: metadata.pssha } : {}),
             ...(Number.isFinite(raw) ? { rawSizeBytes: raw } : {}),
+            ...opaque,
             codec,
             ...(etag ? { etag } : {}),
         };
@@ -666,6 +688,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
 
             for (let attempt = 1; attempt <= SessionBlobStore.COMMIT_MAX_ATTEMPTS; attempt++) {
                 const head = await this.headSnapshot(sessionId, epoch);
+                assertLocalArchiveHead(sessionId, head);
 
                 if (head.exists && head.version === input.baseVersion + 1 && head.turnKey === input.turnKey) {
                     logBlobStore("info", sessionId, "commit already landed (idempotent retry)", {
@@ -763,6 +786,258 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
         }
     }
 
+    // ─── Opaque archives (state policy "store-owned") ───
+    //
+    // A separate chain from the local tar chain, under its own object names (`S.sandbox.bin`, `S.e<N>.sandbox.bin`): a worker that predates this contract never sees
+    // the bytes and so can never unpack them. The head is written by the same single-shot conditional put (`If-Match` / `If-None-Match`, `psver` chain, `turnKey`
+    // idempotency). The turn's record is written FIRST, create-only and scoped by the turn key; the head stamps its digest (`psrec`, `psrecsha`). The worker never
+    // unpacks, parses or lists the archive.
+
+    private opaqueHead(
+        sessionId: string,
+        metadata: Record<string, string> | undefined,
+        etag: string | undefined,
+    ): OpaqueArchiveProbe & { exists: true; recSuffix?: string; recSha?: string } {
+        if (metadata?.psopaque !== "1") {
+            throw new OpaqueArchiveError("ARCHIVE_REPRESENTATION_CONFLICT", `the object stored as the sandbox archive of ${sessionId} is not an opaque archive`);
+        }
+        const version = Number(metadata.psver);
+        if (!Number.isInteger(version) || version < 1) throw new OpaqueArchiveError("ARCHIVE_CORRUPT", `the sandbox archive of ${sessionId} has no valid version`);
+        const raw = Number(metadata.psraw);
+        return {
+            exists: true,
+            version,
+            ...(metadata.psturnkey ? { turnKey: metadata.psturnkey } : {}),
+            ...(metadata.pssha ? { contentHash: metadata.pssha } : {}),
+            ...(metadata.psraw !== undefined && Number.isFinite(raw) ? { rawSizeBytes: raw } : {}),
+            codec: resolveSnapshotCodec(metadata.pscodec),
+            ...(etag ? { etag } : {}),
+            ...(metadata.psrec ? { recSuffix: metadata.psrec } : {}),
+            ...(metadata.psrecsha ? { recSha: metadata.psrecsha } : {}),
+        };
+    }
+
+    private async headArchive(sessionId: string, epoch?: number): Promise<{ exists: false; version: 0 } | (OpaqueArchiveProbe & { exists: true; recSuffix?: string; recSha?: string })> {
+        const blob = this.containerClient.getBlockBlobClient(sandboxArchiveObjectName(sessionId, epoch));
+        try {
+            const props = await blob.getProperties();
+            return this.opaqueHead(sessionId, props.metadata as Record<string, string> | undefined, props.etag);
+        } catch (error: any) {
+            if (error?.statusCode === 404) return { exists: false, version: 0 };
+            throw error;
+        }
+    }
+
+    async probeSnapshotArchive(sessionId: string, epoch?: number): Promise<OpaqueArchiveProbe> {
+        const head = await this.headArchive(sessionId, epoch);
+        if (!head.exists) return { exists: false, version: 0 };
+        const { recSuffix: _recSuffix, recSha: _recSha, ...probe } = head;
+        return probe;
+    }
+
+    /** A blob's bytes up to `limit`; `bytes` is null when it is larger (never read past the bound). Null when the blob does not exist. */
+    private async readBlobBounded(name: string, limit: number): Promise<{ bytes: Buffer | null; etag?: string } | null> {
+        let response: Awaited<ReturnType<ReturnType<ContainerClient["getBlockBlobClient"]>["download"]>>;
+        try {
+            response = await this.containerClient.getBlockBlobClient(name).download(0);
+        } catch (error: any) {
+            if (error?.statusCode === 404) return null;
+            throw error;
+        }
+        const etag = response.etag ? { etag: response.etag } : {};
+        const stream = response.readableStreamBody as (NodeJS.ReadableStream & { destroy?: () => void }) | undefined;
+        if (!stream) return { bytes: null, ...etag };
+        if (typeof response.contentLength === "number" && response.contentLength > limit) {
+            stream.destroy?.();
+            return { bytes: null, ...etag };
+        }
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of stream) {
+            const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            total += piece.length;
+            if (total > limit) {
+                stream.destroy?.();
+                return { bytes: null, ...etag };
+            }
+            chunks.push(piece);
+        }
+        return { bytes: Buffer.concat(chunks), ...etag };
+    }
+
+    /**
+     * Create-only write of a turn record. An existing record is an orphan of an earlier attempt of this same turn (a committed turn key returned before this call):
+     * identical bytes are kept, different bytes are replaced against exactly the object that was read. `false`: another writer changed it meanwhile (the caller starts over).
+     */
+    private async putTurnCommitRecord(name: string, body: Buffer): Promise<boolean> {
+        const blob = this.containerClient.getBlockBlobClient(name);
+        const headers = { blobHTTPHeaders: { blobContentType: "application/json" } };
+        try {
+            await blob.upload(body, body.length, { conditions: { ifNoneMatch: "*" }, ...headers });
+            return true;
+        } catch (error: any) {
+            if (error?.statusCode !== 409 && error?.statusCode !== 412) throw error;
+        }
+        const existing = await this.readBlobBounded(name, REMOTE_TURN_COMMIT_MAX_BYTES + 4096);
+        if (!existing) return false;
+        if (existing.bytes && existing.bytes.equals(body)) return true;
+        if (!existing.etag) return false;
+        try {
+            await blob.upload(body, body.length, { conditions: { ifMatch: existing.etag }, ...headers });
+            return true;
+        } catch (error: any) {
+            if (error?.statusCode === 409 || error?.statusCode === 412) return false;
+            throw error;
+        }
+    }
+
+    async commitSnapshotArchive(sessionId: string, input: SnapshotArchiveCommitInput, epoch?: number): Promise<SnapshotCommitResult> {
+        // Every input check runs before any storage access.
+        const valid = validateArchiveCommit(sessionId, input);
+        const blob = this.containerClient.getBlockBlobClient(sandboxArchiveObjectName(sessionId, epoch));
+
+        for (let attempt = 1; attempt <= SessionBlobStore.COMMIT_MAX_ATTEMPTS; attempt++) {
+            const head = await this.headArchive(sessionId, epoch);
+            if (head.exists && head.version === input.baseVersion + 1 && head.turnKey === input.turnKey) {
+                return {
+                    version: head.version,
+                    contentHash: head.contentHash ?? "",
+                    ...(head.rawSizeBytes !== undefined ? { rawSizeBytes: head.rawSizeBytes } : {}),
+                    alreadyCommitted: true,
+                };
+            }
+            const storedVersion = head.exists ? head.version : 0;
+            const storedTurnKey = head.exists ? head.turnKey : undefined;
+            // A chain with no head only starts at 0: a deleted or lost head is never recreated at a later version.
+            if (storedVersion !== input.baseVersion) throw new SnapshotConflictError(sessionId, input.baseVersion, storedVersion, storedTurnKey);
+            if (input.expectedEtag !== undefined && (!head.exists || head.etag !== input.expectedEtag)) {
+                throw new SnapshotConflictError(sessionId, input.baseVersion, storedVersion, storedTurnKey);
+            }
+            const version = storedVersion + 1;
+
+            // 1. The turn record, BEFORE the head: a crash after it leaves an orphan the next attempt of this turn replaces, never a head without its record.
+            const metadata: Record<string, string> = {
+                psver: String(version),
+                psturnkey: input.turnKey,
+                pssha: valid.contentHash,
+                pscodec: valid.codec,
+                psopaque: "1",
+                ...(valid.rawSizeBytes !== undefined ? { psraw: String(valid.rawSizeBytes) } : {}),
+                ...(isLegacyEpoch(epoch) ? {} : { psepoch: String(epoch) }),
+            };
+            if (valid.turnCommit) {
+                const record = encodeTurnCommitRecord({ sessionId, epoch, version, contentHash: valid.contentHash, turnKey: input.turnKey }, valid.turnCommit.result);
+                const stored = await this.putTurnCommitRecord(turnCommitObjectName(sessionId, epoch, input.turnKey), Buffer.from(record.text, "utf8"));
+                if (!stored) continue;
+                metadata.psrec = record.suffix;
+                metadata.psrecsha = record.sha256;
+            }
+            faultPoint("store.commit.record-written");
+
+            // 2. The head: the conditional write that makes the turn the stored state.
+            const conditions = head.exists && head.etag ? { ifMatch: head.etag } : { ifNoneMatch: "*" };
+            faultPoint("store.commit.before-write");
+            try {
+                await blob.upload(valid.body, valid.body.length, { conditions, metadata });
+            } catch (error: any) {
+                // 412 (If-Match lost the race) or 409 (If-None-Match create race): read the head again and decide again.
+                if (error?.statusCode === 412 || error?.statusCode === 409) continue;
+                throw error;
+            }
+            faultPoint("store.commit.after-write");
+            // 3. The superseded turn's record (best-effort; a leftover is garbage, never trusted: no head stamps it).
+            if (head.exists && head.turnKey && head.turnKey !== input.turnKey) {
+                try {
+                    await this.containerClient.getBlockBlobClient(turnCommitObjectName(sessionId, epoch, head.turnKey)).deleteIfExists();
+                } catch (error: unknown) {
+                    logBlobStore("warn", sessionId, "superseded turn record not deleted", { error: errorMessage(error) });
+                }
+            }
+            logBlobStore("info", sessionId, "opaque archive commit complete", {
+                version,
+                turnKey: input.turnKey,
+                archiveBytes: valid.body.length,
+                codec: valid.codec,
+                attempt,
+                ...(isLegacyEpoch(epoch) ? {} : { epoch }),
+            });
+            return {
+                version,
+                contentHash: valid.contentHash,
+                sizeBytes: valid.body.length,
+                ...(valid.rawSizeBytes !== undefined ? { rawSizeBytes: valid.rawSizeBytes } : {}),
+                alreadyCommitted: false,
+            };
+        }
+        throw new Error(`Snapshot commit for ${sessionId} exhausted CAS retries`);
+    }
+
+    async readSnapshotArchive(sessionId: string, epoch?: number, options?: SnapshotArchiveReadOptions): Promise<SnapshotArchiveRead | null> {
+        const cap = effectiveArchiveCap(options?.maxBytes);
+        const name = sandboxArchiveObjectName(sessionId, epoch);
+        // One download answer carries the bytes and the metadata that describes them.
+        let response: Awaited<ReturnType<ReturnType<ContainerClient["getBlockBlobClient"]>["download"]>>;
+        try {
+            response = await this.containerClient.getBlockBlobClient(name).download(0);
+        } catch (error: any) {
+            if (error?.statusCode === 404) return null;
+            throw error;
+        }
+        const head = this.opaqueHead(sessionId, response.metadata as Record<string, string> | undefined, response.etag);
+        const stream = response.readableStreamBody as (NodeJS.ReadableStream & { destroy?: () => void }) | undefined;
+        if (!stream) throw new OpaqueArchiveError("ARCHIVE_CORRUPT", "the stored archive has no body");
+        const tooLarge = () => new OpaqueArchiveError("ARCHIVE_TOO_LARGE", `the stored archive is over the ${cap}-byte cap; it was not read`);
+        if (typeof response.contentLength === "number" && response.contentLength > cap) {
+            stream.destroy?.();
+            throw tooLarge();
+        }
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of stream) {
+            const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            total += piece.length;
+            if (total > cap) {
+                stream.destroy?.();
+                throw tooLarge();
+            }
+            chunks.push(piece);
+        }
+        const bytes = Buffer.concat(chunks);
+        const contentHash = crypto.createHash("sha256").update(bytes).digest("hex");
+        if (bytes.length === 0 || !head.contentHash || head.contentHash !== contentHash) {
+            throw new OpaqueArchiveError("ARCHIVE_CORRUPT", "the stored archive does not match its recorded SHA-256");
+        }
+        return {
+            version: head.version,
+            ...(head.turnKey ? { turnKey: head.turnKey } : {}),
+            contentHash,
+            codec: head.codec ?? resolveSnapshotCodec(undefined),
+            sizeBytes: bytes.length,
+            ...(head.rawSizeBytes !== undefined ? { rawSizeBytes: head.rawSizeBytes } : {}),
+            ...(head.etag ? { etag: head.etag } : {}),
+            archiveBytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.length),
+        };
+    }
+
+    async readTrustedTurnCommit(sessionId: string, epoch?: number): Promise<TrustedTurnCommit | null> {
+        const head = await this.headArchive(sessionId, epoch);
+        if (!head.exists || !head.turnKey || !head.contentHash || !head.recSuffix || !head.recSha) return null;
+        if (head.recSuffix !== turnCommitSuffix(head.turnKey)) return null;
+        const found = await this.readBlobBounded(turnCommitObjectName(sessionId, epoch, head.turnKey), REMOTE_TURN_COMMIT_MAX_BYTES + 4096);
+        // A record over its bound is not a record this protocol wrote.
+        if (!found?.bytes) return null;
+        return parseTurnCommitRecord(found.bytes.toString("utf8"), { sessionId, epoch, version: head.version, contentHash: head.contentHash, turnKey: head.turnKey }, head.recSha);
+    }
+
+    /** Delete the opaque chain of one epoch: its head and every turn record under its prefix (only names the fail-closed parser accepts). */
+    private async deleteOpaqueChain(sessionId: string, epoch?: number): Promise<void> {
+        await this.containerClient.getBlockBlobClient(sandboxArchiveObjectName(sessionId, epoch)).deleteIfExists();
+        for await (const blob of this.containerClient.listBlobsFlat({ prefix: turnCommitObjectPrefix(sessionId, epoch) })) {
+            if (parseOpaqueObjectName(sessionId, blob.name)?.kind !== "turn-commit") continue;
+            await this.containerClient.getBlockBlobClient(blob.name).deleteIfExists();
+        }
+    }
+
     async hydrateSnapshot(sessionId: string, epoch?: number): Promise<SnapshotHydrateResult> {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         const blob = this.containerClient.getBlockBlobClient(this.snapshotBlobName(sessionId, epoch));
@@ -775,6 +1050,7 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             const response = await blob.downloadToFile(tarPath, 0);
             metadata = response.metadata as Record<string, string> | undefined;
             try { tarSizeBytes = fs.statSync(tarPath).size; } catch {}
+            assertLocalArchiveHead(sessionId, this.probeFromMetadata(metadata, undefined));
             const codec = resolveSnapshotCodec(metadata?.pscodec);
 
             fs.mkdirSync(this.sessionStateDir, { recursive: true });
