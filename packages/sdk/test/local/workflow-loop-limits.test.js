@@ -188,8 +188,8 @@ describe("Loop limits (Change C: maxVisits and wait.totalSeconds)", () => {
                 result: { carry: { c: 42 }, result: { noOkKeyHere: 99 } },
             });
 
-            // 5. E1: wait.totalSeconds binding that changes between visit 1 (2 s live / 5 s test) and visit 2 (60 s)
-            // still elapses at visit 1's deadline in BOTH live and test mode; visit 1 finishing at entry still anchors visit 2.
+            // 5. E1/V2: wait.totalSeconds binding uses 5 s on visit 1 (via ?? 5) and bump sets nextBudget = 60 for visit 2.
+            // Both live and test mode MUST elapse at visit 1's 5 s deadline (NOT 60 s), even when visit 1 finishes at entry!
             const e1Yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: total-wait-fixed-v1, version: \"1.0.0\" }\ncontracts:\n  Tick@1: { schema: { type: object, properties: { seq: { type: integer } } } }\ninitial: listen\nstates:\n  listen:\n    type: messaging\n    mode: receive\n    contract: Tick@1\n    wait: { totalSeconds: \"${states.bump.output.nextBudget ?? 5}\" }\n    transition:\n      next:\n        received: bump\n        elapsed: done\n        failure: failed\n  bump:\n    type: script\n    outcomes: [again]\n    source: \"await setResult('again', { nextBudget: 60, saw: context.input.seq });\"\n    transition: { next: { again: listen, failure: failed } }\n  done: { type: terminal, outcome: succeeded, output: \"${states.bump.output}\" }\n  failed: { type: terminal, outcome: failed, output: \"${runtime.error}\" }\n";
             const sE1 = await saveSessionWorkflowDefinition(h.host, {
                 ownerSessionId: chat, name: "total-wait-fixed-v1", yaml: e1Yaml, expected: null,
@@ -197,14 +197,14 @@ describe("Loop limits (Change C: maxVisits and wait.totalSeconds)", () => {
             });
             expect(sE1.receipt.valid, JSON.stringify(sE1.receipt.diagnostics)).toBe(true);
 
-            // Live mode: visit 1 pre-queued claim (finishes at entry with firstBudget=2), bump sets nextBudget=60,
-            // visit 2 MUST use visit 1's stored 2 s deadline (NOT 60 s)!
+            // Live mode: visit 1 pre-queued claim (finishes at entry with 5 s anchor), bump sets nextBudget = 60,
+            // visit 2 elapses at visit 1's 5 s deadline (either pending until visit 1's deadlineAt, or immediate elapsed if already past).
             let capE1 = null;
             const rE1 = await startSessionWorkflowDefinition({
                 ...h.host,
                 duroxideClient: { ...h.client, startOrchestrationVersioned: async (...args) => { capE1 = args; } },
             }, {
-                ownerSessionId: chat, definition: { name: "total-wait-fixed-v1" }, inputs: { firstBudget: 2 },
+                ownerSessionId: chat, definition: { name: "total-wait-fixed-v1" }, inputs: {},
                 actor: ENGINE, operationId: "start-e1-live", owner: OWNER,
             });
             await sendTypedWorkflowInput(h.host, {
@@ -218,13 +218,18 @@ describe("Loop limits (Change C: maxVisits and wait.totalSeconds)", () => {
             const e1Visits = (await h.store.listNodeExecutions(rE1.runId)).filter(n => n.nodeId === "listen");
             expect(e1Visits).toHaveLength(2);
             expect(e1Visits[0].deadlineAt).not.toBeNull();
-            expect(e1Visits[1].deadlineAt.getTime()).toBe(e1Visits[0].deadlineAt.getTime());
+            expect(e1Visits[1].outcome).toBe("elapsed");
+            if (e1Visits[1].deadlineAt !== null) {
+                expect(e1Visits[1].deadlineAt.getTime()).toBe(e1Visits[0].deadlineAt.getTime());
+            } else {
+                expect(e1Visits[1].enteredAt.getTime()).toBeGreaterThanOrEqual(e1Visits[0].deadlineAt.getTime());
+            }
 
-            // Test mode: visit 1 has fixture (finishes without waiting, firstBudget=5), bump sets nextBudget=60,
-            // visit 2 has no fixture and advances virtual clock ONLY to visit 1's virtual + 5 s (NOT +60 s)!
+            // Test mode: visit 1 has fixture (finishes without waiting, 5 s anchor), bump sets nextBudget = 60,
+            // visit 2 has no fixture and advances virtual clock ONLY to visit 1's virtual + 5 s (NOT +60 s).
             const tE1 = await startSessionWorkflowTest(h.host, {
                 ownerSessionId: chat, definition: { definitionId: sE1.receipt.definitionId },
-                inputs: { firstBudget: 5 },
+                inputs: {},
                 fixtures: parseTestFixtures([{
                     operation: "receive", state: "listen", visit: 1,
                     response: { kind: "success", value: { seq: 1 } },
@@ -238,8 +243,56 @@ describe("Loop limits (Change C: maxVisits and wait.totalSeconds)", () => {
             const tVisitsE1 = (await h.store.listNodeExecutions(reportE1.runId)).filter(n => n.nodeId === "listen");
             expect(tVisitsE1).toHaveLength(2);
             expect(tVisitsE1[0].deadlineAt).not.toBeNull();
+            expect(tVisitsE1[1].outcome).toBe("elapsed");
             expect(tVisitsE1[1].deadlineAt.getTime()).toBe(tVisitsE1[0].deadlineAt.getTime());
             expect(tRunE1.virtualNow.getTime() - tVisitsE1[0].deadlineAt.getTime()).toBe(0);
+
+            // 6. V1: visit 1 has no budget -> invalid_input (no stored deadline) -> recovery script returns { budget } ->
+            // visit 2 evaluates totalSeconds itself and stores the anchor deadline (live AND test mode).
+            const v1Yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: total-wait-recover-v1, version: \"1.0.0\" }\ncontracts:\n  Tick@1: { schema: { type: object, properties: { seq: { type: integer } } } }\ninitial: listen\ninitialInput: {}\nstates:\n  listen:\n    type: messaging\n    mode: receive\n    contract: Tick@1\n    wait: { totalSeconds: \"${input.budget}\" }\n    transition:\n      next:\n        received: done\n        elapsed: done\n        invalid_input: recover\n        failure: failed\n  recover:\n    type: script\n    outcomes: [retry]\n    source: \"await setResult('retry', { budget: context.inputs.recoveredBudget });\"\n    transition: { next: { retry: listen, failure: failed } }\n  done: { type: terminal, outcome: succeeded, output: \"${input}\" }\n  failed: { type: terminal, outcome: failed, output: \"${runtime.error}\" }\n";
+            const sV1 = await saveSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, name: "total-wait-recover-v1", yaml: v1Yaml, expected: null,
+                actor: { kind: "session", sessionId: chat }, operationId: "save-v1",
+            });
+            expect(sV1.receipt.valid, JSON.stringify(sV1.receipt.diagnostics)).toBe(true);
+
+            // Live mode (recoveredBudget: 2s for fast test, verify visit 2 sets ~2s deadline and elapses cleanly).
+            const rV1 = await startSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, definition: { name: "total-wait-recover-v1" }, inputs: { recoveredBudget: 2 },
+                actor: ENGINE, operationId: "start-v1-live", owner: OWNER,
+            });
+            const endV1 = await h.waitRun(rV1.runId);
+            expect(endV1.status).toBe("completed");
+            expect(endV1.terminalOutput).toEqual({ budget: 2 });
+            const v1LiveVisits = (await h.store.listNodeExecutions(rV1.runId)).filter(n => n.nodeId === "listen");
+            expect(v1LiveVisits).toHaveLength(2);
+            expect(v1LiveVisits[0].outcome).toBe("invalid_input");
+            expect(v1LiveVisits[0].deadlineAt).toBeNull();
+            expect(v1LiveVisits[1].outcome).toBe("elapsed");
+            expect(v1LiveVisits[1].deadlineAt).not.toBeNull();
+            const liveDeltaMs = v1LiveVisits[1].deadlineAt.getTime() - v1LiveVisits[1].enteredAt.getTime();
+            expect(liveDeltaMs).toBeGreaterThanOrEqual(1950);
+            expect(liveDeltaMs).toBeLessThanOrEqual(2050);
+
+            // Test mode (recoveredBudget: 10s, virtual clock advances cleanly by 10s on visit 2).
+            const tV1 = await startSessionWorkflowTest(h.host, {
+                ownerSessionId: chat, definition: { definitionId: sV1.receipt.definitionId },
+                inputs: { recoveredBudget: 10 },
+                fixtures: [],
+                actor: ENGINE, operationId: "test-v1-virtual", owner: async () => OWNER, binding: async () => null,
+            });
+            const benchV1 = await definitionTestBench(h.host, chat, tV1.testId);
+            const reportV1 = await waitSessionWorkflowTest(h.host, benchV1, { waitMs: 20_000, actor: ENGINE });
+            expect(reportV1.status).toBe("passed");
+            const tRunV1 = await h.store.readRun(reportV1.runId);
+            const v1TestVisits = (await h.store.listNodeExecutions(reportV1.runId)).filter(n => n.nodeId === "listen");
+            expect(v1TestVisits).toHaveLength(2);
+            expect(v1TestVisits[0].outcome).toBe("invalid_input");
+            expect(v1TestVisits[0].deadlineAt).toBeNull();
+            expect(v1TestVisits[1].outcome).toBe("elapsed");
+            expect(v1TestVisits[1].deadlineAt).not.toBeNull();
+            expect(tRunV1.virtualNow.getTime() - v1TestVisits[1].deadlineAt.getTime()).toBe(0);
+            expect(v1TestVisits[1].deadlineAt.getTime() - tRunV1.createdAt.getTime()).toBeGreaterThanOrEqual(9900);
         } finally {
             await h.stop();
         }

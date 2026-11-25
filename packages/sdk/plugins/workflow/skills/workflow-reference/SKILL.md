@@ -102,7 +102,7 @@ Outcome: `elapsed` (route required). Output: its input.
 | `contract` | Required. One root contract (or `WorkflowEnded@1`), or a list of 2–8 distinct names. |
 | `from` | Optional: `{ parent: true }`, session id, or `{ sessionId }` (binding ok); default any permitted sender. |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
-| `wait` | Optional `{ seconds }` (per visit) or `{ totalSeconds }` (from visit 1, never resets; binding read on visit 1 only; use `seconds` inside an outer loop), 1–86,400; never both. |
+| `wait` | Optional `{ seconds }` (per visit) or `{ totalSeconds }` (never resets in a run/branch execution; binding read once on first start; use `seconds` in outer loops), 1–86,400; never both. |
 | `input` | Optional template. |
 
 One name: `received` (payload). List: each contract is an outcome (no `received`),

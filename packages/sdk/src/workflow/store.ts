@@ -4255,7 +4255,7 @@ export class WorkflowStore {
             if ((waitAt !== null && (!waits || waitSeconds !== null))
                 || (((waits && waitAt === null) || deadlined) && waitSeconds === null) || (!mayWait && waitSeconds !== null)
                 || (waitSeconds !== null && !(Number.isSafeInteger(waitSeconds) && waitSeconds >= 1))
-                || (waitTotalSeconds !== null && (input.nodeType !== "messaging" || input.ordinal !== 1 || waitSeconds !== null || waitTotalInherit
+                || (waitTotalSeconds !== null && (input.nodeType !== "messaging" || waitSeconds !== null || waitTotalInherit
                     || !(Number.isSafeInteger(waitTotalSeconds) && waitTotalSeconds >= 1 && waitTotalSeconds <= STATE_TIMEOUT_MAX_SECONDS)))
                 || (waitTotalInherit && (receive === null || input.ordinal <= 1 || waitSeconds !== null))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
@@ -4315,45 +4315,46 @@ export class WorkflowStore {
             let claim: { messageId: string; payloadText: string; contract: string; senderSessionId: string; outcome: string; valueText: string } | null = null;
             const receiveIsList = receive ? Array.isArray(receive.contract) : false;
             const receiveContractText = receive ? encodeReceiveContracts(receive.contract) : null;
-            // E1: visit 1 of a totalSeconds receive always fixes and stores its absolute deadline_at in BOTH live and test modes,
-            // even if visit 1 finishes at entry (inbox claim, invalid_input, or sender refusal).
-            if (waitTotalSeconds !== null) {
+            // E1/V1: totalSeconds anchor is set once by the first visit that evaluates totalSeconds successfully
+            // (lowest ordinal with non-null deadline_at in this run and scope), kept after completion in BOTH live and test modes.
+            let establishedAnchor = false;
+            if (waitTotalSeconds !== null || waitTotalInherit) {
                 const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
                 decidedAt = str(clock[0], "at");
                 const nowText = run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : decidedAt;
-                const { rows: dl } = await client.query(
-                    `SELECT ($1::timestamptz + $2::integer * interval '1 second')::text AS deadline`,
-                    [nowText, waitTotalSeconds]);
-                clockDeadline = str(dl[0], "deadline");
+                const { rows: prior } = await client.query(
+                    `SELECT deadline_at::text AS deadline_at
+                     FROM ${this.t.nodes}
+                     WHERE run_id = $1 AND scope_id = $2 AND node_id = $3 AND deadline_at IS NOT NULL
+                     ORDER BY ordinal ASC
+                     LIMIT 1`,
+                    [input.runId, input.scopeId, input.nodeId]);
+                const anchor = prior[0]?.deadline_at ? str(prior[0], "deadline_at") : null;
+                if (anchor !== null) {
+                    if (receive) {
+                        const { rows: dl } = await client.query(
+                            `SELECT ($1::timestamptz <= $2::timestamptz) AS expired`,
+                            [anchor, nowText]);
+                        if (dl[0].expired === true) {
+                            totalExpired = true;
+                            immediate = { outcome: WAIT_ELAPSED, resultKind: "business", valueText: input.inputText, winner: "controller" };
+                            clockDeadline = null;
+                        } else {
+                            clockDeadline = anchor;
+                        }
+                    }
+                } else if (waitTotalSeconds !== null) {
+                    const { rows: dl } = await client.query(
+                        `SELECT ($1::timestamptz + $2::integer * interval '1 second')::text AS deadline`,
+                        [nowText, waitTotalSeconds]);
+                    clockDeadline = str(dl[0], "deadline");
+                    establishedAnchor = true;
+                }
             }
             if (receive) {
                 if (decidedAt === null) {
                     const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
                     decidedAt = str(clock[0], "at");
-                }
-                if (waitTotalInherit) {
-                    const nowText = run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : decidedAt;
-                    const { rows: first } = await client.query(
-                        `SELECT deadline_at::text AS deadline_at
-                         FROM ${this.t.nodes}
-                         WHERE run_id = $1 AND scope_id = $2 AND node_id = $3 AND ordinal = 1
-                         LIMIT 1`,
-                        [input.runId, input.scopeId, input.nodeId]);
-                    const anchor = first[0]?.deadline_at ? str(first[0], "deadline_at") : null;
-                    if (anchor === null) {
-                        throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT",
-                            `Visit 1 of receive state '${input.nodeId}' in run ${input.runId} has no stored deadline_at anchor.`);
-                    }
-                    const { rows: dl } = await client.query(
-                        `SELECT ($1::timestamptz <= $2::timestamptz) AS expired`,
-                        [anchor, nowText]);
-                    if (dl[0].expired === true) {
-                        totalExpired = true;
-                        immediate = { outcome: WAIT_ELAPSED, resultKind: "business", valueText: input.inputText, winner: "controller" };
-                        clockDeadline = null;
-                    } else {
-                        clockDeadline = anchor;
-                    }
                 }
                 if (!totalExpired) {
                     const contractsList = Array.isArray(receive.contract) ? receive.contract : [receive.contract];
@@ -4369,8 +4370,8 @@ export class WorkflowStore {
                         const payloadText = str(messages[0], "payload");
                         const claimedRes = receiveClaimResult(receiveIsList, contract, senderSessionId, payloadText);
                         claim = { messageId: str(messages[0], "message_id"), payloadText, contract, senderSessionId, ...claimedRes };
-                        // Visit 1 keeps its stored totalSeconds anchor deadline_at after completion; later visits clear it on claim.
-                        if (waitTotalSeconds === null) clockDeadline = null;
+                        // The visit that established the totalSeconds anchor keeps its deadline_at after completion; later visits clear it on claim.
+                        if (!establishedAnchor) clockDeadline = null;
                     }
                 }
             }
@@ -4498,6 +4499,18 @@ export class WorkflowStore {
             await this.project(client, projection);
             return { admitted: true as const, inserted: true, node };
         });
+    }
+
+    /** Earliest stored deadline_at for a receive state in this run and scope (V1 totalSeconds anchor). */
+    async readReceiveTotalDeadline(runId: string, scopeId: string, nodeId: string): Promise<Date | null> {
+        const { rows } = await this.pool.query(
+            `SELECT deadline_at
+             FROM ${this.t.nodes}
+             WHERE run_id = $1 AND scope_id = $2 AND node_id = $3 AND deadline_at IS NOT NULL
+             ORDER BY ordinal ASC
+             LIMIT 1`,
+            [runId, scopeId, nodeId]);
+        return rows[0] ? dateOrNull(rows[0], "deadline_at") : null;
     }
 
     async readNodeExecution(nodeExecutionId: string): Promise<WorkflowNodeExecutionRow | null> {

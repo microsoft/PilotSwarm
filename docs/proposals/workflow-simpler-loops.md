@@ -37,7 +37,7 @@ wait_child:
 
 - **Outcomes:** With a list, each listed contract name is an outcome that requires a route in `transition.next`, plus `elapsed` when `wait` is set. `received` is rejected for list form.
 - **Output:** `{ contract, from, payload }`, where `from` is the sender's session ID.
-- **Selection:** Entry claims the earliest accepted, unconsumed inbox message whose contract is in the list (`from` and `correlate` apply to every listed contract). An arriving message completes a pending receive when its contract is in the list; unlisted contracts remain unclaimed. A message that arrives at or after a receive's deadline is queued, not taken; the visit ends `elapsed`; the message stays in the inbox until its TTL.
+- **Selection:** Entry claims the earliest accepted, unconsumed inbox message whose contract is in the list (`from` and `correlate` apply to every listed contract). An arriving message completes a pending receive when its contract is in the list; unlisted contracts remain unclaimed. A message that arrives at or after a receive's deadline is not taken by that visit; it stays in the inbox, where a later eligible receive can still take it, until its TTL.
 - **Single-contract form:** Unchanged (`received` outcome, raw payload output, unchanged stored IR).
 - **Test mode:** A `receive` fixture for a multi-contract receive supplies `{ contract, payload }` naming one of the listed contracts.
 - **UI:** Shared portal and TUI views list all contracts on the node, display contract names on edges, and show the contract and resolved sender name (omitting raw session IDs when unnamed) on each visit.
@@ -57,7 +57,7 @@ A new binding root `states` exposes `${states.<id>.output}` (with optional neste
 | Field | Rule |
 |---|---|
 | `maxVisits: N` (any non-terminal state) | Integer `1` to `10,000`. Decided first at entry, before `carry` and `input:` evaluation: visit `N + 1` does not run `carry`, `input:`, or its effect, and finishes immediately at entry with outcome `exhausted` and the state's incoming value as output. Requires an `exhausted` route in `transition.next` (routed out of the loop); collides with any business outcome or Decision choice label named `exhausted`. |
-| `wait: { totalSeconds: N }` (`receive`) | Integer `1` to `86,400`, or one whole-string binding. Mutually exclusive with `wait.seconds`. The total budget starts at the first visit and never resets in a run; the binding is read on the first visit only and stored as visit 1's absolute `deadline_at` (even if visit 1 completes at entry); a receive inside an outer loop uses per-visit `wait.seconds`. On later visits, if no time remains, the state finishes immediately with `elapsed` (emitting `workflow.state_completed`); otherwise the timer runs for the remaining duration. |
+| `wait: { totalSeconds: N }` (`receive`) | Integer `1` to `86,400`, or one whole-string binding. Mutually exclusive with `wait.seconds`. The total budget is per run and per branch execution (each parallel item, or each new invocation of a parallel body, has its own first visit and its own budget) and never resets within that run and branch execution; the binding is evaluated once by the first visit that starts the wait (and stored as its absolute `deadline_at`, even if that visit finishes at entry); a receive inside an outer loop uses per-visit `wait.seconds`. On later visits, if no time remains, the state finishes immediately with `elapsed` (emitting `workflow.state_completed`); otherwise the timer runs for the remaining duration. |
 
 ## 3. Worked Example: Child Progress Tracker
 

@@ -2199,12 +2199,16 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 const stateRefs = !immediate ? referencedStateIdsOfNode(node) : [];
                 const stateOutputs = stateRefs.length ? await store.latestStateOutputs(current.runId, scopeId, stateRefs) : null;
                 const entryScope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch, stateOutputs);
-                // E1: on visit 1 of a totalSeconds receive, evaluate totalSeconds once so visit 1 always records its deadline anchor
-                // (even if visit 1 finishes at entry via inbox claim, invalid_input, or sender refusal).
-                if (!immediate && node.type === "messaging" && node.mode === "receive" && node.waitTotalSeconds != null && ordinal === 1) {
-                    const total = waitSeconds(node.waitTotalSeconds, entryScope, `states.${nodeId}.wait.totalSeconds`);
-                    if (typeof total === "number") waitTotalFor = total;
-                    else immediate = total;
+                // E1/V1: if no earlier visit of this receive in this run+scope stored a deadline_at anchor yet, evaluate totalSeconds now;
+                // once any visit stores a deadline_at anchor, later visits reuse it without evaluating totalSeconds again.
+                let hasTotalAnchor = false;
+                if (!immediate && node.type === "messaging" && node.mode === "receive" && node.waitTotalSeconds != null) {
+                    hasTotalAnchor = ordinal > 1 && (await store.readReceiveTotalDeadline(current.runId, scopeId, nodeId)) !== null;
+                    if (!hasTotalAnchor) {
+                        const total = waitSeconds(node.waitTotalSeconds, entryScope, `states.${nodeId}.wait.totalSeconds`);
+                        if (typeof total === "number") waitTotalFor = total;
+                        else immediate = total;
+                    }
                 }
                 if (!immediate && current.controllerVersion !== null && workflowControllerFeatures(current.controllerVersion).carry
                     && node.type !== "terminal" && node.carry !== undefined) {
@@ -2296,7 +2300,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         if (typeof seconds === "number") { waitFor = seconds; receive = resolved.spec; }
                         else immediate = seconds;
                     } else if (node.waitTotalSeconds != null) {
-                        if (ordinal > 1) waitTotalInherit = true;
+                        if (hasTotalAnchor) waitTotalInherit = true;
                         receive = resolved.spec;
                     } else receive = resolved.spec;
                 }
