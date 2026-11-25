@@ -226,6 +226,7 @@ function kindProperties(node, current) {
         rows.push([multi ? "Message types" : "Message type", multi ? node.contract.join(", ") : node.contract],
             ["From", node.from === null ? "Any permitted sender" : node.from === "parent" ? "Parent session" : String(node.from)]);
         if (node.waitSeconds !== undefined) rows.push(["Wait limit", formatSeconds(node.waitSeconds)]);
+        if (node.waitTotalSeconds !== undefined) rows.push(["Total wait limit", formatSeconds(node.waitTotalSeconds)]);
     }
     if (node.kind === "send" || node.kind === "request") {
         rows.push(["Message type", node.contract], ["Recipient", node.recipient === "parent" ? "Parent session" : String(node.recipient)]);
@@ -242,6 +243,7 @@ function kindProperties(node, current) {
     // A parallel step's own rows are its For each section (ParallelSections; owner batch 7, H2).
     if (node.parallel) rows.push(["Parallel step", String(node.parallel)]);
     if (current?.branch && Number.isSafeInteger(current.branch.index)) rows.push(["Branch", node.branchName ?? String(workflowBranchNumber(current.branch.index))]);
+    if (Number.isSafeInteger(node.maxVisits)) rows.push(["Max visits", String(node.maxVisits)]);
     return rows;
 }
 

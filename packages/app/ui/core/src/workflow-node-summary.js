@@ -74,8 +74,10 @@ export function workflowNodeWhat(node) {
         }
         case "receive": {
             const limit = seconds(node.waitSeconds);
+            const total = seconds(node.waitTotalSeconds);
             const target = Array.isArray(node.contract) ? node.contract.join(" or ") : an(node.contract);
-            return `Waits for ${target} message from ${party(node.from)}${limit ? `, for at most ${limit}` : ""}.`;
+            const budget = limit ? `, for at most ${limit}` : total ? `, for at most ${total} total` : "";
+            return `Waits for ${target} message from ${party(node.from)}${budget}.`;
         }
         // Named branches by their names, and a named branch's end.
         case "parallel": return Array.isArray(node.namedBranches)

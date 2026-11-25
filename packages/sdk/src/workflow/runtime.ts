@@ -73,7 +73,7 @@ import {
     RECEIVE_RECEIVED,
     REQUEST_DECLINED,
     REQUEST_RESPONDED,
-    referencedStateIdsOfNode, SPAWN_STARTED, WAIT_ELAPSED, WORKFLOW_ENDED_CONTRACT,
+    referencedStateIdsOfNode, SPAWN_STARTED, STATE_EXHAUSTED, WAIT_ELAPSED, WORKFLOW_ENDED_CONTRACT,
     WAIT_MAX_SECONDS,
     STATE_TIMEOUT_MAX_SECONDS,
     workflowClockWaitWords,
@@ -1013,12 +1013,14 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
             };
         }
         const baseOutcomes = Array.isArray(node.contract) ? [...node.contract] : [RECEIVE_RECEIVED];
+        const hasWait = node.waitSeconds !== null || node.waitTotalSeconds != null;
         return {
             id: node.id, type: "messaging", mode: node.mode,
             contract: Array.isArray(node.contract) ? [...node.contract] : node.contract,
             from: node.from === null ? null : "parent" in node.from ? "parent" : workflowBindingView(node.from.sessionId),
             ...(node.waitSeconds !== null ? { waitSeconds: workflowBindingView(node.waitSeconds) } : {}),
-            outcomes: node.waitSeconds !== null ? [...baseOutcomes, WAIT_ELAPSED] : baseOutcomes, next: node.next,
+            ...(node.waitTotalSeconds != null ? { waitTotalSeconds: workflowBindingView(node.waitTotalSeconds) } : {}),
+            outcomes: hasWait ? [...baseOutcomes, WAIT_ELAPSED] : baseOutcomes, next: node.next,
         };
     }
     if (node.type === "decision") {
@@ -1099,6 +1101,12 @@ export function describeWorkflowStates(ir: WorkflowIR): Array<{ [key: string]: J
     }
     return Object.values(ir.nodes).map(node => {
         const described = describeWorkflowState(node);
+        if (node.type !== "terminal" && node.maxVisits !== undefined) {
+            described.maxVisits = node.maxVisits;
+            if (Array.isArray(described.outcomes) && !described.outcomes.includes(STATE_EXHAUSTED)) {
+                described.outcomes = [...described.outcomes, STATE_EXHAUSTED];
+            }
+        }
         const parallel = bodyOf.get(node.id);
         const branchName = branchOfState.get(node.id);
         return parallel === undefined ? described : { ...described, parallel, ...(branchName !== undefined ? { branchName } : {}) };
@@ -2163,6 +2171,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             let value: JsonValue = null;
             let carryText: string | null = null;
             let waitFor: number | null = null;
+            let waitTotalFor: number | null = null;
             // Stage 2.4: a clock wait's time; the store decides its deadline from its own clock (or a test run's virtual one).
             let waitAt: WorkflowIRClockWait | null = null;
             let receive: ReceiveSpec | null = null;
@@ -2202,6 +2211,15 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     try { value = evaluateBindingTemplate(node.input, entryScope, `states.${nodeId}.input`); }
                     catch (error) {
                         if (!(error instanceof WorkflowBindingError)) throw error;
+                        immediate = runtimeError("invalid_input", error.message);
+                    }
+                }
+                if (!immediate && node.type !== "terminal" && node.maxVisits !== undefined && ordinal > node.maxVisits) {
+                    try {
+                        const outText = boundedCanonicalJson(value, `Output of state '${nodeId}'`);
+                        immediate = { outcome: STATE_EXHAUSTED, resultKind: "business", valueText: outText, winner: "controller" };
+                    } catch (error) {
+                        if (!(error instanceof WorkflowJsonError)) throw error;
                         immediate = runtimeError("invalid_input", error.message);
                     }
                 }
@@ -2268,6 +2286,10 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         const seconds = waitSeconds(node.waitSeconds, entryScope, `states.${nodeId}.wait.seconds`);
                         if (typeof seconds === "number") { waitFor = seconds; receive = resolved.spec; }
                         else immediate = seconds;
+                    } else if (node.waitTotalSeconds != null) {
+                        const total = waitSeconds(node.waitTotalSeconds, entryScope, `states.${nodeId}.wait.totalSeconds`);
+                        if (typeof total === "number") { waitTotalFor = total; receive = resolved.spec; }
+                        else immediate = total;
                     } else receive = resolved.spec;
                 }
                 // A send's recipient and message are resolved once, here, and frozen for this occurrence.
@@ -2413,6 +2435,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
                 ...(carryText !== null ? { carryText } : {}),
                 waitSeconds: immediate ? null : waitFor,
+                ...(waitTotalFor !== null && !immediate ? { waitTotalSeconds: waitTotalFor } : {}),
                 ...(waitAt && !immediate ? { waitAt } : {}),
                 receive: immediate || !receive ? null : {
                     contract: receive.contract, from: receive.from, correlationText: receive.correlationText,

@@ -4059,6 +4059,11 @@ export class WorkflowStore {
          */
         waitSeconds: number | null;
         /**
+         * Total wait budget across all visits of a receive state counted from visit 1's entry in this run and scope.
+         * Mutually exclusive with waitSeconds.
+         */
+        waitTotalSeconds?: number | null;
+        /**
          * Stage 2.4: a clock wait's time, instead of waitSeconds: its deadline is the next time it names after the
          * admission's accepted-entry reading of the store's clock (a test run's virtual clock), DST-safe (cron-at.ts).
          */
@@ -4242,10 +4247,12 @@ export class WorkflowStore {
             const waits = input.nodeType === "wait" && immediate === null;
             const deadlined = intercept !== null && intercept.operation !== "send" && intercept.operation !== "decision" && intercept.operation !== "spawn";
             let waitSeconds = approval !== null ? immediate === null ? approval.timeoutSeconds : null : input.waitSeconds;
+            let waitTotalSeconds = input.waitTotalSeconds ?? null;
             const mayWait = waits || receive !== null || deadlined || (approval !== null && immediate === null) || (input.nodeType === "parallel" && immediate === null);
             if ((waitAt !== null && (!waits || waitSeconds !== null))
                 || (((waits && waitAt === null) || deadlined) && waitSeconds === null) || (!mayWait && waitSeconds !== null)
-                || (waitSeconds !== null && !(Number.isSafeInteger(waitSeconds) && waitSeconds >= 1))) {
+                || (waitSeconds !== null && !(Number.isSafeInteger(waitSeconds) && waitSeconds >= 1))
+                || (waitTotalSeconds !== null && (receive === null || waitSeconds !== null || !(Number.isSafeInteger(waitTotalSeconds) && waitTotalSeconds >= 1 && waitTotalSeconds <= STATE_TIMEOUT_MAX_SECONDS)))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
             }
             // The receive's sender, decided under the session locks: one that
@@ -4260,6 +4267,7 @@ export class WorkflowStore {
                 projection = refusal.projection;
                 receive = null;
                 waitSeconds = null;
+                waitTotalSeconds = null;
             }
             // The send's recipient, decided under the session locks the same way:
             // one that may not be sent to fails the state now, and nothing is stored.
@@ -4297,32 +4305,76 @@ export class WorkflowStore {
             // and the reading is its entered_at (and completed_at when it
             // takes one, or the start of its wait's seconds).
             let decidedAt: string | null = null;
+            let clockDeadline: string | null = null;
             let claim: { messageId: string; payloadText: string; contract: string; senderSessionId: string; outcome: string; valueText: string } | null = null;
             const receiveIsList = receive ? Array.isArray(receive.contract) : false;
             const receiveContractText = receive ? encodeReceiveContracts(receive.contract) : null;
             if (receive) {
                 const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
                 decidedAt = str(clock[0], "at");
-                const contractsList = Array.isArray(receive.contract) ? receive.contract : [receive.contract];
-                const { rows: messages } = await client.query(
-                    `SELECT message_id, payload, contract, sender_session_id FROM ${this.t.inbox}
-                      WHERE run_id = $1 AND consumed_by IS NULL AND contract = ANY($2::text[]) AND ($3::text IS NULL OR sender_session_id = $3)
-                        AND correlation = $4 AND expires_at > $5::timestamptz
-                      ORDER BY seq LIMIT 1 FOR UPDATE`,
-                    [input.runId, contractsList, receive.from, receive.correlationText, decidedAt]);
-                if (messages[0]) {
-                    const contract = str(messages[0], "contract");
-                    const senderSessionId = str(messages[0], "sender_session_id");
-                    const payloadText = str(messages[0], "payload");
-                    const claimedRes = receiveClaimResult(receiveIsList, contract, senderSessionId, payloadText);
-                    claim = { messageId: str(messages[0], "message_id"), payloadText, contract, senderSessionId, ...claimedRes };
+                let totalExpired = false;
+                if (waitTotalSeconds !== null) {
+                    const nowText = run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : decidedAt;
+                    if (input.ordinal === 1) {
+                        const { rows: dl } = await client.query(
+                            `SELECT ($1::timestamptz + $2::integer * interval '1 second')::text AS deadline`,
+                            [nowText, waitTotalSeconds]);
+                        clockDeadline = str(dl[0], "deadline");
+                    } else {
+                        const { rows: first } = await client.query(
+                            `SELECT entered_at::text AS entered_at, deadline_at::text AS deadline_at
+                             FROM ${this.t.nodes}
+                             WHERE run_id = $1 AND scope_id = $2 AND node_id = $3 AND ordinal = 1
+                             LIMIT 1`,
+                            [input.runId, input.scopeId, input.nodeId]);
+                        if (first[0]) {
+                            const useTestStored = run.mode === "test" && first[0].deadline_at !== null && first[0].deadline_at !== undefined;
+                            const { rows: dl } = useTestStored
+                                ? await client.query(
+                                    `SELECT $1::timestamptz::text AS deadline, ($1::timestamptz <= $2::timestamptz) AS expired`,
+                                    [str(first[0], "deadline_at"), nowText])
+                                : await client.query(
+                                    `SELECT ($1::timestamptz + $2::integer * interval '1 second')::text AS deadline,
+                                            ($1::timestamptz + $2::integer * interval '1 second' <= $3::timestamptz) AS expired`,
+                                    [str(first[0], "entered_at"), waitTotalSeconds, nowText]);
+                            if (dl[0].expired === true) {
+                                totalExpired = true;
+                                immediate = { outcome: WAIT_ELAPSED, resultKind: "business", valueText: input.inputText, winner: "controller" };
+                                clockDeadline = null;
+                            } else {
+                                clockDeadline = str(dl[0], "deadline");
+                            }
+                        } else {
+                            const { rows: dl } = await client.query(
+                                `SELECT ($1::timestamptz + $2::integer * interval '1 second')::text AS deadline`,
+                                [nowText, waitTotalSeconds]);
+                            clockDeadline = str(dl[0], "deadline");
+                        }
+                    }
+                }
+                if (!totalExpired) {
+                    const contractsList = Array.isArray(receive.contract) ? receive.contract : [receive.contract];
+                    const { rows: messages } = await client.query(
+                        `SELECT message_id, payload, contract, sender_session_id FROM ${this.t.inbox}
+                          WHERE run_id = $1 AND consumed_by IS NULL AND contract = ANY($2::text[]) AND ($3::text IS NULL OR sender_session_id = $3)
+                            AND correlation = $4 AND expires_at > $5::timestamptz
+                          ORDER BY seq LIMIT 1 FOR UPDATE`,
+                        [input.runId, contractsList, receive.from, receive.correlationText, decidedAt]);
+                    if (messages[0]) {
+                        const contract = str(messages[0], "contract");
+                        const senderSessionId = str(messages[0], "sender_session_id");
+                        const payloadText = str(messages[0], "payload");
+                        const claimedRes = receiveClaimResult(receiveIsList, contract, senderSessionId, payloadText);
+                        claim = { messageId: str(messages[0], "message_id"), payloadText, contract, senderSessionId, ...claimedRes };
+                        // In test mode, keep visit 1's deadline_at so subsequent visits can count totalSeconds from visit 1's virtual clock.
+                        if (!(run.mode === "test" && input.ordinal === 1 && waitTotalSeconds !== null)) clockDeadline = null;
+                    }
                 }
             }
             const result: NodeResultInput | null = immediate
                 ?? (claim ? { outcome: claim.outcome, resultKind: "business", valueText: claim.valueText, winner: "message" } : null);
             // Stage 2.4: a clock wait's deadline, decided once from the accepted-entry reading (a test run's virtual clock):
             // the next time its schedule names after it, DST-safe.
-            let clockDeadline: string | null = null;
             if (waitAt !== null && result === null) {
                 let base: string;
                 if (run.mode === "test" && run.virtualNow !== null) base = run.virtualNow.toISOString();

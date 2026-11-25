@@ -92,6 +92,10 @@ export const SPAWN_STARTED = "started";
 export const WORKFLOW_ENDED_CONTRACT = "WorkflowEnded@1";
 /** Maximum number of distinct contracts in a multi-contract receive state's contract list. */
 export const WORKFLOW_RECEIVE_MAX_CONTRACTS = 8;
+/** Outcome emitted when a non-terminal state reaches visit maxVisits + 1 without running its effect. */
+export const STATE_EXHAUSTED = "exhausted";
+/** Maximum per-state maxVisits limit (matches WORKFLOW_MAX_NODE_EXECUTIONS). */
+export const STATE_MAX_VISITS = WORKFLOW_MAX_NODE_EXECUTIONS;
 /** A state type that is named but not compiled: refused as unsupported rather than unknown. */
 const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 
@@ -171,6 +175,8 @@ interface WorkflowIRAnnotations {
 interface WorkflowIRCarrying extends WorkflowIRAnnotations {
     carry?: { [key: string]: JsonValue };
     routeNotes?: Record<string, string>;
+    /** Visit cap (1..10000); visit maxVisits + 1 finishes at entry with outcome `exhausted`. */
+    maxVisits?: number;
 }
 
 export interface WorkflowIRScript extends WorkflowIRCarrying {
@@ -261,6 +267,8 @@ export interface WorkflowIRReceive extends WorkflowIRCarrying {
     correlate: JsonValue;
     /** The seconds of the wait that races the message, as a wait state's seconds; null for no wait. */
     waitSeconds: number | string | null;
+    /** Total seconds across all visits of this receive state counted from visit 1's entry; mutually exclusive with waitSeconds. */
+    waitTotalSeconds?: number | string | null;
     /** The value the state passes on when its wait elapses; without an input binding, the value that arrived. */
     hasInput: boolean;
     input: JsonValue;
@@ -1095,14 +1103,23 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
         else correlate = bindingValue(raw.correlate, `${path}.correlate`, diagnostics);
     }
     let waitSeconds: number | string | null = null;
+    let waitTotalSeconds: number | string | null = null;
     if (raw.wait !== undefined) {
-        if (!isJsonObject(raw.wait)) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.wait`, "wait must be { seconds: <seconds> }.");
+        if (!isJsonObject(raw.wait)) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.wait`, "wait must be { seconds: <seconds> } or { totalSeconds: <seconds> }.");
         else {
-            checkKeys(raw.wait, ["seconds", "tool"], `${path}.wait`, diagnostics);
+            checkKeys(raw.wait, ["seconds", "totalSeconds", "tool"], `${path}.wait`, diagnostics);
             if (raw.wait.tool !== undefined && raw.wait.tool !== "wait") {
                 diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.wait.tool`, "wait.tool must be 'wait' when given: a receive races the workflow's durable wait.");
             }
-            waitSeconds = secondsField(raw.wait.seconds, `${path}.wait.seconds`, diagnostics);
+            const hasSeconds = Object.hasOwn(raw.wait, "seconds") && raw.wait.seconds !== undefined;
+            const hasTotal = Object.hasOwn(raw.wait, "totalSeconds") && raw.wait.totalSeconds !== undefined;
+            if ((hasSeconds && hasTotal) || (!hasSeconds && !hasTotal)) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.wait`, "wait must set exactly one of seconds or totalSeconds.");
+            } else if (hasSeconds) {
+                waitSeconds = secondsField(raw.wait.seconds, `${path}.wait.seconds`, diagnostics);
+            } else {
+                waitTotalSeconds = secondsField(raw.wait.totalSeconds, `${path}.wait.totalSeconds`, diagnostics);
+            }
         }
     }
     const hasInput = Object.hasOwn(raw, "input");
@@ -1124,10 +1141,10 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
         }
     }
     warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
-    if (contract === null || (raw.wait !== undefined && waitSeconds === null) || (raw.from !== undefined && from === null)) return null;
+    if (contract === null || (raw.wait !== undefined && waitSeconds === null && waitTotalSeconds === null) || (raw.from !== undefined && from === null)) return null;
     return {
         id, type: "messaging", description: optionalText(raw.description, `${path}.description`, diagnostics), mode: "receive",
-        contract, from, correlate, waitSeconds, hasInput, input, next,
+        contract, from, correlate, waitSeconds, ...(waitTotalSeconds !== null ? { waitTotalSeconds } : {}), hasInput, input, next,
     };
 }
 
@@ -1581,7 +1598,11 @@ export function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> 
     if (node.type === "agent") add("timeoutSeconds", node.timeoutSeconds);
     if (node.type === "messaging") {
         add("correlate", node.correlate);
-        if (node.mode === "receive") { add("wait.seconds", node.waitSeconds); if (node.from && "sessionId" in node.from) add("from", node.from.sessionId); }
+        if (node.mode === "receive") {
+            add("wait.seconds", node.waitSeconds);
+            add("wait.totalSeconds", node.waitTotalSeconds);
+            if (node.from && "sessionId" in node.from) add("from", node.from.sessionId);
+        }
         else {
             if ("sessionId" in node.recipient) add("recipient", node.recipient.sessionId);
             if (node.mode === "request") add("timeoutSeconds", node.timeoutSeconds);
@@ -1819,7 +1840,7 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
         if (node.type !== "parallel" || node.branches === undefined || node.timeoutSeconds !== undefined) continue;
         for (const branch of node.branches) {
             const slow = branch.states.map(member => ir.nodes[member]).find(state => state?.type === "agent"
-                || (state?.type === "messaging" && state.mode === "receive" && state.waitSeconds === null));
+                || (state?.type === "messaging" && state.mode === "receive" && state.waitSeconds === null && (state.waitTotalSeconds ?? null) === null));
             if (slow === undefined) continue;
             diagnostics.warning("WORKFLOW_BRANCH_UNBOUNDED", `states.${node.id}.branches.${branch.name}`,
                 `branch '${branch.name}' has ${slow.type === "agent" ? "agent" : "receive"} state '${slow.id}'${slow.type === "agent" ? "" : " with no wait"}, `
@@ -2049,6 +2070,42 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             if (!isJsonObject(carry)) into.error("WORKFLOW_FIELD_INVALID", `${path}.carry`, "carry must be an object template of named fields.");
             delete stateFields.carry;
         }
+        let maxVisits: number | undefined;
+        let exhaustedTarget: string | undefined;
+        if (Object.hasOwn(rawNode, "maxVisits")) {
+            if (type === "terminal") {
+                into.error("WORKFLOW_FIELD_INVALID", `${path}.maxVisits`, "a terminal state cannot set maxVisits.");
+            } else {
+                const rawLimit = rawNode.maxVisits;
+                if (typeof rawLimit !== "number" || !Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > STATE_MAX_VISITS) {
+                    into.error("WORKFLOW_FIELD_INVALID", `${path}.maxVisits`, `maxVisits must be an integer from 1 to ${STATE_MAX_VISITS}.`);
+                } else {
+                    maxVisits = rawLimit;
+                }
+            }
+            delete stateFields.maxVisits;
+        }
+        if (maxVisits !== undefined && type !== "terminal") {
+            const rawNext = isJsonObject(rawNode.transition) && isJsonObject(rawNode.transition.next) ? rawNode.transition.next : null;
+            if (rawNext !== null) {
+                if (!Object.hasOwn(rawNext, STATE_EXHAUSTED)) {
+                    into.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `state '${id}' with maxVisits needs an '${STATE_EXHAUSTED}' route.`);
+                } else {
+                    const target = rawNext[STATE_EXHAUSTED];
+                    if (typeof target !== "string" || !nodeIds.has(target)) {
+                        into.error("WORKFLOW_TARGET_INVALID", `${path}.transition.next.${STATE_EXHAUSTED}`, `route '${STATE_EXHAUSTED}' targets unknown state '${String(target)}'.`);
+                    } else {
+                        exhaustedTarget = target;
+                    }
+                    const declaredOutcomes = Array.isArray(rawNode.outcomes) ? rawNode.outcomes : [];
+                    if (!declaredOutcomes.includes(STATE_EXHAUSTED)) {
+                        const strippedNext = { ...rawNext };
+                        delete strippedNext[STATE_EXHAUSTED];
+                        stateFields.transition = { ...(rawNode.transition as Record<string, unknown>), next: strippedNext };
+                    }
+                }
+            }
+        }
         // The catch-all state takes the outer graph's unhandled runtime errors only: in a body, one ends the branch.
         const catchAllApplies = body === null && hasCatchAll;
         if (type === "script") {
@@ -2121,6 +2178,10 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 + (meant ? ` Did you mean ${meant}?` : ""));
         }
         const compiled = nodes[id];
+        if (compiled && compiled.type !== "terminal" && maxVisits !== undefined) {
+            compiled.maxVisits = maxVisits;
+            if (exhaustedTarget !== undefined) compiled.next[STATE_EXHAUSTED] = exhaustedTarget;
+        }
         if (compiled && notes !== undefined) compiled.notes = notes;
         if (compiled && compiled.type !== "terminal" && isJsonObject(rawNode.transition) && Object.hasOwn(rawNode.transition, "notes")) {
             const routeNotes = rawNode.transition.notes;
@@ -2630,8 +2691,9 @@ function isStoredDecisionInput(value: unknown, path: string): boolean {
     try { validateBindingTemplate(value, path); return true; } catch { return false; }
 }
 
-function storedDecisionRoutesValid(question: WorkflowIRDecisionQuestion, confidence: boolean, next: Record<string, string>): boolean {
+function storedDecisionRoutesValid(question: WorkflowIRDecisionQuestion, confidence: boolean, next: Record<string, string>, hasMaxVisits = false): boolean {
     const expected = new Set(decisionBusinessRoutes(question, confidence));
+    if (hasMaxVisits) expected.add(STATE_EXHAUSTED);
     return [...expected].every(route => Object.hasOwn(next, route))
         && Object.keys(next).every(route => expected.has(route) || isRuntimeRoute(route));
 }
@@ -2770,6 +2832,9 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         } else if (node.type === "messaging") {
             const from = node.from;
             const waitSeconds = node.waitSeconds;
+            const waitTotalSeconds = node.waitTotalSeconds;
+            const validWaitTotal = waitTotalSeconds === undefined || waitTotalSeconds === null
+                || typeof waitTotalSeconds === "number" || typeof waitTotalSeconds === "string";
             const validFrom = from === null || (isJsonObject(from) && Object.keys(from).length === 1
                 && (from.parent === true || typeof from.sessionId === "string"));
             const validSingleContract = typeof node.contract === "string"
@@ -2781,6 +2846,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             need(node.mode === "receive" && (validSingleContract || validListContract)
                 && validFrom && Object.hasOwn(node, "correlate")
                 && (waitSeconds === null || typeof waitSeconds === "number" || typeof waitSeconds === "string")
+                && validWaitTotal && !(waitSeconds !== null && waitTotalSeconds !== undefined && waitTotalSeconds !== null)
                 && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && stringMap(node.next),
                 `stored IR messaging state ${id} is invalid`);
             const sender: WorkflowIRSender | null = from === null ? null
@@ -2788,11 +2854,13 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             const storedContract: string | string[] = validListContract ? [...(node.contract as string[])] : (node.contract as string);
             nodes[id] = {
                 id, type: "messaging", description: node.description, mode: "receive", contract: storedContract, from: sender,
-                correlate: node.correlate, waitSeconds, hasInput: node.hasInput, input: node.input, next: node.next,
+                correlate: node.correlate, waitSeconds,
+                ...(waitTotalSeconds !== undefined && waitTotalSeconds !== null ? { waitTotalSeconds: waitTotalSeconds as number | string } : {}),
+                hasInput: node.hasInput, input: node.input, next: node.next,
             };
         } else if (node.type === "decision") {
             const allowed = new Set(["id", "type", "description", "hasInput", "input", "inputSchema", "question", "confidence", "timeoutSeconds",
-                "next", "notes", "routeNotes", "carry"]);
+                "next", "notes", "routeNotes", "carry", "maxVisits"]);
             const question = isStoredDecisionQuestion(node.question) ? node.question : null;
             const rawConfidence = node.confidence;
             const confidenceValid = rawConfidence === undefined || (isJsonObject(rawConfidence) && Object.keys(rawConfidence).length === 1
@@ -2805,7 +2873,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && typeof node.timeoutSeconds === "number" && Number.isSafeInteger(node.timeoutSeconds)
                 && node.timeoutSeconds >= 1 && node.timeoutSeconds <= DECISION_MAX_TIMEOUT_SECONDS
                 && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(storedNodes, target))
-                && storedDecisionRoutesValid(question, rawConfidence !== undefined, node.next),
+                && storedDecisionRoutesValid(question, rawConfidence !== undefined, node.next, node.maxVisits !== undefined),
             `stored IR decision state ${id} is invalid`);
             nodes[id] = {
                 id, type: "decision", description: node.description, hasInput: node.hasInput, input: node.input,
@@ -2815,7 +2883,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             };
         } else if (node.type === "spawn") {
             const allowed = new Set(["id", "type", "description", "definition", "hasInputs", "inputs", "revision", "agentModels",
-                "next", "notes", "routeNotes", "carry"]);
+                "next", "notes", "routeNotes", "carry", "maxVisits"]);
             const validRevision = node.revision === undefined || (typeof node.revision === "number" && Number.isSafeInteger(node.revision) && node.revision >= 1);
             const validModels = node.agentModels === undefined || isStoredSpawnAgentModels(node.agentModels);
             need(Object.keys(node).every(key => allowed.has(key))
@@ -2825,7 +2893,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && validRevision && validModels
                 && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(storedNodes, target))
                 && Object.hasOwn(node.next, SPAWN_STARTED)
-                && Object.keys(node.next).every(label => label === SPAWN_STARTED || isRuntimeRoute(label)),
+                && Object.keys(node.next).every(label => label === SPAWN_STARTED || (node.maxVisits !== undefined && label === STATE_EXHAUSTED) || isRuntimeRoute(label)),
                 `stored IR spawn state ${id} is invalid`);
             nodes[id] = {
                 id, type: "spawn", description: node.description, definition: node.definition,
@@ -2944,6 +3012,13 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             need(compiled.type !== "terminal" && isJsonObject(node.carry), `stored IR carry of ${id} is not a nonterminal object template`);
             validateBindingTemplate(node.carry, `states.${id}.carry`);
             compiled.carry = node.carry;
+        }
+        if (Object.hasOwn(node, "maxVisits")) {
+            const compiled = nodes[id];
+            need(compiled.type !== "terminal" && typeof node.maxVisits === "number" && Number.isSafeInteger(node.maxVisits)
+                && node.maxVisits >= 1 && node.maxVisits <= STATE_MAX_VISITS && Object.hasOwn(compiled.next, STATE_EXHAUSTED),
+                `stored IR maxVisits of ${id} is invalid`);
+            compiled.maxVisits = node.maxVisits;
         }
     }
     need(Object.hasOwn(nodes, value.initial), "stored IR initial state is missing");
