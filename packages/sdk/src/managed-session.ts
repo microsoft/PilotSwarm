@@ -4651,6 +4651,7 @@ export class ManagedSession {
         const hasUnrecoveredModelStepError = (): boolean => (
             lastStepFailedEmpty
             && turnState.pendingActions.length === 0
+            && this.runInterrupt?.reason == null
             && deferredSessionError === null
             && quietedEmptyAnswer === null
             && !collectedEvents.some((e) => e.eventType === "session.error")

@@ -377,4 +377,69 @@ describe("ManagedSession recovery on failed-empty model steps (issue #383)", () 
         expect(result.agentId).toBe("child-1");
         expect(result.events.some((event) => event.eventType === "runtime.model_step_error")).toBe(false);
     });
+
+    it("T5d (unchanged behaviour): a turn the user stopped is not continued", async () => {
+        let managed;
+        const fake = new FakeCopilotSession([
+            (session) => {
+                session.emit("assistant.turn_start", { turnId: "0" });
+                session.emit("assistant.message", {
+                    messageId: "m1",
+                    content: "",
+                    toolRequests: [{ toolCallId: "c1", name: "read_file", arguments: { path: "a.txt" } }],
+                });
+                session.emit("tool.execution_start", { toolCallId: "c1", toolName: "read_file", arguments: { path: "a.txt" } });
+                session.emit("tool.execution_complete", { toolCallId: "c1", toolName: "read_file", success: true, result: "ok" });
+                session.emit("assistant.usage", { finishReason: "tool_calls", inputTokens: 1000, outputTokens: 40 });
+                session.emit("assistant.turn_end", { turnId: "0" });
+
+                session.emit("assistant.turn_start", { turnId: "1" });
+                session.emit("assistant.usage", { finishReason: "error", inputTokens: 2000, outputTokens: 100 });
+                managed.requestStop("user stop");
+                managed.abort();
+                session.emit("assistant.turn_end", { turnId: "1" });
+                session.emit("session.idle", {});
+            },
+        ]);
+
+        managed = new ManagedSession("i383-t5d", fake, {});
+        const result = await managed.runTurn("read a.txt");
+
+        expect(fake.sentPrompts).toHaveLength(1);
+        expect(result.type).toBe("stopped");
+        expect(result.reason).toBe("user stop");
+        expect((result.events ?? []).some((event) => event.eventType === "runtime.model_step_error")).toBe(false);
+    });
+
+    it("T5e (unchanged behaviour): an aborted turn is not continued", async () => {
+        let managed;
+        const fake = new FakeCopilotSession([
+            (session) => {
+                session.emit("assistant.turn_start", { turnId: "0" });
+                session.emit("assistant.message", {
+                    messageId: "m1",
+                    content: "",
+                    toolRequests: [{ toolCallId: "c1", name: "read_file", arguments: { path: "a.txt" } }],
+                });
+                session.emit("tool.execution_start", { toolCallId: "c1", toolName: "read_file", arguments: { path: "a.txt" } });
+                session.emit("tool.execution_complete", { toolCallId: "c1", toolName: "read_file", success: true, result: "ok" });
+                session.emit("assistant.usage", { finishReason: "tool_calls", inputTokens: 1000, outputTokens: 40 });
+                session.emit("assistant.turn_end", { turnId: "0" });
+
+                session.emit("assistant.turn_start", { turnId: "1" });
+                session.emit("assistant.usage", { finishReason: "error", inputTokens: 2000, outputTokens: 100 });
+                managed.abort();
+                session.emit("assistant.turn_end", { turnId: "1" });
+                session.emit("session.idle", {});
+            },
+        ]);
+
+        managed = new ManagedSession("i383-t5e", fake, {});
+        const result = await managed.runTurn("read a.txt");
+
+        expect(fake.sentPrompts).toHaveLength(1);
+        expect(result.type).toBe("completed");
+        expect(result.content).toBe("(no response)");
+        expect((result.events ?? []).some((event) => event.eventType === "runtime.model_step_error")).toBe(false);
+    });
 });
