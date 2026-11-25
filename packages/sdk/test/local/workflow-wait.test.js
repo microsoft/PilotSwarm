@@ -278,10 +278,12 @@ describe("workflow wait states", () => {
     // CI run 114 (HorizonDB): 50 idle passes of the controller did not fit in the 15 s wait there, so it elapsed before any
     // continue-as-new. The waits, the outage window and the lateness bounds are scaled together: a timer started again at
     // the restart or at the continue-as-new would still be later than the bound.
+    // Alone on local PostgreSQL the 50 passes take 10-13 s, so in the full suite they sometimes outlasted a 15 s wait
+    // (2026-11-25). The wait is 40 s: a timer started again at the continue-as-new would end those 10 s or more late.
     it("keeps the absolute deadline across a worker restart and across continue-as-new", { timeout: testTime.ms(180_000) }, async () => {
         const restartWait = testTime.seconds(6);
         const outageMs = testTime.ms(2_500);
-        const continueWait = testTime.seconds(15);
+        const continueWait = testTime.seconds(40);
         const lateBoundMs = testTime.ms(2_000);
         const base = await baseOf(getEnv());
         // Whole seconds of at least 2: a shorter activity lock renews no earlier than it expires (duroxide 0.1.32).
@@ -307,12 +309,13 @@ describe("workflow wait states", () => {
             expect((await finished(base.store, restarted.runId)).status).toBe("completed");
             await worker.stopRuntime();
 
-            // A 100 ms backstop continues the controller as new (50 idle waits) during a 15 s wait (scaled).
+            // A 100 ms backstop continues the controller as new (50 idle waits) during a 40 s wait (scaled).
             worker = await harness(getEnv(), { base, runtimeOptions, wakeBackstopMs: 100 });
             workers.push(worker);
             const continued = await napEntered(worker, parent, { seconds: String(continueWait) });
             const afterContinue = await completion(base.store, continued.node.nodeExecutionId);
-            expect((await base.client.listExecutions(continued.controllerInstanceId)).length).toBeGreaterThanOrEqual(2);
+            expect((await base.client.listExecutions(continued.controllerInstanceId)).length, "precondition: a continue-as-new before the wait elapsed")
+                .toBeGreaterThanOrEqual(2);
             expect(lateness(afterContinue)).toBeGreaterThanOrEqual(0);
             expect(lateness(afterContinue)).toBeLessThan(lateBoundMs);
             expect(afterContinue).toMatchObject({ outcome: "elapsed", deadlineAt: continued.node.deadlineAt });
