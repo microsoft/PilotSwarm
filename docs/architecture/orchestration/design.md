@@ -840,10 +840,10 @@ fresh runtime and resumes from its committed snapshot. A session that moves to
 another key releases its old runtime. A client the caller supplied is never
 stopped for being idle. A model's vision lookup uses the runtime the session
 is warm on, or the key it last ran on, and skips a runtime that is being
-stopped. The orchestration does not change: the stop only follows a teardown
-that already dropped the warm session, usually the worker's eviction sweep
-(the live orchestration's hold window rotates affinity and leaves the warm
-session to that sweep).
+stopped or has exited. The orchestration does not change: the stop only
+follows a teardown that already dropped the warm session, usually the
+worker's eviction sweep (the live orchestration's hold window rotates affinity
+and leaves the warm session to that sweep).
 
 Every teardown of a warm session cancels its background tasks
 (`rpc.tasks.cancel`) before it destroys the session: a dehydrate, an idle
