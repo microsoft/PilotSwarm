@@ -44,8 +44,8 @@ For a `decision` state, call `load_skill` with name `workflow-decision`.
 - Every reachable state must reach a terminal.
 - Route every outcome; handle errors by code (`workflow-reference`) or `failure`.
 - Root `catchAll` takes unhandled errors once per run; otherwise they fail the run.
-- Bound every loop via carried data or schema limits. `limits.maxNodeExecutions` (default 1,000) is only the safety cap.
-- Child Workflows: `spawn` starts a saved definition without waiting (`started`); each child end sends built-in `WorkflowEnded@1`; scripts and agent steps use `child_workflows`. Max level is 2.
+- Bound loops with `maxVisits` (`exhausted`) or `wait: { totalSeconds }`. `limits.maxNodeExecutions` (1,000) is the safety cap.
+- Child Workflows: `spawn` starts a definition (`started`); end sends `WorkflowEnded@1`; scripts/agents use `child_workflows`. Max level 2.
 - A deadline (`limits: { timeoutSeconds: 3600 }`) cancels pending work and
   fails the run with `timed_out`, paused or not.
 - Terminal `output` is null unless bound. Root `outputSchema` checks
@@ -53,19 +53,18 @@ For a `decision` state, call `load_skill` with name `workflow-decision`.
 
 ## 4. Move data through the graph
 
-By default each state's output is the next state's input. Without `carry`,
-after `sent` it gets only the receipt; after `responded`, only the response;
-after `declined`, only `{reason}`; after a runtime error, only its envelope.
-To keep entry fields, add `carry: { loop: "${input.loop}" }` to a nonterminal.
-Every route (failure too) delivers `{ carry, result }`; each target
-maps it (`input: { n: "${input.carry.n}" }`) or fails `invalid_input`.
-More: load `workflow-carry`.
+Without `carry`, after `sent` it gets only the receipt; after `responded`,
+only the response; after `declined`, only `{reason}`; after an error, its
+envelope. Do not add a script only to copy data: read earlier output with
+`${states.<id>.output}` (via `input:` in scripts). Use `carry` only to
+freeze entry data across failures; load `workflow-carry`.
 
 | Name | What it is | Binding | In a script |
 |---|---|---|---|
 | inputs | The run's static inputs, checked against `inputs.schema` | `${inputs.x}` | `context.inputs` |
-| input | Previous output or error, wrapped as `{ carry, result }` if declared; first state: `initialInput` (default null). | `${input.x}` | `context.input` |
+| input | Previous output or error (`{ carry, result }` if carried); first state: `initialInput` (default null). | `${input.x}` | `context.input` |
 | kv | The run's open key-value map, as of the state's start | `${kv.x}`, `${kv["any key"]}` | `context.kv` |
+| states | Latest output of `<id>` (`null` if none) | `${states.<id>.output}` | via `input:` |
 | runtime.error | The error envelope on an error route | `${runtime.error}` | — |
 | branch | A parallel branch's item and index, or its name (branch states only) | `${branch.item}`, `${branch.index}`, `${branch.name}` | `context.branch` |
 | parentSessionId | You, the agent that started it | — | `context.parentSessionId` |
@@ -358,9 +357,10 @@ states:
   poll:
     type: script
     timeoutSeconds: 60
+    input: { polls: "${states.poll.output.polls ?? 0}" }
     outcomes: [running, finished, gave_up]
     source: |
-      const polls = (context.input.polls ?? 0) + 1;
+      const polls = context.input.polls + 1;
       const buildId = context.inputs.buildId;
       const status = await callTool("get_build_status", { buildId });
       if (status.state !== "running") await setResult("finished", { buildId, state: status.state });

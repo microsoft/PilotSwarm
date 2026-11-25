@@ -9,8 +9,11 @@ Read `workflow-authoring`. No unbounded or exactly-once execution.
 
 ## Visit budget
 
-`limits.maxNodeExecutions`: default 1,000, maximum 10,000, counting waits,
-branches and terminals. The cap fails with `limit_exceeded`; reserve exit visits.
+Prefer per-state `maxVisits: N` (1–10,000; visit N+1 finishes at entry with
+outcome `exhausted` and its input as output, no effect run) to bound a loop,
+and `wait: { totalSeconds: N }` on `receive` for one total deadline across
+visits from visit 1. `limits.maxNodeExecutions` (default 1,000, max 10,000)
+remains the run-wide safety cap (`limit_exceeded`); reserve exit visits.
 
 Let `B` be the run's visit budget, `R` the visits reserved for setup,
 notifications, errors and the terminal, and `C` the most visits in one

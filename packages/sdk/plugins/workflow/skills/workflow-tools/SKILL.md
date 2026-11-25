@@ -120,9 +120,9 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 - `visit: n` selects only the n-th visit of the state (or tool call's script)
   in its branch/item, starting at 1. With equally specific `arguments`, it
   wins over an unbounded fixture. Use one answer per loop round.
-- `receive`: put the message in `response.value` (no `arguments`). The test
-  delivers it as a real message before the wait passes. Without one, its
-  deadline elapses; without `wait` the test fails.
+- `receive`: put the message in `response.value` (no `arguments`; for a
+  multi-contract receive, `{ contract, payload }` naming a listed contract).
+  Delivered before the wait passes; without one it elapses (or fails without `wait`).
 - `kind: success`: use the tool result, agent `{ outcome, output }`, request
   `{ response }` or `{ decline: { reason } }`, any send value, or a receive
   message per its contract schema. Approval uses

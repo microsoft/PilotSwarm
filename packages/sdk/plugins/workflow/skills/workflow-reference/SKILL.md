@@ -36,7 +36,8 @@ Schema fields: inline, or `$ref` to `schemas`.
 A binding is one whole string `"${root.path}"` or `"${root.path ?? <JSON literal>}"`.
 Roots: `inputs`, `input`, `kv`, `runtime` (`runtime.error`), `branch`
 (`branch.item`, `branch.index`; `branch.name` in named branches; branch
-states only). Path segments: `.name`,
+states only), `states` (`${states.<id>.output}`: latest finished visit
+in this run/branch, `null` when none; frozen at entry). Path segments: `.name`,
 `[index]`, `["any key"]`. A template is any JSON value whose strings may be
 bindings.
 
@@ -56,11 +57,9 @@ Each note: at most 16 KiB UTF-8, no NUL/lone surrogates, never executed.
 Notes are shared with graph readers; no secrets. Absent keys stay absent;
 editing notes makes a new revision/hash, not a run change.
 
-Nonterminals except approval may set `carry: { name: "${input.field}" }`. Before input
-mapping, entry freezes that object (64 KiB). Each route then brings
-`{ carry: snapshot, result: outputOrError }` (256 KiB combined);
-`runtime.error` stays raw. No carry: no wrapper. Failures, parallel states
-and an example: load `workflow-carry`. New 1.1.0 runs only, not 1.0.0.
+Nonterminals take optional `maxVisits` (1–10,000): visit N+1 skips its effect
+and ends at entry with `exhausted` (route required) and its input as output.
+Nonterminals except approval take `carry`: load `workflow-carry`.
 
 ### approval
 
@@ -98,15 +97,16 @@ Outcome: `elapsed` (route required). Output: its input.
 
 | Field | Rule |
 |---|---|
-| `contract` | Required. A root contract. |
+| `contract` | Required. One root contract (or `WorkflowEnded@1`), or a list of 2–8 distinct names. |
 | `from` | Optional: `{ parent: true }`, a session id, or `{ sessionId }` (may be a binding). Without it, any permitted sender. |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
-| `wait` | Optional `{ seconds }` (1 to 86,400, or a binding): the receive races a durable timer. |
+| `wait` | Optional `{ seconds }` (per visit) or `{ totalSeconds }` (from visit 1 across visits), 1–86,400 or a binding; never both. |
 | `input` | Optional template. |
 
-Outcomes: `received` (output: the message payload) and, with `wait`,
-`elapsed` (output: its input). Routes for both are required. A message given
-before the state starts is taken too.
+One name: outcome `received` (output: payload). List: each contract is an
+outcome (no `received`), output `{ contract, from, payload }`, taking the
+earliest match. With `wait`, `elapsed` (output: input) is required; spent
+`totalSeconds` fires `elapsed` at entry. Pre-queued messages are taken too.
 
 ### messaging, mode send
 

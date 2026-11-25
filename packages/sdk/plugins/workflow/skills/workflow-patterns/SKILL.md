@@ -169,7 +169,7 @@ example, the 30-day wait limit and visit-budget arithmetic.
 
 ## Spawning child Workflows
 
-Use `type: spawn` for background children (max 50) without pausing a loop. Collect `WorkflowEnded@1` via `receive` + `wait` + `carry` (inbox acceptance order, not finish order; correlate by `workflowId`; sent only while spawning run is active). Scripts/agent steps use `child_workflows`.
+Use `type: spawn` (max 50) and one `receive` with `[Progress@1, WorkflowEnded@1]`, `from: "${states.<spawn>.output.workflowId}"`, and `wait: { totalSeconds }`. Map state via `input: { before: "${states.<rec>.output.list ?? []}" }` (no `carry`). Scripts/agents use `child_workflows`.
 
 ## Testing these patterns
 
