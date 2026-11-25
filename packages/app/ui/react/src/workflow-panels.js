@@ -222,7 +222,9 @@ function kindProperties(node, current) {
         if (current?.deadline) rows.push(["Deadline", workflowEventTime(current.deadline) ?? current.deadline]);
     }
     if (node.kind === "receive") {
-        rows.push(["Message type", node.contract], ["From", node.from === null ? "Any permitted sender" : node.from === "parent" ? "Parent session" : String(node.from)]);
+        const multi = Array.isArray(node.contract);
+        rows.push([multi ? "Message types" : "Message type", multi ? node.contract.join(", ") : node.contract],
+            ["From", node.from === null ? "Any permitted sender" : node.from === "parent" ? "Parent session" : String(node.from)]);
         if (node.waitSeconds !== undefined) rows.push(["Wait limit", formatSeconds(node.waitSeconds)]);
     }
     if (node.kind === "send" || node.kind === "request") {
@@ -566,6 +568,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
     const chosen = !replay && selection ? workflowShownExecution(selected, runId, selection, branch) : null;
     const visit = workflowDetailsVisit(selected, { current: chosen?.chosen && chosen.execution ? chosen.execution : current,
         frame: replay?.frame ?? null, picked: replay?.picked === true });
+    const visitReceive = selected.kind === "receive"
+        ? workflowNodeSummary(selected, { execution: visit ?? current }).receive : null;
     const io = visit ? workflowVisitIo(selected, visit, { recorded: workflowRecordedVisit(visits, visit), atMs: replay?.frame?.atMs ?? null }) : null;
     const apart = summary.result && (!io || (!replay && io.output.kind === "pending" && summary.result.executionId !== io.id)) ? summary.result : null;
     const apartVisit = apart && io ? (selected.executions ?? []).find(item => item?.id === apart.executionId) : null;
@@ -589,6 +593,13 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             summary.spawn ? fact("Type", "Spawn", { "data-fact": "spawn-type" }) : null,
             summary.spawn?.definition ? fact("Child definition", summary.spawn.definition, { "data-fact": "spawn-definition" }) : null,
             summary.spawn?.revision ? fact("Pinned revision", String(summary.spawn.revision), { "data-fact": "spawn-revision" }) : null,
+            visitReceive?.contracts?.length ? fact(visitReceive.contracts.length > 1 ? "Message types" : "Message type",
+                visitReceive.contracts.join(", "), { "data-fact": "receive-contracts" }) : null,
+            visitReceive?.taken?.contract ? fact("Message taken",
+                visitReceive.taken.senderSessionId
+                    ? `${visitReceive.taken.contract} from ${visitReceive.taken.senderSessionId}`
+                    : visitReceive.taken.contract,
+                { "data-fact": "receive-taken" }) : null,
             summary.decision ? fact("Type", "Decision", { "data-fact": "decision-type" }) : null,
             summary.decision?.model ? fact("Model", summary.decision.model, { "data-fact": "decision-model" }) : null,
             summary.decision?.questionType ? fact("Question", summary.decision.questionType === "noul" ? "Yes or no"

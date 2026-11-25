@@ -1638,7 +1638,7 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     // Reading the contracts runs nothing: a run of request or agent states takes input as any run.
     const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
     const contract = ir.contracts[request.contract];
-    const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
+    const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? (Array.isArray(node.contract) ? node.contract : [node.contract]) : []));
     if (request.contract === WORKFLOW_ENDED_CONTRACT && run.mode !== "test") {
         throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `Contract '${WORKFLOW_ENDED_CONTRACT}' is reserved for the runtime and cannot be sent directly.`,
             { receives: [...received].filter(c => c !== WORKFLOW_ENDED_CONTRACT).sort() });

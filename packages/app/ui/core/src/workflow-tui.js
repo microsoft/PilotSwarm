@@ -1827,6 +1827,10 @@ function detailLines(selection, width, decisionCapability = null) {
         if (decision.warning) add(`! ${decision.warning}`, "yellow");
     }
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
+    if (node.kind === "receive") {
+        const contracts = Array.isArray(node.contract) ? node.contract : typeof node.contract === "string" ? [node.contract] : [];
+        if (contracts.length > 1) add(`Message types: ${contracts.join(", ")}`);
+    }
     if (node.kind === "spawn") {
         add("Type: Spawn", "cyan");
         if (node.definition) add(`Child definition: ${node.definition}${Number.isSafeInteger(node.revision) ? ` (rev ${node.revision})` : ""}`);

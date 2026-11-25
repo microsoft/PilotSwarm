@@ -136,6 +136,9 @@ export function workflowRefusalText(label, message, fallback) {
 
 /** A message contract's name without its version ("DadJoke@1" → "DadJoke"). */
 export function workflowContractName(contract) {
+    if (Array.isArray(contract)) {
+        return contract.map(item => workflowContractName(item)).filter(Boolean).join(", ");
+    }
     const text = typeof contract === "string" ? contract.trim() : "";
     const at = text.lastIndexOf("@");
     return at > 0 ? text.slice(0, at) : text;

@@ -94,7 +94,7 @@ export function testAnswerShapeWords(operation: string, outcomes: readonly strin
     if (operation === "send") return 'A send step\'s answer is { kind: "success", value: <any value> }.' + failure;
     if (operation === "receive") {
         return 'A receive step\'s message is a fixture { operation: "receive", state: "<the receive step>", response: { kind: "success", '
-            + "value: <the message, as its contract's schema says> } }.";
+            + "value: <the message, or { contract, payload } for a multi-contract receive> } }.";
     }
     return 'A tool call\'s answer is { kind: "success", value: <what the tool returns> }.' + failure;
 }
@@ -227,7 +227,11 @@ export function definitionTestFixtureSkeleton(call: { operation: string; tool?: 
         : call.operation === "spawn" ? { workflowId: "test-child-workflow", runId: "test-child-run",
             definition: state?.type === "spawn" ? state.definition : "<definition>", revision: state?.type === "spawn" ? (state.revision ?? 1) : 1 }
         : call.operation === "request" ? { response: "<the answer, as its contract's response schema says>" }
-            : call.operation === "receive" ? "<the message, as its contract's schema says>" : "<any value>";
+            : call.operation === "receive"
+                ? (state?.type === "messaging" && state.mode === "receive" && Array.isArray(state.contract)
+                    ? { contract: state.contract[0], payload: "<the message, as the chosen contract's schema says>" }
+                    : "<the message, as its contract's schema says>")
+                : "<any value>";
     return { operation: call.operation, state: node?.nodeId ?? "?", ...(call.operation === "receive" ? {} : skeletonArguments(node?.input ?? null)),
         ...visit, response: { kind: "success", value } };
 }
@@ -637,8 +641,27 @@ export async function waitSessionWorkflowTest(host: Pick<WorkflowHost, "catalog"
             try {
                 const sender = node.receive.from ?? (await host.catalog.getSession(bench.testId))?.parentSessionId ?? null;
                 if (!sender) throw new WorkflowStoreError("FORBIDDEN", "The test has no session to send its message from.");
-                await sendTypedWorkflowInput(host, { workflowSessionId: bench.testId, senderSessionId: sender, runId: run.runId, contract: node.receive.contract,
-                    correlation: node.receive.correlation, payload: fixture.response.value, operationId: `test-receive:${node.nodeExecutionId}` });
+                let contract: string;
+                let payload: JsonValue;
+                if (Array.isArray(node.receive.contract)) {
+                    const val = fixture.response.value;
+                    if (!isJsonObject(val) || typeof val.contract !== "string" || !Object.hasOwn(val, "payload")
+                        || Object.keys(val).some(k => k !== "contract" && k !== "payload")) {
+                        throw new WorkflowStoreError("TEST_RESPONSE_INVALID",
+                            `A multi-contract receive fixture must give { contract, payload } where contract is one of ${node.receive.contract.join(", ")}.`);
+                    }
+                    if (!node.receive.contract.includes(val.contract)) {
+                        throw new WorkflowStoreError("TEST_RESPONSE_INVALID",
+                            `Contract '${val.contract}' is not accepted by receive state '${node.nodeId}'; expected one of ${node.receive.contract.join(", ")}.`);
+                    }
+                    contract = val.contract;
+                    payload = val.payload;
+                } else {
+                    contract = node.receive.contract;
+                    payload = fixture.response.value;
+                }
+                await sendTypedWorkflowInput(host, { workflowSessionId: bench.testId, senderSessionId: sender, runId: run.runId, contract,
+                    correlation: node.receive.correlation, payload, operationId: `test-receive:${node.nodeExecutionId}` });
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 const details = error instanceof WorkflowStoreError && Array.isArray(error.details)

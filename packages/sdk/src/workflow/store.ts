@@ -333,7 +333,7 @@ export interface WorkflowNodeExecutionRow {
     /** A wait state's absolute deadline, fixed at its admission (migration 0088); null for other states. */
     deadlineAt: Date | null;
     /** What a receive state accepts, resolved when it was admitted (migration 0088); null for other states. */
-    receive: { contract: string; from: string | null; correlation: JsonValue } | null;
+    receive: { contract: string | string[]; from: string | null; correlation: JsonValue } | null;
     enteredAt: Date;
     completedAt: Date | null;
 }
@@ -614,10 +614,24 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
     };
 }
 
+function encodeReceiveContracts(contract: string | readonly string[]): string {
+    return typeof contract === "string" ? contract : contract.join(",");
+}
+
+function parseReceiveContracts(raw: string): string | string[] {
+    return raw.includes(",") ? raw.split(",") : raw;
+}
+
+function receiveClaimResult(isList: boolean, contract: string, senderSessionId: string, payloadText: string): { outcome: string; valueText: string } {
+    if (!isList) return { outcome: RECEIVE_RECEIVED, valueText: payloadText };
+    const payload = parseStoredJson(payloadText, "payload");
+    return { outcome: contract, valueText: canonicalJson({ contract, from: senderSessionId, payload }) };
+}
+
 function receiveOf(row: Row): WorkflowNodeExecutionRow["receive"] {
-    const contract = strOrNull(row, "receive_contract");
-    if (contract === null) return null;
-    return { contract, from: strOrNull(row, "receive_from"), correlation: parseStoredJson(str(row, "receive_correlation"), "receive_correlation") };
+    const raw = strOrNull(row, "receive_contract");
+    if (raw === null) return null;
+    return { contract: parseReceiveContracts(raw), from: strOrNull(row, "receive_from"), correlation: parseStoredJson(str(row, "receive_correlation"), "receive_correlation") };
 }
 
 /** A timestamp column as exact ISO 8601 UTC text with microseconds (a JavaScript Date keeps only milliseconds). */
@@ -4058,7 +4072,7 @@ export class WorkflowStore {
          * and its projection, by refusal.
          */
         receive?: {
-            contract: string;
+            contract: string | string[];
             from: string | null;
             correlationText: string;
             refused: Readonly<Record<Exclude<TypedInputAuthority, "allowed">, { result: NodeResultInput; projection?: SessionProjection }>> | null;
@@ -4283,23 +4297,29 @@ export class WorkflowStore {
             // and the reading is its entered_at (and completed_at when it
             // takes one, or the start of its wait's seconds).
             let decidedAt: string | null = null;
-            let claim: { messageId: string; payloadText: string; contract: string; senderSessionId: string } | null = null;
+            let claim: { messageId: string; payloadText: string; contract: string; senderSessionId: string; outcome: string; valueText: string } | null = null;
+            const receiveIsList = receive ? Array.isArray(receive.contract) : false;
+            const receiveContractText = receive ? encodeReceiveContracts(receive.contract) : null;
             if (receive) {
                 const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
                 decidedAt = str(clock[0], "at");
+                const contractsList = Array.isArray(receive.contract) ? receive.contract : [receive.contract];
                 const { rows: messages } = await client.query(
                     `SELECT message_id, payload, contract, sender_session_id FROM ${this.t.inbox}
-                      WHERE run_id = $1 AND consumed_by IS NULL AND contract = $2 AND ($3::text IS NULL OR sender_session_id = $3)
+                      WHERE run_id = $1 AND consumed_by IS NULL AND contract = ANY($2::text[]) AND ($3::text IS NULL OR sender_session_id = $3)
                         AND correlation = $4 AND expires_at > $5::timestamptz
                       ORDER BY seq LIMIT 1 FOR UPDATE`,
-                    [input.runId, receive.contract, receive.from, receive.correlationText, decidedAt]);
-                claim = messages[0] ? {
-                    messageId: str(messages[0], "message_id"), payloadText: str(messages[0], "payload"),
-                    contract: str(messages[0], "contract"), senderSessionId: str(messages[0], "sender_session_id"),
-                } : null;
+                    [input.runId, contractsList, receive.from, receive.correlationText, decidedAt]);
+                if (messages[0]) {
+                    const contract = str(messages[0], "contract");
+                    const senderSessionId = str(messages[0], "sender_session_id");
+                    const payloadText = str(messages[0], "payload");
+                    const claimedRes = receiveClaimResult(receiveIsList, contract, senderSessionId, payloadText);
+                    claim = { messageId: str(messages[0], "message_id"), payloadText, contract, senderSessionId, ...claimedRes };
+                }
             }
             const result: NodeResultInput | null = immediate
-                ?? (claim ? { outcome: RECEIVE_RECEIVED, resultKind: "business", valueText: claim.payloadText, winner: "message" } : null);
+                ?? (claim ? { outcome: claim.outcome, resultKind: "business", valueText: claim.valueText, winner: "message" } : null);
             // Stage 2.4: a clock wait's deadline, decided once from the accepted-entry reading (a test run's virtual clock):
             // the next time its schedule names after it, DST-safe.
             let clockDeadline: string | null = null;
@@ -4343,7 +4363,7 @@ export class WorkflowStore {
                     result?.resultKind === "business" ? storedResultText(result) : null,
                     result?.resultKind === "runtime_error" ? storedResultText(result) : null,
                     result?.winner ?? null, input.kvRevision, claim ? null : waitSeconds,
-                    receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null, decidedAt,
+                    receiveContractText, receive?.from ?? null, receive?.correlationText ?? null, decidedAt,
                     run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null, clockDeadline, carryText],
             );
             const node = nodeFrom(rows[0]);
@@ -4409,8 +4429,8 @@ export class WorkflowStore {
                 if (projection) {
                     projection = { ...projection, events: [...(projection.events ?? []), { eventType: "workflow.state_completed", data: {
                         runId: node.runId, nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, step: node.ordinal,
-                        outcome: RECEIVE_RECEIVED, resultKind: "business", messageId: claim.messageId, contract: claim.contract,
-                        senderSessionId: claim.senderSessionId, outputPreview: jsonbSafeText(claim.payloadText, 1_000),
+                        outcome: claim.outcome, resultKind: "business", messageId: claim.messageId, contract: claim.contract,
+                        senderSessionId: claim.senderSessionId, outputPreview: jsonbSafeText(claim.valueText, 1_000),
                     } }] };
                 }
             }
@@ -4807,20 +4827,24 @@ export class WorkflowStore {
                 [input.messageId, input.workflowSessionId, run.runId, input.senderSessionId, input.operationId, input.requestSha256,
                     input.contract, input.correlationText, input.payloadText, at, input.ttlSeconds]);
             const { rows: waiting } = await client.query(
-                `SELECT node_execution_id FROM ${this.t.nodes}
-                  WHERE run_id = $1 AND state = 'pending' AND node_type = 'messaging' AND receive_contract = $2
+                `SELECT node_execution_id, receive_contract FROM ${this.t.nodes}
+                  WHERE run_id = $1 AND state = 'pending' AND node_type = 'messaging'
+                    AND (receive_contract = $2 OR $2 = ANY(string_to_array(receive_contract, ',')))
                     AND (receive_from IS NULL OR receive_from = $3) AND receive_correlation = $4
                     AND (deadline_at IS NULL OR deadline_at > $5::timestamptz)
                   ORDER BY entered_at, node_execution_id LIMIT 1 FOR UPDATE`,
                 [run.runId, input.contract, input.senderSessionId, input.correlationText, at]);
             let claimed: WorkflowNodeExecutionRow | null = null;
+            let claimedResult: { outcome: string; valueText: string } | null = null;
             if (waiting[0]) {
+                const isList = str(waiting[0], "receive_contract").includes(",");
+                claimedResult = receiveClaimResult(isList, input.contract, input.senderSessionId, input.payloadText);
                 const { rows: completed } = await client.query(
                     `UPDATE ${this.t.nodes}
                         SET state = 'completed', outcome = $2, result_kind = 'business', output = $3, error = NULL, winner = 'message',
                             completed_at = $4::timestamptz
                       WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
-                    [str(waiting[0], "node_execution_id"), RECEIVE_RECEIVED, input.payloadText, at]);
+                    [str(waiting[0], "node_execution_id"), claimedResult.outcome, claimedResult.valueText, at]);
                 if (!completed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A pending receive changed under its lock.");
                 claimed = nodeFrom(completed[0]);
                 await client.query(`UPDATE ${this.t.inbox} SET consumed_by = $2, consumed_at = $3::timestamptz WHERE message_id = $1`,
@@ -4837,11 +4861,11 @@ export class WorkflowStore {
                 runId: run.runId, messageId: input.messageId, contract: input.contract, senderSessionId: input.senderSessionId,
                 claimedBy: claimed ? claimed.nodeExecutionId : null,
             } }];
-            if (claimed) {
+            if (claimed && claimedResult) {
                 events.push({ eventType: "workflow.state_completed", data: {
                     runId: run.runId, nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId, step: claimed.ordinal,
-                    outcome: RECEIVE_RECEIVED, resultKind: "business", messageId: input.messageId, contract: input.contract,
-                    senderSessionId: input.senderSessionId, outputPreview: jsonbSafeText(input.payloadText, 1_000),
+                    outcome: claimedResult.outcome, resultKind: "business", messageId: input.messageId, contract: input.contract,
+                    senderSessionId: input.senderSessionId, outputPreview: jsonbSafeText(claimedResult.valueText, 1_000),
                 } });
             }
             await this.project(client, { sessionId: input.workflowSessionId, events, update: { touch: true } });

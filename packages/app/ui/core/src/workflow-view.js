@@ -74,7 +74,9 @@ function checkState(node) {
     if (node.type === "wait" && typeof node.seconds !== "number" && typeof node.seconds !== "string" && !isRecord(node.at)) {
         throw invalidState(node, "it has no duration");
     }
-    if (node.type === "messaging" && (!MESSAGING_MODES.has(node.mode) || typeof node.contract !== "string")) {
+    const validContract = typeof node.contract === "string"
+        || (node.mode === "receive" && Array.isArray(node.contract) && node.contract.length >= 2 && node.contract.every(c => typeof c === "string"));
+    if (node.type === "messaging" && (!MESSAGING_MODES.has(node.mode) || !validContract)) {
         throw invalidState(node, "its messaging mode or message type is unknown");
     }
     if (node.type === "agent" && (!isRecord(node.invoke) || (node.invoke.source !== "prompt" && node.invoke.source !== "agent"))) {
@@ -266,7 +268,7 @@ export function workflowNodeLabel(node) {
         case "approval": return "Owner approval";
         case "wait": return typeof node.seconds === "number" ? `Wait · ${formatSeconds(node.seconds)}`
             : workflowClockWaitShort(node.at) ? `Wait · ${workflowClockWaitShort(node.at)}` : "Wait";
-        case "receive": return `Receive · ${node.contract}`;
+        case "receive": return `Receive · ${Array.isArray(node.contract) ? node.contract.join(", ") : node.contract}`;
         case "send": return `Send · ${node.contract}`;
         case "request": return `Ask · ${node.contract}`;
         case "agent": return node.invoke?.source === "agent" ? `Agent · ${node.invoke.name}` : "Agent";
@@ -1020,13 +1022,17 @@ export function describeWorkflowExecution(node, execution, sessionName = null) {
         else if (execution.outcome === "elapsed") lines.push("The wait elapsed.");
     } else if (kind === "receive") {
         const wanted = execution.receive ? { contract: execution.receive.contract, from: execution.receive.from } : { contract: node.contract, from: node.from };
+        const wantedText = Array.isArray(wanted.contract) ? wanted.contract.join(" or ") : wanted.contract;
         if (pending) {
-            lines.push(`Waiting for ${wanted.contract} from ${party(wanted.from)}.`);
+            lines.push(`Waiting for ${wantedText} from ${party(wanted.from)}.`);
             if (execution.deadline) lines.push(`If none arrives by ${workflowShortTime(execution.deadline) ?? execution.deadline}, the node continues on elapsed.`);
-        } else if (execution.outcome === "received") {
+        } else if (execution.outcome === "elapsed") {
+            lines.push("The wait limit passed before a matching message arrived.");
+        } else if (execution.outcome === "received" || (execution.outcome && execution.outcome !== "exhausted" && execution.resultKind !== "runtime_error")) {
+            const tookContract = execution.contract || execution.inbox?.contract || (execution.outcome !== "received" ? execution.outcome : null) || wantedText;
             const from = sessionNamed(sessionName, execution.senderSessionId ?? execution.inbox?.senderSessionId);
-            lines.push(`Received ${execution.contract || wanted.contract}${from ? ` from ${from}` : ""}.`);
-        } else if (execution.outcome === "elapsed") lines.push("The wait limit passed before a matching message arrived.");
+            lines.push(`Received ${tookContract}${from ? ` from ${from}` : ""}.`);
+        }
     } else if (kind === "send") {
         const to = recipient(execution.recipientSessionId || execution.outbox?.recipientSessionId);
         if (pending && execution.outbox?.state !== "delivered") lines.push(`Sending ${node.contract} to ${to}.`);

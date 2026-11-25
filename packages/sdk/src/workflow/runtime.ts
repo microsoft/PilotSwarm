@@ -711,7 +711,7 @@ function envelopeText(envelope: ErrorEnvelope): string {
 
 /** What a receive state accepts, resolved when it is entered (store.enterNode). */
 interface ReceiveSpec {
-    contract: string;
+    contract: string | string[];
     /** The sender session, or null for any sender allowed to give this workflow input. */
     from: string | null;
     /** Canonical JSON of the correlation object a message must carry. */
@@ -1012,11 +1012,13 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
                 outcomes: [REQUEST_RESPONDED, REQUEST_DECLINED], next: node.next,
             };
         }
+        const baseOutcomes = Array.isArray(node.contract) ? [...node.contract] : [RECEIVE_RECEIVED];
         return {
-            id: node.id, type: "messaging", mode: node.mode, contract: node.contract,
+            id: node.id, type: "messaging", mode: node.mode,
+            contract: Array.isArray(node.contract) ? [...node.contract] : node.contract,
             from: node.from === null ? null : "parent" in node.from ? "parent" : workflowBindingView(node.from.sessionId),
             ...(node.waitSeconds !== null ? { waitSeconds: workflowBindingView(node.waitSeconds) } : {}),
-            outcomes: node.waitSeconds !== null ? [RECEIVE_RECEIVED, WAIT_ELAPSED] : [RECEIVE_RECEIVED], next: node.next,
+            outcomes: node.waitSeconds !== null ? [...baseOutcomes, WAIT_ELAPSED] : baseOutcomes, next: node.next,
         };
     }
     if (node.type === "decision") {

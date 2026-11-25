@@ -74,7 +74,8 @@ export function workflowNodeWhat(node) {
         }
         case "receive": {
             const limit = seconds(node.waitSeconds);
-            return `Waits for ${an(node.contract)} message from ${party(node.from)}${limit ? `, for at most ${limit}` : ""}.`;
+            const target = Array.isArray(node.contract) ? node.contract.join(" or ") : an(node.contract);
+            return `Waits for ${target} message from ${party(node.from)}${limit ? `, for at most ${limit}` : ""}.`;
         }
         // Named branches by their names, and a named branch's end.
         case "parallel": return Array.isArray(node.namedBranches)
@@ -274,6 +275,20 @@ export function workflowNodeSummary(node, { execution = node?.current ?? null, e
                 revision: Number.isSafeInteger(node.revision) ? node.revision : null,
                 children: Array.isArray(node.children) ? node.children : [],
             },
+        } : {}),
+        ...(node.kind === "receive" ? {
+            receive: (() => {
+                const contracts = Array.isArray(node.contract) ? [...node.contract]
+                    : typeof node.contract === "string" ? [node.contract] : [];
+                const took = execution && execution.status === "completed" && execution.resultKind !== "runtime_error"
+                    && execution.outcome !== "elapsed" && execution.outcome !== "exhausted"
+                    ? {
+                        contract: execution.contract || execution.inbox?.contract
+                            || (execution.outcome && execution.outcome !== "received" ? execution.outcome : (contracts.length === 1 ? contracts[0] : null)),
+                        senderSessionId: execution.senderSessionId ?? execution.inbox?.senderSessionId ?? null,
+                    } : null;
+                return { contracts, taken: took };
+            })(),
         } : {}),
         runsTitle: node.partial && node.runs ? "Older visits not loaded" : null,
         result: workflowNodeResult(node, execution, { ended }), agent, next: workflowNodeNext(node),
