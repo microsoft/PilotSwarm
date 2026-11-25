@@ -10,6 +10,23 @@ have. Session orchestration stays 1.0.86. Additive CMS migration 0103
 `spawn`) runs when the first new worker starts; keep it in place on rollback
 and drain or stop active 1.3.0 runs before restoring older workers.
 
+### Workflows: simpler loops
+
+Three additions remove bookkeeping scripts and `carry` unwrapping from Workflow
+loops: (1) a `receive` state accepts a list of 2 to 8 contracts (including
+`WorkflowEnded@1`), routing directly on each contract name with output
+`{ contract, from, payload }`; (2) `${states.<id>.output}` reads the latest
+finished result of an earlier state in the same run and branch (or from root),
+frozen at state entry; (3) `maxVisits` bounds visits per non-terminal state
+(routing visit N+1 to `exhausted` before `carry` or `input:` with incoming input
+as output) and `wait: { totalSeconds }` sets one fixed deadline across all
+visits of a `receive` state from its first wait start. At acceptance, a list
+receive refuses any payload whose wrapped envelope exceeds the depth or size
+limit, and the `WorkflowEnded@1` 16 KiB truncation check counts the envelope.
+This change adds no migration and no controller version of its own. A worker
+without it ignores `maxVisits` and `wait.totalSeconds`; the upgrade rule above
+(no rolling deploy) prevents that.
+
 ### Workflows: child Workflows
 
 A Workflow can now start another saved Workflow in the background with a `spawn`
