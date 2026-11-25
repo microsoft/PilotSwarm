@@ -45,7 +45,7 @@ For a `decision` state, call `load_skill` with name `workflow-decision`.
 - Route every outcome; handle errors by code (`workflow-reference`) or `failure`.
 - Root `catchAll` takes unhandled errors once per run; otherwise they fail the run.
 - Bound loops with `maxVisits` (route `exhausted` out; doesn't bound one wait) or receive `wait: { totalSeconds: 120 }` (route `elapsed` out); not interchangeable. `limits.maxNodeExecutions` (default 1,000) is the visit budget.
-- Child Workflows: `spawn` starts a definition (`started`); end sends `WorkflowEnded@1`; scripts/agents use `child_workflows`. Max level 2.
+- Child Workflows: `spawn` (`started`) outputs `{ workflowId, runId, definition, revision }`; `from: "${states.<spawn>.output.workflowId}"`; end sends `WorkflowEnded@1`; `child_workflows`; max level 2.
 - A deadline (`limits: { timeoutSeconds: 3600 }`) cancels pending work and
   fails the run with `timed_out`, paused or not.
 - Terminal `output` is null unless bound. Root `outputSchema` checks

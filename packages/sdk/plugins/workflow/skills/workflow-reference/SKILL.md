@@ -273,7 +273,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 ### spawn
 
-`definition` (required literal name or `<package>/<name>`, never a binding), `inputs` (optional object template), `revision` (optional fixed positive int; else newest valid when the child is admitted), `agentModels` (optional), `carry` (optional). Outcome `started` outputs `{ workflowId, runId, definition, revision }` immediately. Child end delivers built-in `WorkflowEnded@1` while the spawning run is active (inbox acceptance order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; outputs >16 KiB set `outputTruncated: true`). Parent end cancels active children. Direct delete sends no ended message (receive times out); end children via `cancel`/`stop`.
+`definition` (literal name or `<package>/<name>`), `inputs` (object template), `revision` (fixed positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (use `from: "${states.<spawn>.output.workflowId}"`). Child end sends built-in `WorkflowEnded@1` while parent is active (inbox order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; >16 KiB sets `outputTruncated: true`). Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
 
 ### terminal
 
@@ -368,6 +368,7 @@ states:
     type: messaging
     mode: receive
     contract: WorkflowEnded@1
+    from: "${states.go.output.workflowId}"
     wait: { seconds: 300 }
     transition: { next: { received: done, elapsed: fail, failure: fail } }
   done: { type: terminal, outcome: succeeded, output: "${input}" }
