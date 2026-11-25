@@ -31,6 +31,24 @@ jobs:
       - name: Verify exact native artifacts and runtime restart
         run: node --test packages/sdk/test/unit/duroxide-dependency.test.mjs
 
+  workflow-scripts-node26:
+    name: Workflow scripts (Node 26)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '26.13.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Workflow script tests on Node 26's permission model
+        run: |
+          node --test packages/sdk/test/unit/workflow-script-guard.test.mjs \
+            packages/sdk/test/unit/workflow-node-guardrails.test.mjs \
+            packages/sdk/test/unit/workflow-script-tool-result-limit.test.mjs
+
   sdk-unit-windows:
     name: Repository build and SDK unit tests (Windows)
     runs-on: windows-latest
