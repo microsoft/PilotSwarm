@@ -6,6 +6,9 @@ import { otelBoolean } from "./telemetry-config.js";
 type Result = "completed" | "error" | "cancelled" | "stopped" | "yielded";
 type LifecycleResult = "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" | "superseded" | "cancelled" | "unpublished";
 type Operation = "hydration" | "dehydration";
+/** `after_startup` / `during_startup`: an unexpected runtime exit. `unclaimed`: a stdio start bound no runtime. */
+export type CopilotRuntimeOutcome = "after_startup" | "during_startup" | "unclaimed";
+const COPILOT_RUNTIME_OUTCOMES = new Set<CopilotRuntimeOutcome>(["after_startup", "during_startup", "unclaimed"]);
 export type RuntimeMetricUsage = { tokensInput: number; tokensOutput: number; tokensCacheRead: number; tokensCacheWrite: number };
 export type InferenceMetricUsage = { inputTokens: number; outputTokens: number };
 export type InferenceHttpStatusClass = "1xx" | "2xx" | "3xx" | "4xx" | "5xx";
@@ -102,6 +105,7 @@ export function createRuntimeMetrics(
     const tools = counter("pilotswarm.tool.calls");
     const lifecycle = counter("pilotswarm.lifecycle.operations");
     const inferenceCalls = counter("pilotswarm.inference.calls");
+    const runtimeExits = counter("pilotswarm.copilot_runtime.exits");
     const histograms = otelBoolean(env, "PILOTSWARM_OTEL_HISTOGRAMS");
     const turnDuration = histograms ? histogram("pilotswarm.turn.duration") : null;
     const lifecycleDuration = histograms ? histogram("pilotswarm.lifecycle.duration") : null;
@@ -141,6 +145,10 @@ export function createRuntimeMetrics(
         },
         toolCall(result: "success" | "error") {
             observe(() => { if (metricsEnabled()) tools?.add(1, { result }); });
+        },
+        /** A Copilot runtime exited unexpectedly, or a stdio start bound no runtime to watch (issue 329). */
+        copilotRuntime(outcome: CopilotRuntimeOutcome) {
+            observe(() => { if (metricsEnabled() && COPILOT_RUNTIME_OUTCOMES.has(outcome)) runtimeExits?.add(1, { outcome }); });
         },
         startLifecycle(operation: Operation) {
             let started = 0;
@@ -229,6 +237,7 @@ let instance: ReturnType<typeof createRuntimeMetrics> | undefined;
 const noopRuntimeMetrics: ReturnType<typeof createRuntimeMetrics> = {
     startTurn: () => () => {},
     toolCall: () => {},
+    copilotRuntime: () => {},
     startLifecycle: () => () => {},
     startInferenceCall: () => () => {},
 };

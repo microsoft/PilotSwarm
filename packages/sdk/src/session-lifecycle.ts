@@ -33,7 +33,8 @@
  *                 result skips the commit entirely (also unpublished), and so
  *                 does a cancelled attempt (a lost activity lock or a terminal
  *                 cancel aborted it; after a lost lock its retry runs the turn
- *                 again).
+ *                 again), and so does an error result that lost its Copilot
+ *                 runtime connection (issue 329: its local dir may be torn).
  *             c3. write the local version marker (published turns and a
  *                 restored winner only)
  *             c4. clear the turn sentinel (published turns and a restored
@@ -103,25 +104,26 @@ export interface TurnCommitOutcome {
      * Store-wins: whether this commit actually advanced the store.
      *   true  — a new version (or an alreadyCommitted same-turnKey winner) landed.
      *   false — the snapshot was NOT published: the turn was user-stopped, its
-     *           activity was cancelled (a lost lock or a terminal cancel), a
+     *           activity was cancelled (a lost lock or a terminal cancel), it
+     *           lost its Copilot runtime connection (transport_loss), a
      *           discarded/foreign turn advanced the store off our base while
      *           we ran (superseded), or an older build's cancelled attempt of
      *           this turn won the CAS (foreign_cancelled_winner: this turn's
      *           memory is not in the store, which holds that attempt's). For
-     *           the first three the sentinel is left dirty so the next turn
+     *           the first four the sentinel is left dirty so the next turn
      *           rehydrates the winner; the caller emits `snapshot_unpublished`.
      */
     published: boolean;
     /** Why the snapshot was not published (only when `published` is false). */
-    unpublishedReason?: "stopped" | "cancelled" | "superseded" | "foreign_cancelled_winner";
+    unpublishedReason?: "stopped" | "cancelled" | "superseded" | "transport_loss" | "foreign_cancelled_winner";
     /**
      * For a `superseded` or `foreign_cancelled_winner` unpublish: the store
      * coordinates of the writer that won the base — carried from the
      * `SnapshotConflictError` (or the winner's commit) so the emitted
      * `snapshot_unpublished` event can name what superseded this turn (foreign
      * writer vs restore race vs the session's own discarded turn). Absent for a
-     * `stopped` or `cancelled` unpublish (no commit was attempted, so nothing
-     * was observed).
+     * `stopped`, `cancelled` or `transport_loss` unpublish (no commit was
+     * attempted, so nothing was observed).
      */
     observedStoreVersion?: number;
     observedStoreTurnKey?: string;
@@ -446,6 +448,29 @@ export async function runTurnCommit(
             alreadyCommitted: false,
             published: false,
             unpublishedReason: "cancelled",
+        };
+    }
+    // Issue 329: a turn that lost its Copilot runtime (the process exited, or
+    // its connection closed or was disposed) left a local dir the runtime may
+    // have been writing when it died. Committing it would publish a torn
+    // conversation and clear the sentinel, and the orchestration's
+    // connection-closed retry would then resume that torn state. Skip the
+    // commit and leave the sentinel dirty: the retry's preamble (on this
+    // worker or any other) hydrates the last committed snapshot and re-runs
+    // the turn there. Review S1: only ManagedSession's typed flag decides
+    // this, never the message text, so a provider error that merely quotes a
+    // disconnect phrase still commits its valid snapshot.
+    if ((result as any)?.type === "error" && (result as any)?.transportLoss === true) {
+        ctx.trace(
+            `session=${ctx.sessionId} turn lost its Copilot runtime connection: skipping snapshot commit at ` +
+            `base v${baseVersion}; sentinel left dirty for the retry to re-hydrate`,
+        );
+        return {
+            version: baseVersion,
+            contentHash: "",
+            alreadyCommitted: false,
+            published: false,
+            unpublishedReason: "transport_loss",
         };
     }
     return measureLifecycle("dehydration", () => commitTurnSnapshot(ctx, baseVersion, result),

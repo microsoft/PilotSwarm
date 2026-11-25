@@ -7286,6 +7286,880 @@
   }
  },
  {
+  "id": "rl.safety",
+  "module": "RuntimeLoss",
+  "config": "rl.safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_StoreNeverTorn",
+   "Inv_NoDeadWarmReuse",
+   "Inv_NoDeadClientUse",
+   "Inv_PromptSettle",
+   "Inv_LossLeavesSentinelDirty"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Up to three runtime deaths (during a turn, between attempts, after the run) and a move to another worker: nothing torn is committed, no dead warm session or dead client is used, a lost turn settles at the exit and leaves its sentinel dirty.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "rl.safety (rl1; expected PASS): Up to three runtime deaths (during a turn, between attempts, after the run) and a move to another worker: nothing torn is committed, no dead warm session or dead client is used, a lost turn settles at the exit and leaves its sentinel dirty.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StoreNeverTorn",
+    "Inv_NoDeadWarmReuse",
+    "Inv_NoDeadClientUse",
+    "Inv_PromptSettle",
+    "Inv_LossLeavesSentinelDirty"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.live",
+  "module": "RuntimeLoss",
+  "config": "rl.live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [],
+  "properties": [
+   "Prop_TurnCommits"
+  ],
+  "deadlock": true,
+  "note": "Fewer runtime deaths (3) than attempts (4), with a possible move: the turn commits. Fairness on Start, Finish, SettleOnExit, SettleByWatchdog and Postamble; Die and Move are free.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "rl.live (rl1; expected PASS): Fewer runtime deaths (3) than attempts (4), with a possible move: the turn commits. Fairness on Start, Finish, SettleOnExit, SettleByWatchdog and Postamble; Die and Move are free.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_TurnCommits"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.live-one-worker",
+  "module": "RuntimeLoss",
+  "config": "rl.live-one-worker.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [],
+  "properties": [
+   "Prop_TurnCommits"
+  ],
+  "deadlock": true,
+  "note": "One worker (no move): every retry resumes on a fresh runtime here and the turn commits.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "rl.live-one-worker (rl1; expected PASS): One worker (no move): every retry resumes on a fresh runtime here and the turn commits.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "FALSE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_TurnCommits"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.rl-main-torn",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-main-torn.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_StoreNeverTorn"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Main before the fix commits a lost turn's local dir, including what the dying runtime wrote of the turn.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "comparison.rl-main-torn (rl1; expected safety): Main before the fix commits a lost turn's local dir, including what the dying runtime wrote of the turn.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_StoreNeverTorn"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.rl-main-dead-warm",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-main-dead-warm.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoDeadWarmReuse"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Main reuses the warm session whose runtime exited: its send fails at once with Connection is closed.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "comparison.rl-main-dead-warm (rl1; expected safety): Main reuses the warm session whose runtime exited: its send fails at once with Connection is closed.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoDeadWarmReuse"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.rl-main-watchdog",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-main-watchdog.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_PromptSettle"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Main settles a turn whose runtime died only at the 300 s inactivity watchdog.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "comparison.rl-main-watchdog (rl1; expected safety): Main settles a turn whose runtime died only at the 300 s inactivity watchdog.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_PromptSettle"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.rl-main-sentinel",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-main-sentinel.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_LossLeavesSentinelDirty"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Main commits after a transport loss, clearing the turn sentinel, so the retry does not hydrate the last committed snapshot.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "comparison.rl-main-sentinel (rl1; expected safety): Main commits after a transport loss, clearing the turn sentinel, so the retry does not hydrate the last committed snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "Inv_LossLeavesSentinelDirty"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.rl-main-live",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-main-live.cfg",
+  "mode": "comparison",
+  "meaning": "code-main",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [],
+  "properties": [
+   "Prop_TurnCommits"
+  ],
+  "deadlock": false,
+  "note": "Main on one worker: after one turn loss every retry reuses the dead warm session and the turn never commits (the lossy hand-off that ends this on main is not modelled).",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "comparison.rl-main-live (rl1; expected liveness): Main on one worker: after one turn loss every retry reuses the dead warm session and the turn never commits (the lossy hand-off that ends this on main is not modelled).",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "FALSE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"main\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_TurnCommits"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.rl-commit-on-loss",
+  "module": "RuntimeLoss",
+  "config": "fault.rl-commit-on-loss.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_StoreNeverTorn"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The postamble commits a lost turn (runTurnCommit without the transport-loss skip): a torn turn reaches the store.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "fault.rl-commit-on-loss (rl1; expected safety): The postamble commits a lost turn (runTurnCommit without the transport-loss skip): a torn turn reaches the store.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"commit-on-loss\""
+   },
+   "invariants": [
+    "Inv_StoreNeverTorn"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.rl-reuse-warm",
+  "module": "RuntimeLoss",
+  "config": "fault.rl-reuse-warm.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoDeadWarmReuse"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Neither the transport-loss block nor getOrCreate drops a warm session whose runtime exited; a death between turns leaves it to be reused (needs AllowIdleLoss: after a turn loss the dirty sentinel drops it anyway).",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "fault.rl-reuse-warm (rl1; expected safety): Neither the transport-loss block nor getOrCreate drops a warm session whose runtime exited; a death between turns leaves it to be reused (needs AllowIdleLoss: after a turn loss the dirty sentinel drops it anyway).",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"reuse-warm\""
+   },
+   "invariants": [
+    "Inv_NoDeadWarmReuse"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.rl-keep-dead-client",
+  "module": "RuntimeLoss",
+  "config": "fault.rl-keep-dead-client.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_NoDeadClientUse"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "The runtime's exit does not take its client out of the pool: the retry resumes on the dead client.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "fault.rl-keep-dead-client (rl1; expected safety): The runtime's exit does not take its client out of the pool: the retry resumes on the dead client.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"keep-dead-client\""
+   },
+   "invariants": [
+    "Inv_NoDeadClientUse"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "fault.rl-no-exit-watch",
+  "module": "RuntimeLoss",
+  "config": "fault.rl-no-exit-watch.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_PromptSettle"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "No exit watch on the turn: a lost turn settles only at the inactivity watchdog.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "fault.rl-no-exit-watch (rl1; expected safety): No exit watch on the turn: a lost turn settles only at the inactivity watchdog.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"no-exit-watch\""
+   },
+   "invariants": [
+    "Inv_PromptSettle"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "wit.rl-turn-loss-recovered",
+  "module": "RuntimeLoss",
+  "config": "wit.rl-turn-loss-recovered.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoTurnLossRecovered"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable: on one worker a turn whose runtime died is retried on a fresh runtime from the last committed snapshot and commits.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "wit.rl-turn-loss-recovered (rl1; expected safety): Reachable: on one worker a turn whose runtime died is retried on a fresh runtime from the last committed snapshot and commits.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "FALSE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoTurnLossRecovered"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rl-moved-recovery",
+  "module": "RuntimeLoss",
+  "config": "wit.rl-moved-recovery.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoMovedRecovery"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable: a turn whose runtime died is retried on another worker and commits there.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "wit.rl-moved-recovery (rl1; expected safety): Reachable: a turn whose runtime died is retried on another worker and commits there.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoMovedRecovery"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rl-idle-loss-recovered",
+  "module": "RuntimeLoss",
+  "config": "wit.rl-idle-loss-recovered.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoIdleLossRecovered"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable: a runtime that died between turns is replaced and the next turn commits on the fresh runtime.",
+  "batch": "rl1",
+  "tlc": {
+   "comment": "wit.rl-idle-loss-recovered (rl1; expected safety): Reachable: a runtime that died between turns is replaced and the next turn commits on the fresh runtime.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoIdleLossRecovered"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.first-turn-safety",
+  "module": "RuntimeLoss",
+  "config": "rl.first-turn-safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_StoreNeverTorn",
+   "Inv_NoDirtyPublish",
+   "Inv_NoDeadWarmReuse",
+   "Inv_NoDeadClientUse",
+   "Inv_PromptSettle",
+   "Inv_LossLeavesSentinelDirty"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "A first turn (an empty store) with the eviction sweep, the dehydrate activity and the safety checkpoint free to run between attempts, up to three runtime deaths and a move: no legacy path publishes a dirty dir, nothing torn reaches the store.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "rl.first-turn-safety (rl2; expected PASS): A first turn (an empty store) with the eviction sweep, the dehydrate activity and the safety checkpoint free to run between attempts, up to three runtime deaths and a move: no legacy path publishes a dirty dir, nothing torn reaches the store.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"none\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StoreNeverTorn",
+    "Inv_NoDirtyPublish",
+    "Inv_NoDeadWarmReuse",
+    "Inv_NoDeadClientUse",
+    "Inv_PromptSettle",
+    "Inv_LossLeavesSentinelDirty"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.legacy-head-safety",
+  "module": "RuntimeLoss",
+  "config": "rl.legacy-head-safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_StoreNeverTorn",
+   "Inv_NoDirtyPublish",
+   "Inv_NoDeadWarmReuse",
+   "Inv_NoDeadClientUse",
+   "Inv_PromptSettle",
+   "Inv_LossLeavesSentinelDirty"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The same over a legacy (unversioned) snapshot: the guard keeps a lost turn's dir from overwriting it.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "rl.legacy-head-safety (rl2; expected PASS): The same over a legacy (unversioned) snapshot: the guard keeps a lost turn's dir from overwriting it.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"legacy\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StoreNeverTorn",
+    "Inv_NoDirtyPublish",
+    "Inv_NoDeadWarmReuse",
+    "Inv_NoDeadClientUse",
+    "Inv_PromptSettle",
+    "Inv_LossLeavesSentinelDirty"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.versioned-head-sweep-safety",
+  "module": "RuntimeLoss",
+  "config": "rl.versioned-head-sweep-safety.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_StoreNeverTorn",
+   "Inv_NoDirtyPublish",
+   "Inv_NoDeadWarmReuse",
+   "Inv_NoDeadClientUse",
+   "Inv_PromptSettle",
+   "Inv_LossLeavesSentinelDirty"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The same over a versioned head: the sweep only reclaims the dir and the legacy paths write nothing.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "rl.versioned-head-sweep-safety (rl2; expected PASS): The same over a versioned head: the sweep only reclaims the dir and the legacy paths write nothing.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"versioned\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StoreNeverTorn",
+    "Inv_NoDirtyPublish",
+    "Inv_NoDeadWarmReuse",
+    "Inv_NoDeadClientUse",
+    "Inv_PromptSettle",
+    "Inv_LossLeavesSentinelDirty"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rl.first-turn-live",
+  "module": "RuntimeLoss",
+  "config": "rl.first-turn-live.cfg",
+  "mode": "reviewed",
+  "meaning": "confirmed",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [],
+  "properties": [
+   "Prop_TurnCommits"
+  ],
+  "deadlock": false,
+  "note": "A first turn with the sweep, dehydrate and checkpoint free (none of them fair): fewer deaths than attempts, so the turn commits.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "rl.first-turn-live (rl2; expected PASS): A first turn with the sweep, dehydrate and checkpoint free (none of them fair): fewer deaths than attempts, so the turn commits.",
+   "spec": "LiveSpec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"none\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [],
+   "properties": [
+    "Prop_TurnCommits"
+   ],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "comparison.rl-pr-sweep-publishes",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-pr-sweep-publishes.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_StoreNeverTorn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The PR before review M1 (deb02556, before the rebase ce74d928): the eviction sweep archives a first turn's dirty dir (an empty store, so no versioned head), and what the dying runtime wrote becomes the session's snapshot.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "comparison.rl-pr-sweep-publishes (rl2; expected safety): The PR before review M1 (deb02556, before the rebase ce74d928): the eviction sweep archives a first turn's dirty dir (an empty store, so no versioned head), and what the dying runtime wrote becomes the session's snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"none\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"no-publish-guard\""
+   },
+   "invariants": [
+    "Inv_StoreNeverTorn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "comparison.rl-pr-publish-dirty",
+  "module": "RuntimeLoss",
+  "config": "comparison.rl-pr-publish-dirty.cfg",
+  "mode": "comparison",
+  "meaning": "code-before-fix",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "Inv_StoreNeverTorn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "The PR before review M1 (deb02556, before the rebase ce74d928): the dehydrate activity or the safety checkpoint archives a lost turn's dirty dir over a legacy snapshot.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "comparison.rl-pr-publish-dirty (rl2; expected safety): The PR before review M1 (deb02556, before the rebase ce74d928): the dehydrate activity or the safety checkpoint archives a lost turn's dirty dir over a legacy snapshot.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "TRUE",
+    "Head": "\"legacy\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"no-publish-guard\""
+   },
+   "invariants": [
+    "Inv_StoreNeverTorn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rl-first-turn-swept",
+  "module": "RuntimeLoss",
+  "config": "wit.rl-first-turn-swept.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoSweptDirtyRecovered"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable: a first turn's runtime dies, the sweep deletes the dirty dir, and the retry starts from the empty store and commits.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "wit.rl-first-turn-swept (rl2; expected safety): Reachable: a first turn's runtime dies, the sweep deletes the dirty dir, and the retry starts from the empty store and commits.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "FALSE",
+    "Head": "\"none\"",
+    "AllowSweep": "TRUE",
+    "AllowPublish": "FALSE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoSweptDirtyRecovered"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rl-refused-publish-recovered",
+  "module": "RuntimeLoss",
+  "config": "wit.rl-refused-publish-recovered.cfg",
+  "mode": "reviewed",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoRefusedPublishRecovered"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable: dehydrate or checkpoint refuses a lost turn's dirty dir over a legacy snapshot, and the retry hydrates that snapshot and commits.",
+  "batch": "rl2",
+  "tlc": {
+   "comment": "wit.rl-refused-publish-recovered (rl2; expected safety): Reachable: dehydrate or checkpoint refuses a lost turn's dirty dir over a legacy snapshot, and the retry hydrates that snapshot and commits.",
+   "spec": "Spec",
+   "constants": {
+    "MaxTries": "4",
+    "MaxLoss": "3",
+    "AllowIdleLoss": "TRUE",
+    "AllowMove": "FALSE",
+    "Head": "\"legacy\"",
+    "AllowSweep": "FALSE",
+    "AllowPublish": "TRUE",
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoRefusedPublishRecovered"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
   "id": "tc.safety",
   "module": "TurnCut",
   "config": "tc.safety.cfg",

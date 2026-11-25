@@ -232,6 +232,22 @@
     "lists": "block",
     "deadlockFirst": false
   },
+  "RuntimeLoss": {
+    "indent": 4,
+    "constants": [
+      "MaxTries",
+      "MaxLoss",
+      "AllowIdleLoss",
+      "AllowMove",
+      "Head",
+      "AllowSweep",
+      "AllowPublish",
+      "Mode",
+      "Fault"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
   "TurnCut": {
     "indent": 4,
     "constants": [

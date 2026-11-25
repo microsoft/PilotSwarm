@@ -31,6 +31,8 @@ export interface CanvasAppCatalogDeps {
     sessionId: string;
     agentIdentity?: string | null;
     workerNodeId?: string;
+    /** Review S5 (#376): a synchronous check before each write; a turn's bridge passes its fence, which throws to stop. */
+    fence?: (step: string) => void;
 }
 
 export interface PublishCanvasAppArgs {
@@ -84,6 +86,7 @@ export async function publishCanvasApp(deps: CanvasAppCatalogDeps, args: Publish
         // Artifact names are FLAT (the store keeps the basename), so the catalog
         // artifact is `app-<name>.html`, not `apps/<name>.html`.
         const filename = `app-${name}.html`;
+        deps.fence?.("copying the app");
         await artifactStore.uploadArtifact(target, filename, html, "text/html", { pinned: true } as any);
         const armed = normalizeCanvasResponseContract(latest.responseContract);
         const record = buildCanvasAppCatalogRecord({
@@ -96,6 +99,7 @@ export async function publishCanvasApp(deps: CanvasAppCatalogDeps, args: Publish
             publishedAt: new Date().toISOString(),
             tags: Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === "string") : [],
         });
+        deps.fence?.("publishing the card");
         await factStore.storeFact({
             key: `apps/${name}`,
             value: record,

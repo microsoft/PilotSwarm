@@ -94,11 +94,15 @@ The migration also rejects:
 
 ### Session ownership and cold resume
 
-A headless session with an active turn cannot be resumed by a second Copilot
-process. PilotSwarm's existing worker ownership path therefore uses one session
-handle per turn and recycles a disconnected handle instead of opening a second
-concurrent owner. The real-runtime test holds a model request open in one
-process and verifies that a second process cannot resume it.
+The runtime does not fence a second owner. It writes `inuse.<pid>.lock` into the
+session directory, but once an active turn's events are on disk a second Copilot
+process can resume the same session; a resume that races the first
+`events.jsonl` flush fails only as `Session not found`. PilotSwarm's worker
+ownership path therefore uses one session handle per turn and recycles a
+disconnected handle instead of opening a second concurrent owner. The
+real-runtime test holds a model request open in one process, waits for
+`assistant.turn_start` on disk, and records that a second process can resume
+it, so a runtime that adds fencing is noticed.
 
 A clean disconnect and worker stop remain resumable. A separate regression kills
 the owner process with `SIGKILL` after its turn is persisted, then resumes the
@@ -134,6 +138,7 @@ npm run test:unit --workspace=packages/sdk
 npm exec --workspace=packages/sdk -- vitest run \
   test/local/copilot-provider-compatibility.test.js \
   test/local/copilot-runtime-migration.test.js \
+  test/local/runtime-loss.test.js \
   test/local/tool-name-collisions.test.js
 ./scripts/run-tests.sh --all-providers
 node --env-file=.env packages/sdk/test/live-copilot-providers.mjs \
@@ -145,7 +150,14 @@ npm run check:privacy
 ```
 
 The synthetic compatibility tests use a real bundled Copilot process and a
-local model endpoint. They cover all five provider wire paths (OpenAI,
+local model endpoint. `runtime-loss.test.js` SIGKILLs that process mid-turn and
+must stay green on every SDK or Node upgrade: PilotSwarm finds the runtime
+child through Node's experimental `child_process` diagnostics channel and the
+SDK's undocumented `--headless --stdio` arguments (issue 329). If either
+changes, the runtime is no longer watched, a death waits for the turn
+inactivity watchdog, and the worker logs a one-time "no runtime process was
+bound" warning and counts `pilotswarm.copilot_runtime.exits{outcome="unclaimed"}`.
+The compatibility tests cover all five provider wire paths (OpenAI,
 OpenAI-proxy, Azure, Anthropic and Anthropic-WIF), streaming and non-streaming
 turns, an external tool call, usage, warm turns, and cold resume. Their scripted
 request parser ignores runtime 1.0.112's extra user-role `<system_reminder>` and

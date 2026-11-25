@@ -605,20 +605,23 @@ describe("session-proxy CMS prompt classification", () => {
         });
     });
 
-    it("reviews MF-1/MF-2 (#382): a dehydrate that refused to publish a cut turn records snapshot_unpublished, not dehydrated", async () => {
+    it.each([
+        ["review M1 (#376)", "an uncommitted turn", "dirty_turn", "session-dirty"],
+        ["reviews MF-1/MF-2 (#382)", "a cut turn", "turn_cut", "session-cut"],
+    ])("%s: a dehydrate that refused to publish %s records snapshot_unpublished, not dehydrated", async (_review, _what, unpublished, sessionId) => {
         const { dehydrateSession, recordedEvents, sessionManager, catalog } = makeHarness();
-        sessionManager.dehydrate = vi.fn(async () => ({ unpublished: "turn_cut" }));
+        sessionManager.dehydrate = vi.fn(async () => ({ unpublished }));
 
         await expect(dehydrateSession(
             { traceInfo: () => {} },
-            { sessionId: "session-cut", reason: "idle", eventData: { detail: "idle handoff" } },
+            { sessionId, reason: "idle", eventData: { detail: "idle handoff" } },
         )).resolves.toBeUndefined();
 
         expect(recordedEvents).toContainEqual({
             eventType: "session.snapshot_unpublished",
             data: expect.objectContaining({
                 detail: "idle handoff",
-                reason: "turn_cut",
+                reason: unpublished,
                 dehydrateReason: "idle",
                 modelMemoryCommitted: false,
             }),

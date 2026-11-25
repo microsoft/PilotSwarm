@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolBindingHarness } from "../helpers/tool-binding-harness.mjs";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
-import { WorkflowToolAuthorityError } from "../../src/workflow/tool-policy.ts";
+import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, WorkflowToolAuthorityError } from "../../src/workflow/tool-policy.ts";
 import { WorkflowPackageCheckError } from "../../src/workflow/package-pins.ts";
 import { PilotSwarmWorker } from "../../src/worker.ts";
 import { join } from "node:path";
@@ -750,5 +750,25 @@ describe("delegated tool authority read budgets", () => {
         expect(h.manager.workflowBindingRecords.has("child")).toBe(false);
         expect(h.manager.workflowSnapshots.has("child")).toBe(false);
         expect(() => h.child.assertWorkflowToolsOpen()).toThrow("Workflow agent visit is no longer available.");
+    });
+});
+
+describe("issue 329 (review S9): a warm parent whose Copilot runtime exited is not reused", () => {
+    it("a spawn capture resumes the parent on a fresh runtime; a direct capture reports the parent unavailable", async () => {
+        const h = await fixture();
+        const dead = h.manager.sessions.get("parent");
+        const exit = { pid: 4242, code: null, signal: "SIGKILL", requested: false, duringStartup: false };
+        dead.bindRuntimeWatch({ bound: true, exit: () => exit, onExit: (listener) => { listener(exit); return () => {}; } });
+
+        await expect(h.manager.captureWorkflowToolBinding("parent", true)).rejects.toMatchObject({ code: WORKFLOW_PARENT_CONTEXT_UNAVAILABLE });
+        // Like captureSpawnToolsV1, prepareParent runs under the lock captureSpawnTools holds.
+        const prepareParent = vi.fn(() => h.turn("parent", 1, { lockHeld: true }));
+        const captured = await h.manager.captureSpawnTools("parent", { model: "fixture-model" }, undefined, undefined, null, false,
+            prepareParent);
+        expect(prepareParent).toHaveBeenCalledTimes(1);
+        const resumed = h.manager.sessions.get("parent");
+        expect(resumed).toBeTruthy();
+        expect(resumed).not.toBe(dead);
+        expect(captured.toolGrant.tools.map(tool => tool.name)).toContain(h.tool.name);
     });
 });

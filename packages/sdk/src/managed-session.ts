@@ -3,6 +3,8 @@ import { DURABLE_COMPOSITION_SPAWN_DESCRIPTION, DURABLE_SPAWN_DESCRIPTION } from
 import { isCapabilityToolGrant, isToolCeiling, TOOL_CEILING_PARAMETER, TOOL_GRANT_PARAMETER, type CapabilityToolGrant, type ToolCeiling } from "./tool-grant.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
+import { fenceControlBridge } from "./control-bridge-fence.js";
+import { COPILOT_RUNTIME_EXIT_MARKER, copilotRuntimeExitMessage, isCopilotTransportLossMessage, type CopilotRuntimeExit, type CopilotRuntimeWatch } from "./copilot-runtime-monitor.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -595,6 +597,15 @@ function extractAssistantMessageContent(event: any): string | undefined {
     return typeof content === "string" && stripInvisibleContent(content) ? content : undefined;
 }
 
+function hasAssistantStepOutput(eventData: unknown): boolean {
+    if (!eventData || typeof eventData !== "object") return false;
+    const data = eventData as Record<string, unknown>;
+    if (extractAssistantMessageContent({ data }) !== undefined) return true;
+    return hasAssistantToolCalls(data)
+        || (Array.isArray(data.toolRequests) && data.toolRequests.length > 0)
+        || (Array.isArray(data.toolCalls) && data.toolCalls.length > 0);
+}
+
 /**
  * enable_workflows where Workflows are already on, in a session whose Workflows are on demand. Such a session stays declared the
  * tool once they are on: a call of a tool the CLI was not declared is refused by the CLI itself ("Tool 'enable_workflows'
@@ -758,9 +769,17 @@ function formatCurrentModelConfig(config: ManagedSessionConfig): string {
 // text and re-prompt the model — bounded — to actually invoke the tool.
 const MAX_TEXT_TOOL_CALL_CORRECTIONS = 2;
 const MAX_REQUIRED_TOOL_CORRECTIONS = 1;
+const MAX_MODEL_ERROR_CONTINUATIONS = 1;
+const MODEL_STEP_ERROR_MESSAGE =
+    "Model step ended with an upstream error (finishReason: error) without producing any text or tool call.";
 const TEXT_TOOL_CALL_INVOKE_RE = /<(?:antml:)?invoke\s+name\s*=\s*"([^"]+)"/i;
 const TEXT_TOOL_CALL_STRUCTURE_RE = /<\/(?:antml:)?invoke\s*>|<(?:antml:)?parameter\b/i;
 const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
+/**
+ * Issue 329 (review S1/S3): how long a turn error waits for its runtime's exit. The SDK rejects requests when stdio
+ * closes, which can come before the process's exit event; an exit inside this window makes the error a transport loss.
+ */
+const RUNTIME_EXIT_GRACE_MS = 1_500;
 
 // Zombie-turn protection. The Copilot CLI subprocess signals turn completion
 // only via events; if it dies mid-turn (e.g. V8 heap OOM), session.idle never
@@ -830,6 +849,11 @@ function buildRequiredToolCorrection(toolName: string): string {
     return `[SYSTEM: Required-tool contract violation. Your previous response did not invoke the "${toolName}" tool. ` +
         `Claims, estimates, and remembered results do not satisfy this request. Invoke "${toolName}" now using the real ` +
         `tool-calling mechanism, then answer only from its result.]`;
+}
+
+function buildModelStepErrorContinuation(): string {
+    return `[SYSTEM: Your previous response ended with an upstream model error before producing any output. ` +
+        `Continue the task from where you stopped and do not repeat tool calls that already completed.]`;
 }
 
 function hasInvokedTool(events: CapturedEvent[], requiredTool: string): boolean {
@@ -1075,6 +1099,12 @@ export class ManagedSession {
      * session before it commits the snapshot or reuses the session.
      */
     private unsettledRun = false;
+    /**
+     * Issue 329: the runtime process this session's client ran on when the
+     * session was opened. A running turn settles as soon as that runtime
+     * exits, and a session whose runtime exited is never reused.
+     */
+    private runtimeWatch: CopilotRuntimeWatch | null = null;
 
     constructor(
         sessionId: string,
@@ -1704,10 +1734,14 @@ export class ManagedSession {
         let result: TurnResult | undefined;
         let turnError: unknown;
         let failed = false;
+        // Review S2/S3: the loss that ended the turn, decided once (with typed evidence) when the turn failed.
+        let lostBy: string | null = null;
         try {
+            // Issue 329: nothing native runs on after its runtime exited, and its closed connection cannot be asked.
+            const runtimeAlive = (): boolean => !this.runtimeWatch?.exit();
             try {
                 // Also retire native tasks restored from an interrupted worker.
-                if (this.config.nativeSubagents === "sync") await settleNativeSubagents(this.copilotSession);
+                if (this.config.nativeSubagents === "sync" && runtimeAlive()) await settleNativeSubagents(this.copilotSession);
                 result = await this._runTurnInner(prompt, opts);
             } catch (err) {
                 failed = true;
@@ -1715,9 +1749,27 @@ export class ManagedSession {
             }
             // Cleanup failures must escape stop/error classification: the
             // activity cannot commit a snapshot with native work still live.
-            if (this.config.nativeSubagents === "sync") await settleNativeSubagents(this.copilotSession, {
-                rejectRunning: result?.type === "completed" && !this.stopRequest,
-            });
+            // Review S2 (Option A): a settle that fails because the runtime's
+            // connection is gone does not change a result the turn already
+            // had (its runtime's death ended the native agents with it), so
+            // the same exit is classified the same way whether it lands
+            // before, during or after the settle. Without a result, the loss
+            // is the turn's outcome. Any other settle failure escapes.
+            if (this.config.nativeSubagents === "sync" && runtimeAlive()) {
+                try {
+                    await settleNativeSubagents(this.copilotSession, {
+                        rejectRunning: result?.type === "completed" && !this.stopRequest,
+                    });
+                } catch (err) {
+                    const lost = await this.transportLossOf(err);
+                    if (!lost) throw err;
+                    if (!result) {
+                        failed = true;
+                        turnError ??= err;
+                        lostBy = lost;
+                    }
+                }
+            }
             // A stop can arrive DURING cleanup. Classify only after it settles.
             if (this.stopRequest) {
                 return {
@@ -1726,7 +1778,13 @@ export class ManagedSession {
                     ...((result as any)?.events ? { events: (result as any).events } : {}),
                 };
             }
-            if (failed) throw turnError;
+            // Issue 329: a turn that failed because its runtime connection was lost is a retryable transport loss,
+            // never an activity failure (review S3: also when stdio closed before the process's exit event).
+            if (failed) {
+                const lost = lostBy ?? await this.transportLossOf(turnError);
+                if (lost) return { type: "error", message: lost, transportLoss: true };
+                throw turnError;
+            }
             return result!;
         } finally {
             this.activeTurn = null;
@@ -1808,6 +1866,56 @@ export class ManagedSession {
         const unsettled = this.unsettledRun;
         this.unsettledRun = false;
         return unsettled;
+    }
+
+    /** Issue 329: watch the runtime process this session runs on (SessionManager binds it when it opens the session). */
+    bindRuntimeWatch(watch: CopilotRuntimeWatch): void {
+        this.runtimeWatch = watch;
+    }
+
+    /** Issue 329: this session's runtime process exited, so the session can never run again. */
+    get runtimeLost(): boolean {
+        return Boolean(this.runtimeWatch?.exit());
+    }
+
+    /** Issue 329 (review S1): this session's runtime exit, waiting up to `ms` for it; null for an unwatched runtime. */
+    private runtimeExitWithin(ms: number): Promise<CopilotRuntimeExit | null> {
+        const watch = this.runtimeWatch;
+        if (!watch?.bound) return Promise.resolve(null);
+        const exited = watch.exit();
+        if (exited) return Promise.resolve(exited);
+        return new Promise((resolve) => {
+            let settled = false;
+            let off: (() => void) | null = null;
+            const finish = (exit: CopilotRuntimeExit | null) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                off?.();
+                resolve(exit);
+            };
+            const timer = setTimeout(() => finish(null), ms);
+            timer.unref?.();
+            off = watch.onExit(finish);
+            if (settled) off();
+        });
+    }
+
+    /**
+     * Issue 329 (review S1/S3): the message of a turn error that is a transport loss, or null. The evidence is typed
+     * first: the runtime's recorded exit, the monitor's own marker, or an exit within RUNTIME_EXIT_GRACE_MS (stdio can
+     * close, rejecting requests, before the process's exit event). The SDK's disconnect wording is the fallback for a
+     * thrown error, because its disconnect errors carry no type. A `session.error` event never reaches here: it is the
+     * model or provider reporting a failure on a live connection.
+     */
+    private async transportLossOf(err: unknown): Promise<string | null> {
+        const exited = this.runtimeWatch?.exit() ?? null;
+        if (exited) return copilotRuntimeExitMessage(exited);
+        const message = err instanceof Error ? err.message : String(err ?? "");
+        if (message.includes(COPILOT_RUNTIME_EXIT_MARKER)) return message;
+        const exit = await this.runtimeExitWithin(RUNTIME_EXIT_GRACE_MS);
+        if (exit) return copilotRuntimeExitMessage(exit);
+        return isCopilotTransportLossMessage(message) ? message : null;
     }
 
     /**
@@ -2046,7 +2154,9 @@ export class ManagedSession {
     }
 
     private buildToolHandlers(turnState: TurnState, opts?: TurnOptions): Tool<any>[] {
-        const controlBridge = opts?.controlToolBridge;
+        // Review S5 (#376): each bridge call runs in this turn's context, so the bridge stops its remaining steps once
+        // the turn has ended (control-bridge-fence.ts).
+        const controlBridge = fenceControlBridge(opts?.controlToolBridge, turnState.stop?.signal);
 
         // Build system tools (wait tool + ask_user tool)
         const waitTool = defineTool("wait", {
@@ -4052,6 +4162,8 @@ export class ManagedSession {
         // Review Q1 of the owner batch: answer text seen in this run, streamed (a nonempty delta) or final. A run that streamed
         // text and then got the empty-answer error was cut short, not empty: it is never quieted.
         let sawAnswerText = false as boolean;
+        let stepProducedOutput = false as boolean;
+        let lastStepFailedEmpty = false as boolean;
         const textEmittedToolCallRef: { current: { toolName: string; rawContent: string } | null } = { current: null };
 
         // Streaming progress + turn timing state.
@@ -4281,6 +4393,27 @@ export class ManagedSession {
                         trackLateToolCallPiece(eventType, rawEventData);
                     }
                     if (eventType === "tool.execution_start" || eventType === "tool.execution_complete") this.noteNativeTaskCall(eventType, eventData);
+                    if (eventType === "assistant.turn_start") {
+                        stepProducedOutput = false;
+                        lastStepFailedEmpty = false;
+                    } else if (eventType === "tool.execution_start") {
+                        stepProducedOutput = true;
+                        lastStepFailedEmpty = false;
+                    } else if (eventType === "assistant.message") {
+                        if (hasAssistantStepOutput(eventData)) {
+                            stepProducedOutput = true;
+                            lastStepFailedEmpty = false;
+                        }
+                    } else if (eventType === "assistant.usage") {
+                        const finishReason = (eventData && typeof eventData === "object")
+                            ? (eventData as any).finishReason
+                            : undefined;
+                        if (finishReason === "error") {
+                            if (!stepProducedOutput) lastStepFailedEmpty = true;
+                        } else {
+                            lastStepFailedEmpty = false;
+                        }
+                    }
                     const captured: CapturedEvent = { eventType, data: eventData };
                     if (eventType === "session.error" && opts?.quietEmptyAnswer === true && quietedEmptyAnswer === null
                         && isEmptyAnswerQueryError(eventData)) {
@@ -4554,7 +4687,20 @@ export class ManagedSession {
         // Both guards also race the correction-loop idle waits below. Mark
         // their rejections as handled so the loser of a race never surfaces
         // as an unhandled rejection before the finally-block clears its timer.
-        const guards: Promise<void>[] = [timeoutPromise, inactivityPromise]
+        // Issue 329: the runtime guard rejects as soon as the session's
+        // runtime process exits. The SDK leaves requests on a closed
+        // connection pending, so without it the turn would wait for the
+        // inactivity watchdog.
+        const runtimeWatch = this.runtimeWatch;
+        const runtimePromise = runtimeWatch
+            ? new Promise<void>((_, reject) => {
+                unsubscribers.push(runtimeWatch.onExit((exit) => {
+                    this.closeSteerGate();
+                    reject(new Error(copilotRuntimeExitMessage(exit)));
+                }));
+            })
+            : null;
+        const guards: Promise<void>[] = [timeoutPromise, inactivityPromise, runtimePromise]
             .filter((p): p is Promise<void> => p !== null);
         // Q2 (review D2): whether a guard expired, for the step reminder's checks after the run settled.
         let guardExpired = false as boolean;
@@ -4593,6 +4739,8 @@ export class ManagedSession {
             // Review SF-3 (#382): a cancelled activity (a lost lock or a terminal cancel) sends no corrective or reminder prompt.
             if (opts?.mayStillSend?.() === false) return false;
             hooks.beforeSend?.();
+            stepProducedOutput = false;
+            lastStepFailedEmpty = false;
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
             runLive = true;
@@ -4609,6 +4757,30 @@ export class ManagedSession {
             }
             runLive = false;
             return true;
+        };
+
+        const hasUnrecoveredModelStepError = (): boolean => (
+            lastStepFailedEmpty
+            && turnState.pendingActions.length === 0
+            && this.runInterrupt?.reason == null
+            && deferredSessionError === null
+            && quietedEmptyAnswer === null
+            && !collectedEvents.some((e) => e.eventType === "session.error")
+        );
+        const failModelStepError = (): TurnResult => {
+            const diagnostic: CapturedEvent = {
+                eventType: "runtime.model_step_error",
+                data: { final: true, sessionId: this.sessionId },
+            };
+            collectedEvents.push(diagnostic);
+            if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+            const accepted = acceptedWorkspaceChanges(turnState);
+            return {
+                type: "error",
+                message: MODEL_STEP_ERROR_MESSAGE,
+                events: collectedEvents,
+                ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
+            } as any;
         };
 
         const withRequiredTool = (text: string): string => (opts?.requiredTool
@@ -4713,6 +4885,25 @@ export class ManagedSession {
                 await turnComplete;
             }
             runLive = false;
+
+            // ── Guard: final model step ended with finishReason "error" and no output ──
+            let modelErrorContinuations = 0;
+            while (
+                modelErrorContinuations < MAX_MODEL_ERROR_CONTINUATIONS
+                && hasUnrecoveredModelStepError()
+            ) {
+                lastStepFailedEmpty = false;
+                stepProducedOutput = false;
+                modelErrorContinuations++;
+                const diagnostic: CapturedEvent = {
+                    eventType: "runtime.model_step_error",
+                    data: { attempt: modelErrorContinuations, sessionId: this.sessionId },
+                };
+                collectedEvents.push(diagnostic);
+                if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                if (!(await runCorrection({ prompt: buildModelStepErrorContinuation() }))) break;
+            }
+            if (hasUnrecoveredModelStepError()) return failModelStepError();
 
             // ── Guard: tool call emitted as text instead of executed ──────────
             // If the model typed a tool call as `<invoke .../>` text rather than
@@ -4830,6 +5021,7 @@ export class ManagedSession {
                 && scheduleEffect !== "set"
                 && deferredSessionError === null
                 && quietedEmptyAnswer === null
+                && !lastStepFailedEmpty
                 && !collectedEvents.some(event => event.eventType === "session.error")
                 && !hasInvokedTool(collectedEvents, COMPLETE_WORKFLOW_NODE_TOOL)
                 && !turnAskedForAnswer(collectedEvents)
@@ -4876,6 +5068,23 @@ export class ManagedSession {
             // includes extra-folder changes, which never end the turn.
             const accepted = acceptedWorkspaceChanges(turnState);
             const acceptedChange = accepted.length > 0 ? { queuedActions: accepted } : {};
+            // Issue 329: the runtime process exited. Nothing can be aborted or
+            // awaited on its closed connection; the turn settles at once as a
+            // retryable transport-loss error. The message matches
+            // isCopilotConnectionClosedError(), so the activity drops this
+            // warm session without committing its snapshot, and the
+            // orchestration retries on a fresh runtime from the last
+            // committed snapshot.
+            const runtimeExit = this.runtimeWatch?.exit() ?? null;
+            if (runtimeExit || errMsg.includes(COPILOT_RUNTIME_EXIT_MARKER)) {
+                return {
+                    type: "error",
+                    message: runtimeExit ? copilotRuntimeExitMessage(runtimeExit) : errMsg,
+                    transportLoss: true,
+                    events: collectedEvents,
+                    ...acceptedChange,
+                } as any;
+            }
             // Review RT-F1: a turn-control admission failure fails the turn as a retryable error (never stopped: a foreign or
             // unreadable Stop is not applied). The model run it was waiting on is aborted and settled first (or reported
             // unsettled), so nothing of it runs on after this result.
@@ -4913,6 +5122,15 @@ export class ManagedSession {
                     ...acceptedChange,
                 };
             }
+            // Issue 329 (review S1/S3): a send rejected because the runtime's
+            // connection is gone (stdio closed, the exit following within the
+            // grace, or the SDK's disconnect wording) is a transport loss too.
+            // Any tool action the turn queued is dropped with it: the retry
+            // re-runs the turn from the last committed snapshot.
+            const lost = await this.transportLossOf(err);
+            if (lost) {
+                return { type: "error", message: lost, transportLoss: true, events: collectedEvents, ...acceptedChange } as any;
+            }
             // Other send() errors — check if any handler aborted first
             if (turnState.pendingActions.length === 0) {
                 return { type: "error", message: errMsg, ...acceptedChange } as any;
@@ -4947,7 +5165,7 @@ export class ManagedSession {
                 && turnState.pendingActions.length === 0
                 && !collectedEvents.some(e => e.eventType === "tool.execution_start" || e.eventType === "session.error"
                     || e.eventType === "runtime.tool_call_as_text" || e.eventType === "runtime.required_tool_not_invoked"
-                    || e.eventType === "runtime.workflow_step_reminded")
+                    || e.eventType === "runtime.workflow_step_reminded" || e.eventType === "runtime.model_step_error")
                 && (this.steer?.sends ?? 0) === 0;
             if (!nothingElse) {
                 const held: CapturedEvent = quietedEmptyAnswer;
@@ -5040,6 +5258,10 @@ export class ManagedSession {
                 events: collectedEvents,
                 ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
             } as any;
+        }
+
+        if (hasUnrecoveredModelStepError()) {
+            return failModelStepError();
         }
 
         return {
