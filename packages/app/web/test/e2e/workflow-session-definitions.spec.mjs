@@ -807,7 +807,7 @@ test.describe("FUI-F1: a session's definition on a phone held sideways (844 x 39
         await routeSession(page);
         const main = await openTab(page);
         await main.getByRole("combobox", { name: "Revision", exact: true }).selectOption("2");
-        await target(main.locator('[data-field="revision-info"] [data-action="delete"]'), "Delete…");
+        await target(main.locator('[data-field="latest-workflow"] [data-action="delete"]'), "Delete…");
         await main.locator('.ps-wf-head-actions [data-action="start"]').click();
         const start = page.getByRole("dialog", { name: "Start hn-top-watch", exact: true });
         await expect(start).toBeVisible();
@@ -1877,7 +1877,7 @@ test("UX2R-F1: the tab opened on the Definition view names the newest Workflow a
     const main = await openTab(page);
     await expect(main).toHaveAttribute("data-view", "definition");
     const latest = main.locator('[data-field="latest-workflow"]');
-    await expect(latest).toHaveText("Workflow #2 · Running · View it");
+    await expect(latest.locator(".ps-wf-latest-text")).toHaveText("Workflow #2 · Running · View it");
     await shot(page, "ux2r-f1-latest-1440");
     await latest.getByRole("button", { name: "View Workflow #2", exact: true }).click();
     await expect(workflowTab(page)).toHaveAttribute("data-view", "workflows");
