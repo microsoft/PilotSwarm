@@ -685,6 +685,16 @@ tool, `enable_workflows`. Turning them on adds the tools below and about
 | `respond_session_request` | A session with Workflows on | Answer a Workflow's request. |
 | `complete_workflow_node` | Only an agent step's own session | Finish that step. |
 
+The tools' arguments are snake_case (`workflow_id`, `run_id`); their results
+are camelCase (`workflowId`, `runId`). Before anything is read, these tools
+refuse a top-level argument with a capital letter, or one that plainly means
+an argument under another spelling (`runid`, `run-id`). The refusal names the
+argument meant when there is exactly one. For `complete_workflow_node` and
+`respond_session_request` it says that an unknown field goes inside `output`
+or `response`. A call missing a required argument is refused with the names
+of the arguments it did send. Values inside an argument, such as `output` or
+`inputs`, are not checked here, and other unknown lowercase keys are ignored.
+
 ### `enable_workflows`
 
 No arguments. Call it once, when the person asks for a Workflow or agrees to
