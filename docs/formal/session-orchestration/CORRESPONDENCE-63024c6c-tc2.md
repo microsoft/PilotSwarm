@@ -1,21 +1,27 @@
-# TurnCut (tc2) correspondence to 2ab2a85e
+# TurnCut (tc2) correspondence to 63024c6c
 
 Workspace-moves M4 after #367, with the fixes from the review of #382: a runTurn attempt cut by a worker drain, a lost
 activity lock or a terminal cancel, and its retry under the same turnKey. Code at
-`2ab2a85efb1b73c27eafda5992f243eb81ac8bb0` (branch `fix/turn-cut-lost-lock`, based on main `ac86a39e`, PilotSwarm
-0.8.17). Mode `"fix"` is this head. Mode `"head"` is the branch before its review (`2078582c`, whose source
-`9ac0cff5` leaves unchanged; `CORRESPONDENCE-2078582c-tc1.md`); its lines are marked **head**. Mode `"main"` is bound
+`63024c6c91293f91e95990b3dd3208b4ea3ceeea` (branch `fix/turn-cut-lost-lock`, based on main `1f6af957`, PilotSwarm
+0.8.18). Mode `"fix"` is this head. Mode `"head"` is the branch before its review (`f9b958c1`, whose source
+`35a68656` leaves unchanged; `CORRESPONDENCE-f9b958c1-tc1.md`); its lines are marked **head**. Mode `"main"` is bound
 to `ac86a39e` (0.8.16 and 0.8.17, which include #367); its lines are marked **main**. Mode `"old"` is v0.6.0, the
 first versioned-snapshot release, to 0.8.15 (before #367); its lines are marked **old**. Modes `"upgrade-main"` and
-`"upgrade-old"` run main's or the old code on worker A and this head on worker B. Line numbers are at `2ab2a85e`
-unless marked. `worker.ts` is unchanged from `2078582c`.
+`"upgrade-old"` run main's or the old code on worker A and this head on worker B. Line numbers are at `63024c6c`
+unless marked. `worker.ts` is unchanged from `f9b958c1`.
+
+The batch was first bound to the same code on main `ac86a39e` (0.8.17), before the rebase. Between `ac86a39e` and
+`1f6af957` (0.8.18), main's only source changes are outside the modelled paths: a session without native tasks gets no
+custom agents (`session-manager.ts` 3421-3428 at this head), and doc comments in `types.ts`. The first moves the
+`session-manager.ts` lines after it by four. Every bound line was re-read at `63024c6c` and is unchanged; the other
+bound source files and the tests below are unchanged. So 0.8.18 behaves as mode `"main"`.
 
 | Model | Code | Label |
 |---|---|---|
 | `A1Cancel`: the drain deadline, a lost lock or a terminal cancel cancels the activity; not fair | `worker.ts` `gracefulShutdown` 1360 `runtime.shutdown(drainBudgetMs)` cancels the activities still running at the deadline; duroxide cancels an activity whose lock was lost, and the running activity of a session that is cancelled or deleted | Code behavior; the lack of fairness is the model's (review C-5): a cancel is an external event |
 | `term => lc /\ ~drain`: a terminal cancel is not retried | the orchestration ends the session and runs `destroySession` (`session-proxy.ts` 6071) instead of another attempt; a terminal cancel of a turn without the lifecycle protocol is not modelled | Model simplification |
 | `A1Latch`: the body latches the cancel; `localA' = "cut"` | the aborted body may have written part of the turn to the session's local dir | Model simplification |
-| `A1Latch`, `MarkCut`: any latched cancel marks the session | `session-proxy.ts` `latchCancelled` 4337-4341 calls `markTurnCut(sessionId, turnGeneration)` (`session-manager.ts` 4369-4371) unless the attempt already saved its turn (`turnSaved`); its callers are the cancel poll 4353 and `lockCut` 4345-4351, which every send and recovery reads (5034, 5046, 5052, 5106, 5170) | Code behavior |
+| `A1Latch`, `MarkCut`: any latched cancel marks the session | `session-proxy.ts` `latchCancelled` 4337-4341 calls `markTurnCut(sessionId, turnGeneration)` (`session-manager.ts` 4373-4375) unless the attempt already saved its turn (`turnSaved`); its callers are the cancel poll 4353 and `lockCut` 4345-4351, which every send and recovery reads (5034, 5046, 5052, 5106, 5170) | Code behavior |
 | `A1Latch`, `MarkCut`, a drain: marked from **main** on | `session-proxy.ts` `throwIfDrainCut` 1737-1742 and `runBody` 5433; unchanged from **main** | Code behavior |
 | `A1Latch`, `MarkCut`, **main** and **old**, a lost lock: no mark | **main** the cancel poll sets `cancelled = true` only; **old** has no `cutTurns` | Code behavior |
 | a cancel latched after the attempt's commit published (or restored a winner) marks nothing, and clears a mark already set | `session-proxy.ts` 5478-5484 (`turnSaved`, review SF-1) | Not modelled (an attempt that completes before its cancel lands); `turn-control-run-turn.test.js` 839 |
@@ -25,20 +31,20 @@ unless marked. `worker.ts` is unchanged from `2078582c`.
 | `A1Return`, `SkipCutCommit`, a drain: no commit | `session-proxy.ts` 5476 `throwIfDrainCut("before the snapshot commit")` (#367, unchanged) | Code behavior |
 | `A1Return`, **main** (a lost lock) and **old** (both): the cut body is saved under the turnKey with its cancelled result | **main** `session-lifecycle.ts` `runTurnCommit` commits every result but a stopped one | Code behavior |
 | `A1Return`, `storeVer # 0`: nothing is written | `session-lifecycle.ts` `commitTurnSnapshot` 456-: the store reports this turnKey committed (the retry won) or a foreign version superseded the base | Code behavior |
-| `SdBegin`: a graceful shutdown begins after an ordinary cut; no attempt starts on A from then on; not fair | `worker.ts` 1314 `beginDrain` (`session-manager.ts` 4349-4351); `isDraining` 4357 | Code behavior (review SF-6) |
-| `SdRelease`: skip a locked session and, with `ReleaseSkip`, a marked one | `worker.ts` 1382 `releaseIdleWorkspaces`; `session-manager.ts` 4215 filters out `sessionLocks` and `_drainKeepsCut` (4390-4394: marked, and this generation drains) | Code behavior |
+| `SdBegin`: a graceful shutdown begins after an ordinary cut; no attempt starts on A from then on; not fair | `worker.ts` 1314 `beginDrain` (`session-manager.ts` 4353-4355); `isDraining` 4361 | Code behavior (review SF-6) |
+| `SdRelease`: skip a locked session and, with `ReleaseSkip`, a marked one | `worker.ts` 1382 `releaseIdleWorkspaces`; `session-manager.ts` 4219 filters out `sessionLocks` and `_drainKeepsCut` (4394-4398: marked, and this generation drains) | Code behavior |
 | `SdSweep`: skip a locked session and, while draining, a marked one (`SweepSkips`); else release its workspace, then reclaim | `worker.ts` 1402 `sweepIdleSessions(1)`; `session-manager.ts` 2128 and 2135 (`_drainKeepsCut`, before and under the session lock); the workspace release or handle destroy 2142-2149; the dir 2150-2192 | Code behavior |
-| `SweepSkips`, **head** and **main**: every sweep skips a marked session | **head** `session-manager.ts` (at `2078582c`) 2125 `if (this.isTurnCut(sessionId)) continue` | Code behavior |
+| `SweepSkips`, **head** and **main**: every sweep skips a marked session | **head** `session-manager.ts` (at `f9b958c1`) 2125 `if (this.isTurnCut(sessionId)) continue` | Code behavior |
 | `EvSweep`: without a drain the eviction sweep may reclaim A's dir once the attempt returned; live, it reclaims a marked session (`liveReclaim`, review MF-1) | `worker.ts` 1194 the eviction clock's `sweepIdleSessions(evictAfterMs)` (35 minutes by default, 1191); `_drainKeepsCut` is false on a live worker | Code behavior; the model has no time, so it claims nothing about the order of this reclaim against B's attach |
-| `Blocked`: the legacy publish guard, a dirty turn sentinel or a cut mark | `session-manager.ts` `_legacyPublishBlocker` 3748-3751 (`readTurnSentinel`, `snapshot-protocol.ts` 217; `isTurnCut` 4382) | Code behavior (reviews MF-1, MF-2) |
+| `Blocked`: the legacy publish guard, a dirty turn sentinel or a cut mark | `session-manager.ts` `_legacyPublishBlocker` 3752-3755 (`readTurnSentinel`, `snapshot-protocol.ts` 217; `isTurnCut` 4386) | Code behavior (reviews MF-1, MF-2) |
 | `ReclaimA`: delete when the dir holds a committed marker, the store chain is versioned or the dir is `Blocked`; else a legacy dehydrate publishes it; the fix clears the mark after the cleanup | `session-manager.ts` 2157-2160 (marker), 2161-2172 (`probeSnapshot`, versioned), 2173-2179 (`_legacyPublishBlocker`, `rmSync`), 2180-2184 `_dehydrateUnlocked`; `clearTurnCut` 2153 (no dir) and 2191 | Code behavior |
-| `ReclaimA`'s publish rule, the dehydrate and checkpoint activities | `session-manager.ts` `_dehydrateUnlocked` 3773-3786 (refuses before the safety checkpoint and the archive, drops the warm handle, keeps the dir and the mark, returns `{ unpublished }`); `checkpoint` 4298-4302; `session-proxy.ts` 5943-5966 (the dehydrate activity records `session.snapshot_unpublished` and returns as after a dehydrate), 6174-6179 (`checkpointSession`) | Not modelled apart from the sweep (the rule is the same); `session-workspace-release.test.mjs`, `session-proxy-events.test.js` 608 |
+| `ReclaimA`'s publish rule, the dehydrate and checkpoint activities | `session-manager.ts` `_dehydrateUnlocked` 3777-3790 (refuses before the safety checkpoint and the archive, drops the warm handle, keeps the dir and the mark, returns `{ unpublished }`); `checkpoint` 4302-4306; `session-proxy.ts` 5943-5966 (the dehydrate activity records `session.snapshot_unpublished` and returns as after a dehydrate), 6174-6179 (`checkpointSession`) | Not modelled apart from the sweep (the rule is the same); `session-workspace-release.test.mjs`, `session-proxy-events.test.js` 608 |
 | `markerA = ~first` (with `lc`) | the marker of the last commit stays in the dir while a turn runs (`snapshot-protocol.ts` `writeTurnSentinel` 226 does not remove it); a first turn has none | Code behavior |
 | `sentA = "dirty"` with `lc` | the lifecycle protocol writes the turn sentinel before the body; a turn without it writes none, so the mark must block on its own (`fault.tc-sentinel-only-guard`) | Code behavior |
-| `Destroy`: a terminal cancel or delete; releases the workspace, drops the handle, clears the mark; the dir is left to the sweep | `session-proxy.ts` 6071-6095 the `destroySession` activity; `session-manager.ts` `destroySession` 4220-4235, `clearTurnCut` 4233 (review SF-1) | Code behavior |
+| `Destroy`: a terminal cancel or delete; releases the workspace, drops the handle, clears the mark; the dir is left to the sweep | `session-proxy.ts` 6071-6095 the `destroySession` activity; `session-manager.ts` `destroySession` 4224-4239, `clearTurnCut` 4237 (review SF-1) | Code behavior |
 | `Destroy`, **head**: the mark stays | **head** `destroySession` does not touch `cutTurns` | Code behavior |
 | `A2Fail`: the retry's preamble probe on A fails; the fix keeps the mark | `session-proxy.ts` 2147 `runTurnPreamble` throws before 2148 `clearTurnCut` (review MF-2) | Code behavior |
-| `A2Fail`, `ProbeClears`, **head**: the mark is already cleared | **head** `session-proxy.ts` (at `2078582c`) 2085 `clearTurnCut` at the start of the run-turn lock body | Code behavior |
+| `A2Fail`, `ProbeClears`, **head**: the mark is already cleared | **head** `session-proxy.ts` (at `f9b958c1`) 2085 `clearTurnCut` at the start of the run-turn lock body | Code behavior |
 | `A2Start` on A: only after a lost lock, once the attempt returned, while A is live; the fix clears the mark once the preamble resolved the session | `session-proxy.ts` 2148 (lifecycle) and 2125 (without the lifecycle protocol, at once) | Code behavior; a retry on A without the lifecycle protocol is not modelled |
 | `A2Start`: resolve from the store (`loc2' = storeC`) | `session-lifecycle.ts` `runTurnPreamble` 273-: a dirty sentinel (275) or no usable dir resolves from the store (`resolveFromStore` 232, called at 347 and 371) | Code behavior |
 | `A2Start`, `storeKey = "cancelled"`, `RecoverNoAdopt`: run the turn on top of it | `session-lifecycle.ts` `recoverAlreadyCommitted` 197-229: a cancelled result under this turnKey (204-214) degrades to a hydrated re-run at the stored version | Code behavior |
@@ -49,7 +55,7 @@ unless marked. `worker.ts` is unchanged from `2078582c`.
 | `A2Commit`, **head**: return its own result as published | **head** `commitTurnSnapshot` returns `published: true` with no `storedResult` | Code behavior; not distinguished by the model (`residual` in both) |
 | `A2Commit`, **main** and **old**: adopt the stored cancelled result (`dropped`) | **main** `commitTurnSnapshot` returns `storedResult` for any readable result under this turnKey | Code behavior |
 | one retry; the retry on A never beside a retry on B; no retry on A in the upgrade modes | the orchestration runs one attempt at a time per turn; in an upgrade A runs the older release, whose retry the `"main"` and `"old"` modes cover | Model simplification |
-| no worker restart | `worker.ts` 743 `startGeneration` clears every mark (`session-manager.ts` 4337-4340) | Model simplification |
+| no worker restart | `worker.ts` 743 `startGeneration` clears every mark (`session-manager.ts` 4341-4344) | Model simplification |
 | `Inv_NoCancelledCommit`, `Inv_TurnNotDropped`, `Inv_NoAbortedHandOff`, `Inv_ShutdownKeepsCut`, `Inv_DrainKeepsCut`, `Inv_NoCutPublish` | a cut attempt is never saved; the retry runs the turn from the last commit; a draining worker leaves a cut session as if its turn still ran, whether the drain cut it or it was cut before the shutdown began (review SF-6); no legacy path publishes a cut attempt's files (review MF-2) | Rule to evaluate |
 | `Prop_TurnRuns`, `Prop_LiveRelease`, `Prop_EndReclaims` | a cut that is not terminal leads to the retry running the turn; a live A releases a cut session whose retry went to B (review MF-1); a destroyed session loses its local dir (review SF-1) | Rule to evaluate, under the stated fairness |
 
@@ -78,7 +84,8 @@ Not modelled:
 - the workspace provider and the partial-changes note;
 - the snapshot store's CAS beyond the turnKey rule (`TurnCommit.tla`, `SnapshotWarmDrop.tla`).
 
-Test evidence (each fails with its fix reverted and passes at this head):
+Test evidence (each fails with its fix reverted and passed before the rebase; the rebase changed neither these tests
+nor the code they cover):
 
 - `packages/sdk/test/unit/session-workspace-release.test.mjs`: while the worker drains, a cut session is neither
   released nor swept; on a live worker the sweep reclaims a cut session without publishing it (it cancels the shells,

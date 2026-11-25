@@ -16,7 +16,7 @@
 (* commit and marks the session cut (markTurnCut); a graceful shutdown's   *)
 (* workspace release and every sweep skip a marked session. A lost lock    *)
 (* outside a drain still saves "cancelled", sets no mark, and is adopted.  *)
-(* Mode "head" (this branch before its review, 9ac0cff5): the fix below,   *)
+(* Mode "head" (this branch before its review, 35a68656): the fix below,   *)
 (* except that every sweep skips a marked session (during a drain or not), *)
 (* no legacy path checks the files before it publishes them, the retry on  *)
 (* A clears the mark before its preamble's probe, and destroySession keeps *)

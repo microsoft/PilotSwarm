@@ -7523,10 +7523,10 @@
   ],
   "properties": [],
   "deadlock": false,
-  "note": "This branch before its review (9ac0cff5): the retry on A clears the mark before its preamble's probe; when the probe fails, the eviction sweep publishes a cut first turn's dir the legacy way (review MF-2).",
+  "note": "This branch before its review (35a68656): the retry on A clears the mark before its preamble's probe; when the probe fails, the eviction sweep publishes a cut first turn's dir the legacy way (review MF-2).",
   "batch": "tc2",
   "tlc": {
-   "comment": "comparison.tc-head (tc2; expected safety): This branch before its review (9ac0cff5): the retry on A clears the mark before its preamble's probe; when the probe fails, the eviction sweep publishes a cut first turn's dir the legacy way (review MF-2).",
+   "comment": "comparison.tc-head (tc2; expected safety): This branch before its review (35a68656): the retry on A clears the mark before its preamble's probe; when the probe fails, the eviction sweep publishes a cut first turn's dir the legacy way (review MF-2).",
    "spec": "Spec",
    "constants": {
     "Mode": "\"head\"",
@@ -7552,10 +7552,10 @@
    "Prop_LiveRelease"
   ],
   "deadlock": false,
-  "note": "This branch before its review (9ac0cff5): every sweep skips a marked session, so a live A keeps a lost-lock cut session's workspace, shells and dir after its retry went to B (review MF-1).",
+  "note": "This branch before its review (35a68656): every sweep skips a marked session, so a live A keeps a lost-lock cut session's workspace, shells and dir after its retry went to B (review MF-1).",
   "batch": "tc2",
   "tlc": {
-   "comment": "comparison.tc-head-live (tc2; expected liveness): This branch before its review (9ac0cff5): every sweep skips a marked session, so a live A keeps a lost-lock cut session's workspace, shells and dir after its retry went to B (review MF-1).",
+   "comment": "comparison.tc-head-live (tc2; expected liveness): This branch before its review (35a68656): every sweep skips a marked session, so a live A keeps a lost-lock cut session's workspace, shells and dir after its retry went to B (review MF-1).",
    "spec": "LiveSpec",
    "constants": {
     "Mode": "\"head\"",
@@ -7581,10 +7581,10 @@
    "Prop_EndReclaims"
   ],
   "deadlock": false,
-  "note": "This branch before its review (9ac0cff5): destroySession keeps the mark, so after a terminal cancel every sweep skips the session and its dir is never reclaimed (review SF-1).",
+  "note": "This branch before its review (35a68656): destroySession keeps the mark, so after a terminal cancel every sweep skips the session and its dir is never reclaimed (review SF-1).",
   "batch": "tc2",
   "tlc": {
-   "comment": "comparison.tc-head-end (tc2; expected liveness): This branch before its review (9ac0cff5): destroySession keeps the mark, so after a terminal cancel every sweep skips the session and its dir is never reclaimed (review SF-1).",
+   "comment": "comparison.tc-head-end (tc2; expected liveness): This branch before its review (35a68656): destroySession keeps the mark, so after a terminal cancel every sweep skips the session and its dir is never reclaimed (review SF-1).",
    "spec": "LiveSpec",
    "constants": {
     "Mode": "\"head\"",

@@ -129,12 +129,13 @@ Bound to `bb162ed8` (`CORRESPONDENCE-bb162ed8-so5b.md`):
 |---|---|
 | `CarriedGiveBack` | `queue.ts`: `markCarriedWork` 456 (called at 1346), `giveBackCarriedWork` 413 (same pass), `observedChronology` 485, `giveBackDroppedPromptWork` 506 (decide-merge 1589-1590, decide-fifo 1703-1705), `peekNextDispatchFifoItem` 259 and the sweep before the pop (1685-1690); `lifecycle.ts` `restorePendingChildDigest` 486-512 |
 
-Bound to `2ab2a85e` (`CORRESPONDENCE-2ab2a85e-tc2.md`; mode `"head"` to `2078582c`, the branch before its review,
-whose binding is `CORRESPONDENCE-2078582c-tc1.md`; mode `"main"` to `ac86a39e`, 0.8.17):
+Bound to `63024c6c` (`CORRESPONDENCE-63024c6c-tc2.md`; mode `"head"` to `f9b958c1`, the branch before its review,
+whose binding is `CORRESPONDENCE-f9b958c1-tc1.md`; mode `"main"` to `ac86a39e`, 0.8.17; main `1f6af957`, 0.8.18, changes
+no modelled code):
 
 | Module | Code |
 |---|---|
-| `TurnCut` | `session-lifecycle.ts` `runTurnCommit` 438-450 (the cancelled skip), `recoverAlreadyCommitted` 197-229 and `commitTurnSnapshot` 456-508 (no adoption of a cancelled result; `foreign_cancelled_winner` 487-508); `session-proxy.ts` `latchCancelled` 4337-4341 and `lockCut` 4345-4351, `clearTurnCut` 2125 and 2148 (after the preamble), the drain cut 1737-1742 and 5433, `turnSaved` 5478-5484; `session-manager.ts` `markTurnCut`/`clearTurnCut`/`isTurnCut`/`_drainKeepsCut` 4369-4394, `_legacyPublishBlocker` 3748-3751 (used by `_dehydrateUnlocked` 3773-3786, `checkpoint` 4298-4302 and the sweep 2173-2179), the sweep's drain skip 2128 and 2135 and its clears 2153 and 2191, `releaseIdleWorkspaces` 4215, `destroySession` 4233; `worker.ts` 1194, 1314, 1382 and 1402 |
+| `TurnCut` | `session-lifecycle.ts` `runTurnCommit` 438-450 (the cancelled skip), `recoverAlreadyCommitted` 197-229 and `commitTurnSnapshot` 456-508 (no adoption of a cancelled result; `foreign_cancelled_winner` 487-508); `session-proxy.ts` `latchCancelled` 4337-4341 and `lockCut` 4345-4351, `clearTurnCut` 2125 and 2148 (after the preamble), the drain cut 1737-1742 and 5433, `turnSaved` 5478-5484; `session-manager.ts` `markTurnCut`/`clearTurnCut`/`isTurnCut`/`_drainKeepsCut` 4373-4398, `_legacyPublishBlocker` 3752-3755 (used by `_dehydrateUnlocked` 3777-3790, `checkpoint` 4302-4306 and the sweep 2173-2179), the sweep's drain skip 2128 and 2135 and its clears 2153 and 2191, `releaseIdleWorkspaces` 4219, `destroySession` 4237; `worker.ts` 1194, 1314, 1382 and 1402 |
 
 ## 3. Case taxonomy and expected results
 
@@ -172,7 +173,7 @@ The 26 `TurnCut` cases come from batch tc2, which replaced tc1's 15. `tc.*` are 
 and as the second worker of an upgrade from 0.8.16/0.8.17 (`upgrade-main`) or v0.6.0-0.8.15 (`upgrade-old`);
 `comparison.tc-main*` model 0.8.17 (a lost lock drops the turn; the shutdown already keeps a drain-cut session, but
 not one cut by a lost lock before the shutdown began); `comparison.tc-head*` model the branch before its review
-(`2078582c`: a legacy sweep publishes the cut files once the retry's failed probe cleared the mark, a live worker
+(`f9b958c1`: a legacy sweep publishes the cut files once the retry's failed probe cleared the mark, a live worker
 never releases a cut session whose retry ran elsewhere, a destroyed session keeps its mark and dir); the eleven
 `fault.tc-*` remove one protection each and must fail; the five `wit.tc-*` witnesses show reachable behavior: the cut
 body returning before the shutdown's release, the upgrade residual (after 0.8.17 saved the cancelled attempt, the
@@ -349,7 +350,7 @@ deletion first and runs no model and no tool (review DR2-001, `session-proxy.ts`
 dropped; a frozen version's turn, or a worker without the Workflow store, has no such guard. For a Workflow agent session the same guard is checked by
 `fix.cc-dr2-001-*` and `impl.cc-final-live` in `../workflow/continued-session/`.
 
-### Batch tc1 (2026-11-24, bound to `2078582c`): a turn whose activity lock was lost
+### Batch tc1 (2026-11-24, bound to `f9b958c1`): a turn whose activity lock was lost
 
 0.8.16 (#367) stopped saving a turn the worker's drain cuts and marks the session cut so the shutdown leaves it held.
 A lost lock outside a drain still saved the cancelled attempt under the turn's key, and the retry adopted it: the
@@ -366,10 +367,16 @@ Run (2026-11-24, TLC 2.19, `-workers 2 -Xmx2g`, 300 s per case, every case under
 `W_*` predicate); 0 unexpected, 0 PARTIAL, 0 VOID. The adopt-commit trace adopts at `A2Commit` after A's 0.8.17 body
 saved the cancelled attempt, the adopt-recover trace at `A2Start`.
 
+First run at `2078582c` (main `ac86a39e`). Re-run on 2026-11-24 after the rebase onto main `1f6af957` (0.8.18), with
+the code bound to `f9b958c1` and the model and cases from `35a68656` (byte-identical to the first run's): the same 15
+results. The PASS cases found 122 (`tc.safety`, `tc.live`), 140 (`tc.upgrade-main`), 196 (`tc.upgrade-old`) and 136
+(`comparison.tc-main-release`) distinct states; the first run recorded no counts. 0.8.18 moved the bound
+`session-manager.ts` lines and changed no modelled path (`CORRESPONDENCE-f9b958c1-tc1.md`).
+
 Not covered: a second retry, the orchestration's retry count, an attempt that completes before its cancel lands, a
 worker restart, a turn that lost its Copilot runtime, and #364's late shutdown cut (see the correspondence file).
 
-### Batch tc2 (2026-11-24, bound to `2ab2a85e`): the review of the lost-lock fix
+### Batch tc2 (2026-11-24, bound to `63024c6c`): the review of the lost-lock fix
 
 The review of #382 found that a cut session's files could still be published, and that a live worker kept them. A
 legacy dehydrate, checkpoint or eviction sweep published a session whose retry's probe on this worker failed (the
@@ -397,6 +404,12 @@ Run (2026-11-24, TLC 2.19, `-workers 2 -Xmx2g`, 300 s per case, every case under
 expected liveness violations (`comparison.tc-head-live` and `fault.tc-sweep-skip-undrained` `Prop_LiveRelease`;
 `comparison.tc-head-end` and `fault.tc-no-destroy-clear` `Prop_EndReclaims`); 0 unexpected, 0 PARTIAL, 0 VOID.
 Every counterexample was read and fails for its intended reason.
+
+First run before the rebase, on main `ac86a39e`. Re-run on 2026-11-24 after the rebase onto main `1f6af957` (0.8.18),
+with the code bound to `63024c6c`: the same 26 results and violated rules, and the same distinct-state counts for every
+PASS and liveness case. A safety violation's count moves by a few states between runs, because two TLC workers reach
+the first violating state in a different order. 0.8.18 moved the bound `session-manager.ts` lines and changed no
+modelled path (`CORRESPONDENCE-63024c6c-tc2.md`).
 
 Bounds: one session, one turn, one cut attempt and one retry; the scenario (a first or later turn, with or without
 the lifecycle protocol, cut by a drain, a lost lock or a terminal cancel) is chosen in `Init`; full state space.
