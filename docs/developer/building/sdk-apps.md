@@ -61,6 +61,8 @@ worker.registerTools([getWeather]);
 await worker.start();
 ```
 
+A handler's second argument is the Copilot SDK's invocation plus PilotSwarm's `PilotSwarmToolInvocationContext`: `durableSessionId` (the calling session), `facts` (tool-private facts), `turnSignal` and `countTurnCall`. `turnSignal` is aborted when the calling turn ends, including a Stop and the loss of the turn's Copilot runtime. The worker does not wait for a handler after that. A turn whose runtime was lost is not committed, and its retry runs again from the last committed turn, so the model may ask for the same call again. A handler with external effects should check `turnSignal` before each effect and make the effects idempotent: an effect it completed before the loss is delivered at least once.
+
 The client half connects to the deployment's Web API — all it needs is the portal URL:
 
 ```ts

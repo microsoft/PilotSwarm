@@ -189,12 +189,39 @@ type TurnResultVariant =
     | ({ type: "set_workspace_extra"; extra: Record<string, SessionWorkspaceExtra | null>; path?: string | null; extraPaths?: Record<string, string>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
     | { type: "stopped"; reason?: string; events?: CapturedEvent[] }
-    | { type: "error"; message: string; retryable?: boolean; events?: CapturedEvent[] };
+    // `transportLoss` (issue 329): the turn ended because its Copilot runtime connection was lost (the runtime
+    // exited, or the SDK reported the connection gone when the turn's error was raised). Only ManagedSession sets it,
+    // from typed evidence; the activity then drops the warm session and does not commit. The orchestration never
+    // reads it: the message names the connection as closed, which selects the retry.
+    | { type: "error"; message: string; retryable?: boolean; transportLoss?: true; events?: CapturedEvent[] };
 
 /** A raw event captured from CopilotSession.on() during a turn. */
 export interface CapturedEvent {
     eventType: string;
     data: unknown;
+}
+
+// ─── Tool invocation ─────────────────────────────────────────────
+
+/**
+ * What PilotSwarm adds to the Copilot SDK's invocation (the handler's second argument) for a worker-registered tool.
+ * The SDK's own fields (`sessionId`, `toolCallId`, `signal`, ...) are still there.
+ */
+export interface PilotSwarmToolInvocationContext {
+    /** The calling PilotSwarm session (the SDK's `sessionId` is its internal session id). */
+    durableSessionId: string;
+    /** Tool-private facts of the calling session, when the worker has a facts store. */
+    facts?: import("./tool-facts-accessor.js").ToolFactsAccessor;
+    /**
+     * Aborted when the turn that called the tool ends: its normal end, a Stop, an abort, a forced settle, or the loss
+     * of its Copilot runtime. The SDK does not wait for a handler after that, and a turn whose runtime was lost is not
+     * committed: the retry runs it again from the last committed turn, so the model may ask for the same call again.
+     * A handler with external effects should check this signal before each effect; effects it completes before the
+     * loss are delivered at least once.
+     */
+    turnSignal?: AbortSignal;
+    /** Counts this call against the tool's per-turn calls and returns the count so far. */
+    countTurnCall?: () => number;
 }
 
 // ─── Turn Options ────────────────────────────────────────────────

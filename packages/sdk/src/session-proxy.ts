@@ -3,6 +3,8 @@ import { agentSender, sessionIdOfInstance } from "./message-sender.js";
 import { spawnAgentAdmission, spawnAgentCreationBudget, WORKFLOW_CHILD_BUDGET_MAX } from "./child-budget.js";
 import { sessionTitleChangedForRecord } from "./session-title.js";
 import { createCopilotClient, textOnlyCopilotSessionOptions } from "./copilot-client.js";
+import { isCopilotTransportLossMessage, transportLossMessage } from "./copilot-runtime-monitor.js";
+import { assertControlBridgeOpen } from "./control-bridge-fence.js";
 import {
     BoundAgentPackageUnavailableError,
     isSessionLockAcquireTimeoutError,
@@ -647,10 +649,19 @@ function isInternalSystemPrompt(text?: string, sender?: unknown): boolean {
         || /^(spawn_agent|message_agent|check_agents|wait_for_agents|complete_agent|cancel_agent|delete_agent) failed/i.test(normalized);
 }
 
+/**
+ * The live CLI is alive but no longer knows the session: the activity resumes it and re-runs the turn at once.
+ * A closed or disposed connection (issue 329) is not handled here: its runtime is gone, so the activity drops the
+ * warm session, skips the snapshot commit and returns the transport-loss error, and the orchestration's
+ * connection-closed retry resumes the session on a fresh runtime from the last committed snapshot, on any worker.
+ */
 function isLiveSessionLostErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
     return /\bSession not found\b/i.test(normalized);
 }
+
+/** Issue 329: how long a turn that lost its runtime waits for its warm session's disconnect before forgetting it. */
+const TRANSPORT_LOSS_DESTROY_DEADLINE_MS = 5_000;
 
 function isToolCallTranscriptCorruptionErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
@@ -751,6 +762,47 @@ async function recordLossyHandoffEvent(
     }).catch((error: unknown) => {
         traceFailure(`CMS lossy handoff summary update failed: ${errorMessage(error)}`);
     });
+}
+
+/**
+ * Issue 329 (review S11): whether the turn just before `turnIndex` started a fresh conversation, saved nothing and
+ * ended unpublished (its Copilot runtime was lost, or it was stopped), as that turn's own `session.snapshot_unpublished`
+ * record states. The record outlives the dirty dir that holds the same evidence (uncommittedDiscard), so it also serves
+ * a worker that never had that dir, or lost it to the eviction sweep. Only the latest turn record counts, and only one
+ * that names the preceding turn of the same epoch: a later turn that saved, or a record from an older worker without
+ * `freshChain`, leaves the store's emptiness unexplained. A failed read is no witness.
+ */
+async function unsavedFreshPredecessorRecorded(
+    catalog: SessionCatalog,
+    sessionId: string,
+    turnIndex: number,
+    turnKey: string | undefined,
+    transcriptEpoch: number,
+    traceFailure: (message: string) => void,
+): Promise<boolean> {
+    let events: Array<{ seq?: unknown; eventType?: string; data?: any }>;
+    try {
+        events = await catalog.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 20, ["session.snapshot_unpublished"]) as any;
+    } catch (error: unknown) {
+        traceFailure(`reading the unpublished-turn records failed: ${errorMessage(error)}`);
+        return false;
+    }
+    // A dehydrate's record names its dehydrateReason; only the turns' own records count.
+    const latest = (events ?? [])
+        .filter((event) => event?.eventType === "session.snapshot_unpublished"
+            && event.data && typeof event.data === "object"
+            && event.data.dehydrateReason === undefined
+            && typeof event.data.turnIndex === "number")
+        .reduce<{ seq?: unknown; data?: any } | null>((best, event) => (!best || Number(event.seq) > Number(best.seq) ? event : best), null);
+    const data = latest?.data;
+    return Boolean(data)
+        && (data.reason === "transport_loss" || data.reason === "stopped")
+        && data.freshChain === true
+        && data.modelMemoryCommitted === false
+        && data.baseVersion === 0
+        && data.turnIndex === turnIndex - 1
+        && (data.transcriptEpoch ?? 0) === transcriptEpoch
+        && Boolean(data.turnKey) && data.turnKey !== turnKey;
 }
 
 function finiteMetricNumber(value: unknown): number | null {
@@ -2165,6 +2217,18 @@ export function registerActivities(
             lifecyclePreambleFresh = pre.kind === "fresh";
             lifecycleUncommittedDiscard = pre.kind === "fresh" && pre.uncommittedDiscard;
             lifecyclePreambleLossy = pre.kind === "fresh" && pre.lossy;
+            // Issue 329 (review S11): a turn that lost its runtime saves nothing, yet the orchestration counts it, so its
+            // retry asks for turn N+1 of a conversation that never saved a turn. Only the worker that ran the lost turn
+            // holds the dirty dir that proves it (uncommittedDiscard); another worker, or this one after the eviction
+            // sweep removed that dir, finds no dir and an empty store. The lost turn's own unpublished record is the same
+            // proof; without it the lossy replay below still runs.
+            if (pre.kind === "fresh" && !pre.lossy && !pre.uncommittedDiscard && !input.epochStart
+                && (input.turnIndex ?? 0) > 0 && catalog
+                && await unsavedFreshPredecessorRecorded(catalog, input.sessionId, input.turnIndex ?? 0,
+                    input.snapshot?.turnKey, input.transcriptEpoch ?? 0, (msg) => activityCtx.traceInfo(`[runTurn] ${msg}`))) {
+                lifecycleUncommittedDiscard = true;
+                trace(`session=${input.sessionId} turn ${input.turnIndex}: the previous turn's record shows it never saved a turn`);
+            }
             if (lifecycleRehydrated) {
                 await recordLifecycleHydration(pre.baseVersion);
             }
@@ -2480,6 +2544,8 @@ export function registerActivities(
         // A named visit starts a new schedule scope; a fenced late turn ends the old one.
         const resetsWorkflowSchedule = () => Boolean(workflowTurnVisit?.nodeExecutionId
             && (!workflowTurnVisit.open || !workflowTurnVisit.inherited));
+        // Review S4/S5 (#376): set when this attempt's body exits (runBody); the control-tool bridge checks it.
+        let controlBridgeClosed = false;
         const executeTurnBody = async (): Promise<TurnResult> => {
         let session: any = null;
         let effectivePrompt = input.prompt;
@@ -3048,6 +3114,22 @@ export function registerActivities(
             });
         };
 
+        // Review S4/S5 (#376): the bridge's effectful tools check, before each external step, that the turn that called
+        // them and this activity attempt are still open (control-bridge-fence.ts). The check is synchronous: it reads two
+        // flags and never waits. Covered: spawn_agent, create_agent_session, message_agent, message_agent_session,
+        // manage_agent_session, send_session_message, reply_session_message, regenerate_agent, complete_agent,
+        // cancel_agent, delete_agent, stop_agent_turn, set_session_model, regenerate_context, the check_agents memo, and
+        // the canvas writes (draw, update, show, canvas_kv put/delete, publish_canvas_app). Not covered: reads; the
+        // Workflow tools, whose writes go through the Workflow store and its run admission, which have their own formal
+        // models (a follow-up); and set_session_workspace's check, which only attaches folders on this worker.
+        const bridgeStep = (tool: string, step: string): void => {
+            try {
+                assertControlBridgeOpen(tool, step, controlBridgeClosed);
+            } catch (error) {
+                traceWarn(`[runTurn] session=${input.sessionId}: ${(error as Error).message}`);
+                throw error;
+            }
+        };
         const controlToolBridge = {
             /**
              * Session workspaces: the attach and the path check behind the
@@ -3096,6 +3178,7 @@ export function registerActivities(
                     }
 
                     const sdkClient = await getInlineClient();
+                    bridgeStep("message_agent_session", "queueing the message");
                     // FU-9: an agent's words, from this session, never merged with a person's.
                     await (sdkClient as any)._getDuroxideClient().enqueueEvent(
                         `session-${targetId}`,
@@ -3149,12 +3232,15 @@ export function registerActivities(
                         // so the row is removed directly — mirroring
                         // deleteAgent rather than inventing a second rule.
                         if (target && ["completed", "failed", "cancelled", "terminated"].includes(String(target.state))) {
+                            bridgeStep("manage_agent_session", "deleting the session");
                             await sdkClient.deleteSession(targetId);
                             return `[SYSTEM: session ${targetId.slice(0, 8)} was already ${target.state} and has been deleted. Reason: ${reason}]`;
                         }
                         const deleteCommand = { type: "cmd", cmd: "delete", id: `delete-mgr-${Date.now()}`, args: { reason } };
                         // S7-DX2 follow-up: a workflow is deleted in its store at once; any other session gets the command queued.
+                        bridgeStep("manage_agent_session", "applying the delete");
                         if (!await operatorCommandApplied(sdkClient, targetId, deleteCommand)) {
+                            bridgeStep("manage_agent_session", "queueing the delete");
                             await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(deleteCommand));
                         }
                         return `[SYSTEM: graceful deletion requested for ${targetId}. It cancels its descendants first, then deletes itself. Poll read_session_info to confirm. Reason: ${reason}]`;
@@ -3164,8 +3250,11 @@ export function registerActivities(
                     const command = { type: "cmd", cmd, id: `${cmd}-mgr-${Date.now()}`, args: { reason } };
                     // S7-DX2 follow-up: a workflow's active run ends in its store at once; the command is then queued only when
                     // its controller is to finish it (any other session gets it queued as before).
+                    bridgeStep("manage_agent_session", `applying the ${action}`);
                     if (!await operatorCommandApplied(sdkClient, targetId, command)) {
                         // G1 residual: the end is marked on the session before its command is queued (session-end-mark.ts).
+                        // The mark and its command are one step for the fence, so it never leaves a mark without its command.
+                        bridgeStep("manage_agent_session", `queueing the ${action}`);
                         if (catalog) await recordSessionEndRequested(catalog, targetId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(command));
                     }
@@ -3386,6 +3475,7 @@ export function registerActivities(
                     // No parentSessionId and nestingLevel 0 — that IS what
                     // makes this a root. The sub-agent preamble that
                     // spawnAgent builds is deliberately NOT applied.
+                    bridgeStep("create_agent_session", "creating the session");
                     const created = await sdkClient.createSession({
                         sessionId: newSessionId,
                         nestingLevel: 0,
@@ -3414,6 +3504,7 @@ export function registerActivities(
                         // sessions instead of leaving them to accumulate as
                         // ordinary top-level rows in the user's list.
                         if (args.test_of) meta.metadata = { testOf: String(args.test_of) };
+                        bridgeStep("create_agent_session", "naming the session");
                         await cmsRetryBestEffort(
                             `createAgentSession.updateSession meta session=${newSessionId}`,
                             () => catalog!.updateSession(newSessionId, meta),
@@ -3432,6 +3523,7 @@ export function registerActivities(
                     // `kind: "agent"` when a manager supplied the opening line,
                     // `kind: "system"` when it is the agent definition's own.
                     const bootstrapFromManager = typeof args.prompt === "string" && args.prompt.trim().length > 0;
+                    bridgeStep("create_agent_session", "sending the opening prompt");
                     await created.send(bootstrap, {
                         ...bootstrapTurnOptions(agentDef.initialRequiredTool),
                         sender: bootstrapFromManager
@@ -3696,6 +3788,7 @@ export function registerActivities(
                         }
                     }
 
+                    bridgeStep("spawn_agent", "creating the child session");
                     const childSession = await sdkClient.createSession({
                         ...(childSessionIdForWorkspace ? { sessionId: childSessionIdForWorkspace } : {}),
                         parentSessionId: input.sessionId,
@@ -3754,6 +3847,7 @@ export function registerActivities(
                             // A requested lock must be durable before the child's
                             // first prompt can trigger title summarization.
                             const capturedMeta = meta;
+                            bridgeStep("spawn_agent", "naming the child session");
                             await (args.lock_title === true ? cmsRetryCritical : cmsRetryBestEffort)(
                                 `runTurn.spawn.updateSession meta session=${childSession.sessionId}`,
                                 () => catalog!.updateSession(childSession.sessionId, capturedMeta),
@@ -3763,6 +3857,7 @@ export function registerActivities(
 
                         const contractJson = buildContractJson(args.contract, input.sessionId, childSession.sessionId);
                         if (contractJson) {
+                            bridgeStep("spawn_agent", "recording the child's contract");
                             await cmsRetryCritical(
                                 `runTurn.spawn.upsertChildOutcome contract child=${childSession.sessionId}`,
                                 () => catalog!.upsertChildOutcome({
@@ -3778,6 +3873,7 @@ export function registerActivities(
                     // Stamped: a spawned child's opening task is written by
                     // THIS agent, not by whoever later reads the child's
                     // transcript. Unstamped it renders as their own "You:".
+                    bridgeStep("spawn_agent", "sending the child its task");
                     await childSession.send(agentTask, {
                         ...bootstrapTurnOptions(bootstrapRequiredTool),
                         sender: { kind: "agent", sessionId: input.sessionId, display: `${runConfig.agentIdentity || "agent"} · task` },
@@ -3863,6 +3959,7 @@ export function registerActivities(
                         "context_tier" in args ? args.context_tier ?? null : undefined,
                     ) : undefined;
                     if (titleUpdate) {
+                        bridgeStep("set_session_model", "saving the title");
                         await cmsRetryCritical(
                             `runTurn.setSessionTitle.updateSession session=${input.sessionId}`,
                             () => catalog!.updateSession(input.sessionId, titleUpdate!),
@@ -3875,6 +3972,7 @@ export function registerActivities(
                     const sdkClient = new PilotSwarmClient(internalClientConfig());
                     try {
                         await startInternalClient(sdkClient);
+                        bridgeStep("set_session_model", "queueing the model switch");
                         await (sdkClient as any).duroxideClient.enqueueEvent(
                             `session-${input.sessionId}`,
                             "messages",
@@ -3906,6 +4004,7 @@ export function registerActivities(
                     const sdkClient = new PilotSwarmClient(internalClientConfig());
                     try {
                         await startInternalClient(sdkClient);
+                        bridgeStep("regenerate_context", "queueing the regeneration");
                         await (sdkClient as any).duroxideClient.enqueueEvent(
                             `session-${input.sessionId}`,
                             "messages",
@@ -3937,6 +4036,7 @@ export function registerActivities(
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     const sdkClient = await getInlineClient();
+                    bridgeStep("regenerate_agent", "queueing the regeneration");
                     await sdkClient._getDuroxideClient().enqueueEvent(
                         child.orchId,
                         "messages",
@@ -3987,6 +4087,7 @@ export function registerActivities(
                         const existing = await catalog.getChildOutcome(child.sessionId);
                         const contractJson = appendContractPatchJson(existing?.contractJson ?? null, args.contract_patch, input.sessionId, child.sessionId);
                         if (contractJson) {
+                            bridgeStep("message_agent", "recording the contract patch");
                             await cmsRetryCritical(
                                 `runTurn.message.upsertChildOutcome contract child=${child.sessionId}`,
                                 () => catalog!.upsertChildOutcome({
@@ -4000,6 +4101,7 @@ export function registerActivities(
                     }
                     const queue = async () => {
                         const sdkClient = await getInlineClient();
+                        bridgeStep("message_agent", "queueing the message");
                         await sdkClient._getDuroxideClient().enqueueEvent(
                             child.orchId,
                             "messages",
@@ -4011,6 +4113,7 @@ export function registerActivities(
                     };
                     if (args.deliver === "now") {
                         const caller = await parentControlCaller();
+                        bridgeStep("message_agent", "steering the child");
                         return await withManagementClient((client) => steerChildTurn(client, {
                             childSessionId: child.sessionId,
                             agentLabel: child.orchId,
@@ -4049,6 +4152,8 @@ export function registerActivities(
                     }
                     const report = buildCheckAgentsReport(children, memo, { full: args?.full === true });
                     if (catalog) {
+                        // A memo from an ended attempt would turn its retry's first report into a delta it never saw.
+                        bridgeStep("check_agents", "recording what it reported");
                         // Fire-and-forget: a lost memo only costs one extra full report next time.
                         void cmsRetryBestEffort(
                             `runTurn.checkAgents memo session=${input.sessionId}`,
@@ -4147,6 +4252,7 @@ export function registerActivities(
                     const { requestId } = await sendInternalSessionMessage({
                         catalog,
                         duroxideClient: sdkClient._getDuroxideClient(),
+                        beforeEnqueue: () => bridgeStep("send_session_message", "queueing the message"),
                     }, {
                         fromSessionId: input.sessionId,
                         toSessionId: targetSessionId,
@@ -4173,6 +4279,7 @@ export function registerActivities(
                     await replyInternalSessionMessage({
                         catalog,
                         duroxideClient: sdkClient._getDuroxideClient(),
+                        beforeEnqueue: () => bridgeStep("reply_session_message", "queueing the reply"),
                     }, {
                         requestId: args.request_id,
                         fromSessionId: input.sessionId,
@@ -4200,6 +4307,7 @@ export function registerActivities(
                         }
                     }
                     if (catalog && builtOutcome && child.sessionKind !== "workflow") {
+                        bridgeStep("complete_agent", "recording the result");
                         await cmsRetryCritical(
                             `runTurn.complete.upsertChildOutcome result child=${child.sessionId}`,
                             () => catalog!.upsertChildOutcome({
@@ -4217,8 +4325,11 @@ export function registerActivities(
                     const cmdId = `done-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId };
                     // S7-DX2: a workflow child's command goes through the store first, as the orchestration's path sends it.
+                    bridgeStep("complete_agent", "applying the command");
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
                         // G1 residual: the end is marked on the child before its command is queued (session-end-mark.ts).
+                        // The mark and its command are one step for the fence, so it never leaves a mark without its command.
+                        bridgeStep("complete_agent", "queueing the command");
                         if (catalog) await recordSessionEndRequested(catalog, child.sessionId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
@@ -4240,6 +4351,7 @@ export function registerActivities(
                         }
                     }
                     if (catalog && builtOutcome && child.sessionKind !== "workflow") {
+                        bridgeStep("cancel_agent", "recording the partial result");
                         await cmsRetryCritical(
                             `runTurn.cancel.upsertChildOutcome partial child=${child.sessionId}`,
                             () => catalog!.upsertChildOutcome({
@@ -4257,8 +4369,11 @@ export function registerActivities(
                     const cmdId = `cancel-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId };
                     // S7-DX2: a workflow child's command goes through the store first, as the orchestration's path sends it.
+                    bridgeStep("cancel_agent", "applying the command");
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
                         // G1 residual: the end is marked on the child before its command is queued (session-end-mark.ts).
+                        // The mark and its command are one step for the fence, so it never leaves a mark without its command.
+                        bridgeStep("cancel_agent", "queueing the command");
                         if (catalog) await recordSessionEndRequested(catalog, child.sessionId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
@@ -4272,6 +4387,7 @@ export function registerActivities(
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     const caller = await parentControlCaller();
+                    bridgeStep("stop_agent_turn", "stopping the child's turn");
                     return await withManagementClient((client) => stopChildTurn(client, {
                         childSessionId: child.sessionId,
                         agentLabel: child.orchId,
@@ -4288,13 +4404,16 @@ export function registerActivities(
                     const child = await resolveManagedChild(args.agent_id);
                     const sdkClient = await getInlineClient();
                     if (child.status === "completed" || child.status === "failed" || child.status === "cancelled") {
+                        bridgeStep("delete_agent", "deleting the child");
                         await sdkClient.deleteSession(child.sessionId);
                         return `[SYSTEM: Sub-agent ${child.orchId} has been deleted.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                     }
                     const cmdId = `delete-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" }, requestedBy: input.sessionId };
                     // S7-DX2: a workflow child's delete is applied in the store, as the orchestration's path sends it.
+                    bridgeStep("delete_agent", "applying the delete");
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        bridgeStep("delete_agent", "queueing the delete");
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
                     return `[SYSTEM: Graceful deletion requested for sub-agent ${child.orchId}. ` +
@@ -4320,6 +4439,7 @@ export function registerActivities(
                 workerNodeId,
                 agentIdentity: runConfig.agentIdentity ?? null,
                 mode: "agent",
+                fence: bridgeStep,
             }),
             findCanvasApp: async (args: { query?: string; limit?: number }) => findCanvasApp({ factStore }, args),
         } as const;
@@ -5134,6 +5254,24 @@ export function registerActivities(
                 }
             }
 
+            // Issue 329: the turn lost its Copilot runtime (the process exited, or its connection closed or was
+            // disposed). The warm session can never run again: drop it now, so no later turn or teardown on this
+            // worker reuses it. The commit below leaves the turn sentinel dirty (session-lifecycle runTurnCommit), and
+            // the orchestration's connection-closed retry resumes on a fresh runtime from the last committed snapshot.
+            // Review S1: ManagedSession's typed flag decides it; the text only shapes the message the frozen
+            // orchestrations' connection-closed check reads.
+            if (result.type === "error" && (result as any).transportLoss === true) {
+                const lostMessage = transportLossMessage(String((result as any).message));
+                traceWarn(`[runTurn] session=${input.sessionId}: the Copilot runtime connection was lost; dropping the warm session (${lostMessage})`);
+                await sessionManager.invalidateWarmSession(input.sessionId, {
+                    lockHeld: true,
+                    destroyDeadlineMs: TRANSPORT_LOSS_DESTROY_DEADLINE_MS,
+                }).catch((err: any) => {
+                    traceWarn(`[runTurn] warm-session invalidation after a transport loss failed (non-fatal): ${err?.message ?? err}`);
+                });
+                result = { ...result, message: lostMessage } as TurnResult;
+            }
+
             if (result.type === "error" && isToolCallTranscriptCorruptionErrorMessage((result as any).message)) {
                 const transcriptError = (result as any).message;
                 throwIfDrainCut("before a transcript reset");
@@ -5397,8 +5535,29 @@ export function registerActivities(
             try {
                 return await executeTurnBody();
             } catch (error) {
-                if (drainCut()) sessionManager.markTurnCut?.(input.sessionId, turnGeneration);
-                throw error;
+                if (drainCut()) {
+                    sessionManager.markTurnCut?.(input.sessionId, turnGeneration);
+                    throw error;
+                }
+                // Issue 329 (review S3): a body that threw because its Copilot runtime connection is gone (the warm
+                // session's runtime exited, or the SDK's disconnect wording) drops the warm session like a returned
+                // transport loss, and fails with the connection-closed wording so the orchestration takes that retry,
+                // not the generic one. Nothing was committed, so the sentinel stays dirty for the retry to re-hydrate.
+                const message = (error as any)?.message ?? String(error);
+                const lost = sessionManager.get?.(input.sessionId)?.runtimeLost === true
+                    || isCopilotTransportLossMessage(message);
+                if (!lost) throw error;
+                traceWarn(`[runTurn] session=${input.sessionId}: the turn threw after its Copilot runtime connection was lost; dropping the warm session (${message})`);
+                await sessionManager.invalidateWarmSession(input.sessionId, {
+                    lockHeld: true,
+                    destroyDeadlineMs: TRANSPORT_LOSS_DESTROY_DEADLINE_MS,
+                }).catch((err: any) => {
+                    traceWarn(`[runTurn] warm-session invalidation after a transport loss failed (non-fatal): ${err?.message ?? err}`);
+                });
+                throw new Error(transportLossMessage(message));
+            } finally {
+                // Review S5 (#376): a bridge call still in flight after the attempt's body ends takes no further step.
+                controlBridgeClosed = true;
             }
         };
         const fullBodyResult: TurnResult = (runConfig as ManagedSessionConfig).workspaceAttach
@@ -5444,8 +5603,9 @@ export function registerActivities(
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
             if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
-                // Store-wins: the snapshot was NOT advanced — a user stop, or a
-                // discarded/foreign turn superseded this one at the store. The
+                // Store-wins: the snapshot was NOT advanced — a user stop, a
+                // lost Copilot runtime (transport_loss), or a discarded/foreign
+                // turn superseded this one at the store. The
                 // turn's result still returns; record the memory loss so it is
                 // operator-visible (never a bare heartbeat). Best-effort (P7).
                 const reason = committed.unpublishedReason ?? "superseded";
@@ -5464,11 +5624,17 @@ export function registerActivities(
                             baseVersion: lifecycleBaseVersion,
                             turnKey: input.snapshot?.turnKey,
                             ...(input.turnIndex != null ? { turnIndex: input.turnIndex } : {}),
+                            // Review S11 (#376): whether this turn's conversation was created fresh with nothing saved
+                            // (the sentinel's freshChain), and its epoch: the next turn's witness on any worker.
+                            freshChain: lifecyclePreambleFresh && !lifecyclePreambleLossy && !lossyReplayed,
+                            transcriptEpoch: input.transcriptEpoch ?? 0,
                             ...(committed.observedStoreVersion != null ? { observedStoreVersion: committed.observedStoreVersion } : {}),
                             ...(committed.observedStoreTurnKey ? { observedStoreTurnKey: committed.observedStoreTurnKey } : {}),
                             ...(bodyResult?.type ? { resultType: bodyResult.type } : {}),
                             message: reason === "stopped"
                                 ? "User-stopped turn: snapshot not committed (intentional discard)."
+                                : reason === "transport_loss"
+                                ? "The turn lost its Copilot runtime connection: snapshot not committed; the retry resumes from the last committed snapshot on a fresh runtime."
                                 : "Turn snapshot superseded: the store advanced off this turn's base before it committed; the next turn rehydrates the winner.",
                         },
                     }], workerNodeId),
@@ -5803,7 +5969,7 @@ export function registerActivities(
         const eventData = normalizeEventData(input.eventData);
         const trace = activityTrace(activityCtx, "dehydrateSession");
         const finishDehydrationMetrics = runtimeMetrics().startLifecycle("dehydration");
-        let dehydrationResult: "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" = "error";
+        let dehydrationResult: "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" | "unpublished" = "error";
         let checkpointFallback = false;
         const dehydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.dehydration", {
             attributes: {
@@ -5814,9 +5980,10 @@ export function registerActivities(
         });
         trace(`session=${input.sessionId} start reason=${reason}`);
 
+        let dehydrateOutcome: { unpublished: string } | void;
         try {
             try {
-                await sessionManager.dehydrate(input.sessionId, reason, {
+                dehydrateOutcome = await sessionManager.dehydrate(input.sessionId, reason, {
                     trace,
                     onCheckpointFallback: () => { checkpointFallback = true; },
                 });
@@ -5880,6 +6047,33 @@ export function registerActivities(
                     });
                 }
                 throw err;
+            }
+
+            // Review M1 (#376): the local files held an uncommitted turn and were not published. The store keeps its
+            // last commit, and the next turn resumes from it, as after the lost turn itself; nothing was dehydrated.
+            const unpublished = dehydrateOutcome?.unpublished;
+            if (unpublished) {
+                trace(`session=${input.sessionId} unpublished reason=${reason} cause=${unpublished}`);
+                dehydrationResult = "unpublished";
+                dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "unpublished");
+                if (catalog) {
+                    await cmsRetryBestEffort(
+                        `dehydrateSession.recordEvent snapshot-unpublished session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "session.snapshot_unpublished",
+                            data: {
+                                ...(eventData ?? {}),
+                                reason: unpublished,
+                                dehydrateReason: reason,
+                                modelMemoryCommitted: false,
+                                message: "Dehydrate did not publish the local session files: they hold a turn that never "
+                                    + "committed. The store keeps its last committed snapshot; the next turn resumes from it.",
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+                return;
             }
 
             trace(`session=${input.sessionId} complete reason=${reason}`);
@@ -6088,7 +6282,12 @@ export function registerActivities(
         activityCtx: any,
         input: { sessionId: string },
     ): Promise<void> => {
-        await sessionManager.checkpoint(input.sessionId);
+        const checkpointOutcome = await sessionManager.checkpoint(input.sessionId);
+        // Review M1 (#376): files holding an uncommitted turn were not checkpointed; nothing new is in the store.
+        if (checkpointOutcome?.unpublished) {
+            activityCtx.traceInfo?.(`[checkpointSession] session=${input.sessionId} not checkpointed (${checkpointOutcome.unpublished})`);
+            return;
+        }
         if (catalog) {
             const snapshotSizeBytes = await tryReadSnapshotSizeBytes(sessionStore, input.sessionId);
             // Best-effort: metric summary is observability only. The blob has

@@ -169,6 +169,22 @@ test("invalid inference observation values collapse to closed metric and span la
     assert.equal(Object.hasOwn(spans[0].attributes, "http.response.status_class"), false);
 });
 
+test("review S8 (#376): Copilot runtime losses count on one counter with a closed outcome label", () => {
+    const { metric, records } = fixture();
+    metric.copilotRuntime("after_startup");
+    metric.copilotRuntime("during_startup");
+    metric.copilotRuntime("unclaimed");
+    metric.copilotRuntime("pid 4242");
+    assert.deepEqual(records, [
+        { name: "pilotswarm.copilot_runtime.exits", value: 1, attributes: { outcome: "after_startup" } },
+        { name: "pilotswarm.copilot_runtime.exits", value: 1, attributes: { outcome: "during_startup" } },
+        { name: "pilotswarm.copilot_runtime.exits", value: 1, attributes: { outcome: "unclaimed" } },
+    ]);
+    const disabled = fixture({ OTEL_METRICS_EXPORTER: "none" });
+    disabled.metric.copilotRuntime("after_startup");
+    assert.deepEqual(disabled.records, []);
+});
+
 test("disabled SDK or metrics exporter records nothing even with a real injected meter", () => {
     for (const env of [{ OTEL_SDK_DISABLED: "true", OTEL_TRACES_EXPORTER: "otlp" }, { OTEL_METRICS_EXPORTER: "none" }]) {
         const { tracer, spans } = traceFixture();

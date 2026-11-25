@@ -23,10 +23,10 @@
  * not exposed to Node) is the floor for re-dispatching session-pinned
  * work after a kill — each kill/recovery cycle costs ~30-40s.
  */
-import { fork } from "node:child_process";
+import { execFileSync, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKER_SCRIPT = resolve(__dirname, "worker-process.js");
@@ -157,4 +157,58 @@ export async function expectFaultDeath(worker, label) {
     if (!worker.faultFired()) {
         throw new Error(`${label}: worker ${worker.id} exited 137 but no fault-injection hit line was logged`);
     }
+}
+
+/** The arguments the Copilot SDK starts its runtime with (copilot-runtime-monitor.ts matches the same pair). */
+const COPILOT_RUNTIME_ARGS = ["--headless", "--stdio"];
+
+/**
+ * Issue 329 (review M2): the Copilot runtimes `parentPid` (default: this test
+ * process, which runs its in-process workers) spawned, as the operating system
+ * reports them: its direct children whose arguments include `--headless` and
+ * `--stdio`. It reads the process table, never the SDK or PilotSwarm's runtime
+ * monitor, so a kill test targets the same process on every revision. A child
+ * that exited but is not yet reaped has no arguments and is not listed.
+ *
+ * @returns {number[]} the PIDs, ascending
+ */
+export function copilotRuntimeChildPids(parentPid = process.pid) {
+    return listProcesses(parentPid)
+        .filter((proc) => proc.ppid === parentPid && COPILOT_RUNTIME_ARGS.every((arg) => proc.args.includes(arg)))
+        .map((proc) => proc.pid)
+        .sort((a, b) => a - b);
+}
+
+function listProcesses(parentPid) {
+    if (process.platform === "linux") {
+        const procs = [];
+        for (const entry of readdirSync("/proc")) {
+            if (!/^\d+$/.test(entry)) continue;
+            try {
+                // "pid (comm) state ppid ...": comm may itself hold spaces and parentheses.
+                const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+                const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+                const args = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0").filter(Boolean);
+                procs.push({ pid: Number(entry), ppid, args });
+            } catch {
+                // The process exited while the table was read.
+            }
+        }
+        return procs;
+    }
+    if (process.platform === "win32") {
+        const script = `Get-CimInstance Win32_Process -Filter "ParentProcessId=${Number(parentPid)}" | `
+            + "ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" }";
+        const text = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script],
+            { encoding: "utf8", windowsHide: true });
+        return text.split(/\r?\n/).filter(Boolean).map((line) => {
+            const [pid, ppid, ...command] = line.split("\t");
+            return { pid: Number(pid), ppid: Number(ppid), args: command.join("\t").split(/\s+/) };
+        });
+    }
+    const text = execFileSync("ps", ["-A", "-o", "pid=,ppid=,args="], { encoding: "utf8" });
+    return text.split("\n").flatMap((line) => {
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+        return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), args: match[3].split(/\s+/) }] : [];
+    });
 }
