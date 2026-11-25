@@ -155,7 +155,9 @@ Mode 2 lets a snapshot-capable compute provider own both CLI conversation files 
 1. **Separated execution with worker-only model keys works:** Both modes run the native Copilot CLI inside an untrusted remote sandbox while keeping model API keys, orchestration, and CMS strictly on the worker.
 2. **Provider snapshot retention cannot be assumed:** A provider's `stop` snapshot ID can restore while the source stays stopped, yet return `404 SnapshotNotFound` after the source resumes and idle-suspends. Separating checkpoint acceptance from restore qualification (`restoreQualification: "unproven"`) is mandatory until a provider guarantees immutable snapshots across resume, idle, and deletion.
 3. **Runtime quiesce before state capture is required:** Closing the runtime transport and stopping the guest CLI before snapshotting (Mode 2) or packing `cli-home` (Mode 1) prevents stale connections and ensures files flush cleanly.
-4. **Prototype verification:** Both modes compile cleanly and pass isolated SDK unit tests (opaque `store-wins` archive CAS, cross-sandbox failover, warm-cache reuse, 412 conflict handling, and Mode 2 managed state machine). Mode 2 same-sandbox two-turn continuity is proven live against a real remote sandbox provider; Mode 1 live cross-sandbox failover validation is underway.
+4. **Prototype verification:** Both modes compile cleanly and pass isolated SDK unit tests (opaque `store-wins` archive CAS, cross-sandbox failover, warm-cache reuse, 412 conflict handling, and Mode 2 managed state machine). **Both modes are also proven live** against a real remote sandbox provider with worker-only model keys:
+   - **Mode 1 (`store-owned`):** Live cross-sandbox failover passed—Turn 1 ran in Sandbox A, dehydrated an opaque brotli archive (~23 KiB) to Blob Storage in ~2 s (0 local files on worker), Sandbox A was deleted (`404`), and Turn 2 allocated brand-new Sandbox B, hydrated from Blob in ~2 s before CLI start, and recalled Turn 1's exact conversation token purely from Blob-hydrated state.
+   - **Mode 2 (`managed`):** Live two-turn same-sandbox continuity passed—Turn 1 wrote a file and committed snapshot reference v1 (`restoreQualification: "unproven"`), and Turn 2 rebound cleanly on the resumed sandbox, read back the exact file, and committed reference v2.
 
 ---
 
@@ -175,4 +177,4 @@ Mode 2 lets a snapshot-capable compute provider own both CLI conversation files 
 | 2 | **PilotSwarm maintainers** | Confirm `16 MiB` compressed as the default `cli-home` archive cap for Mode 1 (and `64 KiB` for the worker-owned trusted turn-commit record), keeping larger workspace files in session workspaces and artifacts. |
 | 3 | **Snapshot-provider teams** | Clarify Mode 2 snapshot guarantees: retention TTL, behavior across source resume and idle auto-suspend, post-delete survival, and snapshot garbage-collection APIs. |
 | 4 | **PilotSwarm maintainers** | Decide whether Mode 2's 32-turn ledger cap should be lifted with a store-level turn journal before graduating Mode 2 out of experimental opt-in. |
-| 5 | **Implementation (next)** | Complete Mode 1 live cross-sandbox failover verification, then run full-suite PR qualification before moving out of draft. |
+| 5 | **Implementation (next)** | Run full-suite PR qualification and code review for Mode 1 (`store-owned`) and Mode 2 Phase 1 (`managed`) before moving out of draft. |
