@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import { SessionBlobStore } from "../../src/blob-store.ts";
+import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
 
 function makeConnectionString() {
     const accountKey = Buffer.from("pilotswarm-test-key").toString("base64");
@@ -15,6 +17,61 @@ function makeConnectionString() {
 }
 
 describe("SessionBlobStore", () => {
+    it("scopes commit and hydrate fault hits to the session with a synthetic blob transport", async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-blob-fault-"));
+        const sessionStateDir = path.join(root, "session-state");
+        const blobs = new Map();
+        const store = new SessionBlobStore({
+            containerClient: {
+                getBlockBlobClient(name) {
+                    return {
+                        async getProperties() {
+                            if (!blobs.has(name)) throw Object.assign(new Error("not found"), { statusCode: 404 });
+                            return { metadata: blobs.get(name).metadata, etag: "test-etag" };
+                        },
+                        async upload(body, _length, options) {
+                            blobs.set(name, { body: Buffer.from(body), metadata: options.metadata });
+                        },
+                        async downloadToFile(file) {
+                            const blob = blobs.get(name);
+                            fs.writeFileSync(file, blob.body);
+                            return { metadata: blob.metadata };
+                        },
+                    };
+                },
+            },
+            containerName: "test-container",
+            sharedKeyCredential: null,
+            sessionStateDir,
+        });
+        const other = `other-${randomUUID()}`;
+        const target = `target-${randomUUID()}`;
+        const points = ["store.commit.before-write", "store.commit.after-write", "store.hydrate.before-swap"];
+        const savedSpec = process.env.PILOTSWARM_FAULT_INJECT;
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+            for (const id of [other, target]) makeSessionLayout(sessionStateDir, id);
+            process.env.PILOTSWARM_FAULT_INJECT = points.map(point => `${point}:log:2`).join(",");
+            for (const [id, baseVersion] of [[other, 0], [target, 0], [target, 1]]) {
+                await store.commitSnapshot(id, { baseVersion, turnKey: `t${baseVersion + 1}` }, 1);
+                await store.hydrateSnapshot(id, 1);
+            }
+            for (const point of points) {
+                expect(log.mock.calls.map(([line]) => line)
+                    .filter(line => line.startsWith(`[fault-injection] hit point=${point} `))).toEqual([
+                    `[fault-injection] hit point=${point} action=log hit=1/2 session=${other} fired=false`,
+                    `[fault-injection] hit point=${point} action=log hit=1/2 session=${target} fired=false`,
+                    `[fault-injection] hit point=${point} action=log hit=2/2 session=${target} fired=true`,
+                ]);
+            }
+        } finally {
+            if (savedSpec === undefined) delete process.env.PILOTSWARM_FAULT_INJECT;
+            else process.env.PILOTSWARM_FAULT_INJECT = savedSpec;
+            log.mockRestore();
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it("archives the current session snapshot layout on dehydrate", async () => {
         // The post-disconnect contract: by the time we call dehydrate, the SDK
         // has either flushed durably or it never will. There is no race to
