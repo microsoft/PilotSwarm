@@ -485,7 +485,7 @@ runs*:
 | turnKey | deterministic per-turn GUID; equality with the store's `psturnkey` means "this turn already committed — adopt, don't re-run" |
 | store-wins | the protocol: exact `(version, sha)` local match is warm; every other state rehydrates; publishes are one-shot, conditioned on the preamble's ETag |
 | give up / unpublished | a commit whose `If-Match(preamble ETag)` failed — someone committed since this turn's base was read. It writes nothing, stays sentinel-dirty, emits `snapshot_unpublished`, and the next turn rehydrates |
-| `snapshot_unpublished { reason }` | CMS event for every non-published turn snapshot: `stopped` (intentional discard) or `superseded` (lost the publish race). The loss signal |
+| `snapshot_unpublished { reason }` | CMS event for every non-published turn snapshot: `stopped` (intentional discard), `superseded` (lost the publish race) or `transport_loss` (the turn's Copilot runtime exited or its connection closed, so its local state is not committed; issue #329). The loss signal |
 | `snapshot_regressed` | CMS event: preamble saw the store at a *lower* version than the local marker (restore or data loss). Hydration proceeds regardless |
 | `snapshot_lineage_jump` | CMS event (orchestration side): an adopted version ≠ mirror+1 — someone else published in the gap. Adoption proceeds regardless |
 

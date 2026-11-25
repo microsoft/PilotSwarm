@@ -17,6 +17,8 @@ import { createDecideTool, createDecisionCatalogReader, DECIDE_TOOL_NAME, type D
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
+import { CopilotRuntimeMonitor, COPILOT_RUNTIME_EXIT_MARKER, describeCopilotRuntimeExit, transportLossMessage, type CopilotRuntimeExit } from "./copilot-runtime-monitor.js";
+import { runtimeMetrics } from "./runtime-metrics.js";
 import { ManagedSession } from "./managed-session.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
 import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, WorkflowPackageCheckError, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
@@ -78,7 +80,7 @@ import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./pro
 import { approvePermissionForSession } from "./permissions.js";
 import { workflowTestPermission } from "./workflow/test-agent-tools.js";
 import { createHash, randomUUID } from "node:crypto";
-import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
+import { readSnapshotMarker, readTurnSentinel, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -89,6 +91,10 @@ const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
 const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
 const SESSION_LOCK_MAX_WAIT_MS = 120_000;
 const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
+// The wait for a dropped handle's disconnect when its local files are not published (its runtime may be gone).
+const UNPUBLISHED_DESTROY_DEADLINE_MS = 5_000;
+/** The once-per-process warning that a stdio client started with no runtime bound to it (review S7). */
+let runtimeUnclaimedWarned = false;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
 
 export class SessionLockAcquireTimeoutError extends Error {
@@ -1063,6 +1069,24 @@ export class SessionManager {
      */
     private clientStarts = new WeakMap<CopilotClient, Promise<void>>();
     /**
+     * The runtime process behind each pooled client (issue 329). A runtime
+     * that exits without the manager stopping it takes its client out of the
+     * pool at once, and every turn running on it settles with a
+     * transport-loss error instead of waiting for the inactivity watchdog.
+     */
+    private readonly runtimeMonitor = new CopilotRuntimeMonitor(
+        (client, exit) => this._onRuntimeLost(client as CopilotClient, exit),
+        () => this._onRuntimeUnclaimed(),
+    );
+    /** The client each warm session was created or resumed on, for the runtime-loss log (review S8). */
+    private readonly runtimeClients = new WeakMap<ManagedSession, CopilotClient>();
+    /**
+     * Clients this manager created over the SDK's stdio transport
+     * (`createCopilotClient`), whose start must spawn a runtime the monitor
+     * binds. An injected client (`manager.client = ...`) is never here.
+     */
+    private readonly stdioClients = new WeakSet<CopilotClient>();
+    /**
      * Backward-compat accessor for the default-token CopilotClient.
      *
      * The internal pool is keyed by transport and GitHub Copilot token (so
@@ -1767,7 +1791,8 @@ export class SessionManager {
         const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
             + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
         const existing = this.clients.get(clientKey);
-        if (existing) return existing;
+        if (existing && !this.runtimeMonitor.isLost(existing)) return existing;
+        if (existing) this._evictClient(existing);
 
         const created = createCopilotClient({
             ...(token ? { gitHubToken: token } : {}),
@@ -1812,6 +1837,7 @@ export class SessionManager {
             }
         } : undefined);
         this.clients.set(clientKey, created);
+        this.stdioClients.add(created);
         return created;
     }
 
@@ -1820,8 +1846,14 @@ export class SessionManager {
      * (see `clientStarts`).
      *
      * - Already connected: `start()` returns at once.
-     * - The CLI exited: the next call restarts it, and concurrent callers
-     *   share that restart too.
+     * - The runtime exited after its start (issue 329): the client left the
+     *   pool when it exited and is never started again, so a caller still
+     *   holding it fails with a transport-loss error and the next lookup
+     *   creates a fresh client. Restarting it in place would leave a runtime
+     *   running outside the pool.
+     * - A client whose runtime the monitor did not see (an injected test
+     *   double) is restarted in place by `start()`, and concurrent callers
+     *   share that restart.
      * - The start failed: the client leaves the pool, so the next call
      *   creates a fresh one.
      *
@@ -1832,10 +1864,28 @@ export class SessionManager {
         const inFlight = this.clientStarts.get(client);
         if (inFlight) return inFlight;
         const starting: Promise<void> = Promise.resolve()
-            .then(() => withoutWorkflowPackageCheck(() => client.start()))
+            .then(() => {
+                if (this.runtimeMonitor.isLost(client)) {
+                    throw new Error(`${COPILOT_RUNTIME_EXIT_MARKER} before this request; its client is not started again: Connection is closed.`);
+                }
+                return this.runtimeMonitor.start(
+                    client,
+                    () => withoutWorkflowPackageCheck(() => client.start()),
+                    { expectRuntime: this.stdioClients.has(client) },
+                );
+            })
             .catch((error: unknown) => {
                 for (const [key, pooled] of this.clients) {
                     if (pooled === client) this.clients.delete(key);
+                }
+                // The start failed because the client's runtime exited (review S6): name it a transport loss, so the
+                // turn takes the orchestration's connection-closed retry on a fresh client, not its generic retry.
+                if (this.runtimeMonitor.isLost(client)) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    const exit = this.runtimeMonitor.watch(client).exit();
+                    throw new Error(transportLossMessage(exit && !message.includes(COPILOT_RUNTIME_EXIT_MARKER)
+                        ? `${COPILOT_RUNTIME_EXIT_MARKER} during startup (${describeCopilotRuntimeExit(exit)}): ${message}`
+                        : message));
                 }
                 throw error;
             })
@@ -1844,6 +1894,58 @@ export class SessionManager {
             });
         this.clientStarts.set(client, starting);
         return starting;
+    }
+
+    /** Take every pool key of this client out of the pool. */
+    private _evictClient(client: CopilotClient): void {
+        for (const [key, pooled] of this.clients) {
+            if (pooled === client) this.clients.delete(key);
+        }
+    }
+
+    /**
+     * The runtime of a pooled client exited without the manager stopping it
+     * (issue 329), for example an OOM kill. The client leaves the pool at
+     * once, so no session or catalog lookup reuses it, and it is force-stopped
+     * so any request still waiting on its closed connection is rejected.
+     * Sessions warm on it see `runtimeLost` and are dropped at their next use;
+     * a turn running on it settles through its runtime watch.
+     */
+    private _onRuntimeLost(client: CopilotClient, exit: CopilotRuntimeExit): void {
+        const keys = [...this.clients].filter(([, pooled]) => pooled === client).length;
+        const warm = [...this.sessions].filter(([, managed]) => this.runtimeClients.get(managed) === client);
+        const inFlight = warm.filter(([, managed]) => managed.getActiveTurn() !== null).map(([id]) => id);
+        const idle = warm.filter(([, managed]) => managed.getActiveTurn() === null).map(([id]) => id);
+        console.warn(`[SessionManager] Copilot runtime exited ${exit.duringStartup ? "during startup" : "after startup"} `
+            + `(${describeCopilotRuntimeExit(exit)}); its client leaves the pool (${keys} key(s)) and is not reused. `
+            + `In-flight turns: [${inFlight.join(", ")}]; idle warm sessions: [${idle.join(", ")}].`);
+        runtimeMetrics().copilotRuntime(exit.duringStartup ? "during_startup" : "after_startup");
+        this._evictClient(client);
+        if (typeof client.forceStop === "function") {
+            void Promise.resolve().then(() => client.forceStop()).catch(() => {});
+        }
+    }
+
+    /**
+     * A stdio client started but the monitor bound no runtime to it (review
+     * S7): Node's `child_process` diagnostics channel (experimental) or the
+     * SDK's runtime arguments changed. Its runtime runs unwatched, so a death
+     * waits for the inactivity watchdog as before issue 329. Warned once per
+     * process and counted on every such client.
+     */
+    private _onRuntimeUnclaimed(): void {
+        runtimeMetrics().copilotRuntime("unclaimed");
+        if (runtimeUnclaimedWarned) return;
+        runtimeUnclaimedWarned = true;
+        console.warn("[SessionManager] A Copilot client started over stdio, but no runtime process was bound to it: "
+            + "an unexpected runtime exit will not be detected until the turn inactivity watchdog. Check the Node "
+            + "child_process diagnostics channel and the SDK's runtime spawn arguments (copilot-runtime-monitor.ts).");
+    }
+
+    /** Bind a warm session to the runtime of the client it was created or resumed on. */
+    private _bindRuntimeWatch(managed: ManagedSession, client: CopilotClient): void {
+        managed.bindRuntimeWatch(this.runtimeMonitor.watch(client));
+        this.runtimeClients.set(managed, client);
     }
 
     /** `client.createSession`, after the client's shared start. */
@@ -1933,7 +2035,8 @@ export class SessionManager {
      */
     private async ensureClientForKey(key: string): Promise<CopilotClient> {
         const cached = this.clients.get(key);
-        if (cached) return cached;
+        if (cached && !this.runtimeMonitor.isLost(cached)) return cached;
+        if (cached) this._evictClient(cached);
         const rootAt = key.indexOf(WORKSPACE_ROOT_CLIENT_SEPARATOR);
         const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
         const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
@@ -2162,6 +2265,12 @@ export class SessionManager {
                         if (versioned?.exists && !versioned.legacy) {
                             fs.rmSync(sessionDir, { recursive: true, force: true });
                             emitSessionManagerTrace(sessionId, `evicted (store versioned at v${versioned.version}); stale unmarked cache reclaimed`);
+                        } else if (this._legacyPublishBlocker(sessionId)) {
+                            // Review M1 (#376): the dir holds a turn that never committed (a dirty turn sentinel), for
+                            // example a first turn whose runtime died. It is not the only copy of anything: the store
+                            // keeps the last commit (or nothing), so the dir is deleted, never archived over it.
+                            fs.rmSync(sessionDir, { recursive: true, force: true });
+                            emitSessionManagerTrace(sessionId, "evicted a dirty uncommitted turn dir; the store keeps its last commit", { level: "warn" });
                         } else {
                             // Legacy session: its local files may be the only copy.
                             await this._dehydrateUnlocked(sessionId, "eviction");
@@ -3453,7 +3562,19 @@ export class SessionManager {
         // 1. Check if already in memory (warm) — update config in case
         //    tools were registered after the session was first created.
         const existing = this.sessions.get(sessionId);
-        if (existing) {
+        if (existing?.runtimeLost && turnIndex !== 0) {
+            // Issue 329: the runtime this warm session ran on exited. The
+            // handle can never run again: drop it and resume below on a fresh
+            // client, from the local files or the last committed snapshot.
+            // (Turn 0 discards any warm handle through the reset below.)
+            console.warn(
+                `[SessionManager] the Copilot runtime of warm session ${sessionId} exited; ` +
+                `dropping the warm session and resuming it on a fresh runtime.`,
+            );
+            await this._cancelWorkspaceShells(sessionId, existing, "a runtime loss");
+            try { await existing.destroy(); } catch {}
+            this._forgetWarmSession(sessionId);
+        } else if (existing) {
             const inheritedPolicyChanged = spawnBinding?.inMemory?.policy === true
                 && existing.requiresInheritedPolicyRebind(config);
             if (turnIndex === 0) {
@@ -3601,6 +3722,7 @@ export class SessionManager {
         if (nativeTaskAccess) copilotSession.on(event => nativeTaskAccess.observe(event));
         if (repoAgentAccess) copilotSession.on(event => repoAgentAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
+        this._bindRuntimeWatch(managed, client);
         managed.setWorkflowDelegationRefusal(agentBindingRefusal);
         if (agentBindingRefusal) managed.closeWorkflowTools();
         managed.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
@@ -3640,6 +3762,16 @@ export class SessionManager {
     /** Get a session by ID (null if not in memory on this node). */
     get(sessionId: string): ManagedSession | null {
         return this.sessions.get(sessionId) ?? null;
+    }
+
+    /**
+     * Issue 329 (review S9): the warm session a caller may run RPCs on. A handle whose Copilot runtime exited stays in
+     * the map until its next turn drops it, but it can never run again, so it counts as absent: the caller resumes the
+     * session on a fresh runtime (getOrCreate drops the dead handle) or reports the session unavailable.
+     */
+    private usableWarmSession(sessionId: string): ManagedSession | undefined {
+        const managed = this.sessions.get(sessionId);
+        return managed && !managed.runtimeLost ? managed : undefined;
     }
 
     /** Root directory holding per-session state dirs. */
@@ -3712,7 +3844,7 @@ export class SessionManager {
      *   4. If the post-disconnect snapshot is missing (which would indicate
      *      a future SDK regression), fall back to the pre-destroy checkpoint.
      */
-    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; lockHeld?: boolean; onCheckpointFallback?: () => void }): Promise<void> {
+    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; lockHeld?: boolean; onCheckpointFallback?: () => void }): Promise<{ unpublished: string } | void> {
         if (!options?.lockHeld) {
             return this._withSessionLock(
                 sessionId,
@@ -3724,7 +3856,18 @@ export class SessionManager {
         return this._dehydrateUnlocked(sessionId, reason, options);
     }
 
-    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; onCheckpointFallback?: () => void }): Promise<void> {
+    /**
+     * Review M1 (#376): why the legacy paths (dehydrate, the safety checkpoint, the eviction sweep) must not write
+     * this session's local files to the store, or null when they may. A dirty turn sentinel means the files hold a
+     * turn that never committed: its runtime died, or it was cut. Publishing them would put a torn conversation over
+     * the last commit (or create one where nothing was committed). A versioned commit is never refused here: it
+     * clears the sentinel itself. Called under the session lock, before any archive is built.
+     */
+    private _legacyPublishBlocker(sessionId: string): "dirty_turn" | null {
+        return readTurnSentinel(path.join(this.sessionStateDir, sessionId)) ? "dirty_turn" : null;
+    }
+
+    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; onCheckpointFallback?: () => void }): Promise<{ unpublished: string } | void> {
         const DESTROY_MAX_RETRIES = 3;
         const trace = options?.trace;
         let lastDestroyError: Error | undefined;
@@ -3737,6 +3880,28 @@ export class SessionManager {
         const sessionDirExistedPreDestroy = fs.existsSync(sessionDir);
 
         emitSessionManagerTrace(sessionId, `dehydrate start reason=${reason}`, { trace });
+
+        // Review M1 (#376): files holding an uncommitted turn are not published, neither by the safety checkpoint nor
+        // by the archive below. The last committed snapshot (or none) stays authoritative. The warm handle is dropped
+        // with a bounded wait (its runtime may be gone) and the local dir is kept: the next turn's lifecycle preamble
+        // discards the uncommitted turn, and the eviction sweep deletes the dir if no turn comes. This is not an error:
+        // the caller gets `{ unpublished }` and reports it as an unpublished snapshot, as after the lost turn itself.
+        const publishBlocker = this.sessionStore ? this._legacyPublishBlocker(sessionId) : null;
+        if (publishBlocker) {
+            await this.invalidateWarmSession(sessionId, { lockHeld: true, destroyDeadlineMs: UNPUBLISHED_DESTROY_DEADLINE_MS })
+                .catch(() => {});
+            emitSessionManagerTrace(
+                sessionId,
+                `dehydrate did not publish (${publishBlocker}): the local files hold an uncommitted turn; the store keeps its last commit`,
+                { trace, level: "warn" },
+            );
+            console.warn(
+                `[SessionManager] dehydrate of ${sessionId} (reason=${reason}) did not publish its local files: ` +
+                `they hold an uncommitted turn (${publishBlocker}); the store keeps its last commit.`,
+            );
+            this._forgetTurnState(sessionId);
+            return { unpublished: publishBlocker };
+        }
 
         if (this.sessionStore && sessionDirExistedPreDestroy) {
             try {
@@ -3788,6 +3953,7 @@ export class SessionManager {
                                 onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);
+                            this._bindRuntimeWatch(managed, client);
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
@@ -4203,19 +4369,31 @@ export class SessionManager {
      * Drop the warm in-memory session handle without deleting any persisted
      * local/session-store state. Used when the underlying Copilot session
      * becomes invalid and we want the next getOrCreate() to resume/hydrate it.
+     *
+     * `destroyDeadlineMs` bounds the wait for the handle's disconnect: past
+     * it the handle is forgotten anyway and its disconnect settles in the
+     * background (issue 329: its runtime connection is gone).
      */
-    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
+    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean; destroyDeadlineMs?: number }): Promise<void> {
         if (!options?.lockHeld) {
-            return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { lockHeld: true }));
+            return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { ...options, lockHeld: true }));
         }
         const session = this.sessions.get(sessionId);
         if (!session) return;
         // Review RT-F1-L1: an invalidated handle is forgotten whatever fails on the way, so it is never reused.
         try {
             await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
-            try {
-                await session.destroy();
-            } catch {}
+            const destroying = session.destroy().catch(() => {});
+            const deadlineMs = options?.destroyDeadlineMs;
+            if (deadlineMs && deadlineMs > 0) {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                await Promise.race([
+                    destroying,
+                    new Promise<void>((resolve) => { timer = setTimeout(resolve, deadlineMs); }),
+                ]).finally(() => { if (timer) clearTimeout(timer); });
+            } else {
+                await destroying;
+            }
         } finally {
             this._forgetWarmSession(sessionId);
         }
@@ -4237,11 +4415,18 @@ export class SessionManager {
      * Checkpoint session state without destroying the session or
      * releasing affinity. Used for crash resilience — session stays warm.
      */
-    async checkpoint(sessionId: string, options?: { lockHeld?: boolean }): Promise<void> {
+    async checkpoint(sessionId: string, options?: { lockHeld?: boolean }): Promise<{ unpublished: string } | void> {
         if (!options?.lockHeld) {
             return this._withSessionLock(sessionId, "checkpoint", () => this.checkpoint(sessionId, { lockHeld: true }));
         }
         if (this.sessionStore) {
+            // Review M1 (#376): a checkpoint of files that hold an uncommitted turn is not written; the store keeps
+            // its last commit.
+            const publishBlocker = this._legacyPublishBlocker(sessionId);
+            if (publishBlocker) {
+                emitSessionManagerTrace(sessionId, `checkpoint did not publish (${publishBlocker}): the local files hold an uncommitted turn`, { level: "warn" });
+                return { unpublished: publishBlocker };
+            }
             await this.sessionStore.checkpoint(sessionId);
         }
     }
@@ -4357,6 +4542,7 @@ export class SessionManager {
         // cannot block another or multiply the worker's termination budget.
         // This is final cleanup only, not the individual-session eviction path.
         await Promise.all(clients.map(async (client) => {
+            this.runtimeMonitor.markStopping(client);
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {
                 const errors = await Promise.race([
@@ -4391,7 +4577,7 @@ export class SessionManager {
 
     async captureWorkflowToolBinding(parentSessionId: string, forSpawn = false,
         captured?: SpawnToolAuthority): Promise<WorkflowToolBinding> {
-        const managed = this.sessions.get(parentSessionId);
+        const managed = this.usableWarmSession(parentSessionId);
         const config = this.workflowParentConfigs.get(parentSessionId);
         const fullConfig = this.sessionConfigs.get(parentSessionId);
         if (!managed || !config || !this.sessionCatalog) throw workflowParentContextUnavailable();
@@ -4485,7 +4671,7 @@ export class SessionManager {
                 const authority = await this.readSpawnToolAuthority(parentSessionId);
                 const { parent, owner } = authority;
                 if (parent && !parent.isSystem && owner
-                    && (!this.sessions.has(parentSessionId) || !this.workflowParentConfigs.has(parentSessionId)
+                    && (!this.usableWarmSession(parentSessionId) || !this.workflowParentConfigs.has(parentSessionId)
                         || !this.sessionConfigs.has(parentSessionId))) {
                     await prepareParent();
                 }

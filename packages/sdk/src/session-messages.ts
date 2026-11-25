@@ -23,6 +23,11 @@ export interface InternalSessionMessageRuntime {
         getStatus(orchestrationId: string): Promise<{ status?: string } | null | undefined>;
         enqueueEvent(orchestrationId: string, eventName: string, payload: string): Promise<unknown>;
     };
+    /**
+     * Review S5 (#376): a synchronous check run just before the message is queued, its only external write. A turn's
+     * tool passes its bridge fence (control-bridge-fence.ts); it throws to stop the send.
+     */
+    beforeEnqueue?: () => void;
 }
 
 function normalizeSessionId(value: unknown): string {
@@ -176,6 +181,7 @@ export async function sendInternalSessionMessage(
         crossOwnerPreamble +
         replyInstructions +
         `\nRequest body:\n${body}`;
+    runtime.beforeEnqueue?.();
     await runtime.duroxideClient.enqueueEvent(
         orchestrationId,
         "messages",
@@ -223,6 +229,7 @@ export async function replyInternalSessionMessage(
         `[SESSION_MESSAGE_RESPONSE request_id=${requestId} from=${fromSessionId}${relationTag} verdict=${verdict}]\n` +
         `${guidance}\n\n` +
         body;
+    runtime.beforeEnqueue?.();
     await runtime.duroxideClient.enqueueEvent(
         orchestrationId,
         "messages",

@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { ManagedSession, TURN_INACTIVITY_ERROR_MARKER } from "../../src/managed-session.ts";
+import { assertControlBridgeOpen, ControlBridgeClosedError, fenceControlBridge } from "../../src/control-bridge-fence.ts";
 import { LiveTurnControl } from "../../src/turn-control.ts";
-import { collectContractViolations, isFailureToolCompletion, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
+import { collectContractViolations, isFailureToolCompletion, registerActivities, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
+import { PilotSwarmClient } from "../../src/client.ts";
+import { PilotSwarmManagementClient } from "../../src/management-client.ts";
+import { resetSessionMessageRateLimitsForTests } from "../../src/session-messages.ts";
+import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
 import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/input-policy.ts";
 import { SPAWN_WORKFLOW_TOOL_SPEC } from "../../src/workflow/tool-spec.ts";
 import {
@@ -468,6 +473,65 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Spawned one and continuing.");
     });
+
+    it("review S5 (#376): a bridge call still in flight when its turn is stopped takes no further step", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: "spawn_agent", args: { task: "say hi" } }];
+        let entered;
+        const reached = new Promise((resolve) => { entered = resolve; });
+        let release;
+        const gate = new Promise((resolve) => { release = resolve; });
+        const writes = [];
+        const results = [];
+        fakeSession.on("tool.execution_complete", (event) => results.push(event.data.result));
+        // The bridge's shape: an awaited first step, then a fenced write (as session-proxy's spawnAgent does).
+        const controlToolBridge = {
+            spawnAgent: vi.fn(async () => {
+                entered();
+                await gate;
+                try {
+                    assertControlBridgeOpen("spawn_agent", "sending the child its task", false);
+                } catch (error) {
+                    return `[SYSTEM: spawn_agent failed: ${error.message}]`;
+                }
+                writes.push("send");
+                return "[SYSTEM: spawned]";
+            }),
+            messageAgent: vi.fn(),
+        };
+        const managed = new ManagedSession("inline-spawn-stopped", fakeSession, {});
+        const turn = managed.runTurn("spawn a child", { controlToolBridge });
+        await reached;
+        expect(managed.requestStop("stop the turn")).not.toBeNull();
+        release();
+        await turn;
+
+        expect(writes).toEqual([]);
+        expect(results).toEqual(["[SYSTEM: spawn_agent failed: spawn_agent stopped before sending the child its task: the turn that asked for it has ended.]"]);
+    });
+
+    it("review S5 (#376): the bridge fence passes values through, keeps the turn across awaits and closes with the attempt", async () => {
+        const turn = new AbortController();
+        const target = {
+            flag: true,
+            async step() {
+                await new Promise((resolve) => setImmediate(resolve));
+                assertControlBridgeOpen("t", "the step", false);
+                return "done";
+            },
+        };
+        const fenced = fenceControlBridge(target, turn.signal);
+        expect(fenced.flag).toBe(true);
+        expect(fenceControlBridge(target, undefined)).toBe(target);
+        expect(await fenced.step()).toBe("done");
+        // Outside a fenced call there is no turn to check: only the attempt flag applies.
+        expect(() => assertControlBridgeOpen("t", "the step", false)).not.toThrow();
+        expect(() => assertControlBridgeOpen("t", "the step", true)).toThrow(ControlBridgeClosedError);
+        const late = fenced.step();
+        turn.abort();
+        await expect(late).rejects.toThrow("t stopped before the step: the turn that asked for it has ended.");
+    });
+
     it("spawn_workflow runs inline, keeps the turn going and passes the tool call id", async () => {
         const fakeSession = new FakeCopilotSession();
         const yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\n";
@@ -1900,5 +1964,177 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
         expect(h.fakeSession.sentPrompts[2]).toBe(TEXT);
         expect(result.events.map(event => event.eventType).filter(type => type.startsWith("runtime.")))
             .toEqual(["runtime.required_tool_not_invoked", "runtime.workflow_step_reminded"]);
+    });
+});
+
+/**
+ * Review S5 (#376): the runTurn activity's real control bridge, called after the activity's body has ended (the case of a
+ * tool call still in flight when its attempt is cut). Each effectful tool must stop at the step named here, before its
+ * write. The fixtures make every tool reach that step: the caller owns each target, the targets and children are live
+ * (or terminal where the step is a direct delete), and a canvas exists in slot 1.
+ */
+describe("review S5 (#376): the control bridge's effectful tools take no step after the turn's activity attempt ends", () => {
+    const owner = { provider: "test", subject: "fence-owner" };
+    const APP_HTML = `<!doctype html>\n<!-- CANVAS-APP-MANIFEST ${JSON.stringify({ name: "fence-app", interface: { keys: [{ key: "app/item" }] } })} -->\n<html><body>app</body></html>`;
+    const WRITTEN_EVENTS = new Set([
+        "session.end_requested", "session.check_agents_memo", "session.canvas_updated", "session.canvas_data",
+        "session.canvas_presented", "session.canvas_app_published",
+    ]);
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+        resetSessionMessageRateLimitsForTests();
+    });
+
+    const CANVAS_DRAWN = (types) => ((types ?? []).includes("session.canvas_updated")
+        ? [{ seq: 1, eventType: "session.canvas_updated", data: { rev: 1, slot: 1 } }]
+        : []);
+
+    async function bridgeOfEndedTurn(callerId, { duringTurn, childrenGate, heldInTurn, catalog = {}, uploadArtifact } = {}) {
+        const effects = {
+            enqueueEvent: vi.fn(async () => {}),
+            deleteSession: vi.spyOn(PilotSwarmClient.prototype, "deleteSession").mockResolvedValue(undefined),
+            managementStart: vi.spyOn(PilotSwarmManagementClient.prototype, "start").mockResolvedValue(undefined),
+            upsertChildOutcome: vi.fn(async () => {}),
+            canvasKvWrite: vi.fn(async () => ({ status: "written", rev: 1, sizeBytes: 1 })),
+            uploadArtifact: uploadArtifact ?? vi.fn(async () => {}),
+            storeFact: vi.fn(async () => {}),
+        };
+        vi.spyOn(PilotSwarmManagementClient.prototype, "stop").mockResolvedValue(undefined);
+        vi.spyOn(PilotSwarmClient.prototype, "start").mockImplementation(async function () {
+            this.duroxideClient = { enqueueEvent: effects.enqueueEvent, getStatus: async () => ({ status: "Running" }) };
+        });
+        vi.spyOn(PilotSwarmClient.prototype, "stop").mockResolvedValue(undefined);
+        vi.spyOn(PilotSwarmClient.prototype, "listSessions").mockImplementation(async () => {
+            await childrenGate;
+            return [
+                { sessionId: "child-live", parentSessionId: callerId, title: "live child" },
+                { sessionId: "child-done", parentSessionId: callerId, title: "finished child" },
+            ];
+        });
+        vi.spyOn(PilotSwarmClient.prototype, "_getSessionInfo")
+            .mockImplementation(async (id) => ({ sessionId: id, status: id === "child-done" ? "completed" : "running", iterations: 1 }));
+        const rows = {
+            [callerId]: { sessionId: callerId, owner, state: "running" },
+            "target-live": { sessionId: "target-live", owner, state: "running" },
+            "target-done": { sessionId: "target-done", owner, state: "completed" },
+        };
+        let bridge;
+        let inFlight;
+        const h = makeRunTurnHarness({
+            turn: async (opts) => {
+                bridge = opts.controlToolBridge;
+                inFlight = duringTurn?.(bridge);
+                if (heldInTurn) await heldInTurn;
+                return { type: "completed", content: "ok", events: [] };
+            },
+            catalogExtras: {
+                getSession: vi.fn(async (id) => rows[id] ?? null),
+                getChildOutcome: vi.fn(async () => null),
+                upsertChildOutcome: effects.upsertChildOutcome,
+                canvasKvWrite: effects.canvasKvWrite,
+                getCanvasKvSettings: vi.fn(async () => ({ kvAccess: "owner", kvManifest: null, latestRev: 1 })),
+                canvasKvGet: vi.fn(async () => null),
+                getSessionEventsBefore: vi.fn(async (_id, _before, _limit, types) => CANVAS_DRAWN(types)),
+                ...catalog,
+            },
+        });
+        const artifactStore = { uploadArtifact: effects.uploadArtifact, downloadArtifactText: vi.fn(async () => APP_HTML) };
+        // The harness registers no store URL or fact store; the turn's inline client and publish_canvas_app need them.
+        registerActivities({ registerActivity: (name, fn) => { h.handlers[name] = fn; } },
+            h.sessionManager, null, undefined, h.catalog, undefined, "fixture://bridge-fence",
+            undefined, undefined, undefined, undefined, undefined, undefined, { storeFact: effects.storeFact }, "worker-1", artifactStore);
+        await h.runTurn(callerId);
+        return { bridge, inFlight, effects, h };
+    }
+
+    function expectNoWrite({ effects, h }) {
+        for (const [name, spy] of Object.entries(effects)) {
+            expect(spy, name).not.toHaveBeenCalled();
+        }
+        expect(h.recordedEvents.filter((event) => WRITTEN_EVENTS.has(event.eventType))).toEqual([]);
+    }
+
+    const stopped = (tool, step) => `${tool} stopped before ${step}: the turn's activity attempt has ended.`;
+    const text = (result) => (typeof result === "string" ? result : JSON.stringify(result));
+
+    it.each([
+        ["message_agent_session", "queueing the message", (b) => b.messageAgentSession({ session_id: "target-live", message: "hello" })],
+        ["manage_agent_session", "applying the complete", (b) => b.manageAgentSession({ session_id: "target-live", action: "complete" })],
+        ["manage_agent_session", "applying the cancel", (b) => b.manageAgentSession({ session_id: "target-live", action: "cancel" })],
+        ["manage_agent_session", "applying the delete", (b) => b.manageAgentSession({ session_id: "target-live", action: "delete" })],
+        ["manage_agent_session", "deleting the session", (b) => b.manageAgentSession({ session_id: "target-done", action: "delete" })],
+        ["send_session_message", "queueing the message", (b) => b.sendSessionMessage({ session_id: "target-live", subject: "status", body: "How is it going?" })],
+        ["reply_session_message", "queueing the reply", (b) => b.replySessionMessage({ request_id: "req-1", session_id: "target-live", body: "Fine." })],
+        ["regenerate_agent", "queueing the regeneration", (b) => b.regenerateAgent({ agent_id: "child-live" })],
+        ["complete_agent", "recording the result", (b) => b.completeAgent({ agent_id: "child-live", result: { summary: "done" } })],
+        ["complete_agent", "applying the command", (b) => b.completeAgent({ agent_id: "child-live" })],
+        ["cancel_agent", "recording the partial result", (b) => b.cancelAgent({ agent_id: "child-live", partial_result: { summary: "half" } })],
+        ["cancel_agent", "applying the command", (b) => b.cancelAgent({ agent_id: "child-live" })],
+        ["delete_agent", "applying the delete", (b) => b.deleteAgent({ agent_id: "child-live" })],
+        ["delete_agent", "deleting the child", (b) => b.deleteAgent({ agent_id: "child-done" })],
+        ["stop_agent_turn", "stopping the child's turn", (b) => b.stopAgentTurn({ agent_id: "child-live" })],
+        ["check_agents", "recording what it reported", (b) => b.checkAgents({})],
+        ["draw_canvas", "drawing the canvas", (b) => b.drawCanvas({ html: "<p>hello</p>" })],
+        ["update_canvas", "writing the data", (b) => b.updateCanvas({ data: { n: 1 } })],
+        ["show_canvas", "presenting the canvas", (b) => b.showCanvas({})],
+        ["canvas_kv", "the put of app/item", (b) => b.canvasKv({ op: "put", key: "app/item", value: 1 })],
+        ["canvas_kv", "the delete of app/item", (b) => b.canvasKv({ op: "delete", key: "app/item" })],
+        ["publish_canvas_app", "copying the app", (b) => b.publishCanvasApp({ name: "fence-app", description: "Use when a test checks that an ended turn publishes nothing." })],
+    ])("%s stops before %s", async (tool, step, call) => {
+        const ended = await bridgeOfEndedTurn(`fence-${tool}-${step.replace(/\W+/g, "-")}`);
+        expect(text(await call(ended.bridge))).toContain(stopped(tool, step));
+        expectNoWrite(ended);
+        expect(ended.h.traces.warn).toContainEqual(expect.stringContaining(stopped(tool, step)));
+    });
+
+    it("a call in flight when its activity attempt ends stops at its next step", async () => {
+        let release;
+        const childrenGate = new Promise((resolve) => { release = resolve; });
+        const ended = await bridgeOfEndedTurn("fence-in-flight", {
+            childrenGate,
+            duringTurn: (bridge) => bridge.completeAgent({ agent_id: "child-live", result: { summary: "done" } }),
+        });
+        // The call started inside the turn and waits on its child lookup; the activity has returned since.
+        expect(PilotSwarmClient.prototype.listSessions).toHaveBeenCalledTimes(1);
+        release();
+        expect(text(await ended.inFlight)).toContain(stopped("complete_agent", "recording the result"));
+        expectNoWrite(ended);
+    });
+
+    // Copilot review (#376): each canvas write checks the fence again after the await before it. The call starts in
+    // the turn and is held at one await until its activity attempt has ended; released, it stops before its next
+    // write. A write made before the hold stands (a step already started completes).
+    const planeOn = { canvasLiveAvailable: async () => true };
+    it.each([
+        ["draw_canvas", "minting the revision", "the revision read", (b) => b.drawCanvas({ html: "<p>hello</p>" }),
+            (hold) => ({ catalog: { getSessionCanvases: hold(async () => []), mintCanvasRev: vi.fn(async () => 2) } }), ["mintCanvasRev", "uploadArtifact"]],
+        ["draw_canvas", "uploading the canvas", "the mint", (b) => b.drawCanvas({ html: "<p>hello</p>" }),
+            (hold) => ({ catalog: { mintCanvasRev: hold(async () => 2) } }), ["uploadArtifact"]],
+        ["draw_canvas", "recording the canvas", "the upload", (b) => b.drawCanvas({ html: "<p>hello</p>" }),
+            (hold) => ({ uploadArtifact: hold(async () => {}), catalog: { upsertSessionCanvas: vi.fn(async () => {}) } }), ["upsertSessionCanvas"]],
+        ["update_canvas", "recording the data", "the plane write", (b) => b.updateCanvas({ data: { n: 1 } }),
+            (hold) => ({ catalog: { ...planeOn, upsertCanvasLiveTick: hold(async () => ({ payload: { n: 1 }, seq: 2 })) } }), []],
+        ["update_canvas", "recording the data", "the data-rev read", (b) => b.updateCanvas({ data: { n: 1 } }),
+            (hold) => {
+                const read = hold(async () => []);
+                return { catalog: { getSessionEventsBefore: async (id, before, limit, types) => ((types ?? []).includes("session.canvas_data") ? read() : CANVAS_DRAWN(types)) } };
+            }, []],
+        ["canvas_kv", "the put of app/item", "the row read", (b) => b.canvasKv({ op: "put", key: "app/item", value: 1 }),
+            (hold) => ({ catalog: { canvasKvGet: hold(async () => null) } }), ["canvasKvWrite"]],
+    ])("%s stops before %s when its attempt ends during %s", async (tool, step, at, call, setup, untouched) => {
+        let entered;
+        const reached = new Promise((resolve) => { entered = resolve; });
+        let release;
+        const held = new Promise((resolve) => { release = resolve; });
+        const hold = (result) => vi.fn(async (...args) => { entered(); await held; return result(...args); });
+        const ended = await bridgeOfEndedTurn(`fence-held-${tool}-${at.replace(/\W+/g, "-")}`, {
+            ...setup(hold), heldInTurn: reached, duringTurn: call,
+        });
+        release();
+        expect(text(await ended.inFlight)).toContain(stopped(tool, step));
+        for (const name of untouched) expect(ended.h.catalog[name] ?? ended.effects[name], name).not.toHaveBeenCalled();
+        expect(ended.h.recordedEvents.filter((event) => WRITTEN_EVENTS.has(event.eventType))).toEqual([]);
+        expect(ended.h.traces.warn).toContainEqual(expect.stringContaining(stopped(tool, step)));
     });
 });

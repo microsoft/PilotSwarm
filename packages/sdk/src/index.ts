@@ -217,6 +217,7 @@ export type {
     ControlOutcomeEventData,
     SteerConfirmedEventData,
     CarriedSteersClosedEventData,
+    PilotSwarmToolInvocationContext,
 } from "./types.js";
 export {
     TURN_CONTROL_EVENT_TYPES,

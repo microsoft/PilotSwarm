@@ -16,6 +16,7 @@ import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
 import { TOOL_COMPOSITION_CAPABILITY } from "../../src/activity-routing.ts";
 import { writeTurnSentinel } from "../../src/snapshot-protocol.ts";
 import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.mjs";
+import { copilotRuntimeChildPids } from "../helpers/kill-harness.js";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
 import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
 
@@ -23,7 +24,7 @@ const OWNER = { provider: "test", subject: "composition-rebuild" };
 const context = { traceInfo() {}, isCancelled: () => false, orchestrationVersion: "1.0.84" };
 const versions = { currentVersion: "1.0.84", latestVersion: "1.0.84" };
 
-async function withParent(run, { lineage = null, limit = null, row = {}, storeFactory } = {}) {
+async function withParent(run, { lineage = null, limit = null, row = {}, storeFactory, stateDirName = "sessions" } = {}) {
     const home = mkdtempSync(join(tmpdir(), "ps-composition-rebuild-"));
     const server = await createNativeCopilotProvider(() => ({ content: "NO_MODEL_TURN_EXPECTED" }));
     const config = { model: "fixture:gpt-5.6-terra", workingDirectory: home,
@@ -61,7 +62,7 @@ async function withParent(run, { lineage = null, limit = null, row = {}, storeFa
                 name: "gpt-5.6-terra", supportedReasoningEfforts: ["low"], defaultReasoningEffort: "low",
             }],
         }] }),
-    }, join(home, "sessions"));
+    }, join(home, stateDirName));
     manager.setToolRegistry(new Map(tools), { staticNames: new Set(tools.map(([name]) => name)) });
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
     manager.setSessionCatalog(catalog);
@@ -437,6 +438,46 @@ describe("1.0.84 composition after rebuilding a session", () => {
             expect(manager.sessions.has("parent")).toBe(true);
             expect(server.requests).toEqual([]);
         });
+    });
+
+    it("issue 329 (review S9): a capture after the warm parent's runtime died resumes the parent on a fresh runtime", { timeout: 120_000 }, async () => {
+        await withParent(async ({ manager, config, handlers, server, ctx }) => {
+            const before = copilotRuntimeChildPids();
+            const proxy = createSessionProxy(ctx, "parent", "parent-affinity", config, "tool-composition-v1");
+            const first = proxy.captureSpawnTools(config, "all", undefined, null);
+            await handlers.get(first.name)(context, first.input);
+            const dead = manager.sessions.get("parent");
+            // One real exchange gives the parent a conversation to resume. The CLI writes none before it, and writes
+            // it under $COPILOT_HOME/session-state, the state dir this test gives the manager.
+            await dead.copilotSession.sendAndWait({ prompt: "Seed the parent's conversation." }, 60_000);
+            const seeded = server.requests.length;
+            expect(seeded).toBeGreaterThan(0);
+            const started = copilotRuntimeChildPids().filter(pid => !before.includes(pid));
+            expect(started).toHaveLength(1);
+            const exited = new Promise(resolve => dead.runtimeWatch.onExit(resolve));
+            process.kill(started[0], "SIGKILL");
+            let timer;
+            await Promise.race([exited, new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error("the warm parent's runtime exit was not seen within 30s")), 30_000);
+            })]).finally(() => clearTimeout(timer));
+            expect(dead.runtimeLost).toBe(true);
+
+            const opening = vi.spyOn(manager, "getOrCreate");
+            const again = proxy.captureSpawnTools(config, "all", undefined, null, false,
+                { transcriptEpoch: 0, workspaceRevision: 0, turnIndex: 1 });
+            const capture = await handlers.get(again.name)(context, again.input);
+            expect(opening).toHaveBeenCalledTimes(1);
+            const resumed = manager.sessions.get("parent");
+            expect(resumed).toBeTruthy();
+            expect(resumed).not.toBe(dead);
+            expect(resumed.runtimeLost).toBe(false);
+            expect(capture.toolGrant.tools.map(tool => tool.name)).toEqual(["allowed_tool"]);
+            const restarted = copilotRuntimeChildPids().filter(pid => !before.includes(pid));
+            expect(restarted).toHaveLength(1);
+            expect(restarted[0]).not.toBe(started[0]);
+            // The capture asked no model: only the seeding exchange reached it.
+            expect(server.requests).toHaveLength(seeded);
+        }, { stateDirName: "session-state" });
     });
 
     it("keeps grant and the inherited ceiling after continue-as-new followed by hydration", { timeout: 120_000 }, async () => {
