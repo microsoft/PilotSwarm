@@ -4,6 +4,17 @@
 
 **Upgrade: deploy the workers.** No migration and no orchestration version.
 
+### A model step that fails without output no longer ends the turn as completed
+
+A model step can end with `finishReason: "error"` and with neither text nor a
+tool call, and the Copilot runtime reports no `session.error` (seen with Gemini
+models in long tool loops). The turn then ended as completed, with
+`(no response)` or with an earlier progress line, and the session stopped in
+the middle of its task. The turn now sends one continuation prompt that asks
+the model to go on from where it stopped and not to repeat finished tool
+calls. If that step fails the same way, the turn ends with an error, which the
+existing turn retry takes. Accepted workspace changes are kept.
+
 ### Workflow scripts run on Node 26
 
 On Node 26 the permission model also limits the network, so a workflow script
