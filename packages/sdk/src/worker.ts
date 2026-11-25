@@ -12,6 +12,7 @@ import { SessionManager, packageAgentKey, agentOwnerKey, type AgentCopyEntry, ty
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
+import { ComputeRegistry, type ComputeProvider } from "./compute-target.js";
 import { registerActivities } from "./session-proxy.js";
 import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
@@ -247,10 +248,13 @@ export class PilotSwarmWorker {
     /** Session turn control: the worker's LISTEN hub (design 4.4). */
     private _turnControlHub: TurnControlHub | null = null;
     private _started = false;
+    private _starting = false;
     private _runtimeStartup: Promise<void> | null = null;
     private _stopRequested = false;
     /** Worker-level tool registry — name → Tool. */
     private toolRegistry = new Map<string, Tool<any>>();
+    /** Worker-level remote compute targets and providers (opt-in, compute-target.ts). */
+    private _computeRegistry: ComputeRegistry | null = null;
     /** Loaded skill directories from plugins + direct config. */
     private _loadedSkillDirs: string[] = [];
     /** Loaded skills by name for agent-declared eager prompt injection. */
@@ -487,6 +491,13 @@ export class PilotSwarmWorker {
             },
             effectiveSessionStateDir,
         );
+        if (options.computeTargets !== undefined || options.computeProviders !== undefined) {
+            this._computeRegistry = new ComputeRegistry({
+                targets: options.computeTargets,
+                providers: options.computeProviders,
+            });
+            this.sessionManager.setComputeRegistry(this._computeRegistry);
+        }
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
         this.sessionManager.setModelProviderTypes(this._modelProviderTypes);
         this.sessionManager.setWorkspaceProvider(options.workspaceProvider
@@ -641,6 +652,21 @@ export class PilotSwarmWorker {
         this.sessionManager.setWorkspaceProvider(provider, this.config.workerNodeId ?? undefined);
     }
 
+    /**
+     * Remote compute: register a compute provider before `start()`.
+     * Throws if the worker is already started or a provider with the same `kind` is already registered.
+     */
+    registerComputeProvider(provider: ComputeProvider): void {
+        if (this._started || this._starting) {
+            throw new Error("registerComputeProvider() must be called before start()");
+        }
+        if (!this._computeRegistry) {
+            this._computeRegistry = new ComputeRegistry();
+            this.sessionManager.setComputeRegistry(this._computeRegistry);
+        }
+        this._computeRegistry.registerProvider(provider);
+    }
+
     /** Store full config (with tools/hooks) for a session. */
     setSessionConfig(sessionId: string, config: ManagedSessionConfig): void {
         this.sessionManager.setConfig(sessionId, config);
@@ -736,8 +762,17 @@ export class PilotSwarmWorker {
     // ─── Lifecycle ───────────────────────────────────────────
 
     async start(): Promise<void> {
-        if (this._started) return;
+        if (this._started || this._starting) return;
+        this._starting = true;
         this._stopRequested = false;
+        try {
+            // Remote compute: fail closed synchronously before starting duroxide if any enabled target lacks a compatible provider.
+            this._computeRegistry?.validateForStart();
+            this._computeRegistry?.seal();
+        } catch (err) {
+            this._starting = false;
+            throw err;
+        }
         // Workflow tools are available again after a stop of this worker (E1-R4).
         this.sessionManager.startWorkflowTools();
         this.sessionManager.startGeneration();
@@ -1176,9 +1211,11 @@ export class PilotSwarmWorker {
         try {
             await this._runtimeStartup;
         } catch (err) {
+            this._starting = false;
             if (!this._stopRequested) await this.stop();
             throw err;
         }
+        this._starting = false;
         if (this._stopRequested) return;
         this._started = true;
         this._startProviderPolling();
@@ -1255,6 +1292,22 @@ export class PilotSwarmWorker {
         // while the catalog/provider it uses are still open.
         await this._providerReconciliation;
         await this.sessionManager.shutdown();
+        if (this._computeRegistry) {
+            let disposeTimer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([
+                    this._computeRegistry.disposeAll(),
+                    new Promise<void>((_, reject) => {
+                        disposeTimer = setTimeout(() => reject(new Error("compute provider dispose timed out after 10000ms")), 10_000);
+                        disposeTimer.unref?.();
+                    }),
+                ]);
+            } catch (err: any) {
+                console.warn(`[PilotSwarmWorker] compute provider dispose failed: ${err?.message ?? err}`);
+            } finally {
+                if (disposeTimer) clearTimeout(disposeTimer);
+            }
+        }
         // After the runtime drained its activities, so a Stop that arrives
         // during a graceful drain still reaches running turns.
         if (this._turnControlHub) {
@@ -1281,6 +1334,7 @@ export class PilotSwarmWorker {
             this.graphStore = null;
         }
         this._provider = null;
+        this._starting = false;
         this._started = false;
     }
 

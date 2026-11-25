@@ -16,7 +16,10 @@ import { FeatureFlagError, isAlwaysOn, type FeatureOwner } from "./feature-flags
 import { createDecideTool, createDecisionCatalogReader, DECIDE_TOOL_NAME, type DecideToolHost, type DecisionCatalogSnapshot } from "./decision-tools.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
-import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
+import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility, type ToolCatalogPolicyResolver } from "./copilot-client.js";
+import { RemoteRuntimeRequestHandler, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
+import { parseSessionComputeTargetRef, type ComputeRegistry } from "./compute-target.js";
+import { RemoteRuntimeError, assertRemoteRuntimeBinding, type RemoteRuntimeBinding, type RemoteRuntimeBindingToken } from "./remote-runtime.js";
 import { ManagedSession } from "./managed-session.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
 import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, WorkflowPackageCheckError, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
@@ -1035,6 +1038,23 @@ export function pinWorkflowWorkspaceConfig(
     return config;
 }
 
+/**
+ * The model provider config for a remote runtime: the same provider with its credentials swapped for placeholders, and the grant the worker's request handler
+ * enforces. Null when the session's model has no provider the worker can broker (a GitHub Copilot model, or a base URL that is not https or loopback).
+ */
+function remoteProviderGrant(
+    providerConfig: Record<string, any>,
+    sessionId: string,
+): { config: Record<string, any>; grant: RemoteSessionGrant } | null {
+    const provider = providerConfig.provider as Record<string, any> | undefined;
+    if (!provider) return null;
+    const { provider: redacted, secrets } = redactProviderSecrets(provider, sessionId);
+    const grant = remoteSessionGrant(provider.baseUrl, secrets);
+    if (!grant) return null;
+    const { gitHubToken: _token, ...rest } = providerConfig;
+    return { config: { ...rest, provider: redacted }, grant };
+}
+
 export class SessionManager {
     /**
      * Resolved inspect viewers, keyed by session id. Static so it is shared
@@ -1144,6 +1164,12 @@ export class SessionManager {
      * created/resumed in `_getOrCreateUnlocked`.
      */
     private sessionClientKeys = new Map<string, string>();
+    /** Remote runtimes bound for the turn in progress, by session. `token` prevents ABA release of a newer turn's binding; `resume`: the remote already holds the native session. */
+    private remoteRuntimes = new Map<string, { binding: RemoteRuntimeBinding; token: RemoteRuntimeBindingToken; resume?: boolean }>();
+    /** What each bound remote session's model requests may reach (compute-runtime.ts). Set while its turn builds its config, dropped with the binding. */
+    private remoteGrants = new Map<string, RemoteSessionGrant>();
+    /** Worker-scoped remote compute targets and providers (opt-in, compute-target.ts). Null when unset. */
+    private computeRegistry: ComputeRegistry | null = null;
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
@@ -1789,30 +1815,33 @@ export class SessionManager {
                 ...process.env,
                 COPILOT_HOME: path.dirname(this.sessionStateDir),
             },
-        }, byokOpenAi ? { type: "openai" } : undefined, byokOpenAi ? (request, context, model) => {
-            const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
-            if (!config) return undefined;
-            // Policy lookup must never fail the model request itself: a model
-            // removed by a catalog reload (or an unparsable URL) keeps the
-            // catalog unchanged and lets the provider answer.
-            try {
-                const registry = this.workerDefaults.modelProviders;
-                const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
-                if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
-                const resolved = registry?.resolve(descriptor.qualifiedName);
-                if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
-                const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
-                const endpoint = new URL(provider.baseUrl);
-                const target = new URL(request.url);
-                if (target.origin !== endpoint.origin
-                    || !target.pathname.startsWith(endpoint.pathname.replace(/\/+$/, "") + "/")) return undefined;
-                return descriptor.toolCatalog;
-            } catch {
-                return undefined;
-            }
-        } : undefined);
+        }, byokOpenAi ? { type: "openai" } : undefined, byokOpenAi ? (request, context, model) => this._byokToolCatalog(request, context, model) : undefined);
         this.clients.set(clientKey, created);
         return created;
+    }
+
+    /** The tool-catalog policy of a BYOK model's requests: only requests to the session's own provider endpoint, and only when its catalog declares one. */
+    private _byokToolCatalog(...[request, context, model]: Parameters<ToolCatalogPolicyResolver>): ReturnType<ToolCatalogPolicyResolver> {
+        const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
+        if (!config) return undefined;
+        // Policy lookup must never fail the model request itself: a model
+        // removed by a catalog reload (or an unparsable URL) keeps the
+        // catalog unchanged and lets the provider answer.
+        try {
+            const registry = this.workerDefaults.modelProviders;
+            const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
+            if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
+            const resolved = registry?.resolve(descriptor.qualifiedName);
+            if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
+            const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
+            const endpoint = new URL(provider.baseUrl);
+            const target = new URL(request.url);
+            if (target.origin !== endpoint.origin
+                || !target.pathname.startsWith(endpoint.pathname.replace(/\/+$/, "") + "/")) return undefined;
+            return descriptor.toolCatalog;
+        } catch {
+            return undefined;
+        }
     }
 
     /**
@@ -2387,6 +2416,19 @@ export class SessionManager {
         let effectiveSerializableConfig: SerializableSessionConfig = inheritedToolNames.length > 0
             ? { ...serializableConfig, toolNames: inheritedToolNames }
             : serializableConfig;
+        // A session that names a compute target runs only on a remote runtime this turn bound for it; a worker that cannot serve the target refuses
+        // before any local effect (no reset, no hydrate, no client). A session with no target is never offered one.
+        const remoteRuntime = this.remoteRuntimes.get(sessionId);
+        const computeTargetRef = parseSessionComputeTargetRef(serializableConfig.computeTarget);
+        if (computeTargetRef && !remoteRuntime) {
+            throw new RemoteRuntimeError("REMOTE_RUNTIME_UNAVAILABLE", "this session runs on a compute target and no remote runtime is bound for it on this worker", { terminal: false });
+        }
+        if (remoteRuntime && !computeTargetRef) {
+            throw new RemoteRuntimeError("REMOTE_RUNTIME_REFUSED", "a remote runtime is bound for a session that names no compute target");
+        }
+        if (remoteRuntime && serializableConfig.workspace) {
+            throw new RemoteRuntimeError("REMOTE_RUNTIME_REFUSED", "a session workspace is not available on a remote runtime");
+        }
         // Which copy of the bound agent does this session get? Owner-aware:
         // the session owner's own user-scope package copy shadows the shared
         // one, the same rule the registry resolver applies at create time.
@@ -2501,8 +2543,15 @@ export class SessionManager {
         const workflowContextOwnsCheck = config.workflowContextOwnsCheck;
         delete config.workflowContextOwnsCheck;
         // Section 4.11: with no record, a turn still attaches the deployment's
-        // default home folder as its working folder.
-        const workspaceAttach = config.workspace || config.workspaceAttach?.homeIsWorkingFolder ? config.workspaceAttach : undefined;
+        // default home folder as its working folder. Remote runtimes never receive
+        // worker-local workspace attachments or worker filesystem paths.
+        if (remoteRuntime) {
+            delete config.workspace;
+            delete config.workspaceAttach;
+            delete config.workingDirectory;
+            delete config.workspaceCleared;
+        }
+        const workspaceAttach = !remoteRuntime && (config.workspace || config.workspaceAttach?.homeIsWorkingFolder) ? config.workspaceAttach : undefined;
         if (config.workspace && !workspaceAttach) {
             throw new Error(
                 `Session ${sessionId} has a workspace but reached getOrCreate without an attach result; `
@@ -2664,10 +2713,20 @@ export class SessionManager {
         // is wired in. Skipping the await on the no-catalog path matters
         // for the SessionManager unit tests that exercise lock ordering
         // by counting microtasks before the first `resumeSession()` call.
-        const userGithubToken = this.sessionCatalog
+        // A remote runtime never holds a GitHub Copilot credential: only a model provider the worker can broker.
+        let remoteProviderConfig: Record<string, any> | undefined;
+        if (remoteRuntime) {
+            const grantable = remoteProviderGrant(resolvedProviderConfig, sessionId);
+            if (!grantable) {
+                throw new RemoteRuntimeError("REMOTE_RUNTIME_REFUSED", "the session's model has no model provider the worker can broker to a remote runtime (an https base URL is required)");
+            }
+            remoteProviderConfig = grantable.config;
+            this.remoteGrants.set(sessionId, grantable.grant);
+        }
+        const userGithubToken = this.sessionCatalog && !remoteRuntime
             ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel, catalogRow)
             : undefined;
-        if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
+        if (!remoteRuntime && resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
             throw Object.assign(
                 new Error(
                     "GitHub Copilot key missing or invalid. Set GITHUB_TOKEN on the worker, set your per-user GitHub Copilot key in Admin, or (for system sessions) have an admin store a System key in the Admin Console before using GitHub Copilot models.",
@@ -2679,7 +2738,7 @@ export class SessionManager {
         const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
             + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
-        if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
+        if (!remoteRuntime && previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
             // warmed this session. Tear down the
             // warm handle so the resume path below binds to the right
@@ -2697,8 +2756,8 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
-        this.sessionClientKeys.set(sessionId, desiredClientKey);
+        const client = remoteRuntime ? remoteRuntime.binding.client : await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        if (!remoteRuntime) this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
         // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
@@ -3019,6 +3078,14 @@ export class SessionManager {
             } };
         });
         Object.assign(effectiveMcpServers, attached.mcpServers);
+        if (remoteRuntime) {
+            // An MCP server is a process the CLI starts. On a remote runtime that would run the worker's configured command on the remote host, so none is offered.
+            const excluded = Object.keys(effectiveMcpServers);
+            if (excluded.length > 0) {
+                emitSessionManagerTrace(sessionId, `remote runtime: ${excluded.length} MCP server(s) are not offered to a remote runtime`, { trace });
+                for (const name of excluded) delete effectiveMcpServers[name];
+            }
+        }
         config.capabilityFingerprint = attached.fingerprint;
         config.capabilityServices = {
             search: async args => {
@@ -3285,23 +3352,29 @@ export class SessionManager {
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
             // Session workspaces: after a clear the folder stays explicit, or
             // the resume falls back to the checkout the CLI session was
-            // created in (review R1).
-            workingDirectory: workspaceAttach?.path ?? config.workingDirectory
-                ?? (config.workspaceCleared ? process.cwd() : undefined),
-            // Session workspaces (section 4.10): the extra folders attached
-            // for this turn. The CLI lists them to the model and keeps them
-            // only until a cold resume, so they are passed every time. Not in
-            // the fingerprint: a new handle would stop running shells.
-            ...(workspaceAttach?.extras?.length
-                ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
-                : {}),
-            // Session workspaces: repo hooks never run, and the repo's
-            // instruction files load only when the provider adopts them. A
-            // cleared session keeps hooks off.
-            ...(workspaceAttach ? {
+            // created in (review R1). Remote runtimes never receive worker paths
+            // and keep file hooks and ambient custom instructions disabled.
+            ...(remoteRuntime ? {
                 enableFileHooks: false,
-                skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
-            } : config.workspaceCleared ? { enableFileHooks: false } : {}),
+                skipCustomInstructions: true,
+            } : {
+                workingDirectory: workspaceAttach?.path ?? config.workingDirectory
+                    ?? (config.workspaceCleared ? process.cwd() : undefined),
+                // Session workspaces (section 4.10): the extra folders attached
+                // for this turn. The CLI lists them to the model and keeps them
+                // only until a cold resume, so they are passed every time. Not in
+                // the fingerprint: a new handle would stop running shells.
+                ...(workspaceAttach?.extras?.length
+                    ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
+                    : {}),
+                // Session workspaces: repo hooks never run, and the repo's
+                // instruction files load only when the provider adopts them. A
+                // cleared session keeps hooks off.
+                ...(workspaceAttach ? {
+                    enableFileHooks: false,
+                    skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
+                } : config.workspaceCleared ? { enableFileHooks: false } : {}),
+            }),
             // The CLI's `skill` tool called with `name` is given it as `skill` (withSkillNameArgument).
             hooks: withSkillNameArgument(withWorkspaceChangeDeny(
                 nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
@@ -3401,10 +3474,11 @@ export class SessionManager {
                 excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
             } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
-            ...resolvedProviderConfig,
+            ...(remoteProviderConfig ?? resolvedProviderConfig),
             // Pass loaded skills from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
-            ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
+            // A remote runtime has none of the worker's directories; its skills reach the model through load_skill.
+            ...(!remoteRuntime && sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
             // A session without native tasks gets no custom agents. `task` is excluded for it (excludedTools
             // above), so the runtime never uses the list, and PilotSwarm starts its agents with its own tools.
             // The worker's list must not be passed: it holds every copy of a name (a deployment agent, a shared
@@ -3423,6 +3497,12 @@ export class SessionManager {
                 onPermissionRequest: workflowToolPermission,
             } : {}),
         };
+        if (remoteRuntime && Array.isArray(sessionConfig.customAgents)) {
+            sessionConfig.customAgents = sessionConfig.customAgents.map((agent: any) => {
+                const { mcpServers: _omitted, ...rest } = agent ?? {};
+                return rest;
+            });
+        }
         // What a workflow this session starts inherits (captureWorkflowToolBinding). Recorded here for the warm path and
         // again once a new ManagedSession is stored below: the turn-0 reset, the epoch start and a rebind (a model or
         // effort switch, a capability selection such as use_package) forget the warm session and this record with it.
@@ -3450,6 +3530,14 @@ export class SessionManager {
 
         let copilotSession: CopilotSession;
 
+        if (remoteRuntime) {
+            // The remote runtime owns the native session; this worker has no copy of it. A handle left from an earlier turn went with that turn's runtime.
+            const stale = this.sessions.get(sessionId);
+            if (stale) {
+                try { await stale.destroy(); } catch { /* its runtime may already be gone */ }
+                this._forgetWarmSession(sessionId);
+            }
+        }
         // 1. Check if already in memory (warm) — update config in case
         //    tools were registered after the session was first created.
         const existing = this.sessions.get(sessionId);
@@ -3494,9 +3582,9 @@ export class SessionManager {
             }
         }
 
-        const localExists = fs.existsSync(sessionDir);
+        const localExists = remoteRuntime ? false : fs.existsSync(sessionDir);
         let storedExists = false;
-        if (this.sessionStore) {
+        if (this.sessionStore && !remoteRuntime) {
             try {
                 storedExists = await this.sessionStore.exists(sessionId, transcriptEpoch || undefined);
             } catch (error: unknown) {
@@ -3514,7 +3602,19 @@ export class SessionManager {
             { trace },
         );
 
-        if (turnIndex === 0) {
+        if (remoteRuntime) {
+            // Create or resume on the bound client, which is already started. Nothing here touches this worker's session directory or the session store.
+            const resumeRemote = remoteRuntime.resume ?? (turnIndex != null && turnIndex > 0 && !epochStart);
+            emitSessionManagerTrace(sessionId, `remote runtime: ${resumeRemote ? "native resume" : "native create"} turnIndex=${turnIndex ?? "unknown"} epoch=${transcriptEpoch}`, { trace });
+            try {
+                copilotSession = resumeRemote
+                    ? await remoteRuntime.binding.client.resumeSession(sessionId, sessionConfig)
+                    : await remoteRuntime.binding.client.createSession(sessionConfig);
+            } catch (error) {
+                this.remoteGrants.delete(sessionId);
+                throw error;
+            }
+        } else if (turnIndex === 0) {
             if (localExists || storedExists) {
                 console.warn(
                     `[SessionManager] stale persisted Copilot session found for turn 0 (${sessionId}); ` +
@@ -3635,6 +3735,60 @@ export class SessionManager {
             }]).catch(() => {});
         }
         return managed;
+    }
+
+    /**
+     * Bind a started remote Copilot client to a session for the turn in progress (the caller holds the session's run-turn lock). `resume`: the remote already
+     * holds the native session. Returns an opaque token; pass it to `releaseRemoteRuntime` before closing the client so a late release cannot detach a newer turn.
+     */
+    bindRemoteRuntime(sessionId: string, binding: RemoteRuntimeBinding, options?: { resume?: boolean }): RemoteRuntimeBindingToken {
+        assertRemoteRuntimeBinding(binding);
+        if (this.remoteRuntimes.has(sessionId)) {
+            throw new RemoteRuntimeError("REMOTE_RUNTIME_BOUND", "a remote runtime is already bound for this session", { terminal: false });
+        }
+        const token: RemoteRuntimeBindingToken = Symbol(`remote-runtime:${sessionId}`);
+        this.remoteRuntimes.set(sessionId, { binding, token, ...(options?.resume !== undefined ? { resume: options.resume } : {}) });
+        return token;
+    }
+
+    /**
+     * End the binding: the warm handle on the remote client is disconnected (best effort: the remote may be gone) and forgotten, and the session's model grant
+     * is dropped. When `token` is supplied and no longer matches the active binding, this call is a no-op. Nothing on this worker's disk or in the session store changes.
+     */
+    async releaseRemoteRuntime(sessionId: string, token?: RemoteRuntimeBindingToken): Promise<void> {
+        const active = this.remoteRuntimes.get(sessionId);
+        if (token !== undefined && (!active || active.token !== token)) return;
+        this.remoteRuntimes.delete(sessionId);
+        this.remoteGrants.delete(sessionId);
+        const warm = this.sessions.get(sessionId);
+        if (!warm) return;
+        try { await warm.destroy(); } catch { /* the remote runtime may already be gone */ }
+        this._forgetWarmSession(sessionId);
+    }
+
+    hasRemoteRuntime(sessionId: string): boolean {
+        return this.remoteRuntimes.has(sessionId);
+    }
+
+    setComputeRegistry(registry: ComputeRegistry | null): void {
+        this.computeRegistry = registry;
+    }
+
+    getComputeRegistry(): ComputeRegistry | null {
+        return this.computeRegistry;
+    }
+
+    /**
+     * The request handler a remote runtime's Copilot client must be created with: every model request the remote makes returns through this worker, which checks it
+     * against the session's grant and adds the real credentials. Pass `sessionId` to bind the handler strictly to one session so a shared remote host cannot use
+     * another bound session's grant.
+     */
+    createRemoteModelRequestHandler(sessionId?: string): RemoteRuntimeRequestHandler {
+        return new RemoteRuntimeRequestHandler(
+            (requestedSessionId) => requestedSessionId ? this.remoteGrants.get(requestedSessionId) : undefined,
+            (request, context, model) => this._byokToolCatalog(request, context, model),
+            sessionId,
+        );
     }
 
     /** Get a session by ID (null if not in memory on this node). */
@@ -4173,13 +4327,36 @@ export class SessionManager {
         if (!options?.lockHeld) {
             return this._withSessionLock(sessionId, "destroySession", () => this.destroySession(sessionId, { lockHeld: true }));
         }
+        const targetId = this.sessionConfigs.get(sessionId)?.computeTarget?.targetId
+            ?? this.clientSessionConfigs.get(sessionId)?.computeTarget?.targetId;
+        const hadRemote = this.remoteRuntimes.has(sessionId) || this.remoteGrants.has(sessionId);
         try {
             await this.sessions.get(sessionId)?.destroy();
         } finally {
+            this.remoteRuntimes.delete(sessionId);
+            this.remoteGrants.delete(sessionId);
             this._forgetWarmSession(sessionId);
             this.sessionApplicationTools.delete(sessionId);
             this.clientSessionConfigs.delete(sessionId);
             this._forgetTurnState(sessionId);
+            if (this.computeRegistry?.hasProviders() && (targetId !== undefined || hadRemote)) {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                await Promise.race([
+                    this.computeRegistry.releaseSession({
+                        sessionId,
+                        ...(targetId ? { targetId } : {}),
+                        reason: "deleted",
+                    }),
+                    new Promise<void>((resolve) => {
+                        timer = setTimeout(() => {
+                            console.warn(`[SessionManager] compute provider releaseSession timed out for ${sessionId}`);
+                            resolve();
+                        }, 5_000);
+                        timer.unref?.();
+                    }),
+                ]);
+                if (timer) clearTimeout(timer);
+            }
         }
     }
 
@@ -4317,6 +4494,9 @@ export class SessionManager {
         // First, before anything below can end a running model turn: CopilotClient.stop aborts each session before it
         // detaches (SDK 1.0.34), and the aborted run then returns as if the turn had finished. runTurn saves no such run.
         this.shutdownsBegun += 1;
+        // Drop any active remote runtime bindings and credential grants so a subsequent start() never inherits stale bindings or secrets.
+        this.remoteRuntimes.clear();
+        this.remoteGrants.clear();
         // An opening, waiting or setting up, takes nothing after this (M-08, E1-R4). The open executors are closed as this
         // generation's, so their teardowns still release their folders; then a new generation begins (E1b-R1), and any
         // work of this one that ends later touches only its own handles.

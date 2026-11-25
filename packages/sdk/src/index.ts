@@ -31,6 +31,34 @@
  */
 
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
+export {
+    COMPUTE_ARCHIVE_MAX_BYTES,
+    COMPUTE_KIND_PATTERN,
+    COMPUTE_STATE_POLICIES,
+    COMPUTE_TARGET_ID_PATTERN,
+    ComputeRegistry,
+    ComputeTargetError,
+    STORE_OWNED_DEFAULT_DEADLINES_MS,
+    createComputeRegistry,
+    parseComputeTarget,
+    parseSessionComputeTargetRef,
+} from "./compute-target.js";
+export type {
+    ComputeProvider,
+    ComputeRegistryOptions,
+    ComputeSessionReleaseReason,
+    ComputeSessionReleaseRequest,
+    ComputeStatePolicy,
+    ComputeTarget,
+    ParsedComputeTarget,
+    ResolvedComputeTarget,
+    SessionComputeTargetRef,
+    StoreOwnedDeadlinesMs,
+    StoreOwnedTargetSettings,
+} from "./compute-target.js";
+export { REMOTE_RUNTIME_ERROR_CODES, RemoteRuntimeError, isRemoteRuntimeError } from "./remote-runtime.js";
+export type { RemoteRuntimeBinding, RemoteRuntimeBindingToken, RemoteRuntimeErrorCode } from "./remote-runtime.js";
+export type { RemoteRuntimeRequestHandler } from "./compute-runtime.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_ALWAYS_ON_NOTICE, FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError, isAlwaysOn } from "./feature-flags.js";

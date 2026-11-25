@@ -22,6 +22,7 @@ import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
 import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/store.js";
 import { canonicalJson } from "./workflow/json.js";
+import { ComputeTargetError } from "./compute-target.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -2033,16 +2034,24 @@ export class PgSessionCatalog implements SessionCatalog {
 
             if (await this.supportsCreationConfig()) {
                 // The create procedure locks even a conflicting row. Keep a workflow's
-                // first grant/input immutable across concurrent creates and retries.
-                // The caller learns the row is not its own by reading it back
-                // (PilotSwarmClient.createSession refuses a workflow session's id).
+                // first grant/input immutable across concurrent creates and retries,
+                // and never overwrite an existing session's computeTarget placement.
                 const { rows } = await client.query(
                     `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
                     [sessionId],
                 );
-                if (rows[0]?.creation_config?.workflow) {
+                const existingConfig = rows[0]?.creation_config;
+                if (existingConfig?.workflow) {
                     await client.query("ROLLBACK");
                     return;
+                }
+                if (existingConfig && useCreationConfig) {
+                    const existingTargetId = existingConfig?.computeTarget?.targetId ?? null;
+                    const incomingTargetId = (opts?.creationConfig as { computeTarget?: { targetId?: string } } | undefined)?.computeTarget?.targetId ?? null;
+                    if (existingTargetId !== incomingTargetId) {
+                        await client.query("ROLLBACK");
+                        throw new ComputeTargetError(`session ${sessionId} cannot overwrite its compute target after creation`);
+                    }
                 }
             }
 

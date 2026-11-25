@@ -841,6 +841,11 @@ export interface SerializableSessionConfig {
      * names to actual Tool objects from its registry at activity execution time.
      */
     toolNames?: string[];
+    /**
+     * The compute target this session's Copilot runtime runs on, by id (compute-target.ts). Set when the session is created and never changed. Absent: the
+     * runtime runs on the worker, as for every session that does not name one.
+     */
+    computeTarget?: import("./compute-target.js").SessionComputeTargetRef;
     /** Host-captured capability grant for a 1.0.84 spawned child; absent preserves the legacy tool surface. */
     toolGrant?: import("./workflow/tool-policy.js").WorkflowToolBinding;
     /** Host-captured ceiling for this session and its whole subtree; an empty list removes every tool. */
@@ -1728,6 +1733,19 @@ export interface PilotSwarmWorkerOptions {
 
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
+
+    /**
+     * Remote compute targets served by this worker (opt-in, compute-target.ts).
+     * Each target declares its `kind`, `statePolicy`, and provider-owned `config`.
+     * Absent: no remote compute targets are registered and every session behaves unchanged.
+     */
+    computeTargets?: import("./compute-target.js").ComputeTarget[];
+
+    /**
+     * Remote compute providers registered on this worker (opt-in, compute-target.ts).
+     * Additional providers can also be registered before `start()` via `registerComputeProvider()`.
+     */
+    computeProviders?: import("./compute-target.js").ComputeProvider[];
 
     /**
      * Wall-clock cap on a single LLM turn, in milliseconds. If a turn takes

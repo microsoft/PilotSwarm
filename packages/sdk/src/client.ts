@@ -39,6 +39,7 @@ import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveClusterDecisionCapability, resolveRuntimeDecisionProviderBinding, resolveRuntimeModelSelection,
     type ClusterDecisionCapability, type RuntimeDecisionProviderBinding, type RuntimeModelSelection } from "./provider-catalog.js";
+import { ComputeTargetError, parseSessionComputeTargetRef } from "./compute-target.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -127,6 +128,8 @@ export function projectSerializableSessionConfig(
         toolNames: allNames.length ? allNames : undefined,
         ...(fullConfig?.toolGrant ? { toolGrant: fullConfig.toolGrant } : {}),
         ...(fullConfig?.toolCeiling ? { toolCeiling: fullConfig.toolCeiling } : {}),
+        // Present only when set, so a session without a compute target projects exactly as before.
+        ...(fullConfig?.computeTarget !== undefined ? { computeTarget: parseSessionComputeTargetRef(fullConfig.computeTarget) } : {}),
         // Session workspaces: present only when set, so a session without one
         // projects exactly as before.
         ...(fullConfig?.workspace ? { workspace: fullConfig.workspace } : {}),
@@ -256,6 +259,12 @@ export class PilotSwarmClient {
             workspace = checked.workspace;
         }
 
+        // Compute targets: validate before any CMS write and reject incompatible local workspaces up front.
+        const computeTarget = parseSessionComputeTargetRef(config?.computeTarget);
+        if (computeTarget && workspace) {
+            throw new ComputeTargetError("a session cannot configure both a compute target and a local session workspace");
+        }
+
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         const resolved = await this._resolveCreationModel(config ?? {}, false, {
             strictExplicitSettings: !isSubAgent,
@@ -291,6 +300,7 @@ export class PilotSwarmClient {
                 hooks: resolvedConfig.hooks,
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
+                ...(computeTarget ? { computeTarget } : {}),
                 ...(resolvedConfig.toolGrant ? { toolGrant: resolvedConfig.toolGrant } : {}),
                 ...(resolvedConfig.toolCeiling ? { toolCeiling: resolvedConfig.toolCeiling } : {}),
                 ...(workspace ? { workspace } : {}),
@@ -507,6 +517,17 @@ export class PilotSwarmClient {
                 new Error(`Session ${sessionId} is a workflow session; it runs a workflow graph and has no conversation to resume.`),
                 { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
             );
+        }
+        if (config?.computeTarget !== undefined) {
+            const requestedTarget = parseSessionComputeTargetRef(config.computeTarget);
+            const storedCreation = this._catalog.getSessionCreationConfig
+                ? await this._catalog.getSessionCreationConfig(sessionId).catch(() => null)
+                : null;
+            const existingTargetId = (storedCreation as SerializableSessionConfig | null)?.computeTarget?.targetId
+                ?? this.sessionConfigs.get(sessionId)?.computeTarget?.targetId;
+            if (persisted && existingTargetId !== requestedTarget?.targetId) {
+                throw new ComputeTargetError(`session ${sessionId} cannot change or add a compute target after it is created`);
+            }
         }
         if (config) {
             this.sessionConfigs.set(sessionId, config);
@@ -954,6 +975,16 @@ export class PilotSwarmClient {
                 ...(storedSessionConfig as SerializableSessionConfig),
                 ...overrides,
             };
+            // A session's compute target is fixed at creation: a later config may repeat it, never change or add it.
+            const storedTarget = (storedSessionConfig as SerializableSessionConfig).computeTarget;
+            if (overrides.computeTarget !== undefined) {
+                if (stored && storedTarget?.targetId !== overrides.computeTarget.targetId) {
+                    throw new ComputeTargetError(`session ${sessionId} cannot change its compute target after it is created`);
+                }
+                if (!stored && cmsRow && this._catalog.getSessionCreationConfig && !this.sessionConfigs.has(sessionId)) {
+                    throw new ComputeTargetError(`session ${sessionId} cannot add a compute target after it is created`);
+                }
+            }
             // A partial resume may explicitly replace root tool additions before
             // the first message, while retaining its durable named binding.
             if ((merged.boundAgentName || merged.namedAgentToolAdditions !== undefined) && !cmsRow?.parentSessionId && fullConfig

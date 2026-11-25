@@ -65,6 +65,8 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { ComputeTargetError, parseSessionComputeTargetRef } from "./compute-target.js";
+import { RemoteRuntimeError, isRemoteRuntimeError } from "./remote-runtime.js";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
@@ -2080,12 +2082,19 @@ export function registerActivities(
 
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
+        // A session on a compute target runs only on a remote runtime bound for this turn. A worker that has none refuses here, before the
+        // lifecycle preamble can hydrate or discard anything in its own session directory.
+        const computeTargetRef = parseSessionComputeTargetRef(input.config?.computeTarget);
+        const hasRemoteRuntime = sessionManager.hasRemoteRuntime(input.sessionId);
+        if (computeTargetRef && !hasRemoteRuntime) {
+            throw new RemoteRuntimeError("REMOTE_RUNTIME_UNAVAILABLE", "this session runs on a compute target and no remote runtime is bound for it on this worker", { terminal: false });
+        }
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
         // Only active when the orchestration (1.0.57+) supplied snapshot
         // coordinates AND the store implements the versioned CAS contract.
-        // Absent either, this activity behaves exactly as before.
+        // Remote runtimes never enter the worker-local snapshot lifecycle.
         const lifecycle: TurnLifecycleContext | null =
-            input.snapshot && sessionStore && supportsVersionedSnapshots(sessionStore)
+            !computeTargetRef && !hasRemoteRuntime && input.snapshot && sessionStore && supportsVersionedSnapshots(sessionStore)
                 ? {
                     store: sessionStore,
                     sessionStateDir: sessionManager.getSessionStateDir(),
@@ -2318,7 +2327,7 @@ export function registerActivities(
         // turn only, never saved. Not for an orchestration older than 1.0.80,
         // which cannot hold a turn for a folder.
         const workspaceConfig = runConfig as ManagedSessionConfig;
-        const workspaceDefaults = workspaceConfig.workspaceToolsBlocked ? null
+        const workspaceDefaults = computeTargetRef || hasRemoteRuntime || workspaceConfig.workspaceToolsBlocked ? null
             : workspaceConfig.workspaceDefaults !== undefined ? workflowWorkspaceDefaults(workspaceConfig.workspaceDefaults)
             : await resolveWorkspaceDefaults(sessionManager.getWorkspaceProvider(), {
                 sessionId: input.sessionId,
@@ -2326,7 +2335,9 @@ export function registerActivities(
                 owner: catalogSessionRow?.owner ?? null,
                 isSystem: Boolean(catalogSessionRow?.isSystem),
             }, { onError: (message) => activityCtx.traceInfo(`[runTurn] workspace defaults for ${input.sessionId}: ${message}`) });
-        const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, workspaceDefaults);
+        const withDefaults = computeTargetRef || hasRemoteRuntime
+            ? { workspace: null, skipped: [] as Array<{ name: string; reason: string }> }
+            : applyWorkspaceDefaults(runConfig.workspace ?? null, workspaceDefaults);
         for (const skip of withDefaults.skipped) {
             activityCtx.traceInfo(`[runTurn] default folder "${skip.name}" left out for ${input.sessionId}: ${skip.reason}`);
         }
@@ -3389,6 +3400,7 @@ export function registerActivities(
                         namedAgentToolAdditions: [],
                         promptLayering: { kind: "app-agent" as const },
                         ...(agentDef.tools ? { toolNames: agentDef.tools } : {}),
+                        ...(input.config?.computeTarget !== undefined ? { computeTarget: input.config.computeTarget } : {}),
                         agentId: agentDef.id ?? agentDef.name,
                         ...(owner ? { owner } : {}),
                     });
@@ -3695,9 +3707,10 @@ export function registerActivities(
                         // S2RT-F3: the budget is counted again, atomically with the creation (child-budget.ts).
                         ...spawnAgentCreationBudget(agentIsSystem, MAX_SUB_AGENTS),
                         ...childModelCreationOptions(childConfig),
-                        ...(childConfig.workspace ? { workspace: childConfig.workspace } : {}),
-                        ...(childConfig.workspaceDefaults !== undefined ? { workspaceDefaults: childConfig.workspaceDefaults } : {}),
-                        ...(childConfig.workingDirectory ? { workingDirectory: childConfig.workingDirectory } : {}),
+                        ...(childConfig.computeTarget !== undefined ? { computeTarget: childConfig.computeTarget } : {}),
+                        ...(childConfig.workspace && childConfig.computeTarget === undefined ? { workspace: childConfig.workspace } : {}),
+                        ...(childConfig.workspaceDefaults !== undefined && childConfig.computeTarget === undefined ? { workspaceDefaults: childConfig.workspaceDefaults } : {}),
+                        ...(childConfig.workingDirectory && childConfig.computeTarget === undefined ? { workingDirectory: childConfig.workingDirectory } : {}),
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         boundAgentPackageId: childConfig.boundAgentPackageId,
@@ -5550,6 +5563,15 @@ export function registerActivities(
                 finalTurnResult = withIntakeWitness({ type: "error", message } as TurnResult);
                 return finalTurnResult;
             }
+            // Remote-runtime and compute-target refusals that repeating cannot fix settle non-retryable; retryable ones rethrow.
+            if (isRemoteRuntimeError(err) || err instanceof ComputeTargetError) {
+                const terminal = err instanceof ComputeTargetError ? true : err.terminal;
+                activityCtx.traceInfo(`[runTurn] remote runtime ${terminal ? "refusal" : "retryable failure"}: ${err.message}`);
+                if (terminal) {
+                    finalTurnResult = withIntakeWitness({ type: "error", message: err.message, retryable: false } as TurnResult);
+                    return finalTurnResult;
+                }
+            }
             turnSpan.recordException(err);
             turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
             throw err;
@@ -6485,9 +6507,10 @@ export function registerActivities(
                 // S2RT-F3: a sub-agent counts toward its parent's budget, checked atomically with its creation (child-budget.ts).
                 ...spawnAgentCreationBudget(input.isSystem === true, WORKFLOW_CHILD_BUDGET_MAX),
                 ...childModelCreationOptions(childConfig),
-                ...(input.config.workspace ? { workspace: input.config.workspace } : {}),
-                ...(input.config.workspaceDefaults !== undefined ? { workspaceDefaults: input.config.workspaceDefaults } : {}),
-                ...(input.config.workingDirectory ? { workingDirectory: input.config.workingDirectory } : {}),
+                ...(input.config.computeTarget !== undefined ? { computeTarget: input.config.computeTarget } : {}),
+                ...(input.config.workspace && input.config.computeTarget === undefined ? { workspace: input.config.workspace } : {}),
+                ...(input.config.workspaceDefaults !== undefined && input.config.computeTarget === undefined ? { workspaceDefaults: input.config.workspaceDefaults } : {}),
+                ...(input.config.workingDirectory && input.config.computeTarget === undefined ? { workingDirectory: input.config.workingDirectory } : {}),
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 boundAgentPackageId: input.config.boundAgentPackageId,
