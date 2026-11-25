@@ -48,6 +48,7 @@ continue-as-new. Models and batches below name the paths of the commit they were
 | Batch rl2 (2026-11-24, `dd1029c6`; re-run at `0b338528` on main `1f6af957`) | 8 more cases of `RuntimeLoss` for review M1 of #376 (the store's head before the turn, the eviction sweep and the legacy publish guard): 23 of 23 as expected with rl1; the sweep that published a lost first turn's dirty dir is reproduced on the code before the guard and holds with it |
 | Batches tc1 and tc2 (2026-11-24, `f9b958c1` and `63024c6c` on main `1f6af957`) | `TurnCut` (a turn cut by a drain, a lost activity lock or a terminal cancel): tc1 15 of 15 as expected; tc2, with the review of #382, 26 of 26 (5 PASS, 21 expected violations) |
 | Combined re-run (2026-11-25, `16e5c481`: main `9099aaa2` with #376, merged into #382) | every case of the folder: 233 of 233 as expected (89 PASS, 144 expected violations), 0 PARTIAL, 0 VOID; `RuntimeLoss` and `TurnCut` re-bound to the merged head with unchanged results and PASS state counts |
+| Re-run at `e8301e9e` (2026-11-25: main `b79be29d`, 0.8.19, merged into #382) | every case of the folder: 233 of 233 as expected (89 PASS, 144 expected violations), 0 PARTIAL, 0 VOID; only line numbers of the bound code moved, and the PASS state counts are unchanged |
 
 1.0.83 (`src/orchestration/`, the durable Workflow intake) is the latest
 version: new sessions start at it, and every continue-as-new targets it. 1.0.82
@@ -170,6 +171,17 @@ TurnCut's modes `"head"`, `"main"` and `"old"` keep their tc2 bindings:
 |---|---|
 | `RuntimeLoss` | `session-manager.ts` `ensureClient` 1776, `_startClient` 1865-1900, `_evictClient` 1903, `_onRuntimeLost` 1917, `ensureClientForKey` 2039, `sweepIdleSessions` 2212 (the cut skip only while draining 2231; the committed marker 2260-2263 and the versioned probe 2264-2275 delete a cache; the guard deletes a dirty dir 2276-2282; otherwise the legacy dehydrate 2283-2287), the warm-session drop 3575-3586, `_legacyPublishBlocker` 3878-3881, `_dehydrateUnlocked` 3883 (the guard 3897-3919), `checkpoint` 4436 (the guard 4441-4447); `managed-session.ts` the exit race 4694-4702 and its catch 5071-5087; `session-proxy.ts` the transport-loss drop 5291-5301, `runBody` 5567-5595, `snapshot_unpublished` 5644-5692 and 6105-6131; `session-lifecycle.ts` `runTurnPreamble` 275-374 and `runTurnCommit` 403 (the transport-loss skip 463-475) |
 | `TurnCut` | `session-lifecycle.ts` `runTurnCommit` 440-452 (the cancelled skip), `recoverAlreadyCommitted` 199-231 and `commitTurnSnapshot` 481-533 (`foreign_cancelled_winner` 512-533); `session-proxy.ts` `latchCancelled` 4457-4461 and `lockCut` 4465-4472, `clearTurnCut` 2177 and 2200 (after the preamble), the drain cut 1789-1794 and 5571-5574, `turnSaved` 5637-5643; `session-manager.ts` `markTurnCut`/`clearTurnCut`/`isTurnCut`/`_drainKeepsCut` 4514-4539, `_legacyPublishBlocker` 3878-3881, the sweep's drain skip 2231 and 2238 and its clears 2256 and 2294, `releaseIdleWorkspaces` 4340, `destroySession` 4366; `worker.ts` 1194, 1314, 1382 and 1402 (unchanged) |
+
+After main moved to 0.8.19, `e8301e9e` merges main `b79be29d` into the branch. Of the bound files, only
+`managed-session.ts`, `session-proxy.ts` and `worker.ts` changed, and only by #406's insertions (the Workflow
+`child_workflows` tool and a Workflow spawn host), which move the bound lines. `CORRESPONDENCE-e8301e9e-rltc.md` maps
+every line of the `16e5c481` file to the same unchanged source line here. The models and the bindings of the other modes
+are unchanged:
+
+| Module | Code at `e8301e9e` (lines that moved since `16e5c481`) |
+|---|---|
+| `RuntimeLoss` | `managed-session.ts` the exit race 4708-4716 and its catch 5085-5101; `session-proxy.ts` the transport-loss drop 5299-5309, `runBody` 5575-5603, `snapshot_unpublished` 5652-5700 and 6113-6139; the `session-manager.ts` and `session-lifecycle.ts` lines as at `16e5c481` |
+| `TurnCut` | `session-proxy.ts` `latchCancelled` 4465-4469 and `lockCut` 4473-4480, the drain cut 5579-5582 (1789-1794 unchanged), `turnSaved` 5645-5651; `worker.ts` 1232, 1357, 1425 and 1445; the `session-lifecycle.ts` and `session-manager.ts` lines, and `clearTurnCut` 2177 and 2200, as at `16e5c481` |
 
 ## 3. Case taxonomy and expected results
 
@@ -555,6 +567,21 @@ counts: `rl.first-turn-safety` and `rl.first-turn-live` 754, `rl.legacy-head-saf
 Not covered, beyond rl2's and tc2's lists: an attempt that both loses its Copilot runtime and is cut. Neither model
 has both events in one attempt; the code skips its commit as cut, after dropping the dead warm handle (the
 correspondence file, interaction 2). A release cut from main `9099aaa2` before #382 lands is not a mode of `TurnCut`.
+
+### Re-run at `e8301e9e` (2026-11-25): after main 0.8.19
+
+`e8301e9e` merges main `b79be29d` (0.8.19) into the branch. Main's changes since `9099aaa2` reach the bound files only
+through #406's insertions in `managed-session.ts`, `session-proxy.ts` and `worker.ts` (the Workflow `child_workflows`
+tool and a Workflow spawn host), which move the bound lines and change no modelled step. No model or case changed.
+`CORRESPONDENCE-e8301e9e-rltc.md` re-binds every row of the `16e5c481` file, line by line, to the same unchanged source
+line.
+
+Run of the whole folder (2026-11-25, TLC 2.19, tla2tools v1.7.4, Java 21, `-workers 2 -Xmx2g`, 300 s per case, the
+longest case 7 s): SANY accepted all 21 modules; 233 of 233 cases as expected. 89 PASS, 134 expected safety violations
+and 10 expected liveness violations, each on a rule its case names; 0 unexpected, 0 PARTIAL, 0 VOID. The PASS state
+counts equal the `16e5c481` run's (for example `rl.first-turn-safety` 754, `tc.upgrade-old` 1,006,
+`comparison.tc-main-release` 842). Not covered: as at `16e5c481`; a release cut from main before #382 lands, 0.8.19
+included, is not a mode of `TurnCut`.
 
 ## 5. How to run
 
