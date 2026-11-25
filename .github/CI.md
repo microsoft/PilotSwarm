@@ -15,6 +15,10 @@ runtime restart. Same-version GitHub Release binaries are not interchangeable
 with the npm artifacts: their build environments can impose different libc
 requirements. The ordinary Windows and Linux checks remain unchanged.
 
+A separate Node 26 job builds the workspace and runs the workflow script tests.
+Node 26's permission model limits the network, so this job covers the script
+runner's `--allow-net` grant, which the Node 24 checks never reach.
+
 Release packaging validates the root and all package-local `LICENSE` files,
 then checks the complete notice inside each actual tarball before publication.
 The release has three tarballs, `SHA256SUMS` (covering those tarballs), and a

@@ -4,6 +4,9 @@ import { readFileSync, readdirSync } from "node:fs";
 
 const root = new URL("../../../", import.meta.url);
 const nodeVersion = "24.22.1";
+// Node 26 limits the network under the permission model, so the workflow
+// script runner's --allow-net grant runs only there.
+const node26Version = "26.13.0";
 const nodeRange = "^24.22.1 || >=26.12.1";
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
@@ -28,6 +31,7 @@ test("workspace manifests and the lockfile require patched Node releases", () =>
 
 test("every setup-node step pins the patched LTS instead of a cached major", () => {
   let checked = 0;
+  let node26Jobs = 0;
   for (const file of readdirSync(new URL(".github/workflows/", root))) {
     if (!/\.ya?ml$/.test(file)) continue;
     const source = read(`.github/workflows/${file}`);
@@ -36,11 +40,13 @@ test("every setup-node step pins the patched LTS instead of a cached major", () 
     const versions = [...source.matchAll(/^\s*node-version:\s*["']?([^\s"']+)["']?\s*$/gm)];
     assert.equal(versions.length, setups.length, `${file}: every setup needs an explicit version`);
     for (const [, version] of versions) {
-      assert.equal(version, nodeVersion, file);
+      if (file === "pr-checks.yml" && version === node26Version) node26Jobs++;
+      else assert.equal(version, nodeVersion, file);
       checked++;
     }
   }
   assert.ok(checked > 0, "expected setup-node steps");
+  assert.equal(node26Jobs, 1, `pr-checks.yml: one job runs the workflow script tests on Node ${node26Version}`);
 });
 
 test("all Node image stages pin the patched Trixie runtime", () => {
