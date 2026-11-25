@@ -1118,7 +1118,7 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
             } else if (hasSeconds) {
                 waitSeconds = secondsField(raw.wait.seconds, `${path}.wait.seconds`, diagnostics);
             } else {
-                waitTotalSeconds = secondsField(raw.wait.totalSeconds, `${path}.wait.totalSeconds`, diagnostics);
+                waitTotalSeconds = secondsField(raw.wait.totalSeconds, `${path}.wait.totalSeconds`, diagnostics, "totalSeconds");
             }
         }
     }
@@ -2086,6 +2086,15 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             delete stateFields.maxVisits;
         }
         if (maxVisits !== undefined && type !== "terminal") {
+            if (Array.isArray(rawNode.outcomes) && rawNode.outcomes.includes(STATE_EXHAUSTED)) {
+                into.error("WORKFLOW_FIELD_INVALID", `${path}.outcomes`,
+                    `outcome '${STATE_EXHAUSTED}' collides with maxVisits, which reserves '${STATE_EXHAUSTED}' for the visit limit.`);
+            }
+            if (type === "decision" && isJsonObject(rawNode.question) && isJsonObject(rawNode.question.criteria)
+                && Object.hasOwn(rawNode.question.criteria, STATE_EXHAUSTED)) {
+                into.error("WORKFLOW_FIELD_INVALID", `${path}.question.criteria.${STATE_EXHAUSTED}`,
+                    `choice label '${STATE_EXHAUSTED}' collides with maxVisits, which reserves '${STATE_EXHAUSTED}' for the visit limit.`);
+            }
             const rawNext = isJsonObject(rawNode.transition) && isJsonObject(rawNode.transition.next) ? rawNode.transition.next : null;
             if (rawNext !== null) {
                 if (!Object.hasOwn(rawNext, STATE_EXHAUSTED)) {
@@ -2097,12 +2106,9 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                     } else {
                         exhaustedTarget = target;
                     }
-                    const declaredOutcomes = Array.isArray(rawNode.outcomes) ? rawNode.outcomes : [];
-                    if (!declaredOutcomes.includes(STATE_EXHAUSTED)) {
-                        const strippedNext = { ...rawNext };
-                        delete strippedNext[STATE_EXHAUSTED];
-                        stateFields.transition = { ...(rawNode.transition as Record<string, unknown>), next: strippedNext };
-                    }
+                    const strippedNext = { ...rawNext };
+                    delete strippedNext[STATE_EXHAUSTED];
+                    stateFields.transition = { ...(rawNode.transition as Record<string, unknown>), next: strippedNext };
                 }
             }
         }
@@ -2260,7 +2266,10 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
         }
         for (const node of Object.values(nodes)) {
             const parallel = bodyOf.get(node.id);
-            const nodePath = parallel !== undefined ? `states.${parallel}.body.states.${node.id}` : `states.${node.id}`;
+            const readerBranch = branchOfState.get(node.id);
+            const nodePath = parallel !== undefined
+                ? (readerBranch !== undefined ? `states.${parallel}.branches.${readerBranch}.states.${node.id}` : `states.${parallel}.body.states.${node.id}`)
+                : `states.${node.id}`;
             for (const [field, template] of nodeTemplates(node)) {
                 let expressions: ReturnType<typeof bindingExpressionsOf>;
                 try { expressions = bindingExpressionsOf(template, `${nodePath}.${field}`); } catch { continue; }
@@ -2276,6 +2285,16 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                     if (!Object.hasOwn(nodes, targetId)) {
                         diagnostics.error("WORKFLOW_BINDING_INVALID", exprPath,
                             `states.${targetId} does not name a state in this workflow.`);
+                        continue;
+                    }
+                    const targetParallel = bodyOf.get(targetId);
+                    const targetBranch = branchOfState.get(targetId);
+                    if (targetParallel !== undefined && (parallel !== targetParallel || readerBranch !== targetBranch)) {
+                        const segs = exprPath.split(/\.|\[|\]/).filter(Boolean).map(p => (/^\d+$/.test(p) ? Number(p) : p));
+                        const ast = document.getIn(segs, true) as { range?: [number, number, number] } | null | undefined;
+                        diagnostics.error("WORKFLOW_BINDING_INVALID", exprPath,
+                            `state '${targetId}' is inside parallel state '${targetParallel}'${targetBranch !== undefined ? ` (branch '${targetBranch}')` : ""} and is only visible inside its branch.`,
+                            lineOf(yaml, ast?.range?.[0]));
                     }
                 }
             }

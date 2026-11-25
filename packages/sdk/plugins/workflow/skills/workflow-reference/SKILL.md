@@ -36,8 +36,9 @@ Schema fields: inline, or `$ref` to `schemas`.
 A binding is one whole string `"${root.path}"` or `"${root.path ?? <JSON literal>}"`.
 Roots: `inputs`, `input`, `kv`, `runtime` (`runtime.error`), `branch`
 (`branch.item`, `branch.index`; `branch.name` in named branches; branch
-states only), `states` (`${states.<id>.output}`: latest finished visit
-in this run/branch, `null` when none; frozen at entry). Path segments: `.name`,
+states only), `states` (`${states.<id>.output}`: latest result of `<id>` — failed visits
+don't replace it; same branch or root only, else compile error; `null` if none;
+frozen at entry). Path segments: `.name`,
 `[index]`, `["any key"]`. A template is any JSON value whose strings may be
 bindings.
 
@@ -57,8 +58,9 @@ Each note: at most 16 KiB UTF-8, no NUL/lone surrogates, never executed.
 Notes are shared with graph readers; no secrets. Absent keys stay absent;
 editing notes makes a new revision/hash, not a run change.
 
-Nonterminals take optional `maxVisits` (1–10,000): visit N+1 skips its effect
-and ends at entry with `exhausted` (route required) and its input as output.
+Nonterminals take `maxVisits` (1–10,000; forbids business outcome `exhausted`):
+visit N+1 skips carry/input/effect and ends at entry with `exhausted` (route
+required) and incoming value as output.
 Nonterminals except approval take `carry`: load `workflow-carry`.
 
 ### approval
@@ -98,22 +100,21 @@ Outcome: `elapsed` (route required). Output: its input.
 | Field | Rule |
 |---|---|
 | `contract` | Required. One root contract (or `WorkflowEnded@1`), or a list of 2–8 distinct names. |
-| `from` | Optional: `{ parent: true }`, a session id, or `{ sessionId }` (may be a binding). Without it, any permitted sender. |
+| `from` | Optional: `{ parent: true }`, session id, or `{ sessionId }` (binding ok); default any permitted sender. |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
-| `wait` | Optional `{ seconds }` (per visit) or `{ totalSeconds }` (from visit 1 across visits), 1–86,400 or a binding; never both. |
+| `wait` | Optional `{ seconds }` (per visit) or `{ totalSeconds }` (from visit 1, never resets; binding read on visit 1 only; use `seconds` inside an outer loop), 1–86,400; never both. |
 | `input` | Optional template. |
 
-One name: outcome `received` (output: payload). List: each contract is an
-outcome (no `received`), output `{ contract, from, payload }`, taking the
-earliest match. With `wait`, `elapsed` (output: input) is required; spent
-`totalSeconds` fires `elapsed` at entry. Pre-queued messages are taken too.
+One name: `received` (payload). List: each contract is an outcome (no `received`),
+output `{ contract, from, payload }`, earliest match. With `wait`, `elapsed`
+(input) is required; spent `totalSeconds` fires `elapsed` at entry.
 
 ### messaging, mode send
 
 | Field | Rule |
 |---|---|
 | `contract` | Required. |
-| `recipient` | Required: `{ parent: true }`, a session id, or `{ sessionId }` (may be a binding). |
+| `recipient` | Required: `{ parent: true }`, session id, or `{ sessionId }` (binding ok). |
 | `correlate` | Optional template object. |
 | `input` | Optional template; the message. At most 16 KB, valid for the contract. |
 
@@ -272,7 +273,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 ### spawn
 
-`definition` (required literal name or `<package>/<name>`, never a binding), `inputs` (optional object template), `revision` (optional fixed positive int; else newest valid when the child is admitted), `agentModels` (optional), `carry` (optional). Outcome `started` outputs `{ workflowId, runId, definition, revision }` immediately. Child end delivers built-in `WorkflowEnded@1` while the spawning run is active (inbox acceptance order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; outputs >16 KiB set `outputTruncated: true`). Parent end cancels active children. A child that is deleted directly (not cancelled or stopped) sends no ended message; the parent's `receive` then takes its timeout. End a child with `cancel` or `stop`.
+`definition` (required literal name or `<package>/<name>`, never a binding), `inputs` (optional object template), `revision` (optional fixed positive int; else newest valid when the child is admitted), `agentModels` (optional), `carry` (optional). Outcome `started` outputs `{ workflowId, runId, definition, revision }` immediately. Child end delivers built-in `WorkflowEnded@1` while the spawning run is active (inbox acceptance order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; outputs >16 KiB set `outputTruncated: true`). Parent end cancels active children. Direct delete sends no ended message (receive times out); end children via `cancel`/`stop`.
 
 ### terminal
 

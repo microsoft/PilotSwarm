@@ -85,3 +85,78 @@ test("evaluateBindingTemplate resolves unvisited state to null or ?? default wit
     assert.equal(evaluateBindingTemplate("${states.b.output}", scope), null);
     assert.equal(evaluateBindingTemplate("${states.c.output.n}", scope), 7);
 });
+
+test("K1: compiler rejects ${states.<id>.output} referencing a parallel body state from root, root terminal, or sibling branch", () => {
+    const makeParallel = (extraAlpha, rootReader, doneReader) => `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: k1-parallel-scope, version: "1.0.0" }
+initial: fan
+states:
+  fan:
+    type: parallel
+    concurrency: 2
+    branches:
+      alpha:
+        initial: a1
+        states:
+          a1:
+            type: script
+            outcomes: [ok]
+            source: "await setResult('ok', { a: 1 });"
+            transition: { next: { ok: a2, failure: a_end } }
+          a2:
+            type: script
+            input: ${extraAlpha}
+            outcomes: [ok]
+            source: "await setResult('ok', context.input);"
+            transition: { next: { ok: a_end, failure: a_end } }
+          a_end: { type: terminal, outcome: succeeded, output: "\${states.a2.output}" }
+      beta:
+        initial: b1
+        states:
+          b1:
+            type: script
+            outcomes: [ok]
+            source: "await setResult('ok', { b: 2 });"
+            transition: { next: { ok: b_end, failure: b_end } }
+          b_end: { type: terminal, outcome: succeeded, output: "\${states.b1.output}" }
+    transition: { next: { joined: after, blocked: failed, failure: failed } }
+  after:
+    type: script
+    input: ${rootReader}
+    outcomes: [ok]
+    source: "await setResult('ok', context.input);"
+    transition: { next: { ok: done, failure: failed } }
+  done:
+    type: terminal
+    outcome: succeeded
+    output: ${doneReader}
+  failed: { type: terminal, outcome: failed }
+`;
+
+    // Cross-branch: alpha reads beta's b1
+    const cross = compileWorkflow(makeParallel('{ bad: "${states.b1.output}" }', '{}', '{}'));
+    assert.equal(cross.valid, false);
+    const crossErr = cross.diagnostics.find(d => d.code === "WORKFLOW_BINDING_INVALID");
+    assert.ok(crossErr, JSON.stringify(cross.diagnostics));
+    assert.ok(Number.isInteger(crossErr.line), `expected line number, got ${JSON.stringify(crossErr)}`);
+    assert.match(crossErr.message, /only visible inside its branch/);
+
+    // Root state reading parallel branch state a1
+    const fromRoot = compileWorkflow(makeParallel('{}', '{ bad: "${states.a1.output}" }', '{}'));
+    assert.equal(fromRoot.valid, false);
+    const rootErr = fromRoot.diagnostics.find(d => d.code === "WORKFLOW_BINDING_INVALID");
+    assert.ok(rootErr && Number.isInteger(rootErr.line));
+    assert.match(rootErr.message, /only visible inside its branch/);
+
+    // Root terminal output reading parallel branch state a1
+    const fromTerm = compileWorkflow(makeParallel('{}', '{}', '{ bad: "${states.a1.output}" }'));
+    assert.equal(fromTerm.valid, false);
+    const termErr = fromTerm.diagnostics.find(d => d.code === "WORKFLOW_BINDING_INVALID");
+    assert.ok(termErr && Number.isInteger(termErr.line));
+    assert.match(termErr.message, /only visible inside its branch/);
+
+    // Valid: same branch + root reading parallel state itself
+    const ok = compileWorkflow(makeParallel('{ own: "${states.a1.output}" }', '{ joined: "${states.fan.output}" }', '"${states.after.output}"'));
+    assert.equal(ok.valid, true, JSON.stringify(ok.diagnostics));
+});

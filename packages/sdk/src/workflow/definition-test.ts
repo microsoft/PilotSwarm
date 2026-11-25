@@ -339,7 +339,8 @@ export async function definitionTestReport(host: Pick<WorkflowHost, "store"> & P
                 : testAnswerShapeWords(waiting.operation),
             fixture: definitionTestFixtureSkeleton(waiting, waitingNode, waitingNode ? ir?.nodes[waitingNode.nodeId] ?? null : null) }
         : stuck ? { call: `receive step ${stuck[1]}`, arguments: "null", expected: stuck[2],
-            fixture: definitionTestFixtureSkeleton({ operation: "receive" }, stuckNode ?? { nodeId: stuck[1], ordinal: 1, input: null }) }
+            fixture: definitionTestFixtureSkeleton({ operation: "receive" }, stuckNode ?? { nodeId: stuck[1], ordinal: 1, input: null },
+                ir?.nodes[stuck[1]] ?? null) }
             : null;
     // The step the test stopped at has the cancel's reason as its error (the cancel names the call, the visit says "canceled").
     const stoppedAt = refused || unanswered

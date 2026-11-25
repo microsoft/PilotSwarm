@@ -2,10 +2,10 @@
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANT SplitCommit
-VARIABLES inbox, claims, result, expired, retried
+VARIABLES inbox, claims, result, now, deadline, retried, observed
 
-vars == <<inbox, claims, result, expired, retried>>
-db == <<inbox, claims, result, expired>>
+vars == <<inbox, claims, result, now, deadline, retried, observed>>
+db == <<inbox, claims, result, deadline>>
 
 Messages == {"p1", "p2", "e", "q"}
 Contract == [m \in Messages |-> CASE m = "q" -> "Q"
@@ -30,22 +30,27 @@ Accepted == {inbox[i] : i \in DOMAIN inbox}
 Used(i) == \E v \in Visits : <<v, i>> \in claims
 Taken(v) == {i \in Indices : <<v, i>> \in claims}
 Eligible(v) == {i \in DOMAIN inbox : ~Used(i) /\ Contract[inbox[i]] \in Match[v[1]]}
+DeadlineReached(v) == v[1] = "L" /\ deadline # 0 /\ now >= deadline
+Recipients(m) == {v \in Waiting : ~DeadlineReached(v) /\ Contract[m] \in Match[v[1]]}
 
 Init ==
     /\ inbox = <<>>
     /\ claims = {}
     /\ result = [v \in Visits |-> New]
-    /\ expired = FALSE
+    /\ now = 0
+    /\ deadline = 0
     /\ retried = [entry |-> FALSE, accept |-> FALSE]
+    /\ observed = [lateArrival |-> FALSE, spentEntry |-> FALSE]
 
 Enter(v) ==
     /\ Waiting = {}
     /\ ~Entered(v)
     /\ \A i \in 1..(v[2] - 1) : Entered(<<v[1], i>>)
+    /\ deadline' = IF v = L1 THEN now + 1 ELSE deadline
     /\ IF v[2] > MaxVisits[v[1]]
           THEN /\ result' = [result EXCEPT ![v] = Receipt("exhausted", "entry")]
                /\ UNCHANGED claims
-          ELSE IF v[1] = "L" /\ expired
+          ELSE IF DeadlineReached(v)
                THEN /\ result' = [result EXCEPT ![v] = Receipt("elapsed", "entry")]
                     /\ UNCHANGED claims
                ELSE LET choices == Eligible(v) IN
@@ -55,48 +60,54 @@ Enter(v) ==
                     ELSE LET i == CHOOSE k \in choices : \A j \in choices : k <= j IN
                          /\ claims' = claims \cup {<<v, i>>}
                          /\ result' = [result EXCEPT ![v] = Receipt(Contract[inbox[i]], "entry")]
-    /\ UNCHANGED <<inbox, expired, retried>>
+    /\ observed' = [observed EXCEPT !.spentEntry =
+           @ \/ (v = L2 /\ DeadlineReached(v) /\ Eligible(v) # {}
+                        /\ result'[v] = Receipt("elapsed", "entry") /\ claims' = claims)]
+    /\ UNCHANGED <<inbox, now, retried>>
 
 Accept(m) ==
     /\ m \notin Accepted
     /\ inbox' = Append(inbox, m)
-    /\ LET recipients == {v \in Waiting : Contract[m] \in Match[v[1]]} IN
+    /\ LET recipients == Recipients(m) IN
        IF recipients = {}
        THEN UNCHANGED <<claims, result>>
        ELSE LET v == CHOOSE w \in recipients : TRUE IN
             /\ claims' = claims \cup {<<v, Len(inbox')>>}
             /\ result' = [result EXCEPT ![v] = Receipt(Contract[m], "arrival")]
-    /\ UNCHANGED <<expired, retried>>
+    /\ observed' = [observed EXCEPT !.lateArrival =
+           @ \/ (L1 \in Waiting /\ DeadlineReached(L1) /\ Contract[m] \in Match["L"]
+                               /\ result'[L1] = Pending /\ claims' = claims)]
+    /\ UNCHANGED <<now, deadline, retried>>
 
 \* Negative control only: an insert committed alone, then the worker stops.
 AcceptThenStop(m) ==
     /\ SplitCommit
     /\ m \notin Accepted
-    /\ \E v \in Waiting : Contract[m] \in Match[v[1]]
+    /\ Recipients(m) # {}
     /\ inbox' = Append(inbox, m)
-    /\ UNCHANGED <<claims, result, expired, retried>>
+    /\ UNCHANGED <<claims, result, now, deadline, retried, observed>>
 
 Tick ==
-    /\ Entered(L1)
-    /\ ~expired
-    /\ expired' = TRUE
-    /\ UNCHANGED <<inbox, claims, result, retried>>
+    \* Allow two possible first-entry times without extending the one-tick budget.
+    /\ now < (IF Entered(L1) THEN 2 ELSE 1)
+    /\ now' = now + 1
+    /\ UNCHANGED <<inbox, claims, result, deadline, retried, observed>>
 
 Fire(v) ==
-    /\ v[1] = "L" /\ expired
+    /\ DeadlineReached(v)
     /\ v \in Waiting
     /\ result' = [result EXCEPT ![v] = Receipt("elapsed", "timer")]
-    /\ UNCHANGED <<inbox, claims, expired, retried>>
+    /\ UNCHANGED <<inbox, claims, now, deadline, retried, observed>>
 
 RetryEntry(v) ==
     /\ Entered(v) /\ ~retried.entry
     /\ retried' = [retried EXCEPT !.entry = TRUE]
-    /\ UNCHANGED db
+    /\ UNCHANGED <<db, now, observed>>
 
 RetryAccept(m) ==
     /\ m \in Accepted /\ ~retried.accept
     /\ retried' = [retried EXCEPT !.accept = TRUE]
-    /\ UNCHANGED db
+    /\ UNCHANGED <<db, now, observed>>
 
 Finished == /\ \A v \in Visits : Entered(v)
             /\ Waiting = {}
@@ -118,8 +129,10 @@ TypeOK ==
     /\ result \in [Visits -> [outcome : Names \cup {"new", "pending", "elapsed", "exhausted"},
                              via : {"none", "entry", "arrival", "timer"}]]
     /\ Cardinality(Waiting) <= 1
-    /\ expired \in BOOLEAN
+    /\ now \in 0..2
+    /\ deadline \in 0..2
     /\ retried \in [entry : BOOLEAN, accept : BOOLEAN]
+    /\ observed \in [lateArrival : BOOLEAN, spentEntry : BOOLEAN]
 
 OncePerMessage ==
     \A i \in Indices : Cardinality({v \in Visits : i \in Taken(v)}) <= 1
@@ -148,18 +161,19 @@ Limits ==
                /\ Taken(v) = {}
         /\ (result[v].outcome = "exhausted") => v[2] > MaxVisits[v[1]]
 
-NoLostDelivery == \A v \in Waiting : Eligible(v) = {}
+NoLostDelivery == \A v \in Waiting : ~DeadlineReached(v) => Eligible(v) = {}
 
 CommitRules ==
     /\ inbox = SubSeq(inbox', 1, Len(inbox))
     /\ claims \subseteq claims'
     /\ \A v \in Visits : (Entered(v) /\ v \notin Waiting) => result'[v] = result[v]
     /\ (retried' # retried) => UNCHANGED db
+    /\ deadline' = IF ~Entered(L1) /\ result'[L1] # New THEN now + 1 ELSE deadline
     /\ \A c \in (claims' \ claims) :
            \A j \in 1..(c[2] - 1) :
                ~Used(j) => Contract[inbox'[j]] \notin Match[c[1][1]]
     /\ \A v \in Visits :
-           (~Entered(v) /\ result'[v] # New /\ v[1] = "L" /\ expired
+           (~Entered(v) /\ result'[v] # New /\ DeadlineReached(v)
              /\ v[2] <= MaxVisits["L"]) => result'[v] = Receipt("elapsed", "entry")
 
 CommitSafety == [][CommitRules]_vars
@@ -168,11 +182,14 @@ CommitSafety == [][CommitRules]_vars
 NoPThenE == ~(result[L1].outcome = "P" /\ result[L2].outcome = "E")
 NoArrival == ~(\E v \in {L1, L2} : result[v].via = "arrival")
 NoEntryElapsed == ~(result[L2] = Receipt("elapsed", "entry") /\ Eligible(L2) # {})
-NoExhausted == ~(result[L3] = Receipt("exhausted", "entry") /\ expired /\ Eligible(L3) # {})
+NoExhausted == ~(result[L3] = Receipt("exhausted", "entry") /\ DeadlineReached(L3)
+                                                           /\ Eligible(L3) # {})
 NoDuplicateEntry == ~retried.entry
 NoQWaiting == ~(\E v \in (Waiting \cap {L1, L2}) :
                    \E i \in DOMAIN inbox : inbox[i] = "q" /\ ~Used(i))
 NoDuplicateAccept == ~retried.accept
 NoTimerElapsed == ~(\E v \in {L1, L2} :
                       result[v] = Receipt("elapsed", "timer") /\ Eligible(v) # {})
+NoLateArrivalThenTimer == ~(observed.lateArrival /\ result[L1] = Receipt("elapsed", "timer"))
+NoSpentEntryWithMessage == ~observed.spentEntry
 =============================================================================

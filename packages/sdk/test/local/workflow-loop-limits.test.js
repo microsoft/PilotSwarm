@@ -11,6 +11,8 @@ import { registerWorkflow } from "../../src/workflow/runtime.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { sendTypedWorkflowInput } from "../../src/workflow/service.ts";
+import { startSessionWorkflowTest, definitionTestBench, waitSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
+import { parseTestFixtures } from "../../src/workflow/test-mode.ts";
 
 const require = createRequire(import.meta.url);
 const { PostgresProvider, Client, Runtime } = require("duroxide");
@@ -91,15 +93,15 @@ describe("Loop limits (Change C: maxVisits and wait.totalSeconds)", () => {
             const end1 = await h.waitRun(r1.runId);
             expect(end1.status).toBe("completed");
             expect(end1.terminalOutput).toEqual({
-                exhaustedOutput: { n: 3, tag: "passed-in" },
-                lastRan: { n: 3, tag: "passed-in" },
+                exhaustedOutput: { n: 3, ran: true },
+                lastRan: { n: 3, ran: true },
             });
             const visits1 = (await h.store.listNodeExecutions(r1.runId)).filter(n => n.nodeId === "work");
             expect(visits1.map(v => ({ ordinal: v.ordinal, outcome: v.outcome, attempts: v.effectAttempts, output: v.output }))).toEqual([
                 { ordinal: 1, outcome: "again", attempts: 1, output: { n: 1, ran: true } },
                 { ordinal: 2, outcome: "again", attempts: 1, output: { n: 2, ran: true } },
                 { ordinal: 3, outcome: "again", attempts: 1, output: { n: 3, ran: true } },
-                { ordinal: 4, outcome: "exhausted", attempts: 0, output: { n: 3, tag: "passed-in" } },
+                { ordinal: 4, outcome: "exhausted", attempts: 0, output: { n: 3, ran: true } },
             ]);
 
             // 2. wait.totalSeconds across 3 visits: totalSeconds=3, napSeconds=2.
@@ -136,6 +138,12 @@ describe("Loop limits (Change C: maxVisits and wait.totalSeconds)", () => {
             expect(listenVisits[2].completedAt.getTime() - listenVisits[2].enteredAt.getTime()).toBeLessThan(200);
             const tick3 = await h.q("SELECT consumed_by FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND (payload::jsonb->>'seq') = '3'", [r2.runId]);
             expect(tick3[0].consumed_by).toBeNull();
+            // E3: store-decided totalExpired -> elapsed emits workflow.state_completed just like inbox-claim.
+            const events2 = await h.catalog.getSessionEvents(r2.workflowId);
+            const elapsedEvt = events2.find(e => e.eventType === "workflow.state_completed"
+                && e.data?.nodeExecutionId === listenVisits[2].nodeExecutionId);
+            expect(elapsedEvt, "E3: store-decided elapsed must emit workflow.state_completed").toBeTruthy();
+            expect(elapsedEvt.data).toMatchObject({ stateId: "listen", step: 3, outcome: "elapsed", resultKind: "business" });
 
             // 3. Remaining-time deadline on visit 2: totalSeconds=3, napSeconds=1, only 1 tick queued.
             let capturedStart3 = null;
@@ -161,6 +169,77 @@ describe("Loop limits (Change C: maxVisits and wait.totalSeconds)", () => {
             const deltaFromFirstMs = remVisits[1].deadlineAt.getTime() - remVisits[0].enteredAt.getTime();
             expect(deltaFromFirstMs).toBeGreaterThanOrEqual(2950);
             expect(deltaFromFirstMs).toBeLessThanOrEqual(3050);
+
+            // 4. E2: maxVisits: 1 whose input & carry mappings fail on visit 2 routes exhausted (NOT invalid_input) with incoming value as output.
+            const e2CleanYaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: max-visits-bad-input, version: \"1.0.0\" }\ninitial: seed\nstates:\n  seed:\n    type: script\n    outcomes: [go]\n    source: \"await setResult('go', { okKey: 42 });\"\n    transition: { next: { go: work, failure: failed } }\n  work:\n    type: script\n    maxVisits: 1\n    input:\n      x: \"${input.okKey}\"\n    carry:\n      c: \"${input.okKey}\"\n    outcomes: [again]\n    source: \"await setResult('again', { noOkKeyHere: 99 });\"\n    transition:\n      next:\n        again: work\n        exhausted: done\n        failure: failed\n  done: { type: terminal, outcome: succeeded, output: \"${input}\" }\n  failed: { type: terminal, outcome: failed, output: \"${runtime.error}\" }\n";
+            const sE2 = await saveSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, name: "max-visits-bad-input", yaml: e2CleanYaml, expected: null,
+                actor: { kind: "session", sessionId: chat }, operationId: "save-e2",
+            });
+            expect(sE2.receipt.valid, JSON.stringify(sE2.receipt.diagnostics)).toBe(true);
+            const rE2 = await startSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, definition: { name: "max-visits-bad-input" }, inputs: {},
+                actor: ENGINE, operationId: "start-e2", owner: OWNER,
+            });
+            const endE2 = await h.waitRun(rE2.runId);
+            expect(endE2.status).toBe("completed");
+            expect(endE2.terminalOutput).toEqual({
+                carry: null,
+                result: { carry: { c: 42 }, result: { noOkKeyHere: 99 } },
+            });
+
+            // 5. E1: wait.totalSeconds binding that changes between visit 1 (2 s live / 5 s test) and visit 2 (60 s)
+            // still elapses at visit 1's deadline in BOTH live and test mode; visit 1 finishing at entry still anchors visit 2.
+            const e1Yaml = "apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: total-wait-fixed-v1, version: \"1.0.0\" }\ncontracts:\n  Tick@1: { schema: { type: object, properties: { seq: { type: integer } } } }\ninitial: listen\nstates:\n  listen:\n    type: messaging\n    mode: receive\n    contract: Tick@1\n    wait: { totalSeconds: \"${states.bump.output.nextBudget ?? 5}\" }\n    transition:\n      next:\n        received: bump\n        elapsed: done\n        failure: failed\n  bump:\n    type: script\n    outcomes: [again]\n    source: \"await setResult('again', { nextBudget: 60, saw: context.input.seq });\"\n    transition: { next: { again: listen, failure: failed } }\n  done: { type: terminal, outcome: succeeded, output: \"${states.bump.output}\" }\n  failed: { type: terminal, outcome: failed, output: \"${runtime.error}\" }\n";
+            const sE1 = await saveSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, name: "total-wait-fixed-v1", yaml: e1Yaml, expected: null,
+                actor: { kind: "session", sessionId: chat }, operationId: "save-e1",
+            });
+            expect(sE1.receipt.valid, JSON.stringify(sE1.receipt.diagnostics)).toBe(true);
+
+            // Live mode: visit 1 pre-queued claim (finishes at entry with firstBudget=2), bump sets nextBudget=60,
+            // visit 2 MUST use visit 1's stored 2 s deadline (NOT 60 s)!
+            let capE1 = null;
+            const rE1 = await startSessionWorkflowDefinition({
+                ...h.host,
+                duroxideClient: { ...h.client, startOrchestrationVersioned: async (...args) => { capE1 = args; } },
+            }, {
+                ownerSessionId: chat, definition: { name: "total-wait-fixed-v1" }, inputs: { firstBudget: 2 },
+                actor: ENGINE, operationId: "start-e1-live", owner: OWNER,
+            });
+            await sendTypedWorkflowInput(h.host, {
+                workflowSessionId: rE1.workflowId, senderSessionId: chat, runId: rE1.runId,
+                contract: "Tick@1", payload: { seq: 1 }, operationId: "e1-live-tick1",
+            });
+            await h.client.startOrchestrationVersioned(...capE1);
+            const endE1 = await h.waitRun(rE1.runId);
+            expect(endE1.status).toBe("completed");
+            expect(endE1.terminalOutput).toEqual({ nextBudget: 60, saw: 1 });
+            const e1Visits = (await h.store.listNodeExecutions(rE1.runId)).filter(n => n.nodeId === "listen");
+            expect(e1Visits).toHaveLength(2);
+            expect(e1Visits[0].deadlineAt).not.toBeNull();
+            expect(e1Visits[1].deadlineAt.getTime()).toBe(e1Visits[0].deadlineAt.getTime());
+
+            // Test mode: visit 1 has fixture (finishes without waiting, firstBudget=5), bump sets nextBudget=60,
+            // visit 2 has no fixture and advances virtual clock ONLY to visit 1's virtual + 5 s (NOT +60 s)!
+            const tE1 = await startSessionWorkflowTest(h.host, {
+                ownerSessionId: chat, definition: { definitionId: sE1.receipt.definitionId },
+                inputs: { firstBudget: 5 },
+                fixtures: parseTestFixtures([{
+                    operation: "receive", state: "listen", visit: 1,
+                    response: { kind: "success", value: { seq: 1 } },
+                }], { receive: true }),
+                actor: ENGINE, operationId: "test-e1-virtual", owner: async () => OWNER, binding: async () => null,
+            });
+            const benchE1 = await definitionTestBench(h.host, chat, tE1.testId);
+            const reportE1 = await waitSessionWorkflowTest(h.host, benchE1, { waitMs: 20_000, actor: ENGINE });
+            expect(reportE1.status).toBe("passed");
+            const tRunE1 = await h.store.readRun(reportE1.runId);
+            const tVisitsE1 = (await h.store.listNodeExecutions(reportE1.runId)).filter(n => n.nodeId === "listen");
+            expect(tVisitsE1).toHaveLength(2);
+            expect(tVisitsE1[0].deadlineAt).not.toBeNull();
+            expect(tVisitsE1[1].deadlineAt.getTime()).toBe(tVisitsE1[0].deadlineAt.getTime());
+            expect(tRunE1.virtualNow.getTime() - tVisitsE1[0].deadlineAt.getTime()).toBe(0);
         } finally {
             await h.stop();
         }

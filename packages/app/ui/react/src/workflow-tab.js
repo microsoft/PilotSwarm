@@ -1299,6 +1299,12 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
  */
 export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null, visits = null }) {
     const { sessionId, view, projection } = child;
+    const sessionName = React.useCallback(id => {
+        if (typeof child.sessionName === "function") return child.sessionName(id);
+        const byId = typeof controller?.getState === "function" ? controller.getState()?.sessions?.byId : null;
+        const title = byId?.[id]?.title;
+        return typeof title === "string" && title.trim() ? title.trim() : null;
+    }, [child.sessionName, controller]);
     // OF-S2-8: the script and samples come from the YAML of the revision this Workflow runs, read once, when allowed.
     const code = useWorkflowRevisionYaml(controller, sessionId, view, child.workflowModel ?? child.readModel ?? null, Boolean(selected));
     const [branchPick, setBranchPick] = React.useState(null);
@@ -1319,7 +1325,7 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
         !replayFrame ? h(WorkflowApprovalDetails, { key: selected.current?.id ?? selected.id, controller, sessionId,
             approval: workflowApprovalView(child.workflowModel ?? child.readModel, selected.current) }) : null,
         h(WorkflowNodeSummary, {
-            selected, nodes: child.nodes, runId,
+            selected, nodes: child.nodes, runId, sessionName,
             // An agent node's visits, with its session, are in its Log (finding 8).
             onLog: selected.kind === "agent" ? onLog : null,
             sections: h(NodeCodeSections, { node: selected, yaml: code.yaml, pending: code.pending, hidden: code.hidden }),

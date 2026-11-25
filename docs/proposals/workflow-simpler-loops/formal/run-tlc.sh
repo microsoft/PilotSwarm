@@ -29,7 +29,8 @@ run SimplerLoops.cfg logs/main.log
 grep -Fq 'Model checking completed. No error has been found.' logs/main.log
 
 for witness in NoPThenE NoArrival NoEntryElapsed NoExhausted NoDuplicateEntry \
-               NoQWaiting NoDuplicateAccept NoTimerElapsed; do
+               NoQWaiting NoDuplicateAccept NoTimerElapsed NoLateArrivalThenTimer \
+               NoSpentEntryWithMessage; do
     config="witnesses/$witness.cfg"
     printf 'SPECIFICATION Spec\nCONSTANT SplitCommit = FALSE\nINVARIANT %s\n' "$witness" > "$config"
     expect_invariant "$config" "logs/$witness.log" "$witness"

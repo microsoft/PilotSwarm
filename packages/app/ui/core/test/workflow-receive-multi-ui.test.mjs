@@ -64,11 +64,22 @@ test("multi-contract receive renders label, card fact, edge labels, and visit co
     assert.match(graphHtml, /Progress@1/);
     assert.match(graphHtml, /WorkflowEnded@1/);
 
-    const panelHtml = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, {
+    const panelNamedHtml = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, {
+        selected: node, nodes: flow.nodes, select: () => {}, runId: "run-1", openSession: () => {},
+        sessionName: id => (id === "wf-child" ? "progress-worker" : null),
+    }));
+    assert.match(panelNamedHtml, /Message types/);
+    assert.match(panelNamedHtml, /Progress@1, WorkflowEnded@1/);
+    const takenNamed = panelNamedHtml.match(/data-fact="receive-taken"[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? "";
+    assert.match(takenNamed, /Message taken/);
+    assert.match(takenNamed, /Progress@1 from progress-worker/);
+    assert.ok(!takenNamed.includes("wf-child"), "Message taken must never render raw sender session id");
+
+    const panelUnknownHtml = renderToStaticMarkup(React.createElement(WorkflowNodeSummary, {
         selected: node, nodes: flow.nodes, select: () => {}, runId: "run-1", openSession: () => {},
     }));
-    assert.match(panelHtml, /Message types/);
-    assert.match(panelHtml, /Progress@1, WorkflowEnded@1/);
-    assert.match(panelHtml, /Message taken/);
-    assert.match(panelHtml, /Progress@1 from wf-child/);
+    const takenUnknown = panelUnknownHtml.match(/data-fact="receive-taken"[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? "";
+    assert.match(takenUnknown, /Message taken/);
+    assert.match(takenUnknown, /<strong>Progress@1<\/strong>/);
+    assert.ok(!takenUnknown.includes("wf-child"), "Message taken must omit unknown sender rather than show raw id");
 });

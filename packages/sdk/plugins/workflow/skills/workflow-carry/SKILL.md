@@ -5,8 +5,9 @@ description: Preserve loop counters and payloads through Workflow errors, receip
 
 # Workflow carry
 
-Use `states.<id>.output` for what an earlier state produced; use `carry` for
-a value that must be frozen. Call `load_skill` with name `workflow-authoring`
+Use `${states.<id>.output}` for the latest finished result of `<id>` (a
+failed visit does not replace it; visible in the same branch or from root, else
+compile error); use `carry` for a value that must be frozen. Call `load_skill` with name `workflow-authoring`
 first. Nonterminals except approval may opt in:
 `carry: { loop: "${input.loop}", payload: "${input.payload}" }`.
 Entry freezes this object before `input:` maps the effect's payload.

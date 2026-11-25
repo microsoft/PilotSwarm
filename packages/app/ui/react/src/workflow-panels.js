@@ -560,7 +560,7 @@ export function WorkflowAgentLog({ log, failed = null, onMore = null, nodeId = n
  * the visit shown runs, is an earlier visit's result shown apart, said as that visit's.
  */
 export function WorkflowNodeSummary({ selected, nodes, select, openSession = null, runId = null, executionValues = null, onReadWholeValue = null,
-    branchIndex = null, onBranch = null, onLog = null, sections = null, replay = null, visits = null, selection = null }) {
+    branchIndex = null, onBranch = null, onLog = null, sections = null, replay = null, visits = null, selection = null, sessionName = null }) {
     const branch = workflowBranchChoice(selected.branches, branchIndex);
     const current = branch ? branch.execution : selected.current ?? null;
     // Review UI-3: a chosen item shows its own result (its latest ended visit in that item), never another item's.
@@ -571,7 +571,7 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
     const visit = workflowDetailsVisit(selected, { current: chosen?.chosen && chosen.execution ? chosen.execution : current,
         frame: replay?.frame ?? null, picked: replay?.picked === true });
     const visitReceive = selected.kind === "receive"
-        ? workflowNodeSummary(selected, { execution: visit ?? current }).receive : null;
+        ? workflowNodeSummary(selected, { execution: visit ?? current, sessionName }).receive : null;
     const io = visit ? workflowVisitIo(selected, visit, { recorded: workflowRecordedVisit(visits, visit), atMs: replay?.frame?.atMs ?? null }) : null;
     const apart = summary.result && (!io || (!replay && io.output.kind === "pending" && summary.result.executionId !== io.id)) ? summary.result : null;
     const apartVisit = apart && io ? (selected.executions ?? []).find(item => item?.id === apart.executionId) : null;
@@ -598,8 +598,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             visitReceive?.contracts?.length ? fact(visitReceive.contracts.length > 1 ? "Message types" : "Message type",
                 visitReceive.contracts.join(", "), { "data-fact": "receive-contracts" }) : null,
             visitReceive?.taken?.contract ? fact("Message taken",
-                visitReceive.taken.senderSessionId
-                    ? `${visitReceive.taken.contract} from ${visitReceive.taken.senderSessionId}`
+                visitReceive.taken.senderName
+                    ? `${visitReceive.taken.contract} from ${visitReceive.taken.senderName}`
                     : visitReceive.taken.contract,
                 { "data-fact": "receive-taken" }) : null,
             summary.decision ? fact("Type", "Decision", { "data-fact": "decision-type" }) : null,

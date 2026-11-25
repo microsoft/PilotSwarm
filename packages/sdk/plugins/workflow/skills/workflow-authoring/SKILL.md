@@ -44,7 +44,7 @@ For a `decision` state, call `load_skill` with name `workflow-decision`.
 - Every reachable state must reach a terminal.
 - Route every outcome; handle errors by code (`workflow-reference`) or `failure`.
 - Root `catchAll` takes unhandled errors once per run; otherwise they fail the run.
-- Bound loops with `maxVisits` (`exhausted`) or `wait: { totalSeconds }`. `limits.maxNodeExecutions` (1,000) is the safety cap.
+- Bound loops with `maxVisits` (route `exhausted` out; does not bound one wait) or receive `wait: { totalSeconds }` (route `elapsed` out); not interchangeable. `limits.maxNodeExecutions` (1,000) is the cap.
 - Child Workflows: `spawn` starts a definition (`started`); end sends `WorkflowEnded@1`; scripts/agents use `child_workflows`. Max level 2.
 - A deadline (`limits: { timeoutSeconds: 3600 }`) cancels pending work and
   fails the run with `timed_out`, paused or not.
@@ -64,7 +64,7 @@ freeze entry data across failures; load `workflow-carry`.
 | inputs | The run's static inputs, checked against `inputs.schema` | `${inputs.x}` | `context.inputs` |
 | input | Previous output or error (`{ carry, result }` if carried); first state: `initialInput` (default null). | `${input.x}` | `context.input` |
 | kv | The run's open key-value map, as of the state's start | `${kv.x}`, `${kv["any key"]}` | `context.kv` |
-| states | Latest output of `<id>` (`null` if none) | `${states.<id>.output}` | via `input:` |
+| states | Latest finished result of `<id>` (errors don't replace; same branch or root only; `null` if none) | `${states.<id>.output}` | via `input:` |
 | runtime.error | The error envelope on an error route | `${runtime.error}` | — |
 | branch | A parallel branch's item and index, or its name (branch states only) | `${branch.item}`, `${branch.index}`, `${branch.name}` | `context.branch` |
 | parentSessionId | You, the agent that started it | — | `context.parentSessionId` |
@@ -281,10 +281,9 @@ decision itself into the graph:
   (for a failure, its step and cause) and start no other run unless asked.
   `message`: use or relay it as the user asked. `request`: answer once
   with `respond_session_request` before its deadline, never as plain text.
-- For a status question, use `read_workflow` for that workflow (its run),
-  not `list_sessions`.
+- For status, use `read_workflow` for that workflow (its run), not `list_sessions`.
 - If notifications are off (`definition.notifyOnCompletion` is false),
-  nothing will arrive: read the run with `read_workflow` when the user asks.
+  nothing will arrive: read the run with `read_workflow` when asked.
 - If a status read fails, quote the actual error (its code and message) and
   try once more; if it fails again, report it plainly.
 - Pass `notify_on_completion: false` to `workflow_definition` `start` to
@@ -389,9 +388,7 @@ states:
     output: "${runtime.error}"
 ```
 
-`get_build_status` stands for a read-only tool of your own. The parent gives
-the run a `BuildEvent@1` with `send_workflow_input` (`correlation:
-{ buildId }`), before or after the receive starts; without one, its wait
-elapses after 300 seconds and the run polls once. A test of it gives that
-event as a fixture: `{ operation: receive, state: await_event, response:
+`get_build_status` is a read-only tool. Send `BuildEvent@1` via
+`send_workflow_input` (`correlation: { buildId }`); if none arrives in 300 s,
+it polls. Test fixture: `{ operation: receive, state: await_event, response:
 { kind: success, value: { buildId: 7, state: succeeded } } }`, `expect: done`.

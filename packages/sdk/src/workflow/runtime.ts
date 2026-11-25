@@ -2172,6 +2172,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             let carryText: string | null = null;
             let waitFor: number | null = null;
             let waitTotalFor: number | null = null;
+            let waitTotalInherit = false;
             // Stage 2.4: a clock wait's time; the store decides its deadline from its own clock (or a test run's virtual one).
             let waitAt: WorkflowIRClockWait | null = null;
             let receive: ReceiveSpec | null = null;
@@ -2185,10 +2186,27 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if ("failure" in arrived) immediate = arrived.failure;
             else {
                 value = arrived.incoming;
-                const stateRefs = referencedStateIdsOfNode(node);
+                // E2: maxVisits is decided FIRST, before carry and input evaluation; output is the incoming value.
+                if (node.type !== "terminal" && node.maxVisits !== undefined && ordinal > node.maxVisits) {
+                    try {
+                        const outText = boundedCanonicalJson(value, `Output of state '${nodeId}'`);
+                        immediate = { outcome: STATE_EXHAUSTED, resultKind: "business", valueText: outText, winner: "controller" };
+                    } catch (error) {
+                        if (!(error instanceof WorkflowJsonError)) throw error;
+                        immediate = runtimeError("invalid_input", error.message);
+                    }
+                }
+                const stateRefs = !immediate ? referencedStateIdsOfNode(node) : [];
                 const stateOutputs = stateRefs.length ? await store.latestStateOutputs(current.runId, scopeId, stateRefs) : null;
                 const entryScope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch, stateOutputs);
-                if (current.controllerVersion !== null && workflowControllerFeatures(current.controllerVersion).carry
+                // E1: on visit 1 of a totalSeconds receive, evaluate totalSeconds once so visit 1 always records its deadline anchor
+                // (even if visit 1 finishes at entry via inbox claim, invalid_input, or sender refusal).
+                if (!immediate && node.type === "messaging" && node.mode === "receive" && node.waitTotalSeconds != null && ordinal === 1) {
+                    const total = waitSeconds(node.waitTotalSeconds, entryScope, `states.${nodeId}.wait.totalSeconds`);
+                    if (typeof total === "number") waitTotalFor = total;
+                    else immediate = total;
+                }
+                if (!immediate && current.controllerVersion !== null && workflowControllerFeatures(current.controllerVersion).carry
                     && node.type !== "terminal" && node.carry !== undefined) {
                     try { carryText = evaluateCarry(node.carry, entryScope, `states.${nodeId}.carry`); }
                     catch (error) {
@@ -2211,15 +2229,6 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     try { value = evaluateBindingTemplate(node.input, entryScope, `states.${nodeId}.input`); }
                     catch (error) {
                         if (!(error instanceof WorkflowBindingError)) throw error;
-                        immediate = runtimeError("invalid_input", error.message);
-                    }
-                }
-                if (!immediate && node.type !== "terminal" && node.maxVisits !== undefined && ordinal > node.maxVisits) {
-                    try {
-                        const outText = boundedCanonicalJson(value, `Output of state '${nodeId}'`);
-                        immediate = { outcome: STATE_EXHAUSTED, resultKind: "business", valueText: outText, winner: "controller" };
-                    } catch (error) {
-                        if (!(error instanceof WorkflowJsonError)) throw error;
                         immediate = runtimeError("invalid_input", error.message);
                     }
                 }
@@ -2287,9 +2296,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         if (typeof seconds === "number") { waitFor = seconds; receive = resolved.spec; }
                         else immediate = seconds;
                     } else if (node.waitTotalSeconds != null) {
-                        const total = waitSeconds(node.waitTotalSeconds, entryScope, `states.${nodeId}.wait.totalSeconds`);
-                        if (typeof total === "number") { waitTotalFor = total; receive = resolved.spec; }
-                        else immediate = total;
+                        if (ordinal > 1) waitTotalInherit = true;
+                        receive = resolved.spec;
                     } else receive = resolved.spec;
                 }
                 // A send's recipient and message are resolved once, here, and frozen for this occurrence.
@@ -2435,7 +2443,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
                 ...(carryText !== null ? { carryText } : {}),
                 waitSeconds: immediate ? null : waitFor,
-                ...(waitTotalFor !== null && !immediate ? { waitTotalSeconds: waitTotalFor } : {}),
+                // E1: visit 1 keeps waitTotalFor even when finishing at entry (invalid_input/refusal/claim) so visit 1 stores the anchor deadline_at.
+                ...(waitTotalFor !== null ? { waitTotalSeconds: waitTotalFor } : {}),
+                ...(waitTotalInherit && !immediate ? { waitTotalInherit: true } : {}),
                 ...(waitAt && !immediate ? { waitAt } : {}),
                 receive: immediate || !receive ? null : {
                     contract: receive.contract, from: receive.from, correlationText: receive.correlationText,

@@ -254,7 +254,7 @@ export function workflowNodeNext(node) {
  * The whole summary of a node for the Node panel: { what, now, runs, result, agent, next }. `execution` is the visit
  * shown (a branch step's chosen branch, else the node's current visit).
  */
-export function workflowNodeSummary(node, { execution = node?.current ?? null, ended = undefined, now = Date.now() } = {}) {
+export function workflowNodeSummary(node, { execution = node?.current ?? null, ended = undefined, now = Date.now(), sessionName = null } = {}) {
     if (!node) return null;
     const agent = node.kind === "agent" ? {
         sessionMode: workflowAgentSessionMode(node),
@@ -282,12 +282,15 @@ export function workflowNodeSummary(node, { execution = node?.current ?? null, e
             receive: (() => {
                 const contracts = Array.isArray(node.contract) ? [...node.contract]
                     : typeof node.contract === "string" ? [node.contract] : [];
+                const rawSender = execution?.senderSessionId ?? execution?.inbox?.senderSessionId ?? null;
+                const resolvedName = typeof sessionName === "function" && typeof rawSender === "string" && rawSender
+                    ? (sessionName(rawSender)?.trim() || null) : null;
                 const took = execution && execution.status === "completed" && execution.resultKind !== "runtime_error"
                     && execution.outcome !== "elapsed" && execution.outcome !== "exhausted"
                     ? {
                         contract: execution.contract || execution.inbox?.contract
                             || (execution.outcome && execution.outcome !== "received" ? execution.outcome : (contracts.length === 1 ? contracts[0] : null)),
-                        senderSessionId: execution.senderSessionId ?? execution.inbox?.senderSessionId ?? null,
+                        senderName: resolvedName,
                     } : null;
                 return { contracts, taken: took };
             })(),

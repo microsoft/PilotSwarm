@@ -152,3 +152,60 @@ contracts:
     assert.equal(noElapsed.valid, false);
     assert.ok(noElapsed.diagnostics.some(d => d.code === "WORKFLOW_ROUTE_MISSING" && /elapsed/.test(d.message)));
 });
+
+test("K2: maxVisits rejects business outcome or Decision choice label named 'exhausted', while states without maxVisits remain unchanged", () => {
+    const scriptCollision = compileWorkflow(yaml(`  first:
+    type: script
+    maxVisits: 2
+    outcomes: [ok, exhausted]
+    source: "await setResult('ok', {});"
+    transition: { next: { ok: done, exhausted: done, failure: done } }
+  done: { type: terminal, outcome: succeeded }
+`));
+    assert.equal(scriptCollision.valid, false);
+    assert.ok(scriptCollision.diagnostics.some(d => d.code === "WORKFLOW_FIELD_INVALID" && /collides with maxVisits/.test(d.message)),
+        JSON.stringify(scriptCollision.diagnostics));
+
+    const decisionCollision = compileWorkflow(yaml(`  first:
+    type: decision
+    maxVisits: 2
+    question:
+      type: choice
+      instructions: "Pick"
+      criteria:
+        keep_going: "continue"
+        exhausted: "collision"
+    transition: { next: { keep_going: done, exhausted: done, failure: done } }
+  done: { type: terminal, outcome: succeeded }
+`));
+    assert.equal(decisionCollision.valid, false);
+    assert.ok(decisionCollision.diagnostics.some(d => d.code === "WORKFLOW_FIELD_INVALID" && /collides with maxVisits/.test(d.message)),
+        JSON.stringify(decisionCollision.diagnostics));
+
+    // Without maxVisits, a script business outcome named 'exhausted' still compiles cleanly.
+    const withoutMax = compileWorkflow(yaml(`  first:
+    type: script
+    outcomes: [ok, exhausted]
+    source: "await setResult('exhausted', {});"
+    transition: { next: { ok: done, exhausted: done, failure: done } }
+  done: { type: terminal, outcome: succeeded }
+`));
+    assert.equal(withoutMax.valid, true, JSON.stringify(withoutMax.diagnostics));
+});
+
+test("K3: out-of-range wait.totalSeconds diagnostic names totalSeconds, not seconds", () => {
+    const bad = compileWorkflow(yaml(`  first:
+    type: messaging
+    mode: receive
+    contract: Ping@1
+    wait: { totalSeconds: 0 }
+    transition: { next: { received: done, elapsed: done, failure: done } }
+  done: { type: terminal, outcome: succeeded }
+`, `contracts:
+  Ping@1: { schema: { type: object } }
+`));
+    assert.equal(bad.valid, false);
+    const err = bad.diagnostics.find(d => d.path === "states.first.wait.totalSeconds");
+    assert.ok(err, JSON.stringify(bad.diagnostics));
+    assert.match(err.message, /^totalSeconds must be an integer/);
+});

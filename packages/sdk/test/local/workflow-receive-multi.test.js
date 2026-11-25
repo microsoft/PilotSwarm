@@ -229,16 +229,28 @@ describe("Multi-contract receive (Change A)", () => {
                 ownerSessionId: chat, definition: { name: "multi-direct" }, inputs: {},
                 actor: ENGINE, operationId: "start-pending-arrival", owner: OWNER,
             });
-            // Send unlisted Other@1 first -> must NOT complete wait_ab
-            await sendTypedWorkflowInput(h.host, {
+            // X2: wait until wait_ab is pending BEFORE sending so we truly exercise the pending-arrival path.
+            let pendingWait = null;
+            for (let i = 0; i < 100 && !pendingWait; i += 1) {
+                const nodes = await h.store.listNodeExecutions(r1.runId);
+                pendingWait = nodes.find(n => n.nodeId === "wait_ab" && n.state === "pending") ?? null;
+                if (!pendingWait) await new Promise(r => setTimeout(r, 50));
+            }
+            expect(pendingWait, "wait_ab must be pending before messages arrive").toBeTruthy();
+
+            // Send unlisted Other@1 first -> must NOT claim wait_ab
+            const otherReceipt = await sendTypedWorkflowInput(h.host, {
                 workflowSessionId: r1.workflowId, senderSessionId: chat, runId: r1.runId,
                 contract: "Other@1", payload: { x: 1 }, operationId: "op-other-1",
             });
-            // Send listed Beta@1 -> completes wait_ab via Beta@1 route
-            await sendTypedWorkflowInput(h.host, {
+            expect(otherReceipt.receipt.claimedBy).toBeNull();
+
+            // Send listed Beta@1 -> receipt claims pending wait_ab execution directly
+            const betaReceipt = await sendTypedWorkflowInput(h.host, {
                 workflowSessionId: r1.workflowId, senderSessionId: chat, runId: r1.runId,
                 contract: "Beta@1", payload: { tag: "hello" }, operationId: "op-beta-1",
             });
+            expect(betaReceipt.receipt.claimedBy?.nodeExecutionId).toBe(pendingWait.nodeExecutionId);
             const end1 = await h.waitRun(r1.runId);
             expect(end1.status).toBe("completed");
             expect(end1.terminalOutput).toEqual({

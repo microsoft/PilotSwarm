@@ -169,7 +169,7 @@ example, the 30-day wait limit and visit-budget arithmetic.
 
 ## Spawning child Workflows
 
-Use `type: spawn` (max 50) and one `receive` with `[Progress@1, WorkflowEnded@1]`, `from: "${states.<spawn>.output.workflowId}"`, and `wait: { totalSeconds }`. Map state via `input: { before: "${states.<rec>.output.list ?? []}" }` (no `carry`). Scripts/agents use `child_workflows`.
+`spawn` (max 50) + one `receive` with declared `Progress@1` and `WorkflowEnded@1`, `from: "${states.<spawn>.output.workflowId}"`, `wait: { totalSeconds: 120 }`; map list via `states.<rec>.output`. Tools: `child_workflows`.
 
 ## Testing these patterns
 
@@ -178,7 +178,7 @@ agent node has its own: `{ operation: agent, state: quick_summary, ... }`
 and `{ operation: agent, state: careful_summary, ... }`. A For each body's
 node runs once per item; one fixture answers every item, and `visit`
 counts per item. In a loop, `visit: n` answers the n-th round of a state;
-a fixture without `visit` answers the other rounds. A receive gets its
+a fixture without `visit` answers the other rounds. A single-contract receive gets its
 message from `{ operation: receive, state: <id>, visit?, response: { kind:
-success, value: <message> } }`. The report's `path` names each step's
+success, value: <message> } }` (list form: `{ contract, payload }`). The report's `path` names each step's
 `branch` (its name, or `item N`) and `enteredBy`.
