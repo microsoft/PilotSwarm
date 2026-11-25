@@ -25,6 +25,7 @@ import {
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
     WORKFLOW_DECISION_EFFECT_VERSION,
+    WORKFLOW_SPAWN_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
     WORKFLOW_IDLE_WAITS_PER_EXECUTION,
     WORKFLOW_REQUEST_CAPABILITY,
@@ -168,7 +169,7 @@ function* failRun(ctx: OrchestrationContext, runId: string, message: string): Ge
 }
 
 /** The controller orchestration (WORKFLOW_CONTROLLER_VERSION): controlRun, and a fault ends its run visibly (failRun). */
-export function* workflowController_1_2_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
+export function* workflowController_1_3_0(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
     let input: ControllerInput;
     try {
         input = parseControllerInput(rawInput);
@@ -779,16 +780,18 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 continue;
             }
             if (entered.state === "pending") {
-                if (node.type === "decision" && plan.test === true) {
+                if ((node.type === "decision" || node.type === "spawn") && plan.test === true) {
                     yield* persistentlyTagged(ctx, R.intercept, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId });
                     continue;
                 }
                 // Script starts keep the exact input from earlier controller histories.
-                yield ctx.startOrchestrationVersioned(WORKFLOW_EFFECT_NAME,
-                    node.type === "decision" ? WORKFLOW_DECISION_EFFECT_VERSION : WORKFLOW_EFFECT_VERSION,
+                const effectVersion = node.type === "decision" ? WORKFLOW_DECISION_EFFECT_VERSION
+                    : node.type === "spawn" ? WORKFLOW_SPAWN_EFFECT_VERSION
+                    : WORKFLOW_EFFECT_VERSION;
+                yield ctx.startOrchestrationVersioned(WORKFLOW_EFFECT_NAME, effectVersion,
                     workflowEffectInstanceId(entered.nodeExecutionId),
                     { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId,
-                        ...(node.type === "decision" ? { nodeType: "decision" } : {}) });
+                        ...(node.type === "decision" || node.type === "spawn" ? { nodeType: node.type } : {}) });
             }
         }
         if (rerouted) continue;

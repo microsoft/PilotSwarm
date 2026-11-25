@@ -57,6 +57,10 @@ export function workflowNodeWhat(node) {
             const first = workflowFirstSentence(node.question?.instructions);
             return first ? `Runs a Decision model: “${first}”` : "Runs a Decision model and routes its semantic result.";
         }
+        case "spawn":
+            return typeof node.definition === "string" && node.definition
+                ? `Starts child Workflow ${node.definition}${Number.isSafeInteger(node.revision) ? ` (revision ${node.revision})` : ""}.`
+                : "Starts a child Workflow.";
         case "script": return `Runs the script ${node.id}${Number.isFinite(node.timeoutSeconds) ? `, for at most ${formatSeconds(node.timeoutSeconds)}` : ""}.`;
         case "approval": return `Asks the Workflow owner: ${node.question ?? "Read the proposal and decide."}`;
         case "wait": return typeof node.seconds === "number" ? `Waits ${formatSeconds(node.seconds)}.`
@@ -264,6 +268,13 @@ export function workflowNodeSummary(node, { execution = node?.current ?? null, e
         what: workflowNodeWhat(node), now: workflowNodeNow(node, execution, now), runs: workflowNodeRuns(node, execution, now),
         ...(typeof node.about?.notes === "string" ? { notes: node.about.notes } : {}),
         ...(node.kind === "decision" || node.type === "decision" ? { decision: workflowDecisionSummary(node, execution) } : {}),
+        ...(node.kind === "spawn" || node.type === "spawn" ? {
+            spawn: {
+                definition: typeof node.definition === "string" ? node.definition : null,
+                revision: Number.isSafeInteger(node.revision) ? node.revision : null,
+                children: Array.isArray(node.children) ? node.children : [],
+            },
+        } : {}),
         runsTitle: node.partial && node.runs ? "Older visits not loaded" : null,
         result: workflowNodeResult(node, execution, { ended }), agent, next: workflowNodeNext(node),
         // A chosen item (`ended` given) or a For each step that has no result of its own here says so (review UI-3).

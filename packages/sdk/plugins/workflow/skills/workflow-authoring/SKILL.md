@@ -35,22 +35,17 @@ For a `decision` state, call `load_skill` with name `workflow-decision`.
 | A typed answer from a session before a deadline | `messaging`, `mode: request` | a send and a receive |
 | The same steps for each item of a list, then one join | `parallel` | many agent states copied by hand |
 | Different nodes at once (a prompt or a model for each branch), then one join | `parallel` with named `branches` | several Workflows |
+| Start another saved Workflow without waiting and collect `WorkflowEnded@1` later | `spawn` | a blocking agent step in a loop |
 | The end of the run, with its outcome | `terminal` | — |
 
 ## 3. Design a bounded graph
 
-- Keep it small: few states and a straight common path. Give corner cases,
-  parsing and many-way decisions to an agent with a clear task, not
-  conditions or scripts: scripts do work, not decisions.
-- Every reachable state must be able to reach a terminal, or the compiler
-  refuses the graph.
-- Route every outcome. Handle runtime errors by code (`workflow-reference`
-  lists them), or route all with `failure`.
-- Root `catchAll: <state>` takes unhandled errors, at most once per run.
-  With no route or catch-all, a runtime error fails the run.
-- Bound every loop. Count rounds in the data the loop carries, or let a
-  schema refuse the next round (`maximum: 3`). `limits.maxNodeExecutions`
-  (default 1,000) is the last safety limit, not the design.
+- Keep graphs small and straight. Give judgment to agents, work to scripts.
+- Every reachable state must reach a terminal.
+- Route every outcome; handle errors by code (`workflow-reference`) or `failure`.
+- Root `catchAll` takes unhandled errors once per run; otherwise they fail the run.
+- Bound every loop via carried data or schema limits. `limits.maxNodeExecutions` (default 1,000) is only the safety cap.
+- Child Workflows: `spawn` starts a saved definition without waiting (`started`); each child end sends built-in `WorkflowEnded@1`; scripts and agent steps use `child_workflows`. Max level is 2.
 - A deadline (`limits: { timeoutSeconds: 3600 }`) cancels pending work and
   fails the run with `timed_out`, paused or not.
 - Terminal `output` is null unless bound. Root `outputSchema` checks
@@ -169,7 +164,7 @@ An agent state runs one task and waits for its typed result.
 - `tools: none` or a list limits the agent and its sub-agents to those
   tools (plus `complete_workflow_node`).
 - Put indispensable tools in `requiredTools`; a lost package drops only its own pinned tools.
-- Use `grant` to add held tools; `tools` only limits. Named steps default to `none`, inline steps to `all`. Details: `workflow-tools`.
+- Keep it small: few states and a straight common path (scripts do work, not decisions). Bound every loop. Use `grant` to add held tools; `tools` only limits. Named: `none`, inline: `all`.
 - An agent session that ends a turn with its state open and nothing
   pending is reminded to complete, at most 3 times.
 - Message it with `message_agent` (that neither completes the state nor

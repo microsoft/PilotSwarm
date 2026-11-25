@@ -4,7 +4,7 @@ import type { SessionOwnerInfo, SessionWorkspace, WorkspaceDefaultsRecord } from
 import { readWorkflowWorkspace } from "../workspace.js";
 import type { MessageSender } from "../message-sender.js";
 import type { WorkflowAgentModelUsed, WorkflowAgentNodeHost, WorkflowAgentSpawnRequest } from "./runtime.js";
-import { WORKFLOW_MAX_DESCENDANT_LEVEL } from "./input-policy.js";
+import { computeSessionLevel, SESSION_MAX_NESTING_LEVEL, type SessionLevelNode } from "./input-policy.js";
 import { pinnedAgentPackageId } from "../agent-package-pins.js";
 import type { JsonValue } from "./json.js";
 
@@ -15,9 +15,8 @@ import type { JsonValue } from "./json.js";
  *
  * The child:
  * - is a child session of the workflow (its parent in the session tree), at
- *   the workflow's level plus one, which is at most
- *   WORKFLOW_MAX_DESCENDANT_LEVEL (root 0: parent 0, workflow 1, node agent
- *   2 and its child 3); a deeper child is refused (forbidden);
+ *   the workflow's level (rule 5), which is at most SESSION_MAX_NESTING_LEVEL
+ *   (2); a deeper child is refused (forbidden);
  * - is owned as any spawned child is (the lineage's effective owner,
  *   resolveEffectiveSpawnOwner) and uses the controlling parent agent's
  *   model when the workflow names one;
@@ -39,7 +38,7 @@ import type { JsonValue } from "./json.js";
  * repeated prompt while that id is among its most recent ones.
  */
 
-export { WORKFLOW_MAX_DESCENDANT_LEVEL };
+export { SESSION_MAX_NESTING_LEVEL };
 /** The display name of the sender of an agent state's first prompt. */
 export const WORKFLOW_AGENT_PROMPT_SENDER = "workflow node invocation";
 
@@ -131,17 +130,19 @@ export interface WorkflowAgentHostDeps {
     createChild(spec: WorkflowAgentChildSpec): Promise<void>;
 }
 
-/** A session's level: 0 for a root, one more per parent; null when its lineage is missing, cyclic or deeper than any allowed. */
+/** A session's level by rule 5 (root 0, agent step +0, every other child +1); null when its lineage is missing, cyclic or deeper than maxDepth. */
 export async function sessionLevel(getSession: WorkflowAgentHostDeps["getSession"], sessionId: string, maxDepth = 16): Promise<number | null> {
+    const chain: SessionLevelNode[] = [];
     const seen = new Set<string>();
     let cursor: string | null = sessionId;
-    for (let level = 0; level <= maxDepth && cursor !== null; level += 1) {
+    for (let step = 0; step <= maxDepth && cursor !== null; step += 1) {
         if (seen.has(cursor)) return null;
         seen.add(cursor);
         const row = await getSession(cursor);
         if (!row) return null;
         const parent = row.parentSessionId ?? null;
-        if (parent === null) return level;
+        chain.push({ sessionId: cursor, parentSessionId: parent });
+        if (parent === null) return computeSessionLevel(chain);
         cursor = parent;
     }
     return null;
@@ -154,15 +155,27 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
             if (workflowLevel === null) {
                 return { refused: { code: "unavailable" as const, message: `The lineage of workflow ${request.workflowSessionId} cannot be read.` } };
             }
-            const level = workflowLevel + 1;
-            if (level > WORKFLOW_MAX_DESCENDANT_LEVEL) {
-                // Spec 14 (stage 1 keeps the limit and says each refusal in words).
+            // Rule 5: an agent step is at its Workflow's level.
+            const level = workflowLevel;
+            if (level > SESSION_MAX_NESTING_LEVEL) {
                 return { refused: { code: "forbidden" as const, message: `Node ${request.stateId} cannot start its agent: its session would be at `
-                    + `level ${level} (the top-level session is level 0), and sessions inside a Workflow stop at level ${WORKFLOW_MAX_DESCENDANT_LEVEL}. `
+                    + `level ${level} (the top-level session is level 0), and sessions inside a Workflow stop at level ${SESSION_MAX_NESTING_LEVEL}. `
                     + "Start this Workflow from a session nearer the top." } };
             }
             const owner = await resolveEffectiveSpawnOwner(id => deps.getSession(id), request.workflowSessionId);
-            const controlling = request.controllingSessionId ? await deps.getSession(request.controllingSessionId) : null;
+            let controlling: WorkflowAgentHostSessionRow | null = null;
+            if (request.controllingSessionId) {
+                let cursor: string | null = request.controllingSessionId;
+                const seen = new Set<string>();
+                while (cursor && !seen.has(cursor)) {
+                    seen.add(cursor);
+                    const row = await deps.getSession(cursor);
+                    if (!row) break;
+                    controlling = row;
+                    if (row.sessionKind !== "workflow") break;
+                    cursor = row.parentSessionId ?? null;
+                }
+            }
             const workspace = request.testRun
                 ? null
                 : deps.getSessionCreationConfig

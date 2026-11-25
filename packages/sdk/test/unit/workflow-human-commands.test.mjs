@@ -121,7 +121,7 @@ test("advertises the workflow support the host was configured with: a person's c
         operations: [...WORKFLOW_HUMAN_OPERATIONS, ...WORKFLOW_HUMAN_MILESTONE_OPERATIONS] });
     assert.deepEqual(workflowCapabilities({ read: true, commands: { testMode: false } }).commands.operations,
         [...WORKFLOW_HUMAN_OPERATIONS, "stop"]);
-    assert.equal(milestone.controllerVersion, "1.2.0");
+    assert.equal(milestone.controllerVersion, "1.3.0");
     // recover stays the agent's: never advertised to a person.
     assert.ok(!milestone.operations.includes("recover"));
     // Each answer is a fresh value: a client that changes it changes nothing here.

@@ -46,7 +46,7 @@ it("the real worker keeps the attempt counter through two script crashes and val
         const result = await client.duroxideClient.waitForOrchestration(created.receipt.run.controllerInstanceId, testTime.ms(60_000));
         expect(result.status, JSON.stringify(result)).toBe("Completed");
         const run = await host.store.readRun(created.receipt.run.runId);
-        expect(run).toMatchObject({ controllerVersion: "1.2.0", terminalOutcome: "succeeded", terminalOutput: { attempts: 3, result: 3 } });
+        expect(run).toMatchObject({ controllerVersion: "1.3.0", terminalOutcome: "succeeded", terminalOutput: { attempts: 3, result: 3 } });
         const visits = (await host.store.listNodeExecutions(run.runId)).filter(node => node.nodeId === "poll");
         expect(visits.map(node => ({ ordinal: node.ordinal, input: node.input, carry: node.carrySnapshot, outcome: node.outcome }))).toEqual([
             { ordinal: 1, input: 1, carry: { attempts: 1 }, outcome: "execution_failed" },

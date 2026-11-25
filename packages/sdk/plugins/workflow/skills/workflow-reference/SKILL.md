@@ -268,17 +268,11 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   step's result was saved, and kept, but its next step never started). `cancelledBy` is `failFast`, `join` or `timeout`. `late` marks a
   success saved after the time limit. A report too large to store drops
   every `output` and `error` and adds `truncated: true`.
-- With `timeoutSeconds`: a success counts only when it was saved at or
-  before the time limit. A branch step due at the time limit ends just
-  after it and does not count. When the time limit passes with k such
-  successes, the state still joins. With fewer, it ends with the runtime error
-  `timed_out`, whose `details` is the same report with `timedOut: true`;
-  if k could already no longer happen then, it is `blocked` with
-  `timedOut: true` instead.
-- Worker slots: each running script holds one of the worker's slots
-  (`PILOTSWARM_WORKER_CONCURRENCY`; the duroxide default is 2) for its whole
-  run, and the controller needs one too: keep `concurrency` well below the
-  slot count.
+- With `timeoutSeconds`, only timely successes count; fewer than k ends `timed_out` (or `blocked` if k was already unreachable) with `timedOut: true`. Keep `concurrency` below `PILOTSWARM_WORKER_CONCURRENCY`.
+
+### spawn
+
+`definition` (required literal name or `<package>/<name>`, never a binding), `inputs` (optional object template), `revision` (optional fixed positive int; else newest valid when the child is admitted), `agentModels` (optional), `carry` (optional). Outcome `started` outputs `{ workflowId, runId, definition, revision }` immediately. Child end delivers built-in `WorkflowEnded@1` while the spawning run is active (inbox acceptance order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; outputs >16 KiB set `outputTruncated: true`). Parent end cancels active children. A child that is deleted directly (not cancelled or stopped) sends no ended message; the parent's `receive` then takes its timeout. End a child with `cancel` or `stop`.
 
 ### terminal
 
@@ -308,34 +302,19 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 | Effect | On a retry or a worker restart |
 |---|---|
 | script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. Canvas: absolute ticks and `put`s; a `CONFLICT` where `get` shows your value is success; draw once, then tick. |
-| decision | Effect entries 1 and 2 may call the provider; entry 3 records `unavailable` without a call. Duroxide records an activity result before the existing pending-only completion CAS; a recorded result, lifecycle deadline or cancellation keeps its first stored winner. A worker crash after sending before history commits can redeliver the non-mutating provider call. |
+| decision | Attempts 1–2 call the provider; attempt 3 records `unavailable`. First stored result wins. |
+| spawn | Keyed Start (`spawn:<nodeExecutionId>`): retries replay the same child; never creates a second child. |
 | agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones are refused. |
 | send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
 | request | At least once, one id. First answer decides; none after deadline. |
 | receive | Takes each message once, in the order the run accepted it. |
 | wait | Elapses once, by the store's clock. |
 
-- **Timers.** Wait/receive/request/agent/parallel/run deadlines are durable,
-  fixed at state/run start; restarts and pauses do not stop them.
-- **Joins.** Read `forEach` once at entry; at most `concurrency` branches
-  run. Only timely stored successes count. Stopping scripts is best-effort:
-  a cancelled branch may finish, but its result does not count.
-- **Pause.** No starts or routing until `resume`. Started work keeps its
-  result; expired deadlines route after resume.
-- **Stop.** No new starts. Started work settles; then `stopped`. Grace
-  expiry cancels pending work.
-- **Cancel, delete.** The run ends when it is accepted: pending visits are
-  cancelled, then scripts are stopped and agent sessions ended. A delete tells
-  no one.
-- **Run deadline.** Pending work is cancelled and the run fails `timed_out`,
-  paused or not.
-- **Failure.** A runtime error takes its code's route, else `failure`, else
-  `catchAll` (once per run; a later route to it fails the run), else the
-  run fails. In a branch it ends the branch without success. A run whose
-  controller stopped shows `needsRecovery`; `recover` ends it failed.
-- **Versions.** Started revisions and named-agent versions stay pinned.
-  Changes need a new Workflow. Only variables change (`set_vars`), read at
-  step start.
+- **Timers.** Deadlines are durable from start; restarts and pauses do not stop them.
+- **Joins.** `forEach` runs up to `concurrency` branches; only timely successes count.
+- **Pause / Stop / Cancel.** Pause holds new admissions; stop drains active work until grace expiry; cancel/delete end pending work and active child Workflows.
+- **Failure.** Errors route by code, then `failure`, then `catchAll` once, else fail the run.
+- **Versions.** Started revisions and agent pins stay fixed; only variables (`set_vars`) change.
 
 ## Not supported: do not write
 
@@ -368,4 +347,28 @@ states:
   done: { type: terminal, outcome: succeeded }
   blocked: { type: terminal, outcome: blocked }
   failed: { type: terminal, outcome: failed }
+```
+
+## Example: child Workflow
+
+```yaml
+# example: child-dispatch
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: child-dispatch, version: "1.0.0" }
+initial: go
+states:
+  go:
+    type: spawn
+    definition: worker-task
+    inputs: { item: "alpha" }
+    transition: { next: { started: wait, failure: fail } }
+  wait:
+    type: messaging
+    mode: receive
+    contract: WorkflowEnded@1
+    wait: { seconds: 300 }
+    transition: { next: { received: done, elapsed: fail, failure: fail } }
+  done: { type: terminal, outcome: succeeded, output: "${input}" }
+  fail: { type: terminal, outcome: failed, output: "${runtime.error}" }
 ```

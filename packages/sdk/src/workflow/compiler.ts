@@ -1,5 +1,6 @@
 import { isScalar, parseDocument, visit, type Document } from "yaml";
 import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
+import { parseWorkflowAgentModels } from "./agent-models.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
 import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefusal, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 import { schemaPlaceWords, schemaPointerParts } from "./schema-words.js";
@@ -84,7 +85,11 @@ export const RUNTIME_ERROR_CODES = [
 /** The catch route a runtime error takes when its own code has no route. */
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
-export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "decision", "parallel", "terminal"] as const;
+export const SUPPORTED_NODE_TYPES = ["script", "wait", "approval", "messaging", "agent", "decision", "spawn", "parallel", "terminal"] as const;
+/** Outcome of a spawn state once the child Workflow run is admitted. */
+export const SPAWN_STARTED = "started";
+/** Built-in contract sent by the runtime to a parent Workflow when a child Workflow ends. */
+export const WORKFLOW_ENDED_CONTRACT = "WorkflowEnded@1";
 /** A state type that is named but not compiled: refused as unsupported rather than unknown. */
 const KNOWN_NODE_TYPES = [...SUPPORTED_NODE_TYPES, "join"] as readonly string[];
 
@@ -453,7 +458,25 @@ export interface WorkflowIRContract {
     response?: { schema: string };
 }
 
-export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRDecision | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
+/** A spawn state: starts another Workflow Definition as a child of this Workflow and continues with outcome started. */
+export interface WorkflowIRSpawn extends WorkflowIRCarrying {
+    id: string;
+    type: "spawn";
+    description: string | null;
+    /** Literal name of a definition of the definition owner, or <package>/<name>. Never a binding. */
+    definition: string;
+    /** Whether explicit inputs were provided; absent means {}. */
+    hasInputs: boolean;
+    inputs: JsonValue;
+    /** Fixed revision number; absent means newest valid revision when entered. */
+    revision?: number;
+    /** Optional per-state model overrides for the child Workflow. */
+    agentModels?: Record<string, { model: string; reasoningEffort?: string; contextTier?: string }>;
+    /** Route label -> target node: started, and runtime routes. */
+    next: Record<string, string>;
+}
+
+export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRApproval | WorkflowIRMessaging | WorkflowIRDecision | WorkflowIRSpawn | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
 
 export interface WorkflowIR extends WorkflowIRAnnotations {
     irVersion: typeof WORKFLOW_IR_VERSION;
@@ -889,10 +912,17 @@ function senderField(value: unknown, path: string, diagnostics: Diagnostics, fie
     return typeof bindingValue(sessionId, path, diagnostics) === "string" ? { sessionId } : null;
 }
 
-/** A messaging state's contract: a declared root contract name, or null with a diagnostic. */
-function contractField(value: unknown, path: string, contracts: ReadonlySet<string>, diagnostics: Diagnostics): string | null {
+/** A messaging state's contract: a declared root contract name (or built-in WorkflowEnded@1 on receive), or null with a diagnostic. */
+function contractField(value: unknown, path: string, contracts: ReadonlySet<string>, diagnostics: Diagnostics,
+    options: { allowBuiltInEnded?: boolean } = {}): string | null {
     if (typeof value !== "string" || !CONTRACT_NAME_PATTERN.test(value)) {
         diagnostics.error("WORKFLOW_FIELD_INVALID", path, "contract must name a root contract, such as BuildEvent@1.");
+        return null;
+    }
+    if (value === WORKFLOW_ENDED_CONTRACT) {
+        if (options.allowBuiltInEnded) return value;
+        diagnostics.error("WORKFLOW_CONTRACT_RESERVED", path,
+            `contract '${WORKFLOW_ENDED_CONTRACT}' is sent by the runtime when a child Workflow ends; a definition cannot send it.`);
         return null;
     }
     if (!contracts.has(value)) {
@@ -1022,7 +1052,7 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
         return null;
     }
     checkKeys(raw, ["type", "description", "mode", "contract", "from", "correlate", "wait", "input", "transition"], path, diagnostics);
-    const contract = contractField(raw.contract, `${path}.contract`, contracts, diagnostics);
+    const contract = contractField(raw.contract, `${path}.contract`, contracts, diagnostics, { allowBuiltInEnded: true });
     const from = raw.from === undefined ? null : senderField(raw.from, `${path}.from`, diagnostics);
     let correlate: JsonValue = null;
     if (raw.correlate !== undefined) {
@@ -1242,6 +1272,89 @@ function compileDecision(id: string, raw: Record<string, unknown>, nodeIds: Read
     };
 }
 
+const SPAWN_DEFINITION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$/;
+
+function compileSpawnAgentModels(value: unknown, path: string, diagnostics: Diagnostics)
+    : Record<string, { model: string; reasoningEffort?: string; contextTier?: string }> | undefined | null {
+    if (value === undefined) return undefined;
+    try {
+        const parsed = parseWorkflowAgentModels(value);
+        if (!parsed) return undefined;
+        for (const [stateId, choice] of Object.entries(parsed)) {
+            if (choice.model.includes("${")) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.${stateId}.model`, "model must be a literal provider:model string.");
+                return null;
+            }
+        }
+        return parsed;
+    } catch (error) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", path, error instanceof Error ? error.message : String(error));
+        return null;
+    }
+}
+
+function isStoredSpawnAgentModels(value: unknown): value is Record<string, { model: string; reasoningEffort?: string; contextTier?: string }> {
+    try {
+        return parseWorkflowAgentModels(value) !== null;
+    } catch {
+        return false;
+    }
+}
+
+function compileSpawn(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, hasCatchAll: boolean,
+    diagnostics: Diagnostics): WorkflowIRSpawn | null {
+    const path = `states.${id}`;
+    checkKeys(raw, ["type", "description", "definition", "inputs", "revision", "agentModels", "transition"], path, diagnostics);
+    let definition: string | null = null;
+    if (typeof raw.definition !== "string" || !raw.definition.trim()) {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.definition`, "a spawn state needs a literal definition name (or <package>/<name>).");
+    } else if (raw.definition.includes("${")) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.definition`, "definition must be a literal definition name, never a binding.");
+    } else if (!SPAWN_DEFINITION_PATTERN.test(raw.definition)) {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.definition`,
+            "definition must be a literal definition name (letters, digits, dot, dash, underscore) or <package>/<name>.");
+    } else {
+        definition = raw.definition;
+    }
+    const hasInputs = Object.hasOwn(raw, "inputs");
+    let inputs: JsonValue = null;
+    if (hasInputs) {
+        if (!isJsonObject(raw.inputs)) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.inputs`, "inputs must be an object mapping input names to values or bindings.");
+        } else {
+            inputs = bindingValue(raw.inputs, `${path}.inputs`, diagnostics);
+        }
+    }
+    let revision: number | undefined;
+    let revisionValid = true;
+    if (raw.revision !== undefined) {
+        if (typeof raw.revision !== "number" || !Number.isSafeInteger(raw.revision) || raw.revision < 1) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.revision`, "revision must be a literal positive integer.");
+            revisionValid = false;
+        } else revision = raw.revision;
+    }
+    const agentModels = compileSpawnAgentModels(raw.agentModels, `${path}.agentModels`, diagnostics);
+    const next = compileRoutes(raw, path, "a spawn", nodeIds, diagnostics);
+    for (const label of Object.keys(next)) {
+        if (label !== SPAWN_STARTED && !isRuntimeRoute(label)) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`,
+                `a spawn has one outcome, '${SPAWN_STARTED}'; its other routes must be runtime error codes or '${FAILURE_ROUTE}'.`);
+        }
+    }
+    if (isJsonObject(raw.transition) && isJsonObject(raw.transition.next) && !Object.hasOwn(next, SPAWN_STARTED)) {
+        diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `a spawn needs a '${SPAWN_STARTED}' route.`);
+    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    if (definition === null || !revisionValid || agentModels === null) return null;
+    return {
+        id, type: "spawn", description: optionalText(raw.description, `${path}.description`, diagnostics),
+        definition, hasInputs, inputs,
+        ...(revision !== undefined ? { revision } : {}),
+        ...(agentModels !== undefined ? { agentModels } : {}),
+        next,
+    };
+}
+
 /** An agent definition's name, or its package's: a letter or digit, then up to 127 letters, digits, '_', '.' or '-'. */
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
@@ -1419,6 +1532,10 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
         add("forEach", node.forEach);
         add("timeoutSeconds", node.timeoutSeconds);
         for (const branch of node.branches ?? []) if (branch.hasInput) add(`branches.${branch.name}.input`, branch.input);
+        return templates;
+    }
+    if (node.type === "spawn") {
+        if (node.hasInputs) add("inputs", node.inputs);
         return templates;
     }
     if (node.hasInput) add("input", node.input);
@@ -1792,6 +1909,11 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
                 diagnostics.error("WORKFLOW_CONTRACT_NAME", path, "contract names are a name, '@' and a version number, such as BuildEvent@1.");
                 continue;
             }
+            if (contractName === WORKFLOW_ENDED_CONTRACT) {
+                diagnostics.error("WORKFLOW_CONTRACT_RESERVED", path,
+                    `contract '${WORKFLOW_ENDED_CONTRACT}' is built in and sent by the runtime; do not declare it under contracts.`);
+                continue;
+            }
             declaredContracts.add(contractName);
             if (!isJsonObject(definition) || !Object.hasOwn(definition, "schema")) {
                 diagnostics.error("WORKFLOW_FIELD_INVALID", path, "a contract must be { schema: <JSON Schema> }.");
@@ -1895,6 +2017,9 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
             if (node) nodes[id] = node;
         } else if (type === "decision") {
             const node = compileDecision(id, stateFields, nodeIds, schemas, catchAllApplies, into);
+            if (node) nodes[id] = node;
+        } else if (type === "spawn") {
+            const node = compileSpawn(id, stateFields, nodeIds, catchAllApplies, into);
             if (node) nodes[id] = node;
         } else if (type === "terminal") {
             const node = compileTerminal(id, stateFields, schemas, into);
@@ -2563,7 +2688,8 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             const waitSeconds = node.waitSeconds;
             const validFrom = from === null || (isJsonObject(from) && Object.keys(from).length === 1
                 && (from.parent === true || typeof from.sessionId === "string"));
-            need(node.mode === "receive" && typeof node.contract === "string" && Object.hasOwn(contracts, node.contract)
+            need(node.mode === "receive" && typeof node.contract === "string"
+                && (Object.hasOwn(contracts, node.contract) || node.contract === WORKFLOW_ENDED_CONTRACT)
                 && validFrom && Object.hasOwn(node, "correlate")
                 && (waitSeconds === null || typeof waitSeconds === "number" || typeof waitSeconds === "string")
                 && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && stringMap(node.next),
@@ -2596,6 +2722,27 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 inputSchema: node.inputSchema, question: copyDecisionQuestion(question),
                 ...(rawConfidence !== undefined ? { confidence: { minimumProbability: (rawConfidence as { minimumProbability: number }).minimumProbability } } : {}),
                 timeoutSeconds: node.timeoutSeconds, next: node.next,
+            };
+        } else if (node.type === "spawn") {
+            const allowed = new Set(["id", "type", "description", "definition", "hasInputs", "inputs", "revision", "agentModels",
+                "next", "notes", "routeNotes", "carry"]);
+            const validRevision = node.revision === undefined || (typeof node.revision === "number" && Number.isSafeInteger(node.revision) && node.revision >= 1);
+            const validModels = node.agentModels === undefined || isStoredSpawnAgentModels(node.agentModels);
+            need(Object.keys(node).every(key => allowed.has(key))
+                && typeof node.definition === "string" && SPAWN_DEFINITION_PATTERN.test(node.definition)
+                && typeof node.hasInputs === "boolean" && Object.hasOwn(node, "inputs")
+                && (node.hasInputs ? isJsonObject(node.inputs) : node.inputs === null)
+                && validRevision && validModels
+                && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(storedNodes, target))
+                && Object.hasOwn(node.next, SPAWN_STARTED)
+                && Object.keys(node.next).every(label => label === SPAWN_STARTED || isRuntimeRoute(label)),
+                `stored IR spawn state ${id} is invalid`);
+            nodes[id] = {
+                id, type: "spawn", description: node.description, definition: node.definition,
+                hasInputs: node.hasInputs, inputs: node.inputs,
+                ...(node.revision !== undefined ? { revision: node.revision as number } : {}),
+                ...(node.agentModels !== undefined ? { agentModels: node.agentModels as WorkflowIRSpawn["agentModels"] } : {}),
+                next: node.next,
             };
         } else if (node.type === "agent") {
             const invoke = node.invoke;

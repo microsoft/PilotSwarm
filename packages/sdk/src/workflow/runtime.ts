@@ -6,6 +6,12 @@ import {
     WORKFLOW_EFFECT_1_1_0_NAME, WORKFLOW_EFFECT_1_1_0_VERSION, workflowEffect_1_1_0,
 } from "./effect_1_1_0/index.js";
 import {
+    WORKFLOW_EFFECT_1_2_0_NAME, WORKFLOW_EFFECT_1_2_0_VERSION, workflowEffect_1_2_0,
+} from "./effect_1_2_0/index.js";
+import type { WorkflowHost } from "./service.js";
+import { resolveEffectiveSpawnOwner } from "../cms.js";
+import { readWorkflowWorkspace } from "../workspace.js";
+import {
     BRANCH_ROUTE,
     CATCH_ALL_ROUTE,
     type ControllerPlan,
@@ -18,6 +24,7 @@ import {
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
     WORKFLOW_DECISION_EFFECT_VERSION,
+    WORKFLOW_SPAWN_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
     WORKFLOW_REQUEST_NAME,
     WORKFLOW_REQUEST_VERSION,
@@ -66,7 +73,7 @@ import {
     RECEIVE_RECEIVED,
     REQUEST_DECLINED,
     REQUEST_RESPONDED,
-    WAIT_ELAPSED,
+    SPAWN_STARTED, WAIT_ELAPSED, WORKFLOW_ENDED_CONTRACT,
     WAIT_MAX_SECONDS,
     STATE_TIMEOUT_MAX_SECONDS,
     workflowClockWaitWords,
@@ -93,7 +100,7 @@ import {
     previewJson,
     sha256Hex,
     WorkflowJsonError,
-    type JsonValue,
+    utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, type JsonObject, type JsonValue,
 } from "./json.js";
 import { schemaSetFor, type SchemaProblem } from "./schema.js";
 import {
@@ -120,7 +127,7 @@ import { workflowAgentChildSessionId, workflowAgentSessionId, workflowAgentSessi
 import { readStoredAgentModels, readStoredDecisionProviderBindings, type WorkflowAgentModelChoice } from "./agent-models.js";
 import {
     ACTIVE_RUN_STATUSES,
-    nodeExecutionIdFor,
+    nodeExecutionIdFor, typedInputRequestSha256, WORKFLOW_INBOX_LIMITS, WORKFLOW_INPUT_TTL_SECONDS,
     WorkflowStoreError,
     type NodeResultInput,
     type ParallelSettled,
@@ -562,7 +569,9 @@ export interface WorkflowRuntimeDeps {
      * turn stopped when the visit is decided (session: continue; formal Q2); without it, the turn runs on and only binding
      * by node execution id keeps its late answer from deciding the next visit.
      */
-    catalog: Pick<SessionCatalog, "getSession" | "getSessionEvents"> & Partial<Pick<SessionCatalog, "turnControlAdd">>;
+    catalog: Pick<SessionCatalog, "getSession" | "getSessionEvents"> & Partial<Pick<SessionCatalog, "turnControlAdd" | "getSessionCreationConfig" | "createWorkflowSession" | "softDeleteSession">>;
+    /** Optional WorkflowHost builder for spawn states; defaults to one built from store, catalog, and the activity client. */
+    spawnChildHost?: (client: NonNullable<ReturnType<ActivityContext["getClient"]>>) => WorkflowHost | Promise<WorkflowHost>;
     /**
      * Whether this worker runs workflow scripts (PILOTSWARM_WORKFLOW_SCRIPTS). Only a script state's activity reads it: the
      * Workflow engine itself (waits, messages, requests, agents, parallel states) is always on (PRR-1).
@@ -1016,6 +1025,13 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
             ...(node.confidence !== undefined ? { confidence: { ...node.confidence } } : {}), next: node.next,
         };
     }
+    if (node.type === "spawn") {
+        return {
+            id: node.id, type: "spawn", definition: node.definition,
+            ...(node.revision !== undefined ? { revision: node.revision } : {}),
+            outcomes: [SPAWN_STARTED], next: node.next,
+        };
+    }
     if (node.type === "parallel") {
         // Its join of the first k ({ first: k }) and its own time limit, only when it has them.
         // Named branches show their names, initials and states (in order) instead of a forEach.
@@ -1248,9 +1264,84 @@ export async function endWorkflowRunAgents(store: WorkflowStore, client: Workflo
  * visits (endWorkflowContinuedSessions; owner decision agent-node-continue-20261106). A run with no `session: continue`
  * state finds no such session there. `stopTurn` stops the running turn of a visit whose end is sent now (review G5).
  */
+/**
+ * End active child Workflows owned by a parent Workflow whose run ended.
+ * When the parent session was deleted, delete its child Workflows; otherwise cancel active child runs.
+ */
+export async function endWorkflowRunChildWorkflows(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string,
+    options: { deleteSession?: (sessionId: string) => Promise<void> } = {}): Promise<void> {
+    const run = await store.readRun(runId);
+    if (!run) return;
+    const link = await store.readSessionLink(run.workflowSessionId);
+    const parentDeleted = link?.deleted === true;
+    const children = await store.listChildWorkflows(run.workflowSessionId);
+    const bareClaims = parentDeleted ? await store.listBareChildWorkflowClaims(run.workflowSessionId) : [];
+    if (children.length === 0 && bareClaims.length === 0) return;
+    const errors: unknown[] = [];
+    if (parentDeleted && options.deleteSession) {
+        for (const bareId of bareClaims) {
+            try {
+                await options.deleteSession(bareId);
+            } catch (error) {
+                errors.push(error);
+            }
+        }
+    }
+    for (const child of children) {
+        try {
+            if (parentDeleted) {
+                if (!child.deletedAt) {
+                    const opId = `parent-delete:${run.runId}`;
+                    try {
+                        await store.recordSessionCommand({
+                            workflowSessionId: child.workflowSessionId,
+                            operationId: opId,
+                            requestSha256: sha256Hex(`${opId}:${child.workflowSessionId}`),
+                            command: "delete",
+                            reason: "Parent workflow was deleted.",
+                            requestedBy: run.workflowSessionId,
+                            expectedParentSessionId: run.workflowSessionId,
+                        });
+                    } catch (error) {
+                        if (!(error instanceof WorkflowStoreError && error.code === "WORKFLOW_DELETED")) throw error;
+                    }
+                    if (options.deleteSession) await options.deleteSession(child.workflowSessionId);
+                }
+                if (child.controllerInstanceId) {
+                    await client.enqueueEvent(child.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
+                        JSON.stringify({ type: "workflow-wake", runId: child.runId, reason: "delete" })).catch(() => {});
+                }
+            } else if (child.runId && child.status && ACTIVE_RUN_STATUSES.includes(child.status)) {
+                const opId = `parent-end:${run.runId}`;
+                try {
+                    await store.recordSessionCommand({
+                        workflowSessionId: child.workflowSessionId,
+                        operationId: opId,
+                        requestSha256: sha256Hex(`${opId}:${child.workflowSessionId}`),
+                        command: "cancel",
+                        reason: `Parent workflow run ${run.runId} ended (${run.status}).`,
+                        requestedBy: run.workflowSessionId,
+                        expectedParentSessionId: run.workflowSessionId,
+                    });
+                } catch (error) {
+                    if (!(error instanceof WorkflowStoreError && error.code === "WORKFLOW_DELETED")) throw error;
+                }
+                if (child.controllerInstanceId) {
+                    await client.enqueueEvent(child.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
+                        JSON.stringify({ type: "workflow-wake", runId: child.runId, reason: "cancel" })).catch(() => {});
+                }
+            }
+        } catch (error) {
+            errors.push(error);
+        }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new Error(errors.map(error => workflowErrorMessage(error)).join(" "));
+}
+
 export async function endWorkflowRunAgentSessions(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string,
-    options: { stopTurn?: WorkflowAgentTurnStop } = {}): Promise<void> {
-    // Review G3: the continued sessions are looked at even when a visit's own child could not be ended; then the call fails.
+    options: { stopTurn?: WorkflowAgentTurnStop; deleteSession?: (sessionId: string) => Promise<void> } = {}): Promise<void> {
+    // Review G3: the continued sessions and child Workflows are looked at even when a visit's own child could not be ended; then the call fails.
     const errors: unknown[] = [];
     try {
         await endWorkflowRunAgents(store, client, runId, options);
@@ -1259,6 +1350,11 @@ export async function endWorkflowRunAgentSessions(store: WorkflowStore, client: 
     }
     try {
         await endWorkflowContinuedSessions(store, client, runId);
+    } catch (error) {
+        errors.push(error);
+    }
+    try {
+        await endWorkflowRunChildWorkflows(store, client, runId, options);
     } catch (error) {
         errors.push(error);
     }
@@ -1561,6 +1657,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     }
     runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_1_0_0_NAME, WORKFLOW_EFFECT_1_0_0_VERSION, workflowEffect_1_0_0);
     runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_1_1_0_NAME, WORKFLOW_EFFECT_1_1_0_VERSION, workflowEffect_1_1_0);
+    runtime.registerOrchestrationVersioned(WORKFLOW_EFFECT_1_2_0_NAME, WORKFLOW_EFFECT_1_2_0_VERSION, workflowEffect_1_2_0);
     runtime.registerOrchestrationVersioned(WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION, workflowNotify);
     runtime.registerOrchestrationVersioned(WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION, workflowSend);
     runtime.registerOrchestrationVersioned(WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION, workflowRequestDelivery);
@@ -1607,7 +1704,10 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
     const endAgentChild = (client: WorkflowAgentEndClient, nodeExecutionId: string, options: { afterSpawn?: boolean } = {}) =>
         endWorkflowAgentChild(store, client, nodeExecutionId, { ...options, ...(stopAgentSessionTurn ? { stopTurn: stopAgentSessionTurn } : {}) });
     const endRunAgents = (client: WorkflowAgentEndClient, runId: string): Promise<void> =>
-        endWorkflowRunAgentSessions(store, client, runId, stopAgentSessionTurn ? { stopTurn: stopAgentSessionTurn } : {});
+        endWorkflowRunAgentSessions(store, client, runId, {
+            ...(stopAgentSessionTurn ? { stopTurn: stopAgentSessionTurn } : {}),
+            deleteSession: deps.deleteSession,
+        });
     /**
      * A later visit of a state that continues its session (session: continue; owner decision agent-node-continue-20261106): null
      * for the state's first visit in the run; for a later one, its number among the state's visits, the previous visit's
@@ -1884,6 +1984,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         if (run.mode !== "live" || run.status !== "cancelled" || !cancelledBeforeBegin(run)) return false;
         const definition = await store.readDefinition(run.workflowSessionId);
         if (!definition?.parentSessionId) return false;
+        const parentLink = await store.readSessionLink(definition.parentSessionId);
+        if (parentLink?.sessionKind === "workflow") return true;
         return cancelRequester(run) !== definition.parentSessionId;
     };
     /** The KV a node execution was admitted with (an execution from before KV revisions sees an empty map). */
@@ -2078,7 +2180,18 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         immediate = runtimeError("invalid_input", error.message);
                     }
                 }
-                if (!immediate && node.type !== "terminal" && node.type !== "parallel" && node.hasInput) {
+                if (!immediate && node.type === "spawn") {
+                    if (node.hasInputs) {
+                        try {
+                            const evaluated = evaluateBindingTemplate(node.inputs, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.inputs`);
+                            if (!isJsonObject(evaluated)) immediate = runtimeError("invalid_input", "spawn inputs must evaluate to a JSON object.");
+                            else value = evaluated;
+                        } catch (error) {
+                            if (!(error instanceof WorkflowBindingError)) throw error;
+                            immediate = runtimeError("invalid_input", error.message);
+                        }
+                    } else value = {};
+                } else if (!immediate && node.type !== "terminal" && node.type !== "parallel" && node.type !== "spawn" && node.hasInput) {
                     try { value = evaluateBindingTemplate(node.input, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.input`); }
                     catch (error) {
                         if (!(error instanceof WorkflowBindingError)) throw error;
@@ -2221,7 +2334,19 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // input, the message against its contract, the deadline. In agent mode real an agent state is not intercepted: its
             // child is created as a live run's is, its deadline runs on the virtual clock, and its child's framework tool calls
             // are intercepted in its turns instead (test-agent-tools.ts).
-            let intercept: { operation: "decision" | "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null = null;
+            let intercept: { operation: "decision" | "agent" | "send" | "request" | "approval" | "spawn"; argumentsText: string; responseSchema: string | null } | null = null;
+            if (node.type === "spawn" && current.mode === "test" && !immediate) {
+                intercept = {
+                    operation: "spawn",
+                    argumentsText: canonicalJson({
+                        definition: node.definition,
+                        ...(node.revision !== undefined ? { revision: node.revision } : {}),
+                        inputs: value,
+                        ...(node.agentModels !== undefined ? { agentModels: node.agentModels } : {}),
+                    }),
+                    responseSchema: null,
+                };
+            }
             if (node.type === "decision" && current.mode === "test" && !immediate) {
                 const binding = decisionBindingFor(current, node.id, false);
                 if ("error" in binding) immediate = runtimeError("invalid_input", binding.error);
@@ -2416,7 +2541,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     if (stored.node.state === "completed") rows.push(stored.node);
                     continue;
                 }
-                if (executed.nodeType !== "script" && executed.nodeType !== "decision") continue;
+                if (executed.nodeType !== "script" && executed.nodeType !== "decision" && executed.nodeType !== "spawn") continue;
                 const effect = await client.getStatus(workflowEffectInstanceId(nodeExecutionId));
                 if (!TERMINAL_ORCHESTRATION_STATUSES.includes(effect.status)) continue;
                 const run = await runOf(runId);
@@ -2708,7 +2833,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         };
     };
 
-    register("notifyParent", async (_actx, rawInput) => {
+    register("notifyParent", async (actx, rawInput) => {
         // The budget of the attempt's voluntary waits (27 s; an attempt has no timeout of its own) bounds the wait for
         // deliveries and the wait for the lock together; the connection, the SQL calls and the send are not timed (review
         // DX-5).
@@ -2718,11 +2843,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const requestedBy = input.requestedBy === undefined ? null : textOrNull(input.requestedBy, "requestedBy");
         const definition = await store.readDefinition(run.workflowSessionId);
         if (!definition?.parentSessionId || run.mode !== "live") return null;
-        // The command's requester; else the requester the run's end records (a cancel, before it began or not, or a stop),
-        // so a notifier a recover started does not tell the parent of its own command either (RT-4).
-        const endedBy = requestedBy ?? (cancelledBeforeBegin(run) ? cancelRequester(run) : workflowRunEndRequester(run));
-        if (endedBy && endedBy === definition.parentSessionId) return null;
         const parentSessionId = definition.parentSessionId;
+        const parentSession = await deps.catalog.getSession(parentSessionId);
+        const parentIsWorkflow = parentSession?.sessionKind === "workflow";
+        // For a chat parent, do not echo back a cancel/stop the parent itself requested.
+        // For a Workflow parent, always deliver WorkflowEnded@1 while the spawning run is active.
+        const endedBy = requestedBy ?? (cancelledBeforeBegin(run) ? cancelRequester(run) : workflowRunEndRequester(run));
+        if (!parentIsWorkflow && endedBy && endedBy === parentSessionId) return null;
         const notifyParent = definition.notifyParent;
         // Told or recorded already, at any time in the workflow's history (RT-4: not only its first 50 notices).
         if (await store.runNoticeRecorded(run.workflowSessionId, run.runId)) return null;
@@ -2778,6 +2905,75 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 return null;
             };
             if (!notifyParent) return await skipped("notifications are off");
+            if (parentIsWorkflow) {
+                const spawnExec = run.startOperationId.startsWith("spawn:")
+                    ? await store.readNodeExecution(run.startOperationId.slice("spawn:".length))
+                    : null;
+                const parentRun = spawnExec ? await store.readRun(spawnExec.runId) : null;
+                if (!parentRun || parentRun.workflowSessionId !== parentSessionId || !ACTIVE_RUN_STATUSES.includes(parentRun.status)) {
+                    return await skipped("parent is gone");
+                }
+                const sessionDef = definition.sessionDefinitionId
+                    ? await store.sessionDefinitions.readDefinition(definition.sessionDefinitionId)
+                    : null;
+                const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
+                const defName = sessionDef?.name ?? (label?.name ? jsonbSafeText(label.name, 200) : "");
+                const spawnedBy = spawnExec ? { stateId: spawnExec.nodeId, visit: spawnExec.ordinal } : null;
+                const errObj = isJsonObject(run.terminalError)
+                    ? { code: typeof run.terminalError.code === "string" ? run.terminalError.code : "failed",
+                        message: typeof run.terminalError.message === "string" ? run.terminalError.message : "" }
+                    : null;
+                const basePayload: Record<string, JsonValue> = {
+                    workflowId: run.workflowSessionId,
+                    definition: defName,
+                    revision: definition.sessionRevision ?? run.revision,
+                    spawnedBy,
+                    status: run.status,
+                    outcome: run.terminalOutcome,
+                    stateId: run.terminalNodeId,
+                    outputTruncated: false,
+                    error: errObj,
+                };
+                // Enforce the 16 KB notice output budget; omit output and fall back to metadata-only if larger or unserializable.
+                const WORKFLOW_ENDED_NOTICE_MAX_BYTES = 16 * 1024;
+                let payloadText: string;
+                try {
+                    const candidate = canonicalJson({ ...basePayload, output: run.terminalOutput });
+                    payloadText = utf8ByteLength(candidate) <= WORKFLOW_ENDED_NOTICE_MAX_BYTES
+                        ? candidate
+                        : canonicalJson({ ...basePayload, outputTruncated: true });
+                } catch {
+                    payloadText = canonicalJson({ ...basePayload, outputTruncated: true });
+                }
+                const operationId = `ended:${run.runId}`;
+                const requestSha256 = typedInputRequestSha256({
+                    runId: parentRun.runId, contract: WORKFLOW_ENDED_CONTRACT, correlationText: "{}",
+                    payloadText, ttlSeconds: WORKFLOW_INPUT_TTL_SECONDS,
+                });
+                try {
+                    const accepted = await store.acceptInput({
+                        workflowSessionId: parentSessionId, runId: parentRun.runId, messageId: operationId,
+                        senderSessionId: run.workflowSessionId, operationId, requestSha256,
+                        contract: WORKFLOW_ENDED_CONTRACT, correlationText: "{}", payloadText,
+                        ttlSeconds: WORKFLOW_INPUT_TTL_SECONDS,
+                        limits: WORKFLOW_INBOX_LIMITS,
+                        bypassInboxLimits: true,
+                    });
+                    if (accepted.receipt.claimedBy && ACTIVE_RUN_STATUSES.includes(accepted.run.status)) {
+                        const client = actx.getClient();
+                        if (client) {
+                            await client.enqueueEvent(accepted.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
+                                JSON.stringify({ type: "workflow-wake", runId: accepted.run.runId, reason: "input" }));
+                        }
+                    }
+                    return await told();
+                } catch (error) {
+                    if (error instanceof WorkflowStoreError && (error.code === "RUN_ENDED" || error.code === "WORKFLOW_DELETED")) {
+                        return await skipped("parent is gone");
+                    }
+                    throw error;
+                }
+            }
             if (!await deps.authorizeParentNotification(run.workflowSessionId, parentSessionId)) return await skipped("parent is gone");
             const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
             // A failed run says why (batch 7, s-4): the failing state, the runtime error's code and message, and its first problems.
@@ -3089,8 +3285,25 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const callTool = async (call: ScriptToolCall): Promise<unknown> => {
             // G3: a test run's call is answered by its fixture even where the grant lacks its tool (or there is no grant).
             if (testFixtures !== null) return interceptedToolCall(binding, call, testFixtures);
-            if (!binding) throw new Error(NO_TOOL_GRANT_MESSAGE);
+            if (!binding && call.name !== "child_workflows") throw new Error(NO_TOOL_GRANT_MESSAGE);
             if (scriptDone || tools.stop.signal.aborted) throw new Error("The script ended before its tool call ran.");
+            if (call.name === "child_workflows") {
+                const client = actx.getClient();
+                if (!client) throw new Error("child_workflows requires the durable client.");
+                const { childWorkflowsFromTool } = await import("./tools.js");
+                const raw = await childWorkflowsFromTool(isJsonObject(call.arguments) ? call.arguments : {}, {
+                    callerWorkflowSessionId: run.workflowSessionId,
+                    host: { store, catalog: deps.catalog as WorkflowHost["catalog"], duroxideClient: client },
+                });
+                const parsed = JSON.parse(raw);
+                if (isJsonObject(parsed) && parsed.ok === false && isJsonObject(parsed.error)) {
+                    const code = typeof parsed.error.code === "string" ? parsed.error.code : "WORKFLOW_TOOL_ERROR";
+                    const message = typeof parsed.error.message === "string" ? parsed.error.message : "child_workflows failed";
+                    throw Object.assign(new Error(message), { code });
+                }
+                return parsed;
+            }
+            if (!binding) throw new Error(NO_TOOL_GRANT_MESSAGE);
             tools.opening ??= deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal, { signal: tools.stop.signal })
                 .catch(error => {
                     if (error instanceof WorkflowPackageCheckError) tools.opening = null;
@@ -3171,6 +3384,106 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         // Not started: the node was decided, or its run or session ended, before entry.
         if (ran.resultSource === "not_started" || decidedElsewhere) return { kind: "completed" };
         return { kind: "result", result: scriptResult(node, run, ir, ran) };
+    });
+
+    register("spawnChild", async (actx, rawInput) => {
+        const input = parseEffectInput(rawInput);
+        const executed = await store.readNodeExecution(input.nodeExecutionId);
+        if (!executed || executed.runId !== input.runId) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${input.nodeExecutionId} is missing.`);
+        if (executed.state === "completed") return { kind: "completed" };
+        const run = await runOf(executed.runId);
+        const ir = await irOf(run);
+        const node = nodeOf(ir, executed.nodeId);
+        if (node.type !== "spawn") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a spawn state.`);
+        if (run.mode === "test") {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Spawn state ${executed.nodeExecutionId} of a test run must be intercepted.`);
+        }
+        if (actx.isCancelled()) return { kind: "completed" };
+
+        const client = actx.getClient();
+        if (!client) throw new Error("Workflow spawnChild needs the durable client.");
+
+        // Resolve the definition owner (nearest non-Workflow ancestor, or sessionPin.ownerSessionId in creation config).
+        const creation = await deps.catalog.getSessionCreationConfig?.(run.workflowSessionId) ?? null;
+        const marker = isJsonObject(creation) && isJsonObject((creation as JsonObject).workflow) ? (creation as JsonObject).workflow as JsonObject : null;
+        const pin = marker && isJsonObject(marker.sessionPin) ? marker.sessionPin as JsonObject : null;
+        let definitionOwnerId: string | null = typeof pin?.ownerSessionId === "string" ? pin.ownerSessionId : null;
+        if (!definitionOwnerId) {
+            let cursor: string | null = run.workflowSessionId;
+            const seen = new Set<string>();
+            while (cursor && !seen.has(cursor)) {
+                seen.add(cursor);
+                const row = await deps.catalog.getSession(cursor);
+                if (!row) break;
+                if (row.sessionKind !== "workflow") { definitionOwnerId = cursor; break; }
+                cursor = row.parentSessionId ?? null;
+            }
+        }
+        if (!definitionOwnerId) {
+            return { kind: "result", result: runtimeError("unavailable", `The definition owner of Workflow ${run.workflowSessionId} could not be resolved.`) };
+        }
+
+        // Pass binding as a function so startToolBinding refuses with WORKFLOW_PARENT_CONTEXT_UNAVAILABLE on failure.
+        const bindingProvider = async (): Promise<WorkflowToolBinding | null> => {
+            const parentBinding = await deps.resolveToolBinding(run.workflowSessionId);
+            if (!parentBinding) return null;
+            const { agentStepBindings: _drop, ...baseBinding } = parentBinding;
+            return { ...baseBinding, parentSessionId: run.workflowSessionId };
+        };
+        const workspace = readWorkflowWorkspace(creation);
+        const owner = await resolveEffectiveSpawnOwner(id => deps.catalog.getSession(id), run.workflowSessionId);
+        const spawnHost = deps.spawnChildHost ? await deps.spawnChildHost(client) : null;
+        if (!spawnHost) {
+            return { kind: "result", result: runtimeError("unavailable", "This Workflow worker has no spawn host configured.") };
+        }
+
+        const { startSessionWorkflowDefinition } = await import("./session-definitions.js");
+        try {
+            const started = await startSessionWorkflowDefinition(spawnHost, {
+                ownerSessionId: definitionOwnerId,
+                parentSessionId: run.workflowSessionId,
+                spawn: { nodeExecutionId: executed.nodeExecutionId },
+                definition: { name: node.definition },
+                ...(node.revision !== undefined ? { revision: node.revision } : {}),
+                inputs: isJsonObject(executed.input) ? executed.input : {},
+                ...(node.agentModels ? { agentModels: node.agentModels } : {}),
+                notifyParent: true,
+                actor: { kind: "system", name: "workflow-spawn" },
+                operationId: executed.nodeExecutionId,
+                ...(owner ? { owner } : {}),
+                binding: bindingProvider,
+                ...(workspace ? {
+                    workspace: workspace.workspace,
+                    workspaceDefaults: workspace.defaults,
+                    ...(workspace.workingDirectory ? { workspaceWorkingDirectory: workspace.workingDirectory } : {}),
+                } : {}),
+            });
+            const handle = {
+                workflowId: started.workflowId,
+                runId: started.runId,
+                definition: started.name,
+                revision: started.revision,
+            };
+            return { kind: "result", result: { outcome: SPAWN_STARTED, resultKind: "business", winner: "effect", valueText: canonicalJson(handle) } };
+        } catch (error) {
+            // Only definite WorkflowStoreError refusals become immediate terminal results; transient errors
+            // (including controller dispatch failures after DB commit) rethrow so effect 1.2.0 retries via storeTagged.
+            if (error instanceof WorkflowStoreError) {
+                const code = error.code === "INPUT_INVALID" || error.code === "WORKFLOW_INPUT_INVALID" || error.code === "WORKFLOW_COMMAND_INVALID" || error.code === "AGENT_MODELS_INVALID"
+                    ? "invalid_input"
+                    : error.code === "DEFINITION_NOT_FOUND" || error.code === "DEFINITION_DELETED" || error.code === "DEFINITION_INVALID" || error.code === "REVISION_NOT_FOUND" || error.code === "WORKFLOW_DECISION_MODEL_UNAVAILABLE" || error.code === "WORKFLOW_TOOLS_UNAVAILABLE" || error.code === "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE"
+                        ? "unavailable"
+                        : error.code === "CHILD_LIMIT"
+                            ? "budget_exceeded"
+                            : error.code === "WORKFLOW_NESTING_LIMIT"
+                                ? "forbidden"
+                                : error.code === "RUN_ENDED"
+                                    ? "cancelled"
+                                    : null;
+                if (code !== null) return { kind: "result", result: runtimeError(code, error.message) };
+            }
+            throw error;
+        }
     });
 
     register("recordEffectResult", async (_ctx, rawInput) => {
@@ -3707,7 +4020,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
         const owed: string[] = [];
         for (const item of cancelled) {
-            if (item.nodeType === "script" || item.nodeType === "decision") {
+            if (item.nodeType === "script" || item.nodeType === "decision" || item.nodeType === "spawn") {
                 const instanceId = workflowEffectInstanceId(item.nodeExecutionId);
                 try {
                     const status = await client.getStatus(instanceId);
@@ -3888,6 +4201,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         }
         const operation = node.type === "approval" ? "approval" as const
             : node.type === "decision" ? "decision" as const
+            : node.type === "spawn" ? "spawn" as const
             : node.type === "agent" ? "agent" as const
             : node.type === "messaging" && node.mode !== "receive" ? node.mode : null;
         if (operation === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} has no effect a test run intercepts.`);
@@ -4402,6 +4716,7 @@ export {
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
     WORKFLOW_DECISION_EFFECT_VERSION,
+    WORKFLOW_SPAWN_EFFECT_VERSION,
     WORKFLOW_FINALIZE_DELAYS_MS,
     WORKFLOW_IDLE_WAITS_PER_EXECUTION,
     WORKFLOW_REQUEST_NAME,

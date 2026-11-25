@@ -121,14 +121,14 @@ describe("Workflow controller versions", () => {
                 operationId: `create-${randomUUID()}`, publish: true, start: { inputs: {} } })).receipt;
 
             // A new run: admitted at the newest version, and its controller started there.
-            expect(WORKFLOW_CONTROLLER_VERSION).toBe("1.2.0");
+            expect(WORKFLOW_CONTROLLER_VERSION).toBe("1.3.0");
             const fresh = await create();
             const freshRun = await h.store.readRun(fresh.run.runId);
-            expect(freshRun.controllerVersion).toBe("1.2.0");
-            expect(starts.at(-1)).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.2.0", input: { v: 1, runId: fresh.run.runId } });
+            expect(freshRun.controllerVersion).toBe("1.3.0");
+            expect(starts.at(-1)).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.3.0", input: { v: 1, runId: fresh.run.runId } });
 
             const older = await create();
-            for (const version of ["1.0.0", "1.1.0"]) {
+            for (const version of ["1.0.0", "1.1.0", "1.2.0"]) {
                 await h.q("UPDATE SCHEMA.workflow_runs SET controller_version = $2 WHERE run_id = $1", [older.run.runId, version]);
                 starts.length = 0;
                 await dispatchWorkflowRun(host, older);
@@ -141,7 +141,7 @@ describe("Workflow controller versions", () => {
             let refused = null;
             try { await dispatchWorkflowRun(host, older); } catch (error) { refused = error; }
             expect(refused?.code, refused?.message).toBe("CONTROLLER_UNAVAILABLE");
-            expect(refused.details).toMatchObject({ controllerVersion: "0.9.0", hostControllerVersion: "1.2.0" });
+            expect(refused.details).toMatchObject({ controllerVersion: "0.9.0", hostControllerVersion: "1.3.0" });
             expect(starts).toEqual([]);
         } finally {
             await h.stop();
@@ -202,7 +202,7 @@ describe("Workflow controller versions", () => {
             const first = await startedEvent(r, controllerInstanceId, 1);
             expect(first).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.1.0", input: { v: 1, runId } });
             const second = await startedEvent(r, controllerInstanceId, 2);
-            expect(second).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.2.0", input: { v: 1, runId } });
+            expect(second).toMatchObject({ name: WORKFLOW_CONTROLLER_NAME, version: "1.3.0", input: { v: 1, runId } });
             expect(second.input.state.cursors).toEqual([expect.objectContaining({ nodeId: "pause", pending: hold.nodeExecutionId })]);
             expect((await r.client.waitForOrchestration(controllerInstanceId, testTime.ms(60_000))).status).toBe("Completed");
             expect(await r.h.store.readRun(runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded", controllerVersion: "1.1.0" });

@@ -153,15 +153,15 @@ describe("workflow agent states: lineage and the human-input chokepoints", () =>
             const root = { childSessionId: C, nodeExecutionId, workflowSessionId: W, controllingSessionId: P };
             expect(await h.store.readWorkflowLineage(P)).toEqual({ sessionId: P, level: 0, agentRoot: null, deleted: false });
             expect(await h.store.readWorkflowLineage(W)).toEqual({ sessionId: W, level: 1, agentRoot: null, deleted: false });
-            expect(await h.store.readWorkflowLineage(C)).toEqual({ sessionId: C, level: 2, agentRoot: { ...root, distance: 0 }, deleted: false });
-            expect(await h.store.readWorkflowLineage(G)).toEqual({ sessionId: G, level: 3, agentRoot: { ...root, distance: 1 }, deleted: false });
+            expect(await h.store.readWorkflowLineage(C)).toEqual({ sessionId: C, level: 1, agentRoot: { ...root, distance: 0 }, deleted: false });
+            expect(await h.store.readWorkflowLineage(G)).toEqual({ sessionId: G, level: 2, agentRoot: { ...root, distance: 1 }, deleted: false });
             expect(await h.store.readWorkflowLineage(O)).toEqual({ sessionId: O, level: 1, agentRoot: null, deleted: false });
             expect(await h.store.readWorkflowLineage(randomUUID())).toBeNull();
             // A deleted ancestor still counts: its row is kept.
             await h.catalog.softDeleteSession(C);
             // Review DR2-001: the deleted session's own lineage says so (its turn runs no model); a descendant's does not.
             expect(await h.store.readWorkflowLineage(C)).toMatchObject({ sessionId: C, deleted: true });
-            expect(await h.store.readWorkflowLineage(G)).toEqual({ sessionId: G, level: 3, agentRoot: { ...root, distance: 1 }, deleted: false });
+            expect(await h.store.readWorkflowLineage(G)).toEqual({ sessionId: G, level: 2, agentRoot: { ...root, distance: 1 }, deleted: false });
             // A cycle or a missing parent has no level.
             const X = randomUUID();
             const Y = randomUUID();

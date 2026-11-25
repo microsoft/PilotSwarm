@@ -220,6 +220,7 @@ async function __psPost(route, body) {
     const payload = await response.json();
     if (!payload.ok) {
         const error = new Error(payload.error);
+        if (typeof payload.code === "string") error.code = payload.code;
         if (typeof payload.failureId === "string") __psApply(__psFailureSet, __psFailures, [error, payload.failureId]);
         throw error;
     }
@@ -461,8 +462,9 @@ export async function runScriptNode(request: RunScriptNodeRequest): Promise<RunS
                 if (failureId && typed) {
                     packageFailures.set(failureId, { message: reportedError, details: error.details });
                 }
+                const code = typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : undefined;
                 toolCalls.push({ name, ok: false, durationMs: Date.now() - callStarted, error: reportedError });
-                reply(200, { ok: false, error: reportedError, ...(failureId ? { failureId } : {}) });
+                reply(200, { ok: false, error: reportedError, ...(code ? { code } : {}), ...(failureId ? { failureId } : {}) });
             }
             return;
         }

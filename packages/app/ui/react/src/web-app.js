@@ -5965,8 +5965,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         : 0;
     // The session the list's buttons act on: the highlighted row, which is a selected Workflow row when there is one
     // (Workflow Simplified, S9), else the active session.
-    const highlightedId = viewState.workflowRowId && viewState.sessionsById[viewState.workflowRowId]?.parentSessionId === viewState.activeSessionId
-        ? viewState.workflowRowId : viewState.activeSessionId;
+    const highlightedId = workflowHighlightedSessionId({
+        activeSessionId: viewState.activeSessionId,
+        workflowRowId: viewState.workflowRowId,
+        byId: viewState.sessionsById,
+    });
     const activeSession = highlightedId
         ? viewState.sessionsById[highlightedId] || null
         : null;
@@ -6490,9 +6493,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             // A range holds sessions only: a Terminated row between the two ends is not one (Plan 3, R4).
             const ids = currentRows.filter((r) => !isTerminatedListRow(r)).map((r) => r.sessionId);
             const anchor = current.selectMode ? selectionRangeAnchorRef.current : null;
-            const currentHighlightedId = current.workflowRowId
-                && current.sessionsById[current.workflowRowId]?.parentSessionId === current.activeSessionId
-                ? current.workflowRowId : current.activeSessionId;
+            const currentHighlightedId = workflowHighlightedSessionId({
+                activeSessionId: current.activeSessionId,
+                workflowRowId: current.workflowRowId,
+                byId: current.sessionsById,
+            });
             const fallbackId = current.listDeselected ? null : currentHighlightedId;
             const anchorId = anchor && ids.includes(anchor) ? anchor : fallbackId;
             const startIndex = anchorId ? ids.indexOf(anchorId) : -1;

@@ -20,10 +20,10 @@ import type { WorkflowLineage, WorkflowStore } from "./store.js";
  *   portal stamps every caller as a user, so an API caller cannot claim it)
  *   is not human input; an agent's authority to message a session is decided
  *   where it sends (message_agent's lineage rule).
- * - Its sessions may nest one level deeper than an ordinary lineage: an
- *   agent state's child is at level 2 and may spawn one child, at level 3
- *   (WORKFLOW_MAX_DESCENDANT_LEVEL), counted on the stored lineage, not
- *   on a nesting level a caller passes.
+ * - An agent step is at the level of its Workflow; every other session is one
+ *   level deeper than its parent; no session may be deeper than
+ *   SESSION_MAX_NESTING_LEVEL (2), counted on the stored lineage, not on a
+ *   nesting level a caller passes.
  * - ask_user is refused there: the agent consults its controlling parent
  *   agent or completes its state with needs_input.
  */
@@ -44,8 +44,32 @@ const ACTION_WORDS: Record<WorkflowHumanInputAction, string> = {
     definitions: "save, start, test, copy, update or delete its Workflow Definitions",
 };
 
-/** The deepest level of a workflow agent state's subtree: parent 0, workflow 1, node agent 2 and its child 3 (R16, D02). */
-export const WORKFLOW_MAX_DESCENDANT_LEVEL = 3;
+/** The deepest level any session may be (root is 0; an agent step is at its Workflow's level; every other child is +1). */
+export const SESSION_MAX_NESTING_LEVEL = 2;
+
+export interface SessionLevelNode {
+    sessionId: string;
+    parentSessionId: string | null;
+    isAgentStep?: boolean;
+}
+
+/**
+ * Compute a session's level from its lineage ordered from the session itself up to the root:
+ * root is 0; an agent step is at its Workflow's level (+0); every other child is +1.
+ * Returns null when the lineage is empty, cyclic, or does not reach a root (parentSessionId === null).
+ */
+export function computeSessionLevel(chain: readonly SessionLevelNode[]): number | null {
+    if (chain.length === 0) return null;
+    const seen = new Set<string>();
+    let level = 0;
+    for (const node of chain) {
+        if (seen.has(node.sessionId)) return null;
+        seen.add(node.sessionId);
+        if (node.parentSessionId === null) return level;
+        if (!node.isAgentStep) level += 1;
+    }
+    return null;
+}
 
 /**
  * A1 (Workflow Simplified, spec 14; owner decision E4): sessions inside a Workflow (an agent node's session and its
@@ -102,8 +126,7 @@ export function workflowDefinitionToolsRefusal(): string {
 }
 
 /**
- * The nesting refusal of spawn_agent in words (spec 14: stage 1 keeps WORKFLOW_MAX_DESCENDANT_LEVEL and says each
- * refusal plainly). `level` is the calling session's level; `max` the deepest a session may be.
+ * The nesting refusal of spawn_agent in words. `level` is the calling session's level; `max` the deepest a session may be.
  */
 export function spawnNestingRefusal(level: number, max: number, insideWorkflow: boolean): string {
     return insideWorkflow
@@ -168,23 +191,15 @@ export function workflowInputCapabilities(lineage: WorkflowLineage | null): Work
 }
 
 /**
- * The most a session may nest at, by its lineage: WORKFLOW_MAX_DESCENDANT_LEVEL
- * in an agent state's subtree, otherwise null (the ordinary limit applies).
- */
-export function workflowMaxNestingLevel(lineage: WorkflowLineage | null): number | null {
-    return lineage?.agentRoot ? WORKFLOW_MAX_DESCENDANT_LEVEL : null;
-}
-
-/**
  * The nesting of a child a session spawns (spawn_agent): its level and the
  * most it may be. In a workflow agent state's subtree, with a readable stored
  * lineage, the child's level is the session's stored level plus one and the
- * most is WORKFLOW_MAX_DESCENDANT_LEVEL (a nesting level a caller passes
+ * most is SESSION_MAX_NESTING_LEVEL (a nesting level a caller passes
  * does not count); elsewhere the session's own nesting level plus one and the
  * ordinary limit, exactly as before.
  */
 export function spawnNesting(sessionNestingLevel: number, ordinaryMax: number, lineage: WorkflowLineage | null): { childNestingLevel: number; maxNestingLevel: number } {
-    if (lineage?.agentRoot && lineage.level !== null) return { childNestingLevel: lineage.level + 1, maxNestingLevel: WORKFLOW_MAX_DESCENDANT_LEVEL };
+    if (lineage?.agentRoot && lineage.level !== null) return { childNestingLevel: lineage.level + 1, maxNestingLevel: SESSION_MAX_NESTING_LEVEL };
     return { childNestingLevel: sessionNestingLevel + 1, maxNestingLevel: ordinaryMax };
 }
 

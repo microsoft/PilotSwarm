@@ -63,7 +63,7 @@ test("the registered effect handlers are the frozen 1.0 script and distinct 1.1 
         registerOrchestrationVersioned(name, version, fn) { registered.push({ name, version, fn }); },
     }, { store: {} });
     const effects = registered.filter(entry => entry.name === "workflow-effect");
-    assert.deepEqual(effects.map(entry => entry.version), ["1.0.0", "1.1.0"]);
+    assert.deepEqual(effects.map(entry => entry.version), ["1.0.0", "1.1.0", "1.2.0"]);
     assert.equal(effects[0].fn, workflowEffect_1_0_0);
     assert.equal(effects[1].fn, workflowEffect_1_1_0);
     assert.equal(workflowEffect, workflowEffect_1_0_0);

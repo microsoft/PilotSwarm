@@ -279,12 +279,18 @@ export class SessionDefinitionStore {
     }
 
     /** Lock the session's row (`mode`) and require it live: not deleted, not completed, canceled or failed (Q7). */
-    private async lockLiveOwnerSession(client: PoolClient, ownerSessionId: string, mode: "FOR SHARE" | "FOR NO KEY UPDATE"): Promise<void> {
+    private async lockLiveOwnerSession(client: PoolClient, ownerSessionId: string, mode: "FOR SHARE" | "FOR NO KEY UPDATE",
+        allowWorkflowParent = false): Promise<void> {
         const { rows } = await client.query(`SELECT state, deleted_at, session_kind FROM ${this.t.sessions} WHERE session_id = $1 ${mode}`, [ownerSessionId]);
         const row = rows[0];
         if (!row || row.deleted_at !== null) throw new WorkflowStoreError("SESSION_NOT_FOUND", "This session does not exist or was deleted.");
-        if (row.session_kind === "workflow") throw new WorkflowStoreError("SESSION_NOT_FOUND", "A Workflow does not own Workflow Definitions; its session does.");
+        if (row.session_kind === "workflow" && !allowWorkflowParent) {
+            throw new WorkflowStoreError("SESSION_NOT_FOUND", "A Workflow does not own Workflow Definitions; its session does.");
+        }
         if (OWNER_SESSION_ENDED_STATES.includes(String(row.state))) {
+            if (row.session_kind === "workflow") {
+                throw new WorkflowStoreError("RUN_ENDED", `Parent Workflow ${ownerSessionId} has ended; nothing was started.`, { state: String(row.state) });
+            }
             throw new WorkflowStoreError("SESSION_NOT_LIVE", `This session has ${row.state === "failed" ? "failed" : `been ${row.state === "cancelled" ? "canceled" : row.state}`}: `
                 + "its Workflow Definitions can be read, not changed or started.", { state: String(row.state) });
         }
@@ -488,7 +494,7 @@ export class SessionDefinitionStore {
      * (requireBenchLiveLocked).
      */
     async requireChildBudgetLocked(client: PoolClient, ownerSessionId: string, workflowSessionId: string, max: number): Promise<void> {
-        await this.lockLiveOwnerSession(client, ownerSessionId, "FOR NO KEY UPDATE");
+        await this.lockLiveOwnerSession(client, ownerSessionId, "FOR NO KEY UPDATE", true);
         const { rows } = await client.query(childBudgetCountSql(`"${this.schema}"`), [ownerSessionId, workflowSessionId]);
         const count = Number(rows[0]?.n ?? 0);
         if (count >= max) {

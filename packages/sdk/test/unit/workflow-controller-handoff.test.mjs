@@ -29,7 +29,7 @@ import { replayControllerHistory } from "../helpers/workflow-controller-history.
 
 const recordings = JSON.parse(readFileSync(new URL("../fixtures/workflow-controller-history.json", import.meta.url)));
 const handlerOf = version => WORKFLOW_CONTROLLER_REGISTRY.find(entry => entry.version === version).handler;
-const FROZEN = Object.freeze({ "1.0.0": handlerOf("1.0.0"), "1.1.0": handlerOf("1.1.0") });
+const FROZEN = Object.freeze({ "1.0.0": handlerOf("1.0.0"), "1.1.0": handlerOf("1.1.0"), "1.2.0": handlerOf("1.2.0") });
 const LATEST = handlerOf(WORKFLOW_CONTROLLER_VERSION);
 const copy = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
@@ -38,11 +38,12 @@ const FAR = NOW + 36_000_000;
 const RUN = "handoff-run";
 const START = { v: 1, workflowSessionId: "handoff-workflow", runId: RUN };
 
-test("1.2.0 is the latest controller and distinct from both frozen handlers", () => {
-    assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.2.0");
-    assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0", "1.2.0"]);
+test("1.3.0 is the latest controller and distinct from all frozen handlers (T18)", () => {
+    assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.3.0");
+    assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0", "1.2.0", "1.3.0"]);
     assert.notEqual(LATEST, FROZEN["1.0.0"]);
     assert.notEqual(LATEST, handlerOf("1.1.0"));
+    assert.notEqual(LATEST, handlerOf("1.2.0"));
 });
 
 test("every continue-as-new targets the highest registered version: a run never moves down", () => {

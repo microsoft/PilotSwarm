@@ -167,6 +167,10 @@ The shape is `look -> sleep outcome -> wait -> look`, not an agent's cron.
 Call `load_skill` with name `workflow-long-agent` for a complete bounded
 example, the 30-day wait limit and visit-budget arithmetic.
 
+## Spawning child Workflows
+
+Use `type: spawn` for background children (max 50) without pausing a loop. Collect `WorkflowEnded@1` via `receive` + `wait` + `carry` (inbox acceptance order, not finish order; correlate by `workflowId`; sent only while spawning run is active). Scripts/agent steps use `child_workflows`.
+
 ## Testing these patterns
 
 A test's fixtures (`workflow-tools`) answer by state id, so each branch's

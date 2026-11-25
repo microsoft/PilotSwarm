@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileWorkflow, workflowNearestStateType } from "../../dist/workflow/compiler.js";
 
-const ALL = ["script", "wait", "approval", "messaging", "agent", "decision", "parallel", "terminal"];
+const ALL = ["script", "wait", "approval", "messaging", "agent", "decision", "spawn", "parallel", "terminal"];
 const typeError = type => compileWorkflow(`apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: types, version: "1.0.0" }
@@ -25,11 +25,11 @@ test("an unknown type is refused with the types this compile takes and the one m
         ["end", "terminal"], ["foreach", "parallel"], ["paralel", "parallel"]]) {
         const error = typeError(word);
         assert.equal(error?.code, "WORKFLOW_NODE_TYPE_UNKNOWN", word);
-        assert.equal(error.message, `'${word}' is not a workflow state type. The types are script, wait, approval, messaging, agent, decision, parallel, terminal. `
+        assert.equal(error.message, `'${word}' is not a workflow state type. The types are script, wait, approval, messaging, agent, decision, spawn, parallel, terminal. `
             + `Did you mean ${meant}?`, word);
     }
     // No near type: the list only.
-    assert.equal(typeError("banana").message, "'banana' is not a workflow state type. The types are script, wait, approval, messaging, agent, decision, parallel, terminal.");
+    assert.equal(typeError("banana").message, "'banana' is not a workflow state type. The types are script, wait, approval, messaging, agent, decision, spawn, parallel, terminal.");
     // A type this build knows but does not take keeps its own message.
     assert.equal(typeError("join").code, "WORKFLOW_NODE_TYPE_UNSUPPORTED");
 });

@@ -30,6 +30,11 @@ const frozenVersions = {
         "index.ts": "5ff068778d8cdd127c9d042f8d11b3c3945fde439a00470807887979ffc62f0d",
         "runtime.ts": "df524372a4199401e64d12e4111768e4d5489ce2911cb5ec0e688199b70920ad",
     },
+    // 1f6af957f, with the runtime's version fixed to 1.2.0.
+    "1.2.0": {
+        "index.ts": "4f0541325c29b30df074c7991df617486be9c6eddffc04dda49071122e9a45f8",
+        "runtime.ts": "1d9586a2133907fe8fcc1128b5084571e8a7f6335f76f57d12612dad60326955",
+    },
 };
 const frozenDir = version => `workflow/controller_${version.replaceAll(".", "_")}`;
 
@@ -111,13 +116,13 @@ for (const [version, hashes] of Object.entries(frozenVersions)) {
     });
 }
 
-test("the registry keeps both frozen versions and 1.2.0 is live", () => {
+test("the registry keeps frozen versions 1.0.0, 1.1.0, 1.2.0 and 1.3.0 is live", () => {
     const registry = read("workflow/controller-registry.ts");
     const versions = read("workflow/controller-version.ts");
-    assert.match(versions, /^export const WORKFLOW_CONTROLLER_VERSION = "1\.2\.0";$/m);
-    assert.match(versions, /^export const WORKFLOW_CONTROLLER_VERSIONS = \["1\.0\.0", "1\.1\.0", WORKFLOW_CONTROLLER_VERSION\] as const;$/m);
-    assert.match(registry, /import \{ workflowController_1_2_0 \} from "\.\/controller\/index\.js";/);
-    assert.match(registry, /\{ version: WORKFLOW_CONTROLLER_VERSION, handler: workflowController_1_2_0 \}/);
+    assert.match(versions, /^export const WORKFLOW_CONTROLLER_VERSION = "1\.3\.0";$/m);
+    assert.match(versions, /^export const WORKFLOW_CONTROLLER_VERSIONS = \["1\.0\.0", "1\.1\.0", "1\.2\.0", WORKFLOW_CONTROLLER_VERSION\] as const;$/m);
+    assert.match(registry, /import \{ workflowController_1_3_0 \} from "\.\/controller\/index\.js";/);
+    assert.match(registry, /\{ version: WORKFLOW_CONTROLLER_VERSION, handler: workflowController_1_3_0 \}/);
 });
 
 test("frozen and live continue-as-new target the shared latest version; live code has no feature gates", () => {

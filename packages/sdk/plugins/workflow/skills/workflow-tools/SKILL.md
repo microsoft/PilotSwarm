@@ -114,7 +114,7 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
 { kind, value } }`:
 
 - `operation`: `tool.call` (default; names `tool`), `decision`, `agent`,
-  `send`, `request`, `approval` or `receive` (the others name `state`).
+  `send`, `request`, `approval`, `spawn` or `receive` (the others name `state`).
 - `arguments` matches exact call arguments or state input. Omit it to match
   any input for that tool/state; `receive` forbids it.
 - `visit: n` selects only the n-th visit of the state (or tool call's script)
@@ -280,11 +280,7 @@ New Starts freeze each step's tools and package revisions. Later
 selection changes or republishing do not replace the pins.
 Pre-upgrade Starts gain no composition grant. Existing selection bindings
 use named-none/inline-all; named steps lose formerly inherited parent package tools.
-Each call
-rereads the binding and live access; revocation, parent end or a
-decided visit refuses it. A lost package stops only its own tools.
-Other packages keep their tools. Typed refusal opens without the grant; read failure
-retries. Put indispensable tools in `requiredTools`.
+Calls recheck live access; lost packages stop only their tools. Other packages keep their tools. Put required tools in `requiredTools`.
 
 `spawn_agent` accepts `grant` and `tools`: named default `none`; unnamed
 baseline plus `all`. `grant: none` removes no baseline tools; the inherited ceiling still
@@ -295,11 +291,11 @@ Deprecated `tool_names` keeps its 0.8.11 meaning and adds no grant. Never
 combine `tool_names` with `grant` or `tools`: the call refuses before spawn.
 The inherited ceiling limits `tool_names` too.
 
-Start/read include `delegated`. One `workflow.tools_delegated` audit per Start:
-tools, MCP servers, source packages/ownership (`static`, `owned`,
-`other_shared`), agent package/owner (or `inline prompt`).
-`workflow.agent_tool_called` records per-visit evidence. Mocked-agent tests
-have no child or gate; real-agent tests do.
+Start/read include `delegated` (`workflow.tools_delegated`, `workflow.agent_tool_called`).
+
+## child_workflows
+
+Workflow scripts (`callTool("child_workflows", ...)`) and direct agent steps only; `WORKFLOW_NOT_FOUND` outside own children. Ops: `list` (`status`: `active`|`ended`|`all`, `definition?`, `limit` 1-100, `cursor`), `read` (`workflow_id`), `stop` (`workflow_id`, `operation_id`, `grace_seconds?`, `reason?`), `cancel` (`workflow_id`, `operation_id`, `reason?`).
 
 ## Refusals you can fix
 

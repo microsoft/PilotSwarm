@@ -586,6 +586,9 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             summary.agent?.tools ? fact("Tools", summary.agent.tools, { "data-fact": "tools", title: summary.agent.toolsTitle }) : null,
             // OF-S2-7: the model it uses, chosen at start or from the session.
             summary.agent?.model ? fact("Model", summary.agent.model, { "data-fact": "model" }) : null,
+            summary.spawn ? fact("Type", "Spawn", { "data-fact": "spawn-type" }) : null,
+            summary.spawn?.definition ? fact("Child definition", summary.spawn.definition, { "data-fact": "spawn-definition" }) : null,
+            summary.spawn?.revision ? fact("Pinned revision", String(summary.spawn.revision), { "data-fact": "spawn-revision" }) : null,
             summary.decision ? fact("Type", "Decision", { "data-fact": "decision-type" }) : null,
             summary.decision?.model ? fact("Model", summary.decision.model, { "data-fact": "decision-model" }) : null,
             summary.decision?.questionType ? fact("Question", summary.decision.questionType === "noul" ? "Yes or no"
@@ -625,6 +628,18 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
         selected.kind === "parallel" ? h(ParallelSections, { selected, current, nodes, select, openSession }) : null,
         // Owner 2026-11-20: a Decision node's whole question and criteria, closed until opened, as in the Definition view.
         selected.kind === "decision" ? h(DecisionQuestionSection, { node: selected }) : null,
+        summary.spawn ? h("div", { className: "ps-wf-spawn-children", "data-section": "spawn-children" },
+            h("div", { className: "ps-wf-section-title" }, `Children (${summary.spawn.children.length})`),
+            summary.spawn.children.length === 0
+                ? h("p", { className: "ps-wf-muted" }, "No child Workflows started yet.")
+                : h("ul", { className: "ps-wf-list" }, summary.spawn.children.map(child =>
+                    h("li", { key: child.workflowId, className: "ps-wf-list-item", "data-child-workflow": child.workflowId },
+                        openSession
+                            ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-child-workflow",
+                                "data-session": child.workflowId, onClick: () => openSession(child.workflowId) },
+                                `${child.definition || "child"} #${child.visit ?? "?"}`)
+                            : h("span", null, `${child.definition || "child"} #${child.visit ?? "?"}`),
+                        h("span", { className: "ps-wf-muted" }, ` · ${child.status || "unknown"}${child.outcome ? ` (${child.outcome})` : ""}`))))) : null,
         // OF-S2-8: the script and sample input and output (NodeCodeSections), before where it goes next.
         sections,
         summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },

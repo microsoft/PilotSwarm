@@ -351,6 +351,8 @@ export interface TurnOptions {
          *. Returns JSON.
          */
         completeWorkflowNode?(args: Record<string, unknown>): Promise<string>;
+        /** Direct agent step only: list, read, stop, or cancel child Workflows owned by this step's Workflow. */
+        childWorkflows?(args: Record<string, unknown>): Promise<string>;
         /**
          * Workflow agent states: this session is in an agent state's
          * subtree (its stored lineage), so ask_user is refused with guidance

@@ -88,6 +88,9 @@ export function testAnswerShapeWords(operation: string, outcomes: readonly strin
         return 'A request step\'s answer is { kind: "success", value: { response: <the answer, as its contract\'s response schema says> } }, '
             + 'or { kind: "success", value: { decline: { reason: "..." } } } to decline it.' + failure;
     }
+    if (operation === "spawn") {
+        return 'A spawn step\'s answer is { kind: "success", value: { workflowId: "<id>", runId: "<id>", definition: "<name>", revision: 1 } }.' + failure;
+    }
     if (operation === "send") return 'A send step\'s answer is { kind: "success", value: <any value> }.' + failure;
     if (operation === "receive") {
         return 'A receive step\'s message is a fixture { operation: "receive", state: "<the receive step>", response: { kind: "success", '
@@ -100,7 +103,8 @@ export function testAnswerShapeWords(operation: string, outcomes: readonly strin
 function callWords(interception: WorkflowTestInterception, stateId: string | null): string {
     if (interception.operation === "tool.call") return `tool call ${interception.tool ?? "?"}${stateId ? ` in step ${stateId}` : ""}`;
     const kind = interception.operation === "decision" ? "Decision" : interception.operation === "agent" ? "agent"
-        : interception.operation === "send" ? "send" : interception.operation === "approval" ? "approval" : "request";
+        : interception.operation === "spawn" ? "spawn" : interception.operation === "send" ? "send"
+        : interception.operation === "approval" ? "approval" : "request";
     return `${kind} step ${stateId ?? "?"}`;
 }
 
@@ -220,6 +224,8 @@ export function definitionTestFixtureSkeleton(call: { operation: string; tool?: 
         ? { outcome: state?.type === "agent" && state.outcomes.length ? `<one of: ${state.outcomes.join(", ")}>` : "<one of its outcomes>",
             output: "<its output, as its outputSchema says>" }
         : call.operation === "decision" ? decisionFixtureValue(state)
+        : call.operation === "spawn" ? { workflowId: "test-child-workflow", runId: "test-child-run",
+            definition: state?.type === "spawn" ? state.definition : "<definition>", revision: state?.type === "spawn" ? (state.revision ?? 1) : 1 }
         : call.operation === "request" ? { response: "<the answer, as its contract's response schema says>" }
             : call.operation === "receive" ? "<the message, as its contract's schema says>" : "<any value>";
     return { operation: call.operation, state: node?.nodeId ?? "?", ...(call.operation === "receive" ? {} : skeletonArguments(node?.input ?? null)),

@@ -1,0 +1,25 @@
+$ java -Xmx1152m -XX:+UseParallelGC -cp /tmp/tla2tools.jar tlc2.TLC -workers 2 -config ChildWorkflows.cfg ChildWorkflows.tla
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 18 and seed -4620806953897377349 with 2 workers on 2 cores with 1024MB heap and 64MB offheap memory [pid: 252] (Linux 6.6.159.1-2.azl3 amd64, Microsoft 21.0.8 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-child-workflows/ChildWorkflows.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ChildWorkflows
+Starting... (2026-11-25 06:18:12)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-25 06:18:13.
+Progress(20) at 2026-11-25 06:18:16: 113,556 states generated (113,556 s/min), 42,825 distinct states found (42,825 ds/min), 16,711 states left on queue.
+Progress(36) at 2026-11-25 06:19:16: 10,755,459 states generated (10,641,903 s/min), 3,047,365 distinct states found (3,004,540 ds/min), 124,208 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.5E-6
+  based on the actual fingerprints:  val = 1.9E-6
+11922657 states generated, 3314067 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 45.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 9 and the 95th percentile is 3).
+Finished in 01min 11s at (2026-11-25 06:19:24)

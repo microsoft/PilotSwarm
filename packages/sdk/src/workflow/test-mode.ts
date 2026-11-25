@@ -1,5 +1,5 @@
 import {
-    MESSAGE_SENT, REQUEST_DECLINED, REQUEST_RESPONDED, RUNTIME_ERROR_CODES,
+    MESSAGE_SENT, REQUEST_DECLINED, REQUEST_RESPONDED, RUNTIME_ERROR_CODES, SPAWN_STARTED,
     type WorkflowIR, type WorkflowIRNode,
 } from "./compiler.js";
 import { assertJsonValue, boundedCanonicalJson, canonicalJson, isJsonObject, jsonbSafeText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
@@ -270,6 +270,19 @@ export function testResultFor(interception: Pick<WorkflowTestInterception, "oper
             if (error instanceof DecisionProviderError) return testError(error.code, error.message);
             return testError("execution_failed", "The mocked Decision answer could not be normalized and applied.");
         }
+    }
+    if (interception.operation === "spawn") {
+        if (node.type !== "spawn") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is not a spawn state.`);
+        if (!isJsonObject(value) || typeof value.workflowId !== "string" || !value.workflowId.trim()) {
+            throw invalid("A mocked spawn answer is { workflowId, runId?, definition?, revision? } with a non-empty workflowId.");
+        }
+        const handle = {
+            workflowId: value.workflowId,
+            runId: typeof value.runId === "string" ? value.runId : null,
+            definition: typeof value.definition === "string" ? value.definition : node.definition,
+            revision: typeof value.revision === "number" && Number.isSafeInteger(value.revision) ? value.revision : (node.revision ?? 1),
+        };
+        return { outcome: SPAWN_STARTED, resultKind: "business", winner: "test", valueText: canonicalJson(handle) };
     }
     if (interception.operation === "approval") {
         if (node.type !== "approval") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is not an approval.`);

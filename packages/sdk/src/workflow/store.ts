@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import type { CapabilityToolGrant } from "../tool-grant.js";
 import { carrySnapshotText, readCarrySnapshot } from "./carry.js";
 import {
-    AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, STATE_TIMEOUT_MAX_SECONDS,
+    AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, STATE_TIMEOUT_MAX_SECONDS, WORKFLOW_ENDED_CONTRACT,
     WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
     type WorkflowIRClockWait, type WorkflowIRNode,
 } from "./compiler.js";
@@ -32,6 +32,7 @@ import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLock
 import { workflowAgentSessionContinues } from "./agent-ids.js";
 import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
 import { workflowControllerFeatures } from "./controller-features.js";
+import { computeSessionLevel } from "./input-policy.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -229,6 +230,7 @@ export interface WorkflowRunRow {
     irSha256: string;
     inputs: JsonValue;
     controllerInstanceId: string;
+    startOperationId: string;
     status: WorkflowRunStatus;
     testAgentMode: "mocked" | "real" | null;
     terminalNodeId: string | null;
@@ -395,6 +397,11 @@ export interface WorkflowInboxLimits {
 /** How long an unclaimed input stays eligible for a receive state: the default and the most (seconds). A send state's message takes the default. */
 export const WORKFLOW_INPUT_TTL_SECONDS = 86_400;
 
+/** Shared default inbox bounds: 100 unclaimed, 20 per sender, 60 per sender per 10-minute window. */
+export const WORKFLOW_INBOX_LIMITS: WorkflowInboxLimits = {
+    maxUnconsumed: 100, maxUnconsumedPerSender: 20, maxPerSenderPerWindow: 60, windowSeconds: 600,
+};
+
 /**
  * The hash of a typed-input request (send_workflow_input, and a send state's
  * message given as typed input): the run it is given to, its contract, its
@@ -547,7 +554,7 @@ function runFrom(row: Row): WorkflowRunRow {
         runId: str(row, "run_id"), workflowSessionId: str(row, "workflow_session_id"), mode,
         revision: int(row, "revision"), yamlSha256: str(row, "yaml_sha256"), irSha256: str(row, "ir_sha256"),
         inputs: parseStoredJson(str(row, "inputs"), "inputs"), controllerInstanceId: str(row, "controller_instance_id"),
-        status, testAgentMode,
+        startOperationId: str(row, "start_operation_id"), status, testAgentMode,
         terminalNodeId: strOrNull(row, "terminal_node_id"), terminalOutcome: strOrNull(row, "terminal_outcome"),
         terminalOutput: jsonOrNull(row, "terminal_output"), terminalError: redactWorkflowErrorValue(jsonOrNull(row, "terminal_error")),
         createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"), finishedAt: dateOrNull(row, "finished_at"),
@@ -997,7 +1004,7 @@ export const WORKFLOW_TEST_ADVANCE_MAX_SECONDS = 30 * 86_400;
 /** The most intercepted effects one test run records; a script that reaches more fails its call. */
 export const WORKFLOW_TEST_MAX_INTERCEPTIONS = 1_000;
 /** The operations a test run intercepts: tool calls, Decision and agent states, sends, requests and approvals. */
-export const WORKFLOW_TEST_OPERATIONS = ["tool.call", "decision", "agent", "send", "request", "approval"] as const;
+export const WORKFLOW_TEST_OPERATIONS = ["tool.call", "decision", "agent", "send", "request", "approval", "spawn"] as const;
 export type WorkflowTestOperation = typeof WORKFLOW_TEST_OPERATIONS[number];
 export type WorkflowTestResponseKind = "success" | "error" | "cancel";
 
@@ -1930,11 +1937,12 @@ export class WorkflowStore {
      * may be repeated with its operation id.
      */
     private async lockInputSessions(client: PoolClient, workflowSessionId: string, senderSessionId: string)
-        : Promise<{ live: boolean; authority: TypedInputAuthority }> {
+        : Promise<{ live: boolean; authority: TypedInputAuthority; senderParentSessionId: string | null }> {
         const locked = await this.lockSessionPair(client, workflowSessionId, senderSessionId);
         return {
             live: locked.workflow !== null && !locked.workflow.deleted,
             authority: decideTypedInputAuthority({ workflow: locked.workflow, definition: locked.definition, sender: locked.other, senderSessionId }),
+            senderParentSessionId: locked.other?.parentSessionId ?? null,
         };
     }
 
@@ -2608,6 +2616,8 @@ export class WorkflowStore {
         versionGuard?: Parameters<WorkflowStore["requireVersionFree"]>[0] | null;
         /** Stage 2.1: the session revision this Workflow starts (session-definition-store.ts, requireSessionStartLocked). */
         sessionPin?: { ownerSessionId: string; definitionId: string; revision: number } | null;
+        /** Internal spawn mode: locks the exact spawning run and checks the visit before inserting the child. */
+        spawn?: { nodeExecutionId: string } | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         requireStoredYamlWithinLimit(input.yaml);
         requirePublishable(input.compiled, input.publish || Boolean(input.start));
@@ -2619,6 +2629,36 @@ export class WorkflowStore {
                 const replay = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256);
                 if (replay) return { receipt: replay, replayed: true };
                 await requireSessionStartLocked(client, this.schema, input.sessionPin, input.compiled.yamlSha256);
+            }
+            if (input.spawn) {
+                // Lock the exact spawning run FOR UPDATE and require it active, then verify the spawn visit is still
+                // pending with a plain read (avoids locking node rows in the reverse order of session-delete triggers).
+                if (!input.sessionPin) {
+                    const replay = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256);
+                    if (replay) return { receipt: replay, replayed: true };
+                }
+                const parentRun = await client.query(
+                    `SELECT r.run_id, r.workflow_session_id, r.status, s.deleted_at
+                       FROM ${this.t.runs} r
+                       JOIN ${this.t.sessions} s ON s.session_id = r.workflow_session_id
+                      WHERE r.run_id = (SELECT run_id FROM ${this.t.nodes} WHERE node_execution_id = $1)
+                        FOR UPDATE OF r`,
+                    [input.spawn.nodeExecutionId]);
+                const live = parentRun.rows[0];
+                if (!live || str(live, "workflow_session_id") !== input.parentSessionId || live.deleted_at !== null
+                    || !ACTIVE_RUN_STATUSES.includes(str(live, "status") as WorkflowRunStatus)) {
+                    throw new WorkflowStoreError("RUN_ENDED",
+                        `Parent Workflow ${input.parentSessionId} has no active live run for spawn ${input.spawn.nodeExecutionId}; nothing was started.`,
+                        { status: live ? str(live, "status") : null });
+                }
+                const visit = await client.query(
+                    `SELECT state FROM ${this.t.nodes} WHERE node_execution_id = $1`,
+                    [input.spawn.nodeExecutionId]);
+                if (!visit.rows[0] || str(visit.rows[0], "state") !== "pending") {
+                    throw new WorkflowStoreError("RUN_ENDED",
+                        `Spawn visit ${input.spawn.nodeExecutionId} is no longer pending; nothing was started.`,
+                        { state: visit.rows[0] ? str(visit.rows[0], "state") : null });
+                }
             }
             await this.requireLiveSession(client, input.workflowSessionId);
             const created = await client.query(
@@ -3516,6 +3556,178 @@ export class WorkflowStore {
         return revisionIrFrom(rows[0], revision, expectedIrSha256);
     }
 
+    /** The workflow's active live run, if any. */
+    async readActiveLiveRun(workflowSessionId: string): Promise<WorkflowRunRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.runs} WHERE workflow_session_id = $1 AND mode = 'live' AND status = ANY($2::text[])
+              ORDER BY created_at DESC, run_id DESC LIMIT 1`,
+            [workflowSessionId, ACTIVE_RUN_STATUSES]);
+        return rows[0] ? runFrom(rows[0]) : null;
+    }
+
+    /** Direct child Workflow sessions of a parent Workflow, newest first, filtered and paginated in SQL. */
+    async listChildWorkflows(parentWorkflowSessionId: string, options: {
+        status?: "active" | "ended" | "all";
+        definition?: string | null;
+        limit?: number | null;
+        offset?: number;
+        includeDeleted?: boolean;
+    } = {}): Promise<Array<{
+        workflowSessionId: string;
+        deletedAt: Date | null;
+        sessionDefinitionId: string | null;
+        definitionName: string | null;
+        revision: number | null;
+        runId: string | null;
+        status: WorkflowRunStatus | null;
+        controllerInstanceId: string | null;
+        startOperationId: string | null;
+        startedAt: Date | null;
+        endedAt: Date | null;
+        terminalOutcome: string | null;
+        currentStateId: string | null;
+        currentStateType: string | null;
+    }>> {
+        const params: unknown[] = [parentWorkflowSessionId];
+        const where: string[] = ["s.parent_session_id = $1", "s.session_kind = 'workflow'"];
+        if (options.includeDeleted === false) where.push("s.deleted_at IS NULL");
+        if (options.status === "active") {
+            params.push(ACTIVE_RUN_STATUSES);
+            where.push(`r.status = ANY($${params.length}::text[])`);
+        } else if (options.status === "ended") {
+            params.push(ACTIVE_RUN_STATUSES);
+            where.push(`NOT (r.status = ANY($${params.length}::text[]))`);
+        }
+        if (options.definition) {
+            params.push(options.definition);
+            where.push(`COALESCE(sd.name, rev.name) = $${params.length}`);
+        }
+        let paging = "";
+        if (typeof options.limit === "number" && Number.isSafeInteger(options.limit) && options.limit >= 1) {
+            params.push(options.limit);
+            paging += ` LIMIT $${params.length}`;
+        }
+        if (typeof options.offset === "number" && Number.isSafeInteger(options.offset) && options.offset > 0) {
+            params.push(options.offset);
+            paging += ` OFFSET $${params.length}`;
+        }
+        const { rows } = await this.pool.query(
+            `SELECT s.session_id, s.deleted_at, d.session_definition_id, COALESCE(sd.name, rev.name) AS definition_name,
+                    COALESCE(d.session_revision, r.revision) AS revision,
+                    r.run_id, r.status, r.controller_instance_id, r.start_operation_id,
+                    r.created_at AS started_at, r.finished_at AS ended_at, r.terminal_outcome,
+                    n.node_id AS current_state_id, n.node_type AS current_state_type
+               FROM ${this.t.sessions} s
+               LEFT JOIN ${this.t.definitions} d ON d.workflow_session_id = s.session_id
+               LEFT JOIN "${this.schema}".session_workflow_definitions sd
+                 ON sd.definition_id = d.session_definition_id
+               INNER JOIN LATERAL (
+                   SELECT run_id, revision, status, controller_instance_id, start_operation_id, created_at, finished_at, terminal_outcome
+                     FROM ${this.t.runs}
+                    WHERE workflow_session_id = s.session_id AND mode = 'live'
+                    ORDER BY created_at DESC, run_id DESC LIMIT 1
+               ) r ON true
+               LEFT JOIN LATERAL (
+                   SELECT name FROM ${this.t.revisions}
+                    WHERE workflow_session_id = s.session_id AND revision = COALESCE(r.revision, d.current_revision)
+                    LIMIT 1
+               ) rev ON true
+               LEFT JOIN LATERAL (
+                   SELECT node_id, node_type FROM ${this.t.nodes}
+                    WHERE run_id = r.run_id
+                    ORDER BY CASE WHEN state = 'pending' THEN 0 ELSE 1 END, entered_at DESC, node_execution_id DESC
+                    LIMIT 1
+               ) n ON true
+              WHERE ${where.join(" AND ")}
+              ORDER BY COALESCE(r.created_at, s.created_at) DESC, s.session_id DESC${paging}`,
+            params);
+        return rows.map((row: Row) => ({
+            workflowSessionId: str(row, "session_id"),
+            deletedAt: dateOrNull(row, "deleted_at"),
+            sessionDefinitionId: strOrNull(row, "session_definition_id"),
+            definitionName: strOrNull(row, "definition_name"),
+            revision: row.revision == null ? null : int(row, "revision"),
+            runId: strOrNull(row, "run_id"),
+            status: strOrNull(row, "status") as WorkflowRunStatus | null,
+            controllerInstanceId: strOrNull(row, "controller_instance_id"),
+            startOperationId: strOrNull(row, "start_operation_id"),
+            startedAt: dateOrNull(row, "started_at"),
+            endedAt: dateOrNull(row, "ended_at"),
+            terminalOutcome: strOrNull(row, "terminal_outcome"),
+            currentStateId: strOrNull(row, "current_state_id"),
+            currentStateType: strOrNull(row, "current_state_type"),
+        }));
+    }
+
+    /** Bare child Workflow session claims (no workflow_definitions row yet) under a parent Workflow, for delete cleanup. */
+    /** Read non-deleted child Workflows spawned by a specific set of spawn start operation ids ('spawn:<nodeExecutionId>'). */
+    async listSpawnChildrenByExecutions(parentSessionId: string, spawnOperationIds: string[]): Promise<Array<{
+        workflowSessionId: string;
+        runId: string;
+        definitionName: string;
+        revision: number;
+        status: WorkflowRunStatus;
+        terminalOutcome: string | null;
+        nodeExecutionId: string;
+        stateId: string;
+        visit: number;
+        startedAt: string | null;
+        endedAt: string | null;
+    }>> {
+        if (spawnOperationIds.length === 0) return [];
+        const res = await this.pool.query(
+            `SELECT s.session_id AS workflow_session_id,
+                    r.run_id,
+                    COALESCE(sd.name, rev.name, '') AS definition_name,
+                    COALESCE(d.session_revision, r.revision) AS revision,
+                    r.status,
+                    r.terminal_outcome,
+                    n.node_execution_id,
+                    n.node_id AS state_id,
+                    n.ordinal AS visit,
+                    r.created_at AS started_at,
+                    r.finished_at AS ended_at
+               FROM ${this.t.sessions} s
+               JOIN ${this.t.definitions} d ON d.workflow_session_id = s.session_id
+               JOIN ${this.t.runs} r ON r.workflow_session_id = s.session_id AND r.mode = 'live'
+               JOIN ${this.t.nodes} n ON n.node_execution_id = substr(r.start_operation_id, 7)
+               LEFT JOIN "${this.schema}".session_workflow_definitions sd ON sd.definition_id = d.session_definition_id
+               LEFT JOIN LATERAL (
+                   SELECT name FROM ${this.t.revisions}
+                    WHERE workflow_session_id = s.session_id AND revision = COALESCE(r.revision, d.current_revision)
+                    LIMIT 1
+               ) rev ON true
+              WHERE s.parent_session_id = $1
+                AND s.session_kind = 'workflow'
+                AND s.deleted_at IS NULL
+                AND r.start_operation_id = ANY($2::text[])
+              ORDER BY r.created_at DESC, s.session_id DESC`,
+            [parentSessionId, spawnOperationIds]);
+        return res.rows.map((row: Row) => ({
+            workflowSessionId: str(row, "workflow_session_id"),
+            runId: str(row, "run_id"),
+            definitionName: str(row, "definition_name"),
+            revision: int(row, "revision"),
+            status: str(row, "status") as WorkflowRunStatus,
+            terminalOutcome: strOrNull(row, "terminal_outcome"),
+            nodeExecutionId: str(row, "node_execution_id"),
+            stateId: str(row, "state_id"),
+            visit: int(row, "visit"),
+            startedAt: dateOrNull(row, "started_at")?.toISOString() ?? null,
+            endedAt: dateOrNull(row, "ended_at")?.toISOString() ?? null,
+        }));
+    }
+
+    async listBareChildWorkflowClaims(parentWorkflowSessionId: string): Promise<string[]> {
+        const { rows } = await this.pool.query(
+            `SELECT s.session_id FROM ${this.t.sessions} s
+               LEFT JOIN ${this.t.definitions} d ON d.workflow_session_id = s.session_id
+              WHERE s.parent_session_id = $1 AND s.session_kind = 'workflow' AND s.deleted_at IS NULL
+                AND d.workflow_session_id IS NULL`,
+            [parentWorkflowSessionId]);
+        return rows.map((row: Row) => str(row, "session_id"));
+    }
+
     async listRuns(workflowSessionId: string): Promise<WorkflowRunRow[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.t.runs} WHERE workflow_session_id = $1 ORDER BY created_at, run_id`, [workflowSessionId]);
@@ -3593,9 +3805,14 @@ export class WorkflowStore {
                 const enumerate = async (): Promise<string[]> => {
                     const { rows: affected } = input.cascade
                         ? await client.query(`SELECT session_id FROM ${s}.cms_get_descendant_session_ids($1)`, [input.sessionId])
-                        : workflow ? { rows: [] as Array<Record<string, unknown>> }
-                            : await client.query(`SELECT session_id FROM ${this.t.sessions}
-                                WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL`, [input.sessionId]);
+                        : await client.query(
+                            `SELECT session_id FROM ${this.t.sessions}
+                              WHERE session_kind = 'workflow' AND deleted_at IS NULL
+                                AND (parent_session_id = $1
+                                     OR parent_session_id IN (
+                                         SELECT session_id FROM ${this.t.sessions}
+                                          WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL
+                                     ))`, [input.sessionId]);
                     return affected.map(item => str(item, "session_id"));
                 };
                 const ids = await enumerate();
@@ -3873,7 +4090,7 @@ export class WorkflowStore {
          * Only a test run's admission passes one; null otherwise and for a
          * state that failed at admission.
          */
-        intercept?: { operation: "decision" | "agent" | "send" | "request" | "approval"; argumentsText: string; responseSchema: string | null } | null;
+        intercept?: { operation: "decision" | "agent" | "send" | "request" | "approval" | "spawn"; argumentsText: string; responseSchema: string | null } | null;
         approval?: { question: string; timeoutSeconds: number; forbidden: boolean } | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
@@ -3951,7 +4168,7 @@ export class WorkflowStore {
             const interceptedNodeType = intercept === null ? null
                 : intercept.operation === "agent" ? "agent"
                 : intercept.operation === "approval" ? "approval"
-                : intercept.operation === "decision" ? "decision" : "messaging";
+                : intercept.operation === "decision" ? "decision" : intercept.operation === "spawn" ? "spawn" : "messaging";
             if (intercept !== null && (run.mode !== "test" || immediate !== null || input.nodeType !== interceptedNodeType
                 || (intercept.operation === "approval" && !workflowControllerFeatures(run.controllerVersion ?? "1.0.0").approval))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid test interception.`);
@@ -4009,7 +4226,7 @@ export class WorkflowStore {
             // starting a simulated provider timer; its live timeout remains in the immutable interception arguments.
             const waitAt = input.waitAt ?? null;
             const waits = input.nodeType === "wait" && immediate === null;
-            const deadlined = intercept !== null && intercept.operation !== "send" && intercept.operation !== "decision";
+            const deadlined = intercept !== null && intercept.operation !== "send" && intercept.operation !== "decision" && intercept.operation !== "spawn";
             let waitSeconds = approval !== null ? immediate === null ? approval.timeoutSeconds : null : input.waitSeconds;
             const mayWait = waits || receive !== null || deadlined || (approval !== null && immediate === null) || (input.nodeType === "parallel" && immediate === null);
             if ((waitAt !== null && (!waits || waitSeconds !== null))
@@ -4513,6 +4730,8 @@ export class WorkflowStore {
         limits: WorkflowInboxLimits;
         /** The exchange id of the send state whose message this input is; only the send's delivery passes it. */
         sendExchangeId?: string | null;
+        /** True only for runtime-generated WorkflowEnded@1 notices: bypasses the 100-message inbox cap and rate limit. */
+        bypassInboxLimits?: boolean;
     }): Promise<{ receipt: WorkflowInputReceipt; replayed: boolean; run: WorkflowRunRow }> {
         if (!Number.isSafeInteger(input.ttlSeconds) || input.ttlSeconds < 1) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${input.messageId} has an invalid ttl.`);
@@ -4538,7 +4757,20 @@ export class WorkflowStore {
                 if (!runRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Input ${input.operationId} names a missing run.`);
                 return { receipt: parseInputReceipt(parseStoredJson(receiptText, "receipt")), replayed: true, run: runFrom(runRows[0]) };
             }
-            if (decided.authority !== "allowed") throw new WorkflowStoreError("FORBIDDEN", TYPED_INPUT_REFUSALS[decided.authority]);
+            let trustedChildEnded = false;
+            if (input.bypassInboxLimits === true && input.contract === WORKFLOW_ENDED_CONTRACT
+                && input.operationId.startsWith("ended:") && decided.senderParentSessionId === input.workflowSessionId) {
+                const childRunId = input.operationId.slice("ended:".length);
+                const { rows: childRuns } = await client.query(
+                    `SELECT status FROM ${this.t.runs} WHERE run_id = $1 AND workflow_session_id = $2`,
+                    [childRunId, input.senderSessionId]);
+                if (childRuns[0] && !ACTIVE_RUN_STATUSES.includes(str(childRuns[0], "status") as WorkflowRunStatus)) {
+                    trustedChildEnded = true;
+                }
+            }
+            if (decided.authority !== "allowed" && !trustedChildEnded) {
+                throw new WorkflowStoreError("FORBIDDEN", TYPED_INPUT_REFUSALS[decided.authority]);
+            }
             if (input.sendExchangeId) await this.requireUndecidedSend(client, { ...input, sendExchangeId: input.sendExchangeId });
             const run = await this.lockRun(client, input.runId);
             if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
@@ -4547,22 +4779,24 @@ export class WorkflowStore {
             }
             const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
             const at = str(clock[0], "at");
-            const { rows: counts } = await client.query(
-                `SELECT
-                    (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > $4::timestamptz))::int AS unconsumed,
-                    (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > $4::timestamptz AND sender_session_id = $3))::int AS sender_unconsumed,
-                    (count(*) FILTER (WHERE sender_session_id = $3 AND accepted_at > $4::timestamptz - $5::integer * interval '1 second'))::int AS sender_recent
-                   FROM ${this.t.inbox} WHERE workflow_session_id = $2`,
-                [run.runId, input.workflowSessionId, input.senderSessionId, at, input.limits.windowSeconds]);
-            const count = counts[0] ?? {};
-            if (int(count, "unconsumed") >= input.limits.maxUnconsumed || int(count, "sender_unconsumed") >= input.limits.maxUnconsumedPerSender) {
-                throw new WorkflowStoreError("INBOX_FULL", `Run ${run.runId} holds as many unclaimed inputs as it may (${input.limits.maxUnconsumed}, `
-                    + `${input.limits.maxUnconsumedPerSender} per sender); nothing was stored.`,
-                    { unconsumed: int(count, "unconsumed"), senderUnconsumed: int(count, "sender_unconsumed") });
-            }
-            if (int(count, "sender_recent") >= input.limits.maxPerSenderPerWindow) {
-                throw new WorkflowStoreError("INBOX_RATE_LIMITED", `This sender gave this workflow ${input.limits.maxPerSenderPerWindow} inputs in the last `
-                    + `${input.limits.windowSeconds} s; nothing was stored.`, { windowSeconds: input.limits.windowSeconds });
+            if (!trustedChildEnded) {
+                const { rows: counts } = await client.query(
+                    `SELECT
+                        (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > $4::timestamptz AND NOT (contract = $6 AND operation_id LIKE 'ended:%')))::int AS unconsumed,
+                        (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > $4::timestamptz AND sender_session_id = $3 AND NOT (contract = $6 AND operation_id LIKE 'ended:%')))::int AS sender_unconsumed,
+                        (count(*) FILTER (WHERE sender_session_id = $3 AND accepted_at > $4::timestamptz - $5::integer * interval '1 second' AND NOT (contract = $6 AND operation_id LIKE 'ended:%')))::int AS sender_recent
+                       FROM ${this.t.inbox} WHERE workflow_session_id = $2`,
+                    [run.runId, input.workflowSessionId, input.senderSessionId, at, input.limits.windowSeconds, WORKFLOW_ENDED_CONTRACT]);
+                const count = counts[0] ?? {};
+                if (int(count, "unconsumed") >= input.limits.maxUnconsumed || int(count, "sender_unconsumed") >= input.limits.maxUnconsumedPerSender) {
+                    throw new WorkflowStoreError("INBOX_FULL", `Run ${run.runId} holds as many unclaimed inputs as it may (${input.limits.maxUnconsumed}, `
+                        + `${input.limits.maxUnconsumedPerSender} per sender); nothing was stored.`,
+                        { unconsumed: int(count, "unconsumed"), senderUnconsumed: int(count, "sender_unconsumed") });
+                }
+                if (int(count, "sender_recent") >= input.limits.maxPerSenderPerWindow) {
+                    throw new WorkflowStoreError("INBOX_RATE_LIMITED", `This sender gave this workflow ${input.limits.maxPerSenderPerWindow} inputs in the last `
+                        + `${input.limits.windowSeconds} s; nothing was stored.`, { windowSeconds: input.limits.windowSeconds });
+                }
             }
             const { rows: inserted } = await client.query(
                 `INSERT INTO ${this.t.inbox}
@@ -6261,8 +6495,11 @@ export class WorkflowStore {
                     controllingSessionId: strOrNull(row, "controlling_session_id"), distance: int(row, "distance") };
             }
         }
-        const top = rows[rows.length - 1];
-        const level = !cyclic && strOrNull(top, "parent_session_id") === null ? int(top, "distance") : null;
+        const level = cyclic ? null : computeSessionLevel(rows.map(row => ({
+            sessionId: str(row, "session_id"),
+            parentSessionId: strOrNull(row, "parent_session_id"),
+            isAgentStep: strOrNull(row, "node_execution_id") !== null,
+        })));
         return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
     }
 
