@@ -166,6 +166,44 @@ test("a phone: the Definition view's row wraps to two lines, Definition with ful
     assert.ok(!css.includes(".ps-wf-bar.is-revisions"));
 });
 
+test("Delete button sits at the right end of latest-workflow when present, else revision-info with single-line ellipsis", () => {
+    const withRead = (tab, list, defId, revNum) => {
+        let state = createInitialState({ mode: "api" });
+        state = appReducer(state, { type: "ui/workflowTab", ownerId: OWNER, patch: tab });
+        state = appReducer(state, {
+            type: "ui/sessionDefinitionRead",
+            ownerId: OWNER,
+            key: `${defId}:${revNum}`,
+            entry: { phase: "ready", value: { personCommands: true, viewer: { mayChange: true }, revision: { revision: revNum, valid: true, yaml: "" } } },
+        });
+        const ctrl = { getState: () => state, subscribe: () => () => {}, dispatch: () => {}, setPrompt() {} };
+        return renderToStaticMarkup(React.createElement(SessionWorkflowTab, { controller: ctrl, mobile: true,
+            context: { ownerId: OWNER, workflowId: null }, definitions: sessionDefinitionsModel(list) }));
+    };
+    // With a Workflow started (default opened Definition view shows latest-workflow): Delete is inside latest-workflow, not revision-info.
+    const withLatest = withRead({}, [HN], "def-hn", 3);
+    const latestRow = withLatest.slice(withLatest.lastIndexOf("<div", withLatest.indexOf('data-field="latest-workflow"')));
+    const latestHtml = latestRow.slice(0, latestRow.indexOf("</div>") + 6);
+    assert.match(latestHtml, /data-action="delete"/, "Delete sits on the latest-workflow line");
+    const infoWithLatest = withLatest.slice(withLatest.lastIndexOf("<div", withLatest.indexOf('data-field="revision-info"')));
+    assert.ok(!infoWithLatest.slice(0, infoWithLatest.indexOf("</div>") + 6).includes('data-action="delete"'), "Delete is not duplicated on revision-info");
+
+    // Without any Workflow yet (ALPHA): no latest-workflow row; Delete sits on revision-info with has-remove (nowrap + ellipsis).
+    const noLatest = withRead({ sessionDefinitionId: "def-alpha" }, [ALPHA], "def-alpha", 1);
+    assert.ok(!noLatest.includes('data-field="latest-workflow"'));
+    const infoNoLatest = noLatest.slice(noLatest.lastIndexOf("<div", noLatest.indexOf('data-field="revision-info"')));
+    const infoHtml = infoNoLatest.slice(0, infoNoLatest.indexOf("</div>") + 6);
+    assert.match(infoHtml, /ps-wf-info has-remove/);
+    assert.match(infoHtml, /data-action="delete"/);
+
+    // CSS keeps both rows nowrap, truncates revision-info text with ellipsis when has-remove, and preserves 44 px touch target.
+    const css = fs.readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
+    assert.match(css, /.ps-wf-line.ps-wf-latest { display: flex; flex-wrap: nowrap;/);
+    assert.match(css, /.ps-wf-line.ps-wf-info.has-remove { flex-wrap: nowrap; }/);
+    assert.match(css, /.ps-wf-line.ps-wf-info.has-remove > .ps-wf-info-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }/);
+    assert.match(css, /.ps-wf-latest .ps-mini-button.ps-workflow-tool-button/);
+});
+
 test("the Workflow picker says Workflow in words beside it", () => {
     const source = fs.readFileSync(new URL("../../react/src/workflow-tab.js", import.meta.url), "utf8");
     assert.match(source, /h\(FacedPicker, \{ id, label: "Workflow", kind: "is-number"/);
