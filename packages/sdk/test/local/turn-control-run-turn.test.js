@@ -568,7 +568,7 @@ describe("the turn after a stopped turn that left no committed snapshot", () => 
 
     const lossyCases = [
         ["the dir saved a turn before (marker v2), and the store lost it", { marker: { version: 2, turnKey: "k1", contentHash: "h" } }],
-        ["another worker: no local evidence", { local: false }],
+        ["another worker, and the stopped turn's record is missing", { local: false }],
         ["an earlier attempt of this same turn left the sentinel", { sentinel: { turnKey: "k2", freshChain: true } }],
         ["the conversation was not created fresh (a legacy or warm dir)", { sentinel: { turnKey: "stopped-turn-key", freshChain: false } }],
     ];
@@ -584,7 +584,7 @@ describe("the turn after a stopped turn that left no committed snapshot", () => 
     }
 });
 
-describe("issue 329 (review S11): the turn after a first turn that lost its runtime, on another worker", () => {
+describe("issue 329 (review S11): the turn after a first turn that lost its runtime or was stopped, on another worker", () => {
     /**
      * Workers with their own session-state dirs share one snapshot store and one CMS event log, as on a real fleet.
      * getOrCreate behaves like the real one: a turn > 0 resumes a local dir, and without one it is missing state.
@@ -624,11 +624,23 @@ describe("issue 329 (review S11): the turn after a first turn that lost its runt
                 makeSessionLayout(sessionStateDir, sessionId);
                 return { type: "error", message: "Connection is closed.", transportLoss: true };
             });
-            return { h, opened, run, loseRuntimeNextTurn, store };
+            const stopNextTurn = () => h.session.runTurn.mockImplementationOnce(async () => {
+                makeSessionLayout(sessionStateDir, sessionId);
+                return { type: "stopped", reason: "stop" };
+            });
+            return { h, opened, run, loseRuntimeNextTurn, stopNextTurn, store };
         };
         const of = (type) => events.filter((e) => e.eventType === type);
         const emptyStore = () => fs.rmSync(path.join(root, "session-store"), { recursive: true, force: true });
-        return { sessionId, worker, of, emptyStore };
+        // The read of the turns' unpublished records fails from now on (other event reads still answer).
+        const failRecordReads = () => {
+            catalogExtras.getSessionEventsBefore.mockImplementation(async (_id, beforeSeq, limit, types) => {
+                if (types?.includes("session.snapshot_unpublished")) throw new Error("CMS unavailable");
+                return events.filter((e) => e.seq < beforeSeq && (!types || types.includes(e.eventType)))
+                    .sort((a, b) => b.seq - a.seq).slice(0, limit ?? 1000);
+            });
+        };
+        return { sessionId, worker, of, emptyStore, failRecordReads };
     }
 
     it("another worker starts the retry as a fresh conversation, quietly, and saves it", async () => {
@@ -662,6 +674,23 @@ describe("issue 329 (review S11): the turn after a first turn that lost its runt
         expect(f.of("session.lossy_handoff")).toEqual([]);
     });
 
+    it("a first turn stopped on one worker: the next turn, on another, starts a fresh conversation, quietly, and saves it", async () => {
+        const f = fleet();
+        const a = f.worker("a");
+        a.stopNextTurn();
+        expect((await a.run(0)).type).toBe("stopped");
+        expect(f.of("session.snapshot_unpublished").map((e) => e.data)).toEqual([expect.objectContaining({
+            reason: "stopped", turnIndex: 0, baseVersion: 0, freshChain: true, transcriptEpoch: 0,
+        })]);
+
+        const b = f.worker("b");
+        expect((await b.run(1)).snapshotVersion).toBe(1);
+        expect(b.opened).toEqual([expect.objectContaining({ turnIndex: 1, epochStart: true })]);
+        expect(f.of("session.lossy_handoff")).toEqual([]);
+        expect(f.of("system.message").filter((e) => /worker restart/.test(String(e.data?.content)))).toEqual([]);
+        expect(b.h.session.runTurn.mock.calls[0][0]).toBe("next prompt");
+    });
+
     // Negative controls: an empty store at turn N+1 that no unsaved predecessor explains is a lost snapshot.
     const lossCases = [
         ["the first turn saved, and the store lost it", async (f) => {
@@ -684,6 +713,13 @@ describe("issue 329 (review S11): the turn after a first turn that lost its runt
             for (const e of f.of("session.snapshot_unpublished")) delete e.data.freshChain;
             return 1;
         }],
+        ["a stopped first turn's record comes from an older worker (no freshChain)", async (f) => {
+            const a = f.worker("a");
+            a.stopNextTurn();
+            await a.run(0);
+            for (const e of f.of("session.snapshot_unpublished")) delete e.data.freshChain;
+            return 1;
+        }],
     ];
     for (const [name, setup] of lossCases) {
         it(`${name}: still the lossy replay`, async () => {
@@ -693,8 +729,24 @@ describe("issue 329 (review S11): the turn after a first turn that lost its runt
             expect((await next.run(turnIndex)).type).toBe("completed");
             expect(next.opened.map((o) => [o.turnIndex, o.epochStart === true])).toEqual([[turnIndex, false], [0, false]]);
             expect(f.of("session.lossy_handoff")).toHaveLength(1);
+            expect(f.of("system.message").filter((e) => /worker restart/.test(String(e.data?.content)))).toHaveLength(1);
         });
     }
+
+    it("a stopped first turn, and the read of its record fails: no proof, so still the lossy replay", async () => {
+        const f = fleet();
+        const a = f.worker("a");
+        a.stopNextTurn();
+        await a.run(0);
+        expect(f.of("session.snapshot_unpublished")).toHaveLength(1);
+        f.failRecordReads();
+        const next = f.worker("next");
+        expect((await next.run(1)).type).toBe("completed");
+        expect(next.opened.map((o) => [o.turnIndex, o.epochStart === true])).toEqual([[1, false], [0, false]]);
+        expect(f.of("session.lossy_handoff")).toHaveLength(1);
+        expect(f.of("system.message").filter((e) => /worker restart/.test(String(e.data?.content)))).toHaveLength(1);
+        expect(next.h.traces.info).toContainEqual(expect.stringContaining("reading the unpublished-turn records failed: CMS unavailable"));
+    });
 });
 
 describe("auto-titling ignores runtime notices", () => {

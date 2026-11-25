@@ -502,9 +502,12 @@ preamble resumes from the last committed snapshot on whichever worker takes
 it. When the lost turn was the session's first, nothing was committed, so the
 retry starts the conversation afresh instead of recording a lossy hand-off; a
 worker reads that from the lost turn's `snapshot_unpublished` event
-(`freshChain`). Without a versioned session store there is no commit gate: a
-retry on the same worker resumes the dead runtime's local dir. A runtime that
-stays alive but stops answering still ends at the inactivity watchdog.
+(`freshChain`). The turn after a stopped first turn starts fresh the same way.
+A record from an older worker, or a failed read of the records, gives no
+proof, and the lossy hand-off still runs. Without a versioned session store
+there is no commit gate: a retry on the same worker resumes the dead runtime's
+local dir. A runtime that stays alive but stops answering still ends at the
+inactivity watchdog.
 
 A tool call in flight when the runtime dies is not awaited. A worker tool's
 `turnSignal` is aborted, and the inline control tools stop before their next

@@ -19,7 +19,10 @@ connection-closed retry starts a fresh runtime and, with a versioned session
 store, resumes from the last committed snapshot, on any worker. A lost first
 turn is retried as a fresh conversation, not as a lossy hand-off. Before, the
 retry reused the dead warm session until its retries ran out and it fell back
-to a lossy hand-off.
+to a lossy hand-off. The turn after a stopped first turn also starts fresh on
+any worker; before, a worker without the stopped turn's local files reported a
+false lossy hand-off. A turn recorded by an older worker, or a failed read of
+the turn records, still takes the lossy hand-off.
 
 A disposed or not-connected Copilot connection, and a Copilot session the SDK
 marked disconnected, now take the same retry instead of the generic error retry.
