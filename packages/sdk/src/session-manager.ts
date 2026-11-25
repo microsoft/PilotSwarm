@@ -346,44 +346,6 @@ export function pickAgentCopyByPackageIdForOwner(
         : undefined;
 }
 
-/**
- * The agent list for the Copilot runtime: at most one copy of each agent name.
- *
- * The worker holds every loaded copy of a name: deployment agents, shared
- * packages and each user's private package. The Copilot runtime refuses a
- * session whose customAgents repeat a name ("custom agent names must be
- * unique"), so the worker's whole list cannot be passed as it is.
- *
- * Each name gets the copy pickAgentCopyForOwner picks: the session owner's
- * own user copy, else a deployment agent, else a shared package. Another
- * user's private copy is never passed, also when it is the only copy of the
- * name. A name keeps the place of its first copy that this session may get.
- */
-export function customAgentsForOwner<T extends { name: string }>(
-    agents: readonly T[] | undefined,
-    ownerKey: string | null,
-): T[] {
-    // Lower is better. -1: a private copy of someone else.
-    const rank = (agent: any): number => {
-        if (agent.packageScope === "user") {
-            return ownerKey !== null && agentOwnerKey(agent.packageOwner) === ownerKey ? 0 : -1;
-        }
-        return agent.packageScope == null ? 1 : 2;
-    };
-    const picked = new Map<string, { agent: T; rank: number }>();
-    for (const agent of agents ?? []) {
-        const agentRank = rank(agent);
-        if (agentRank < 0) continue;
-        const current = picked.get(agent.name);
-        if (!current) picked.set(agent.name, { agent, rank: agentRank });
-        else if (agentRank < current.rank) {
-            current.agent = agent;
-            current.rank = agentRank;
-        }
-    }
-    return [...picked.values()].map((entry) => entry.agent);
-}
-
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     /**
@@ -3440,12 +3402,14 @@ export class SessionManager {
             } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
-            // Pass loaded skills and agents from worker defaults; MCP servers
+            // Pass loaded skills from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
             ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
-            // One copy of each name, the one this session's owner may get: the runtime refuses a repeated name.
-            ...(!nativeEnabled && this.workerDefaults.customAgents?.length
-                && { customAgents: customAgentsForOwner(this.workerDefaults.customAgents, sessionOwnerKey) }),
+            // A session without native tasks gets no custom agents. `task` is excluded for it (excludedTools
+            // above), so the runtime never uses the list, and PilotSwarm starts its agents with its own tools.
+            // The worker's list must not be passed: it holds every copy of a name (a deployment agent, a shared
+            // package, each user's private package), and the runtime refuses a list that repeats a name.
+            ...(!nativeEnabled && { customAgents: [] }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
             ...(options?.workflowTools ? {
                 availableTools: options.workflowTools.tools.map(tool => tool.namespacedName ?? tool.name),

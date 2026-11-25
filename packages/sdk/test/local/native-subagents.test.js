@@ -257,7 +257,8 @@ describe("worker session assembly", () => {
             }, { turnIndex: 0 });
             const options = created[0];
             expect(options.excludedTools.includes("task")).toBe(!enabled);
-            expect(options.customAgents.map(a => a.name)).toEqual(enabled ? ["swarm-explore", "swarm-task"] : ["durable-agent"]);
+            // Without native tasks the runtime gets no custom agents: `task` is excluded, so nothing would use them.
+            expect(options.customAgents.map(a => a.name)).toEqual(enabled ? ["swarm-explore", "swarm-task"] : []);
             expect(options.customAgentsLocalOnly === true).toBe(enabled);
             expect(options.excludedBuiltinAgents).toEqual(enabled ? BUILTIN_AGENTS : undefined);
             expect(options.customAgents.some(agent => agent.name === "swarm-rubber-duck")).toBe(false);
@@ -272,12 +273,12 @@ describe("worker session assembly", () => {
     });
 
     // The Copilot runtime refuses a session whose customAgents repeat a name. A worker holds several copies of one name
-    // (a deployment agent, a shared package, each user's private package), and these sessions get the worker's agents.
+    // (a deployment agent, a shared package, each user's private package), so its list must not reach the runtime.
     it.each([
         [{ promptLayering: { kind: "pilotswarm-system-agent" } }],
         [{ agentIdentity: "regen-distiller" }],
         [{ agentIdentity: "agent-tuner" }],
-    ])("gives a session without native tasks one copy of each agent name %j", async (config) => {
+    ])("gives a session without native tasks no custom agents when the worker holds a name twice %j", async (config) => {
         const home = mkdtempSync(join(tmpdir(), "ps-agent-copies-"));
         const alice = { provider: "test", subject: "alice" };
         const manager = new SessionManager(undefined, null, {
@@ -302,8 +303,8 @@ describe("worker session assembly", () => {
         };
         try {
             await manager.getOrCreate("agent-copies", { model: MODEL, ...config }, { turnIndex: 0 });
-            const passed = created[0].customAgents.map(agent => [agent.name, agent.prompt]);
-            expect(passed).toEqual([["helper", "DEPLOYMENT HELPER"], ["editor", "SHARED EDITOR"]]);
+            expect(created[0].excludedTools).toContain("task");
+            expect(created[0].customAgents).toEqual([]);
         } finally { await manager.shutdown(); rmSync(home, { recursive: true, force: true }); }
     });
 });

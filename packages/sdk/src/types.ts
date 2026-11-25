@@ -1877,8 +1877,10 @@ export interface PilotSwarmWorkerOptions {
      *   - `.mcp.json` file with MCP server configs
      *   - `plugin.json` manifest (optional metadata)
      *
-     * The worker reads these at startup. Skills and agents pass through
-     * the SDK's `skillDirectories` / `customAgents` session config fields.
+     * The worker reads these at startup. Skills pass through the SDK's
+     * `skillDirectories` session config field. Agents are PilotSwarm agents:
+     * the worker binds sessions to them and starts them with its own tools.
+     * They are not passed to the SDK's `customAgents`.
      * `.mcp.json` servers form the deployment MCP CATALOG: a session
      * receives a server only via its bound agent's `mcpServers:` /
      * `inheritDefaultMcpServers:` frontmatter (or a base-agent opt-in) —
@@ -1895,7 +1897,7 @@ export interface PilotSwarmWorkerOptions {
 
     /**
      * Additional custom agents (beyond plugins).
-     * Passed directly to the SDK's `customAgents` config.
+     * Loaded like plugin agents; not passed to the SDK's `customAgents`.
      */
     customAgents?: Array<{
         name: string;
