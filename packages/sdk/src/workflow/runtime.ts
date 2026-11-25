@@ -2983,8 +2983,10 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 const WORKFLOW_ENDED_NOTICE_MAX_BYTES = 16 * 1024;
                 let payloadText: string;
                 try {
-                    const candidate = canonicalJson({ ...basePayload, output: run.terminalOutput });
-                    payloadText = utf8ByteLength(candidate) <= WORKFLOW_ENDED_NOTICE_MAX_BYTES
+                    const candidateObj = { ...basePayload, output: run.terminalOutput };
+                    const candidate = canonicalJson(candidateObj);
+                    const envelope = canonicalJson({ contract: WORKFLOW_ENDED_CONTRACT, from: run.workflowSessionId, payload: candidateObj });
+                    payloadText = utf8ByteLength(envelope) <= WORKFLOW_ENDED_NOTICE_MAX_BYTES
                         ? candidate
                         : canonicalJson({ ...basePayload, outputTruncated: true });
                 } catch {

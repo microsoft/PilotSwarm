@@ -17,6 +17,7 @@ import { registerWorkflow } from "../../src/workflow/runtime.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { sendTypedWorkflowInput } from "../../src/workflow/service.ts";
+import { WORKFLOW_JSON_MAX_DEPTH, WORKFLOW_PAYLOAD_MAX_BYTES } from "../../src/workflow/json.ts";
 import { startSessionWorkflowTest, definitionTestBench, waitSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 
 const require = createRequire(import.meta.url);
@@ -356,6 +357,166 @@ describe("Multi-contract receive (Change A)", () => {
             const reportBad = await waitSessionWorkflowTest(h.host, benchBad, { waitMs: 20_000, actor: ENGINE });
             expect(reportBad.status).toBe("failed");
             expect(JSON.stringify(reportBad)).toContain("Other@1");
+
+            // 7. L12: list receive refuses payloads whose { contract, from, payload } envelope exceeds max depth (64) or max size (256 KiB)
+            // at acceptance (inserting nothing), while single-contract receive still accepts depth 64 / 256 KiB and deep child output truncates cleanly.
+            const nestedObj = (depth) => {
+                let cur = 1;
+                for (let i = 0; i < depth; i += 1) cur = { a: cur };
+                return cur;
+            };
+            const OPEN_LIST_YAML = `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: open-list-recv, version: "1.0.0" }
+contracts:
+  A@1: { schema: { type: object } }
+  B@1: { schema: { type: object } }
+initial: wait_ab
+states:
+  wait_ab:
+    type: messaging
+    mode: receive
+    contract: [A@1, B@1]
+    wait: { seconds: 5 }
+    transition: { next: { A@1: done, B@1: done, elapsed: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  failed: { type: terminal, outcome: failed, output: "\${runtime.error}" }
+`;
+            const OPEN_SINGLE_YAML = `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: open-single-recv, version: "1.0.0" }
+contracts:
+  A@1: { schema: { type: object } }
+initial: wait_a
+states:
+  wait_a:
+    type: messaging
+    mode: receive
+    contract: A@1
+    wait: { seconds: 5 }
+    transition: { next: { received: done, elapsed: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  failed: { type: terminal, outcome: failed, output: "\${runtime.error}" }
+`;
+            const DEEP_CHILD_YAML = `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: deep-output-child, version: "1.0.0" }
+initial: mk
+states:
+  mk:
+    type: script
+    outcomes: [ok]
+    source: |
+      let cur = 1;
+      for (let i = 0; i < 63; i += 1) cur = { a: cur };
+      await setResult("ok", cur);
+    transition: { next: { ok: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  failed: { type: terminal, outcome: failed, output: "\${runtime.error}" }
+`;
+            const DEEP_PARENT_YAML = `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: deep-output-parent, version: "1.0.0" }
+contracts:
+  Ping@1: { schema: { type: object } }
+initial: go
+states:
+  go:
+    type: spawn
+    definition: deep-output-child
+    transition: { next: { started: wait_child, failure: failed } }
+  wait_child:
+    type: messaging
+    mode: receive
+    contract: [Ping@1, WorkflowEnded@1]
+    from: "\${states.go.output.workflowId}"
+    wait: { seconds: 20 }
+    transition: { next: { Ping@1: wait_child, WorkflowEnded@1: done, elapsed: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  failed: { type: terminal, outcome: failed, output: "\${runtime.error}" }
+`;
+            for (const [n, y] of [
+                ["open-list-recv", OPEN_LIST_YAML],
+                ["open-single-recv", OPEN_SINGLE_YAML],
+                ["deep-output-child", DEEP_CHILD_YAML],
+                ["deep-output-parent", DEEP_PARENT_YAML],
+            ]) {
+                const sv = await saveSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: chat, name: n, yaml: y, expected: null,
+                    actor: { kind: "session", sessionId: chat }, operationId: `save-${n}`,
+                });
+                expect(sv.receipt.valid, `${n}: ${JSON.stringify(sv.receipt.diagnostics)}`).toBe(true);
+            }
+
+            // (a) Pre-queued max-depth (64) & (c) pre-queued max-size (256 KiB) refused at acceptance; inbox stays empty; valid B@1 passes.
+            let capL12 = null;
+            const rL12 = await startSessionWorkflowDefinition({
+                ...h.host,
+                duroxideClient: { ...h.client, startOrchestrationVersioned: async (...args) => { capL12 = args; } },
+            }, {
+                ownerSessionId: chat, definition: { name: "open-list-recv" }, inputs: {},
+                actor: ENGINE, operationId: "start-l12-pre", owner: OWNER,
+            });
+            const deepErrA = await sendTypedWorkflowInput(h.host, {
+                workflowSessionId: rL12.workflowId, senderSessionId: chat, runId: rL12.runId,
+                contract: "A@1", payload: nestedObj(WORKFLOW_JSON_MAX_DEPTH), operationId: "l12-deep-pre",
+            }).then(() => null, e => e);
+            expect(deepErrA).toMatchObject({ code: "INPUT_INVALID" });
+            expect(deepErrA.message).toMatch(/too deep for a list receive/);
+
+            const bigErrC = await sendTypedWorkflowInput(h.host, {
+                workflowSessionId: rL12.workflowId, senderSessionId: chat, runId: rL12.runId,
+                contract: "A@1", payload: { s: "x".repeat(WORKFLOW_PAYLOAD_MAX_BYTES - 8) }, operationId: "l12-big-pre",
+            }).then(() => null, e => e);
+            expect(bigErrC).toMatchObject({ code: "INPUT_INVALID" });
+            expect(bigErrC.message).toMatch(/too large for a list receive/);
+            expect(await h.store.listInbox(rL12.runId)).toHaveLength(0);
+
+            // (b) Pending list receive also refuses depth 64 cleanly at acceptance with INPUT_INVALID and stores nothing.
+            await h.client.startOrchestrationVersioned(...capL12);
+            let pendL12 = null;
+            for (let i = 0; i < 60 && !pendL12; i += 1) {
+                pendL12 = (await h.store.listNodeExecutions(rL12.runId)).find(n => n.nodeId === "wait_ab" && n.state === "pending") ?? null;
+                if (!pendL12) await new Promise(r => setTimeout(r, 50));
+            }
+            expect(pendL12).toBeTruthy();
+            const deepErrB = await sendTypedWorkflowInput(h.host, {
+                workflowSessionId: rL12.workflowId, senderSessionId: chat, runId: rL12.runId,
+                contract: "A@1", payload: nestedObj(WORKFLOW_JSON_MAX_DEPTH), operationId: "l12-deep-pend",
+            }).then(() => null, e => e);
+            expect(deepErrB).toMatchObject({ code: "INPUT_INVALID" });
+            expect(deepErrB.message).toMatch(/too deep for a list receive/);
+            expect(await h.store.listInbox(rL12.runId)).toHaveLength(0);
+            // Send valid B@1 -> run finishes cleanly (not stuck).
+            await sendTypedWorkflowInput(h.host, {
+                workflowSessionId: rL12.workflowId, senderSessionId: chat, runId: rL12.runId,
+                contract: "B@1", payload: { ok: true }, operationId: "l12-valid-b",
+            });
+            const endL12 = await h.waitRun(rL12.runId);
+            expect(endL12.status).toBe("completed");
+            expect(endL12.terminalOutput).toEqual({ contract: "B@1", from: chat, payload: { ok: true } });
+
+            // Single-contract receive is unchanged: still accepts exact depth 64 payload!
+            const rSingle = await startSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, definition: { name: "open-single-recv" }, inputs: {},
+                actor: ENGINE, operationId: "start-l12-single", owner: OWNER,
+            });
+            await sendTypedWorkflowInput(h.host, {
+                workflowSessionId: rSingle.workflowId, senderSessionId: chat, runId: rSingle.runId,
+                contract: "A@1", payload: nestedObj(WORKFLOW_JSON_MAX_DEPTH), operationId: "l12-single-deep",
+            });
+            const endSingle = await h.waitRun(rSingle.runId);
+            expect(endSingle.status).toBe("completed");
+
+            // WorkflowEnded@1 with depth-63 child output truncates cleanly (outputTruncated: true) so parent's list receive succeeds.
+            const rDeepChild = await startSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, definition: { name: "deep-output-parent" }, inputs: {},
+                actor: ENGINE, operationId: "start-l12-deep-child", owner: OWNER,
+            });
+            const endDeepChild = await h.waitRun(rDeepChild.runId);
+            expect(endDeepChild.status).toBe("completed");
+            expect(endDeepChild.terminalOutput?.contract).toBe("WorkflowEnded@1");
+            expect(endDeepChild.terminalOutput?.payload?.outputTruncated).toBe(true);
         } finally {
             await h.stop();
         }

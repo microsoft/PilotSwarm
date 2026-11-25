@@ -1639,6 +1639,7 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
     const contract = ir.contracts[request.contract];
     const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? (Array.isArray(node.contract) ? node.contract : [node.contract]) : []));
+    const listReceived = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" && Array.isArray(node.contract) ? node.contract : []));
     if (request.contract === WORKFLOW_ENDED_CONTRACT && run.mode !== "test") {
         throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `Contract '${WORKFLOW_ENDED_CONTRACT}' is reserved for the runtime and cannot be sent directly.`,
             { receives: [...received].filter(c => c !== WORKFLOW_ENDED_CONTRACT).sort() });
@@ -1652,6 +1653,18 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     catch (error) {
         if (error instanceof WorkflowJsonError) throw new WorkflowStoreError("INPUT_INVALID", error.message);
         throw error;
+    }
+    if (listReceived.has(request.contract)) {
+        try {
+            boundedCanonicalJson({ contract: request.contract, from: senderSessionId, payload: request.payload }, "The input payload");
+        } catch (error) {
+            if (error instanceof WorkflowJsonError) {
+                const reason = /nesting exceeds/i.test(error.message) ? "too deep" : "too large";
+                throw new WorkflowStoreError("INPUT_INVALID",
+                    `The input payload is ${reason} for a list receive: ${error.message}`);
+            }
+            throw error;
+        }
     }
     const problems = builtInEndedInTest
         ? (isJsonObject(request.payload) ? [] : [{ path: "/", message: "WorkflowEnded@1 payload must be a JSON object." }])
