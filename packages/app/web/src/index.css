@@ -13128,8 +13128,12 @@ textarea.ps-link-input {
 .ps-wf-head-actions { display: inline-flex; align-items: center; gap: 6px; }
 /* The dimmed line under the row: the shown revision's detail (who, when, version, newest, not valid, a package's), its last
    test, and Delete… at its end. "not valid" keeps the danger colour. */
+.ps-wf-line.ps-wf-latest { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.ps-wf-latest-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-wf-line.ps-wf-info { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.ps-wf-line.ps-wf-info.has-remove { flex-wrap: nowrap; }
 .ps-wf-info-text { flex: 1 1 auto; min-width: 0; }
+.ps-wf-line.ps-wf-info.has-remove > .ps-wf-info-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-wf-info-error { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-wf-info-actions { display: inline-flex; flex: none; margin-left: auto; }
 select.ps-workflow-input optgroup { background: var(--ps-background); color: var(--ps-muted); }
@@ -13518,7 +13522,8 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   .ps-wf-latest .ps-link-button {
     display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 8px;
   }
-  /* OF-S2-8: Delete… at the end of the line under the pickers. */
+  /* OF-S2-8: Delete… keeps a 44 px touch target on either the latest-workflow line or the revision-info line. */
+  .ps-wf-latest .ps-mini-button.ps-workflow-tool-button,
   .ps-wf-info .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
   /* UX2P-F1: the new-session picker's rows (a Workflow's too) and its dialog buttons (Create Session) are 44 px targets on a
      phone, without waiting for the touch-scale toggle. */
@@ -13732,6 +13737,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-workflow-node.is-kind-send .ps-workflow-node-icon,
 .ps-workflow-node.is-kind-receive .ps-workflow-node-icon { color: var(--ps-wf-icon-message, #22d3ee); }
 .ps-workflow-node.is-kind-decision .ps-workflow-node-icon { color: var(--ps-wf-icon-decision, #34d399); }
+.ps-workflow-node.is-kind-spawn .ps-workflow-node-icon { color: var(--ps-wf-icon-spawn, #38bdf8); }
 .ps-workflow-node-meta.is-state { color: var(--ps-foreground); }
 /* r3 C15 (and C02): a node's type line was the muted colour on the node's face, 4.2:1 to 4.3:1 on a running node in
    Workspace Dark and on any node in win95. A third of the foreground in it keeps it quieter than the name and reads 5:1 or

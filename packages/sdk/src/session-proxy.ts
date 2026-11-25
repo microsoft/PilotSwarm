@@ -82,7 +82,7 @@ import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarni
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
-import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/tools.js";
+import { childWorkflowsFromTool, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/tools.js";
 import { WORKFLOW_UPDATE_DATA_LINE, isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/request-service.js";
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/agent-node-service.js";
@@ -94,7 +94,7 @@ import { workflowDefinitionFromTool } from "./workflow/definition-tool.js";
 import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/session-packages.js";
 import { requireWorkflowScriptsInYaml } from "./workflow/scripts-gate.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/test-agent-tools.js";
-import { sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
+import { SESSION_MAX_NESTING_LEVEL, sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
 import { applyOperatorCommandToWorkflow, applySessionCommandToWorkflow } from "./workflow/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/intake.js";
 import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/intake-admission.js";
@@ -1826,7 +1826,7 @@ export function registerActivities(
 
         const hostname = os.hostname();
         const MAX_SUB_AGENTS = WORKFLOW_CHILD_BUDGET_MAX;
-        const MAX_NESTING_LEVEL = 2;
+        const MAX_NESTING_LEVEL = SESSION_MAX_NESTING_LEVEL;
         let fallbackAgentIdentity: string | undefined;
         let catalogSessionRow: any = null;
         // Self-heal older persisted system sessions created before agentIdentity
@@ -3398,6 +3398,14 @@ export function registerActivities(
                         // (null) completes none (D1).
                         ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
                 },
+                childWorkflows: async (args: Record<string, unknown>) => {
+                    if (!catalog) return workflowToolErrorPayload(new Error("Workflow session catalog is unavailable."));
+                    const host = await workflowBridgeHost();
+                    return childWorkflowsFromTool(args, {
+                        callerWorkflowSessionId: workflowLineage!.agentRoot!.workflowSessionId,
+                        host: { ...host, catalog },
+                    });
+                },
             } : {}),
 
             /**
@@ -3574,8 +3582,8 @@ export function registerActivities(
                     if (args.lock_title === true && !catalog) {
                         return "[SYSTEM: spawn_agent failed: session title storage is unavailable.]";
                     }
-                    // Workflow agent states (R16): a session in an agent state's subtree nests by its stored lineage, up to
-                    // level 3 (an agent state's child at level 2 may spawn one level). Elsewhere the ordinary limit applies.
+                    // Workflow agent states (rule 5): an agent step is at its Workflow's level; no session nests deeper than
+                    // level 2, counted on the stored lineage. Elsewhere the ordinary limit applies.
                     const { childNestingLevel, maxNestingLevel } = spawnNesting(input.nestingLevel ?? 0, MAX_NESTING_LEVEL, workflowLineage);
                     if (childNestingLevel > maxNestingLevel) {
                         // Spec 14: inside a Workflow the refusal says so, with the levels, in words.

@@ -249,6 +249,7 @@ export class PilotSwarmWorker {
     private _started = false;
     private _runtimeStartup: Promise<void> | null = null;
     private _stopRequested = false;
+    private _spawnSdkClient: Promise<{ stop(): Promise<void>; _workflowAgentModelCheck(): any; _workflowDecisionCapability(): any; _workflowDecisionProviderBindings(): any }> | null = null;
     /** Worker-level tool registry — name → Tool. */
     private toolRegistry = new Map<string, Tool<any>>();
     /** Loaded skill directories from plugins + direct config. */
@@ -1096,6 +1097,43 @@ export class PilotSwarmWorker {
                     providerFor: (qualifiedModel: string, providerInstanceId: string, providerUpdatedAt: string | null) =>
                         this._decisionProviderFor(qualifiedModel, providerInstanceId, providerUpdatedAt),
                 } } : {}),
+                spawnChildHost: async (client) => {
+                    const [{ PilotSwarmClient }, { createWorkflowAgentResolver }, { createPackageWorkflowSource }, { readWorkflowPackagePins }, { workflowTestModeFromEnv }] = await Promise.all([
+                        import("./client.js"),
+                        import("./workflow/agent-resolver.js"),
+                        import("./workflow/session-packages.js"),
+                        import("./workflow/package-pins.js"),
+                        import("./workflow/test-mode-switch.js"),
+                    ]);
+                    if (!this._provider || !this._catalog || !this.factStore) {
+                        throw new Error("Workflow spawn host requires the worker's shared provider, catalog, and fact store.");
+                    }
+                    this._spawnSdkClient ??= (async () => {
+                        const sdkClient = new PilotSwarmClient({ store: storage.duroxide.url, cmsSchema: storage.runtime.cmsSchema, ...internalClientConfig });
+                        await sdkClient._startOnShared({ provider: this._provider!, catalog: this._catalog!, factStore: this.factStore! });
+                        return sdkClient;
+                    })();
+                    const sdkClient = await this._spawnSdkClient;
+                    const packageWorkflows = this.artifactStore
+                        ? createPackageWorkflowSource({ catalog: this._catalog, artifactStore: this.artifactStore }) : undefined;
+                    return {
+                        store: this._catalog.workflowStore!(),
+                        catalog: this._catalog,
+                        duroxideClient: client,
+                        readPackagePins: id => readWorkflowPackagePins(this._catalog!, id),
+                        scripts: workflowScriptSettings.enabled,
+                        ...(packageWorkflows ? { packageWorkflows } : {}),
+                        checkAgentModel: sdkClient._workflowAgentModelCheck(),
+                        decisionCapability: sdkClient._workflowDecisionCapability(),
+                        resolveDecisionProviderBindings: sdkClient._workflowDecisionProviderBindings(),
+                        describeAgentTools: (node, binding, caller, agent) => this.sessionManager.describeWorkflowAgentTools(node, binding, caller, agent),
+                        testMode: workflowTestModeFromEnv(),
+                        resolveAgent: createWorkflowAgentResolver({
+                            catalog: this._catalog,
+                            deploymentAgents: () => ({ userAgents: [...this._rawLoadedAgents], systemAgents: [...this._loadedSystemAgents] }),
+                        }),
+                    };
+                },
                 // This worker's agent host.
                 agentNodes: milestone.workflowMilestoneAgentNodes({
                     catalog: this._catalog,
@@ -1231,6 +1269,11 @@ export class PilotSwarmWorker {
             this._agentPackagesTimer = null;
         }
         await this._featureFlags?.stop();
+        if (this._spawnSdkClient) {
+            const clientPromise = this._spawnSdkClient;
+            this._spawnSdkClient = null;
+            try { await (await clientPromise).stop(); } catch {}
+        }
         if (this._eventLoopHist) {
             this._eventLoopHist.disable();
             this._eventLoopHist = null;

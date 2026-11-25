@@ -1195,8 +1195,41 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     // management client, the Web API and MCP), as `options.callerSessionId` reads it.
     const control = selected ? await store.readLastRunControl(workflowSessionId, selected.runId) : null;
     const delegated = await store.readWorkflowToolsDelegated(workflowSessionId);
+    let spawnedBy: { workflowId: string; stateId: string; visit: number } | null = null;
+    if (selected?.startOperationId?.startsWith("spawn:") && definition.parentSessionId) {
+        const spawnExec = await store.readNodeExecution(selected.startOperationId.slice("spawn:".length));
+        if (spawnExec) spawnedBy = { workflowId: definition.parentSessionId, stateId: spawnExec.nodeId, visit: spawnExec.ordinal };
+    }
+    const spawnChildrenByExec = new Map<string, JsonValue>();
+    let spawnChildrenList: JsonValue[] | null = null;
+    if (selected && sections && ir && Object.values(ir.nodes).some(n => n.type === "spawn")) {
+        const spawnOpIds = [...new Set(
+            [...sections.openExecutions, ...sections.executions.rows]
+                .filter(e => e.nodeType === "spawn")
+                .map(e => `spawn:${e.nodeExecutionId}`),
+        )];
+        const children = await store.listSpawnChildrenByExecutions(workflowSessionId, spawnOpIds);
+        spawnChildrenList = [];
+        for (const child of children) {
+            const entry: JsonObject = {
+                workflowId: child.workflowSessionId,
+                runId: child.runId,
+                definition: child.definitionName,
+                revision: child.revision,
+                status: child.status,
+                outcome: child.terminalOutcome,
+                stateId: child.stateId,
+                visit: child.visit,
+                startedAt: child.startedAt,
+                endedAt: child.endedAt,
+            };
+            spawnChildrenList.push(entry);
+            spawnChildrenByExec.set(child.nodeExecutionId, entry);
+        }
+    }
     return {
         workflowId: workflowSessionId,
+        ...(spawnedBy ? { spawnedBy } : {}),
         ...(delegated !== null ? { delegated } : {}),
         definition: {
             state: definition.state, semver: definition.semver, currentRevision: definition.currentRevision,
@@ -1247,10 +1280,11 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             // OF-S2-7: the agent node models its start chose (by state id); only a run with any shows them, and every other
             // agent node uses its session's model.
             ...(agentModelsView(selected.agentModels)),
+            ...(spawnChildrenList ? { spawnChildren: spawnChildrenList } : {}),
             nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(
-                node, sections.agents, sections.approvals, sections.decisionInference)),
+                node, sections.agents, sections.approvals, sections.decisionInference, spawnChildrenByExec)),
             openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(
-                node, sections.agents, sections.approvals, sections.decisionInference)),
+                node, sections.agents, sections.approvals, sections.decisionInference, spawnChildrenByExec)),
             inbox: sections.inbox.rows.map(inboxViewOf),
             openInbox: sections.openInbox.map(inboxViewOf),
             outbox: sections.outbox.rows.map(message => outboxViewOf(message, sections.intakeOutcomes)),
@@ -1535,7 +1569,8 @@ function decisionInferenceReadView(node: WorkflowNodeExecutionRow, rows: readonl
 }
 
 function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, WorkflowAgentInvocation>,
-    approvals: ReadonlyMap<string, JsonValue>, decisionInference: ReadonlyMap<string, WorkflowDecisionInferenceSummary[]>)
+    approvals: ReadonlyMap<string, JsonValue>, decisionInference: ReadonlyMap<string, WorkflowDecisionInferenceSummary[]>,
+    spawnChildren?: ReadonlyMap<string, JsonValue>)
     : { [key: string]: JsonValue } {
     const agent = agents.get(node.nodeExecutionId);
     const inference = decisionInference.get(node.nodeExecutionId);
@@ -1558,6 +1593,7 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
         ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
         ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
         ...(agent !== undefined ? { agent: agentViewOf(agent) } : {}),
+        ...(spawnChildren?.has(node.nodeExecutionId) ? { spawnChild: spawnChildren.get(node.nodeExecutionId)! } : {}),
         // The visit's input as it was entered (owner 2026-11-20: a node's details show each visit's input and output), bounded
         // as its output is; an execution read (execution_id) gives it whole. Readers of the output read it under the same gate.
         inputPreview: previewJson(node.input, 500),
@@ -1876,6 +1912,125 @@ export async function sendWorkflowInputFromTool(args: Record<string, unknown>, c
             requestSha256: receipt.requestSha256, payloadSha256: receipt.payloadSha256, acceptedAt: receipt.acceptedAt, expiresAt: receipt.expiresAt,
             claimedBy: receipt.claimedBy ? { nodeExecutionId: receipt.claimedBy.nodeExecutionId, stateId: receipt.claimedBy.stateId } : null,
         });
+    } catch (error) {
+        return errorPayload(error);
+    }
+}
+
+export const WORKFLOW_CHILD_WORKFLOWS_TOOL = "child_workflows";
+
+export const CHILD_WORKFLOWS_TOOL_SPEC = {
+    description: "List, read, stop, or cancel child Workflows started by this Workflow. Only reaches child Workflows whose parent is this Workflow.",
+    parameters: {
+        type: "object",
+        properties: {
+            operation: { type: "string", enum: ["list", "read", "stop", "cancel"], description: "Operation to perform." },
+            status: { type: "string", enum: ["active", "ended", "all"], description: "For list: filter by child run status (default: active)." },
+            definition: { type: "string", description: "For list: optional definition name filter." },
+            limit: { type: "number", description: "For list: max rows 1..100 (default: 50)." },
+            cursor: { type: "string", description: "For list: pagination cursor from a previous call." },
+            workflow_id: { type: "string", description: "For read/stop/cancel: child Workflow session id." },
+            operation_id: { type: "string", description: "For stop/cancel: stable idempotency key." },
+            grace_seconds: { type: "number", description: "For stop: grace period 0..3600 seconds (default: 60)." },
+            reason: { type: "string", description: "For stop/cancel: optional reason." },
+        },
+        required: ["operation"],
+    },
+} as const;
+
+/** Strict parent-only authorization for child_workflows: anything other than a live child of callerWorkflowSessionId answers WORKFLOW_NOT_FOUND. */
+async function authorizeChildOfWorkflow(host: WorkflowToolHost, workflowSessionId: string, callerWorkflowSessionId: string): Promise<void> {
+    const [row, definition] = await Promise.all([host.catalog.getSession(workflowSessionId), host.store.readDefinition(workflowSessionId)]);
+    if (!row || row.deletedAt || row.sessionKind !== "workflow" || !definition
+        || row.parentSessionId !== callerWorkflowSessionId || definition.parentSessionId !== callerWorkflowSessionId) {
+        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No child Workflow ${workflowSessionId} belongs to this Workflow.`);
+    }
+}
+
+/**
+ * child_workflows tool: list, read, stop, and cancel child Workflows owned by callerWorkflowSessionId.
+ * Exposed only to a Workflow's script states and direct agent steps.
+ */
+export async function childWorkflowsFromTool(
+    args: Record<string, unknown>,
+    context: { callerWorkflowSessionId: string; host: WorkflowToolHost },
+): Promise<string> {
+    try {
+        const op = typeof args.operation === "string" ? args.operation : "";
+        if (op === "list") {
+            const status = args.status === undefined ? "active" : args.status;
+            if (status !== "active" && status !== "ended" && status !== "all") {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "status must be active, ended, or all.");
+            }
+            const definitionFilter = optionalString(args, "definition");
+            let limit = 50;
+            if (args.limit !== undefined) {
+                if (typeof args.limit !== "number" || !Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100) {
+                    throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "limit must be an integer from 1 to 100.");
+                }
+                limit = args.limit;
+            }
+            let offset = 0;
+            if (args.cursor !== undefined && args.cursor !== null) {
+                if (typeof args.cursor !== "string" || !/^o:[0-9]+$/.test(args.cursor)) {
+                    throw new WorkflowStoreError("WORKFLOW_CURSOR_INVALID", "cursor is invalid.");
+                }
+                offset = Number(args.cursor.slice(2));
+            }
+            const rows = await context.host.store.listChildWorkflows(context.callerWorkflowSessionId, {
+                status,
+                definition: definitionFilter,
+                limit: limit + 1,
+                offset,
+                includeDeleted: false,
+            });
+            const hasMore = rows.length > limit;
+            const slice = hasMore ? rows.slice(0, limit) : rows;
+            const nextCursor = hasMore ? `o:${offset + limit}` : null;
+            const children = await Promise.all(slice.map(async row => {
+                let spawnedBy: { stateId: string; visit: number } | null = null;
+                if (row.startOperationId?.startsWith("spawn:")) {
+                    const exec = await context.host.store.readNodeExecution(row.startOperationId.slice("spawn:".length));
+                    if (exec) spawnedBy = { stateId: exec.nodeId, visit: exec.ordinal };
+                }
+                return {
+                    workflowId: row.workflowSessionId,
+                    definition: row.definitionName,
+                    revision: row.revision,
+                    status: row.status,
+                    stateId: row.currentStateId,
+                    stateType: row.currentStateType,
+                    startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+                    endedAt: row.endedAt ? row.endedAt.toISOString() : null,
+                    outcome: row.terminalOutcome,
+                    spawnedBy,
+                };
+            }));
+            return payload({ ok: true, children, nextCursor });
+        }
+        if (op === "read") {
+            const workflowSessionId = requiredString(args, "workflow_id");
+            await authorizeChildOfWorkflow(context.host, workflowSessionId, context.callerWorkflowSessionId);
+            const view = await readWorkflowModel(context.host, workflowSessionId, {}, "tool", {
+                callerSessionId: context.callerWorkflowSessionId,
+            });
+            return payload({ ok: true, ...view });
+        }
+        if (op === "stop" || op === "cancel") {
+            const workflowSessionId = requiredString(args, "workflow_id");
+            await authorizeChildOfWorkflow(context.host, workflowSessionId, context.callerWorkflowSessionId);
+            const actor: WorkflowActor = { kind: "agent", sessionId: context.callerWorkflowSessionId };
+            const cmdArgs: Record<string, unknown> = {
+                operation: op,
+                workflow_id: workflowSessionId,
+                operation_id: args.operation_id,
+                ...(args.reason !== undefined ? { reason: args.reason } : {}),
+                ...(op === "stop" ? { grace_seconds: args.grace_seconds ?? 60 } : {}),
+            };
+            const result = await runUpdateWorkflowCommand(cmdArgs, context.host, actor, async () => {});
+            return payload({ ok: true, ...result });
+        }
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "child_workflows supports only list, read, stop, and cancel.");
     } catch (error) {
         return errorPayload(error);
     }

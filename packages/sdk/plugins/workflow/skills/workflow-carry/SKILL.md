@@ -5,7 +5,13 @@ description: Preserve loop counters and payloads through Workflow errors, receip
 
 # Workflow carry
 
-Call `load_skill` with name `workflow-authoring` first. Nonterminals may opt in:
+Use `${states.<id>.output}` for the latest finished result of `<id>` (a
+failed visit does not replace it; visible in the same branch or from root, else
+compile error); use `carry` for a value that must be frozen.
+`${states.<id>.output}` holds only the latest result; to collect values across
+visits, route each message to one script that appends to its own prior output,
+e.g. `input: { before: "${states.<this script>.output.items ?? []}", item: "${input.payload}" }`. Call `load_skill` with name `workflow-authoring`
+first. Nonterminals except approval may opt in:
 `carry: { loop: "${input.loop}", payload: "${input.payload}" }`.
 Entry freezes this object before `input:` maps the effect's payload.
 The successor receives `{ carry: snapshot, result: outputOrError }`;

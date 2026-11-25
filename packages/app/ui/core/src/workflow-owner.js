@@ -125,9 +125,19 @@ export function isWorkflowChild(session) {
     return session?.sessionKind === "workflow" && !session?.isGroup;
 }
 
-/** The session that owns a workflow child: its parent session id, or null. */
-export function workflowOwnerId(session) {
-    return isWorkflowChild(session) ? text(session.parentSessionId) : null;
+/** The non-workflow session that owns a workflow child (walks up past parent Workflows when byId is given), or null. */
+export function workflowOwnerId(session, byId = null) {
+    if (!isWorkflowChild(session)) return null;
+    let cursor = text(session.parentSessionId);
+    if (!byId || !cursor) return cursor;
+    const seen = new Set([session.sessionId]);
+    while (cursor && !seen.has(cursor)) {
+        seen.add(cursor);
+        const parent = byId[cursor];
+        if (!parent || !isWorkflowChild(parent)) return cursor;
+        cursor = text(parent.parentSessionId);
+    }
+    return cursor;
 }
 
 /**
@@ -903,7 +913,7 @@ export function workflowNodeSessionTitle(byId, session) {
  */
 export function workflowSelectionTarget(byId, sessionId) {
     const session = byId?.[sessionId] ?? null;
-    const ownerId = workflowOwnerId(session);
+    const ownerId = workflowOwnerId(session, byId);
     if (!ownerId || !byId?.[ownerId] || byId[ownerId].isGroup) return null;
     return { ownerId, workflowId: sessionId };
 }
@@ -923,17 +933,17 @@ export function selectWorkflowTabContext(state) {
     const active = activeId ? byId[activeId] : null;
     const none = { ownerId: null, workflowId: null, nodeSessionId: null, nodeStateId: null };
     if (!active || active.isGroup) return none;
-    if (isWorkflowChild(active)) return { ...none, ownerId: workflowOwnerId(active), workflowId: activeId };
+    if (isWorkflowChild(active)) return { ...none, ownerId: workflowOwnerId(active, byId), workflowId: activeId };
     const ancestor = workflowAncestorOf(byId, activeId);
     if (ancestor) {
         const nodeSession = byId[ancestor.nodeSessionId];
-        return { ownerId: workflowOwnerId(byId[ancestor.workflowId]), workflowId: ancestor.workflowId, nodeSessionId: ancestor.nodeSessionId,
+        return { ownerId: workflowOwnerId(byId[ancestor.workflowId], byId), workflowId: ancestor.workflowId, nodeSessionId: ancestor.nodeSessionId,
             nodeStateId: workflowNodeStateOfSession(nodeSession) };
     }
     const focus = state?.sessions?.workflowRowId ?? null;
-    const focused = focus && byId[focus] && workflowOwnerId(byId[focus]) === activeId ? focus : null;
+    const focused = focus && byId[focus] && workflowOwnerId(byId[focus], byId) === activeId ? focus : null;
     const remembered = state?.ui?.workflowTabs?.[activeId]?.workflowId ?? null;
-    const workflowId = focused ?? (remembered && byId[remembered] && workflowOwnerId(byId[remembered]) === activeId ? remembered : null);
+    const workflowId = focused ?? (remembered && byId[remembered] && workflowOwnerId(byId[remembered], byId) === activeId ? remembered : null);
     return { ...none, ownerId: activeId, workflowId };
 }
 
@@ -1013,7 +1023,7 @@ export function workflowHighlightedSessionId(sessions) {
     const focus = sessions?.workflowRowId ?? null;
     if (!focus || !activeId) return activeId;
     const row = sessions?.byId?.[focus];
-    return workflowOwnerId(row) === activeId ? focus : activeId;
+    return workflowOwnerId(row, sessions?.byId) === activeId ? focus : activeId;
 }
 
 /** The ids of a session's Workflows that are still running (their read models carry what the badge needs), newest first, at most `limit`. */

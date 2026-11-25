@@ -92,6 +92,9 @@ export const WORKFLOW_EFFECT_VERSION = "1.0.0";
 /** The Decision effect orchestration version; script effects remain at 1.0.0. */
 export const WORKFLOW_DECISION_EFFECT_VERSION = "1.1.0";
 
+/** The Spawn effect orchestration version; script (1.0.0) and decision (1.1.0) effects stay distinct. */
+export const WORKFLOW_SPAWN_EFFECT_VERSION = "1.2.0";
+
 /**
  * Delivers a messaging send state's message (one per node execution, with a
  * stable instance id): attempts with the run-ending writes' schedule, then
@@ -170,6 +173,7 @@ export const WORKFLOW_ACTIVITIES = {
     elapse: "workflow.elapse",
     runScript: "workflow.runScript",
     runDecision: "workflow.runDecision",
+    spawnChild: "workflow.spawnChild",
     recordEffectResult: "workflow.recordEffectResult",
     wake: "workflow.wake",
     deliver: "workflow.deliver",
@@ -292,7 +296,7 @@ export interface ControllerPlan {
     catchAll: string | null;
     /** A messaging state names its mode; no other state has one. */
     nodes: Record<string, {
-        type: "script" | "wait" | "approval" | "messaging" | "agent" | "decision" | "parallel" | "terminal";
+        type: "script" | "wait" | "approval" | "messaging" | "agent" | "decision" | "spawn" | "parallel" | "terminal";
         mode?: "receive" | "send" | "request";
         next: Record<string, string>;
         /**
@@ -480,7 +484,7 @@ export function parsePlan(value: unknown): ControllerPlan {
     for (const [id, node] of Object.entries(nodes)) {
         const item = record(node, `plan node ${id}`);
         expect(item.type === "script" || item.type === "wait" || item.type === "approval" || item.type === "messaging" || item.type === "terminal"
-            || item.type === "agent" || item.type === "decision" || item.type === "parallel", `plan node ${id} type is invalid`);
+            || item.type === "agent" || item.type === "decision" || item.type === "spawn" || item.type === "parallel", `plan node ${id} type is invalid`);
         expect(item.type === "messaging" ? item.mode === "receive" || item.mode === "send" || item.mode === "request" : item.mode === undefined,
             `plan node ${id} mode is invalid`);
         const next = record(item.next, `plan node ${id} next`);

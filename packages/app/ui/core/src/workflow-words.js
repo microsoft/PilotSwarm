@@ -136,6 +136,9 @@ export function workflowRefusalText(label, message, fallback) {
 
 /** A message contract's name without its version ("DadJoke@1" → "DadJoke"). */
 export function workflowContractName(contract) {
+    if (Array.isArray(contract)) {
+        return contract.map(item => workflowContractName(item)).filter(Boolean).join(", ");
+    }
     const text = typeof contract === "string" ? contract.trim() : "";
     const at = text.lastIndexOf("@");
     return at > 0 ? text.slice(0, at) : text;
@@ -320,6 +323,9 @@ export function workflowNodeCardWords(input) {
         // agent's name, in its tooltip and the Node panel; a failure still says its shortest reason.
         case "agent":
             break;
+        case "spawn":
+            fact = typeof input.definition === "string" && input.definition ? input.definition : null;
+            break;
         case "terminal":
             fact = input.terminalOutcome ? workflowOutcomeWord(input.terminalOutcome) : null;
             break;
@@ -332,6 +338,6 @@ export function workflowNodeCardWords(input) {
     else if (!fact && mark === WORKFLOW_STATE_MARKS.done) fact = input.outcome ? workflowOutcomeWord(input.outcome) : "done";
     else if (!fact && mark === WORKFLOW_STATE_MARKS.cancelled) fact = "canceled";
     else if (!fact && mark === WORKFLOW_STATE_MARKS.running) fact = input.phase === "paused" ? "paused"
-        : input.kind === "script" || input.kind === "decision" ? "running" : "waiting";
+        : input.kind === "script" || input.kind === "decision" || input.kind === "spawn" ? "running" : "waiting";
     return { mark, fact, badge: input.itemsShown ? null : workflowVisitBadge(input.runs, input.partial), row2: Boolean(mark || fact) };
 }

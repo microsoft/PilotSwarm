@@ -192,6 +192,7 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
         revisionCompare: isPlainRecord(safeView.revisionCompare) ? safeView.revisionCompare : null,
         definitionRevisions: isPlainRecord(safeView.definitionRevisions) ? safeView.definitionRevisions : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
+        spawnedBy: flow?.spawnedBy ?? null,
         banners: flow?.banners || [],
         readError: error,
         loading: Boolean(safeView.loading) && !definition,
@@ -1826,6 +1827,19 @@ function detailLines(selection, width, decisionCapability = null) {
         if (decision.warning) add(`! ${decision.warning}`, "yellow");
     }
     // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
+    if (node.kind === "receive") {
+        const contracts = Array.isArray(node.contract) ? node.contract : typeof node.contract === "string" ? [node.contract] : [];
+        if (contracts.length > 1) add(`Message types: ${contracts.join(", ")}`);
+    }
+    if (node.kind === "spawn") {
+        add("Type: Spawn", "cyan");
+        if (node.definition) add(`Child definition: ${node.definition}${Number.isSafeInteger(node.revision) ? ` (rev ${node.revision})` : ""}`);
+        const children = Array.isArray(node.children) ? node.children : [];
+        add(`Children: ${children.length}`);
+        for (const child of children.slice(0, 10)) {
+            add(`  - ${child.definition || "child"} #${child.visit ?? "?"} [${child.status || "unknown"}] ${child.workflowId}`, "gray");
+        }
+    }
     if (node.kind === "agent") {
         add(`Agent: ${workflowAgentTask(node)}`);
         add(`Session: ${workflowAgentSessionMode(node)}`);
@@ -1976,6 +1990,12 @@ function panelHeights(viewportHeight, rowCount) {
  * The workflow view's presentation (TUI modal): the title (workflow name and status), one row per state in graph order
  * with the selected row, and the selected state's detail lines. Null unless the workflow view is open. Pure.
  */
+/** The child session id opened by Enter/Tab on the currently selected node (agent occurrence or newest spawned child). */
+export function workflowViewChildSessionId(selection) {
+    return selection?.occurrence?.childSessionId
+        ?? (selection?.selected?.node?.kind === "spawn" ? selection.selected.node.children?.[0]?.workflowId ?? null : null);
+}
+
 export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = null) {
     const selection = selectWorkflowViewSelection(state);
     if (!selection) return null;
@@ -1990,7 +2010,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
     const { listHeight, detailsHeight } = panelHeights(viewportHeight ?? state?.ui?.layout?.viewportHeight ?? 40, rows.length);
     const detailsMaxScroll = Math.max(0, detailsLines.length - Math.max(1, detailsHeight - 2));
     return {
-        title: bounded(`Workflow: ${selection.projection.name} · ${selection.projection.status}`, contentWidth),
+        title: bounded(`Workflow: ${selection.projection.name} · ${selection.projection.status}${selection.projection.spawnedBy ? ` · from ${selection.projection.spawnedBy.stateId} #${selection.projection.spawnedBy.visit}` : ""}`, contentWidth),
         rows,
         selectedRowIndex: rowOf[selection.selectedIndex] ?? 0,
         // Workflow Simplified words (03): a node, not a step; Esc goes back to the session the pane belongs to.
@@ -2002,7 +2022,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
         detailsScroll: Math.max(0, Math.min(Number(selection.modal.detailsScroll) || 0, detailsMaxScroll)),
         detailsMaxScroll,
         idealWidth: width,
-        childSessionId: selection.occurrence?.childSessionId ?? null,
+        childSessionId: workflowViewChildSessionId(selection),
     };
 }
 

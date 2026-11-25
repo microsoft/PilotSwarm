@@ -4,6 +4,93 @@
 
 **Upgrade: deploy the workers.** No migration and no orchestration version.
 
+### A turn whose activity lock was lost runs again
+
+0.8.16 stopped saving a turn that a worker's drain cut (#367). A turn whose
+activity lock was lost outside a drain was still saved to the session store with
+the result `cancelled`, under the turn's key. The retry, on any worker, took that
+saved result as the finished turn and ended without running it, so the prompt was
+dropped. This has been possible since v0.6.0, the initial versioned-snapshot
+release, for turns with snapshots enabled. A cancelled attempt is now never saved
+(`session.snapshot_unpublished { reason: "cancelled" }`), and a `cancelled`
+result that an earlier release saved is never adopted: the retry runs the turn
+from the last saved snapshot.
+
+- **Prompts already dropped are not recovered.** A session that lost one shows,
+  in its duroxide history, a `runTurn` activity that completed with the result
+  `cancelled` (the orchestration traces `[session] turn cancelled`) for a turn
+  that nobody stopped, cancelled or deleted.
+- **Side effects may repeat.** A turn whose activity lock is lost after its tools
+  ran may repeat their side effects when it runs again, as after a worker crash.
+- **The activity rechecks its cancellation before every send.** A lost lock, a
+  cancel or a delete read before a model run, a steer, a corrective prompt or a
+  transcript reset stops it: no run starts, nothing is sent, and the stored
+  session state is not reset.
+- **A cut session's local files are never published.** Until a retry on this
+  worker has resolved the session from the store, the worker treats the session
+  as cut. A graceful shutdown neither releases its workspace nor reclaims its
+  local copy. On a running worker the eviction sweep reclaims it without
+  publishing it: it cancels the session's background tasks, releases its
+  workspace and deletes the local copy. A legacy dehydrate or checkpoint (from an
+  orchestration version before 1.0.57) never publishes a cut session or a local
+  copy that still holds an unfinished turn (`session.snapshot_unpublished`); the
+  store keeps its last commit. The mark ends when such a retry (or, without
+  snapshots, any retry) starts its run here, when the session is destroyed (a
+  cancel or delete) or when the sweep reclaims it. A retry here whose store read
+  fails leaves the mark in place.
+- **The unpublished message promises a retry only for a lost lock.** The
+  activity cannot tell a lost lock from a cancel or delete, so the
+  `cancelled` message says the model memory was not committed and that only a
+  lost lock runs the turn again.
+- **Upgrades: stop every worker first.** If a worker of an earlier release runs
+  a cut attempt of the same turn and commits its `cancelled` result first, this
+  release's attempt finds that commit: it returns its own result unpublished
+  (`session.snapshot_unpublished { reason: "foreign_cancelled_winner" }`), and
+  its turn controls and carried steers are not marked consumed. A retry that
+  finds such a commit from an earlier release runs on top of it, so the model may
+  see that partial attempt and then the same prompt again. Stopping every worker
+  before the upgrade avoids both.
+
+## 0.8.19 — 2026-11-25
+
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New Workflow runs start at Workflow controller
+1.3.0 (and spawn effects at workflow-effect 1.2.0), which older workers do not
+have. Session orchestration stays 1.0.86. Additive CMS migration 0103
+(`workflow_child_workflows`, extending `workflow_test_interceptions` to allow
+`spawn`) runs when the first new worker starts; keep it in place on rollback
+and drain or stop active 1.3.0 runs before restoring older workers.
+
+### Workflows: simpler loops
+
+Three additions remove bookkeeping scripts and `carry` unwrapping from Workflow
+loops: (1) a `receive` state accepts a list of 2 to 8 contracts (including
+`WorkflowEnded@1`), routing directly on each contract name with output
+`{ contract, from, payload }`; (2) `${states.<id>.output}` reads the latest
+finished result of an earlier state in the same run and branch (or from root),
+frozen at state entry; (3) `maxVisits` bounds visits per non-terminal state
+(routing visit N+1 to `exhausted` before `carry` or `input:` with incoming input
+as output) and `wait: { totalSeconds }` sets one fixed deadline across all
+visits of a `receive` state from its first wait start. At acceptance, a list
+receive refuses any payload whose wrapped envelope exceeds the depth or size
+limit, and the `WorkflowEnded@1` 16 KiB truncation check counts the envelope.
+This change adds no migration and no controller version of its own. A worker
+without it ignores `maxVisits` and `wait.totalSeconds`; the upgrade rule above
+(no rolling deploy) prevents that.
+
+### Workflows: child Workflows
+
+A Workflow can now start another saved Workflow in the background with a `spawn`
+state (newest valid revision at entry, or a fixed `revision`) and continue
+without blocking. When a child run finishes, the runtime delivers a built-in
+`WorkflowEnded@1` message to its spawning parent run while that parent run is
+active, exempt from the standard inbox cap and truncating outputs above 16 KiB.
+Scripts and agent steps inside a parent Workflow can inspect and control direct
+children with the `child_workflows` tool (`list`, `read`, `stop`, `cancel`);
+only the parent Workflow can read a child through this tool. Ending a parent run
+automatically cancels its active child Workflows, and nesting is capped at level
+2 (a child Workflow cannot spawn another Workflow).
+
 ### A model step that fails without output no longer ends the turn as completed
 
 A model step can end with `finishReason: "error"` and with neither text nor a
@@ -65,53 +152,6 @@ The binding to the runtime process uses Node's experimental `child_process`
 diagnostics channel. If a client start binds no runtime, the worker warns once
 and counts `outcome="unclaimed"`; that client runs unwatched, as before.
 
-### A turn whose activity lock was lost runs again
-
-0.8.16 stopped saving a turn that a worker's drain cut (#367). A turn whose
-activity lock was lost outside a drain was still saved to the session store with
-the result `cancelled`, under the turn's key. The retry, on any worker, took that
-saved result as the finished turn and ended without running it, so the prompt was
-dropped. This has been possible since v0.6.0, the initial versioned-snapshot
-release, for turns with snapshots enabled. A cancelled attempt is now never saved
-(`session.snapshot_unpublished { reason: "cancelled" }`), and a `cancelled`
-result that an earlier release saved is never adopted: the retry runs the turn
-from the last saved snapshot.
-
-- **Prompts already dropped are not recovered.** A session that lost one shows,
-  in its duroxide history, a `runTurn` activity that completed with the result
-  `cancelled` (the orchestration traces `[session] turn cancelled`) for a turn
-  that nobody stopped, cancelled or deleted.
-- **Side effects may repeat.** A turn whose activity lock is lost after its tools
-  ran may repeat their side effects when it runs again, as after a worker crash.
-- **The activity rechecks its cancellation before every send.** A lost lock, a
-  cancel or a delete read before a model run, a steer, a corrective prompt or a
-  transcript reset stops it: no run starts, nothing is sent, and the stored
-  session state is not reset.
-- **A cut session's local files are never published.** Until a retry on this
-  worker has resolved the session from the store, the worker treats the session
-  as cut. A graceful shutdown neither releases its workspace nor reclaims its
-  local copy. On a running worker the eviction sweep reclaims it without
-  publishing it: it cancels the session's background tasks, releases its
-  workspace and deletes the local copy. A legacy dehydrate or checkpoint (from an
-  orchestration version before 1.0.57) never publishes a cut session or a local
-  copy that still holds an unfinished turn (`session.snapshot_unpublished`); the
-  store keeps its last commit. The mark ends when such a retry (or, without
-  snapshots, any retry) starts its run here, when the session is destroyed (a
-  cancel or delete) or when the sweep reclaims it. A retry here whose store read
-  fails leaves the mark in place.
-- **The unpublished message promises a retry only for a lost lock.** The
-  activity cannot tell a lost lock from a cancel or delete, so the
-  `cancelled` message says the model memory was not committed and that only a
-  lost lock runs the turn again.
-- **Upgrades: stop every worker first.** If a worker of an earlier release runs
-  a cut attempt of the same turn and commits its `cancelled` result first, this
-  release's attempt finds that commit: it returns its own result unpublished
-  (`session.snapshot_unpublished { reason: "foreign_cancelled_winner" }`), and
-  its turn controls and carried steers are not marked consumed. A retry that
-  finds such a commit from an earlier release runs on top of it, so the model may
-  see that partial attempt and then the same prompt again. Stopping every worker
-  before the upgrade avoids both.
-
 ### A migration's session settings end with it
 
 CMS migrations 0036 and 0070 set a 5 s `lock_timeout` for the whole database
@@ -126,6 +166,15 @@ of a migration that runs as separate steps. Settings that the pool's own connect
 hook made are kept; a setting the connection inherited (from its startup
 options or the server configuration) is reset rather than pinned, so a later
 configuration reload still reaches it.
+
+### Portal: the Workflow definition delete button is on the Workflow line
+
+In the portal's Definition view, the `Delete…` button sat on the wrapping revision
+info line and could drop onto its own row at phone width. When a latest Workflow
+status line is shown, `Delete…` now sits at the right end of that line; when no
+Workflow exists yet, it stays inline on the revision info line with single-line
+text truncation, keeping its 44 px touch target on narrow screens. No upgrade
+action beyond deploying the portal.
 
 ## 0.8.18 — 2026-11-25
 

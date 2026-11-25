@@ -11,8 +11,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    spawnNesting, spawnNestingRefusal, WORKFLOW_DEFINITION_TOOLS, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED,
-    WORKFLOW_MAX_DESCENDANT_LEVEL, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused,
+    SESSION_MAX_NESTING_LEVEL, spawnNesting, spawnNestingRefusal, WORKFLOW_DEFINITION_TOOLS, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED,
+    workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused,
 } from "../../dist/workflow/input-policy.js";
 import { createWorkflowAgentNodeHost } from "../../dist/workflow/agent-host.js";
 import { WORKFLOW_SESSION_GUIDANCE } from "../../dist/workflow/guidance.js";
@@ -72,15 +72,15 @@ test("the model is declared no definition tools inside a Workflow, and keeps eve
 });
 
 test("nesting refusals keep the limit and say it in words; ordinary sessions keep their refusal as it was", () => {
-    assert.equal(WORKFLOW_MAX_DESCENDANT_LEVEL, 3);
+    assert.equal(SESSION_MAX_NESTING_LEVEL, 2);
     assert.equal(spawnNestingRefusal(2, 2, false),
         "[SYSTEM: spawn_agent failed — you are already at nesting level 2 (max 2). Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]");
-    const inside = spawnNestingRefusal(3, 3, true);
-    assert.match(inside, /^\[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level 3 \(the top-level session is level 0\), /);
-    assert.match(inside, /sessions inside a Workflow stop at level 3\. A sub-agent would be at level 4\. Do this work yourself\.\]$/);
-    // An agent node's session at level 2 may still spawn one level; its sub-agent at level 3 may not.
-    assert.deepEqual(spawnNesting(0, 2, { sessionId: "C", level: 2, agentRoot: ROOT }), { childNestingLevel: 3, maxNestingLevel: 3 });
-    assert.deepEqual(spawnNesting(0, 2, { sessionId: "G", level: 3, agentRoot: { ...ROOT, distance: 1 } }), { childNestingLevel: 4, maxNestingLevel: 3 });
+    const inside = spawnNestingRefusal(2, 2, true);
+    assert.match(inside, /^\[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level 2 \(the top-level session is level 0\), /);
+    assert.match(inside, /sessions inside a Workflow stop at level 2\. A sub-agent would be at level 3\. Do this work yourself\.\]$/);
+    // An agent node's session at level 1 may still spawn one level (level 2); its sub-agent at level 2 may not (level 3).
+    assert.deepEqual(spawnNesting(0, 2, { sessionId: "C", level: 1, agentRoot: ROOT }), { childNestingLevel: 2, maxNestingLevel: 2 });
+    assert.deepEqual(spawnNesting(0, 2, { sessionId: "G", level: 2, agentRoot: { ...ROOT, distance: 1 } }), { childNestingLevel: 3, maxNestingLevel: 2 });
 });
 
 test("an agent node too deep is refused in words naming its node and the levels", async () => {
@@ -91,8 +91,8 @@ test("an agent node too deep is refused in words naming its node and the levels"
     const answer = await host.spawn({ workflowSessionId: "D", childSessionId: "X", stateId: "summarize", controllingSessionId: "C",
         prompt: "p", clientMessageId: "m", task: { source: "prompt", prompt: "p" } });
     assert.equal(answer.refused.code, "forbidden");
-    assert.equal(answer.refused.message, "Node summarize cannot start its agent: its session would be at level 4 (the top-level session is level 0), "
-        + "and sessions inside a Workflow stop at level 3. Start this Workflow from a session nearer the top.");
+    assert.equal(answer.refused.message, "Node summarize cannot start its agent: its session would be at level 3 (the top-level session is level 0), "
+        + "and sessions inside a Workflow stop at level 2. Start this Workflow from a session nearer the top.");
 });
 
 test("the base guidance hands prescriptive work to a Workflow (O3)", () => {
