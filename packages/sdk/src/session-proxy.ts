@@ -3115,7 +3115,13 @@ export function registerActivities(
         };
 
         // Review S4/S5 (#376): the bridge's effectful tools check, before each external step, that the turn that called
-        // them and this activity attempt are still open (control-bridge-fence.ts).
+        // them and this activity attempt are still open (control-bridge-fence.ts). The check is synchronous: it reads two
+        // flags and never waits. Covered: spawn_agent, create_agent_session, message_agent, message_agent_session,
+        // manage_agent_session, send_session_message, reply_session_message, regenerate_agent, complete_agent,
+        // cancel_agent, delete_agent, stop_agent_turn, set_session_model, regenerate_context, the check_agents memo, and
+        // the canvas writes (draw, update, show, canvas_kv put/delete, publish_canvas_app). Not covered: reads; the
+        // Workflow tools, whose writes go through the Workflow store and its run admission, which have their own formal
+        // models (a follow-up); and set_session_workspace's check, which only attaches folders on this worker.
         const bridgeStep = (tool: string, step: string): void => {
             try {
                 assertControlBridgeOpen(tool, step, controlBridgeClosed);
@@ -3172,6 +3178,7 @@ export function registerActivities(
                     }
 
                     const sdkClient = await getInlineClient();
+                    bridgeStep("message_agent_session", "queueing the message");
                     // FU-9: an agent's words, from this session, never merged with a person's.
                     await (sdkClient as any)._getDuroxideClient().enqueueEvent(
                         `session-${targetId}`,
@@ -3225,12 +3232,15 @@ export function registerActivities(
                         // so the row is removed directly — mirroring
                         // deleteAgent rather than inventing a second rule.
                         if (target && ["completed", "failed", "cancelled", "terminated"].includes(String(target.state))) {
+                            bridgeStep("manage_agent_session", "deleting the session");
                             await sdkClient.deleteSession(targetId);
                             return `[SYSTEM: session ${targetId.slice(0, 8)} was already ${target.state} and has been deleted. Reason: ${reason}]`;
                         }
                         const deleteCommand = { type: "cmd", cmd: "delete", id: `delete-mgr-${Date.now()}`, args: { reason } };
                         // S7-DX2 follow-up: a workflow is deleted in its store at once; any other session gets the command queued.
+                        bridgeStep("manage_agent_session", "applying the delete");
                         if (!await operatorCommandApplied(sdkClient, targetId, deleteCommand)) {
+                            bridgeStep("manage_agent_session", "queueing the delete");
                             await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(deleteCommand));
                         }
                         return `[SYSTEM: graceful deletion requested for ${targetId}. It cancels its descendants first, then deletes itself. Poll read_session_info to confirm. Reason: ${reason}]`;
@@ -3240,8 +3250,11 @@ export function registerActivities(
                     const command = { type: "cmd", cmd, id: `${cmd}-mgr-${Date.now()}`, args: { reason } };
                     // S7-DX2 follow-up: a workflow's active run ends in its store at once; the command is then queued only when
                     // its controller is to finish it (any other session gets it queued as before).
+                    bridgeStep("manage_agent_session", `applying the ${action}`);
                     if (!await operatorCommandApplied(sdkClient, targetId, command)) {
                         // G1 residual: the end is marked on the session before its command is queued (session-end-mark.ts).
+                        // The mark and its command are one step for the fence, so it never leaves a mark without its command.
+                        bridgeStep("manage_agent_session", `queueing the ${action}`);
                         if (catalog) await recordSessionEndRequested(catalog, targetId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(command));
                     }
@@ -4015,6 +4028,7 @@ export function registerActivities(
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     const sdkClient = await getInlineClient();
+                    bridgeStep("regenerate_agent", "queueing the regeneration");
                     await sdkClient._getDuroxideClient().enqueueEvent(
                         child.orchId,
                         "messages",
@@ -4130,6 +4144,8 @@ export function registerActivities(
                     }
                     const report = buildCheckAgentsReport(children, memo, { full: args?.full === true });
                     if (catalog) {
+                        // A memo from an ended attempt would turn its retry's first report into a delta it never saw.
+                        bridgeStep("check_agents", "recording what it reported");
                         // Fire-and-forget: a lost memo only costs one extra full report next time.
                         void cmsRetryBestEffort(
                             `runTurn.checkAgents memo session=${input.sessionId}`,
@@ -4228,6 +4244,7 @@ export function registerActivities(
                     const { requestId } = await sendInternalSessionMessage({
                         catalog,
                         duroxideClient: sdkClient._getDuroxideClient(),
+                        beforeEnqueue: () => bridgeStep("send_session_message", "queueing the message"),
                     }, {
                         fromSessionId: input.sessionId,
                         toSessionId: targetSessionId,
@@ -4254,6 +4271,7 @@ export function registerActivities(
                     await replyInternalSessionMessage({
                         catalog,
                         duroxideClient: sdkClient._getDuroxideClient(),
+                        beforeEnqueue: () => bridgeStep("reply_session_message", "queueing the reply"),
                     }, {
                         requestId: args.request_id,
                         fromSessionId: input.sessionId,
@@ -4281,6 +4299,7 @@ export function registerActivities(
                         }
                     }
                     if (catalog && builtOutcome && child.sessionKind !== "workflow") {
+                        bridgeStep("complete_agent", "recording the result");
                         await cmsRetryCritical(
                             `runTurn.complete.upsertChildOutcome result child=${child.sessionId}`,
                             () => catalog!.upsertChildOutcome({
@@ -4298,8 +4317,11 @@ export function registerActivities(
                     const cmdId = `done-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId };
                     // S7-DX2: a workflow child's command goes through the store first, as the orchestration's path sends it.
+                    bridgeStep("complete_agent", "applying the command");
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
                         // G1 residual: the end is marked on the child before its command is queued (session-end-mark.ts).
+                        // The mark and its command are one step for the fence, so it never leaves a mark without its command.
+                        bridgeStep("complete_agent", "queueing the command");
                         if (catalog) await recordSessionEndRequested(catalog, child.sessionId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
@@ -4321,6 +4343,7 @@ export function registerActivities(
                         }
                     }
                     if (catalog && builtOutcome && child.sessionKind !== "workflow") {
+                        bridgeStep("cancel_agent", "recording the partial result");
                         await cmsRetryCritical(
                             `runTurn.cancel.upsertChildOutcome partial child=${child.sessionId}`,
                             () => catalog!.upsertChildOutcome({
@@ -4338,8 +4361,11 @@ export function registerActivities(
                     const cmdId = `cancel-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId };
                     // S7-DX2: a workflow child's command goes through the store first, as the orchestration's path sends it.
+                    bridgeStep("cancel_agent", "applying the command");
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
                         // G1 residual: the end is marked on the child before its command is queued (session-end-mark.ts).
+                        // The mark and its command are one step for the fence, so it never leaves a mark without its command.
+                        bridgeStep("cancel_agent", "queueing the command");
                         if (catalog) await recordSessionEndRequested(catalog, child.sessionId, command, input.sessionId);
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
@@ -4353,6 +4379,7 @@ export function registerActivities(
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     const caller = await parentControlCaller();
+                    bridgeStep("stop_agent_turn", "stopping the child's turn");
                     return await withManagementClient((client) => stopChildTurn(client, {
                         childSessionId: child.sessionId,
                         agentLabel: child.orchId,
@@ -4369,13 +4396,16 @@ export function registerActivities(
                     const child = await resolveManagedChild(args.agent_id);
                     const sdkClient = await getInlineClient();
                     if (child.status === "completed" || child.status === "failed" || child.status === "cancelled") {
+                        bridgeStep("delete_agent", "deleting the child");
                         await sdkClient.deleteSession(child.sessionId);
                         return `[SYSTEM: Sub-agent ${child.orchId} has been deleted.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                     }
                     const cmdId = `delete-inline-${Date.now()}`;
                     const command = { type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" }, requestedBy: input.sessionId };
                     // S7-DX2: a workflow child's delete is applied in the store, as the orchestration's path sends it.
+                    bridgeStep("delete_agent", "applying the delete");
                     if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        bridgeStep("delete_agent", "queueing the delete");
                         await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
                     }
                     return `[SYSTEM: Graceful deletion requested for sub-agent ${child.orchId}. ` +
@@ -4401,6 +4431,7 @@ export function registerActivities(
                 workerNodeId,
                 agentIdentity: runConfig.agentIdentity ?? null,
                 mode: "agent",
+                fence: bridgeStep,
             }),
             findCanvasApp: async (args: { query?: string; limit?: number }) => findCanvasApp({ factStore }, args),
         } as const;

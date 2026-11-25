@@ -44,6 +44,12 @@ export interface CanvasOperationDeps {
     mode: "agent" | "script";
     /** Test seam: the clock of the script-mode tick wait only. Default: the monotonic clock. */
     tickClock?: CanvasTickClock;
+    /**
+     * Review S5 (#376): a synchronous check before each write. A turn's bridge passes its fence
+     * (control-bridge-fence.ts), which throws once the turn or its activity attempt has ended; the write then
+     * returns `{ error }` and writes nothing more. A writer without a turn passes none.
+     */
+    fence?: (tool: string, step: string) => void;
 }
 
 async function latestCanvasDataRev(catalog: any, sessionId: string, slot = 1): Promise<number> {
@@ -472,6 +478,7 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 // burns a phantom rev — infra-failure only, and the
                 // next successful draw overwrites it; read_canvas
                 // stays honest because it is log-first.
+                deps.fence?.("draw_canvas", "drawing the canvas");
                 const seedRev = await latestCanvasRev(catalog, target, slot);
                 const rev = typeof (catalog as any).mintCanvasRev === "function"
                     ? await (catalog as any).mintCanvasRev(target, slot, seedRev)
@@ -596,6 +603,7 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 if (isPatch && !planeAvailable) {
                     return { error: "this deployment predates the canvas data plane — send data (the whole state) instead of patch" };
                 }
+                deps.fence?.("update_canvas", "writing the data");
                 // Whole state after this write, whoever computes it:
                 // the plane merges patches server-side; a plain PUT is
                 // its own whole state.
@@ -673,6 +681,11 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
             if (rev === 0) {
                 return { error: `nothing has been drawn in slot ${slot} — draw_canvas first; show_canvas only presents an existing canvas` };
             }
+            try {
+                deps.fence?.("show_canvas", "presenting the canvas");
+            } catch (err: any) {
+                return { error: err?.message || String(err) };
+            }
             await catalog.recordEvents(target, [{
                 eventType: "session.canvas_presented",
                 data: { slot, rev, ...(crossSession ? { by: deps.writerSessionId } : {}) },
@@ -716,6 +729,7 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                         const op = args.op === "put"
                             ? { op: "put" as const, key: args.key, value: args.value, ifMatch: args.ifMatch ?? null }
                             : { op: "delete" as const, key: args.key, ifMatch: args.ifMatch ?? null };
+                        deps.fence?.("canvas_kv", `the ${args.op} of ${args.key}`);
                         const written = await writeCanvasKv(store, target, slot, principal, [op]);
                         const result = written.results[0];
                         return result.ok
@@ -742,7 +756,10 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
             const resolved = await resolveCanvasTarget(deps, args.session_id);
             if ("error" in resolved) return { error: resolved.error };
             return publishCanvasApp(
-                { artifactStore, catalog, factStore, sessionId: deps.writerSessionId, agentIdentity: deps.agentIdentity, workerNodeId },
+                {
+                    artifactStore, catalog, factStore, sessionId: deps.writerSessionId, agentIdentity: deps.agentIdentity, workerNodeId,
+                    fence: deps.fence ? (step) => deps.fence!("publish_canvas_app", step) : undefined,
+                },
                 { name: args.name, description: args.description, tags: args.tags, slot, target: resolved.target },
             );
         },

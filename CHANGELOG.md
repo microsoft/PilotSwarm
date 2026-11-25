@@ -32,7 +32,9 @@ A refused dehydrate records `session.snapshot_unpublished { reason: "dirty_turn"
 A tool call in flight when the runtime dies is not awaited, and the retry runs
 the turn again, so tool effects are at-least-once. A worker tool's `turnSignal`
 is aborted at the loss, and the inline control tools stop before their next
-external step.
+external step: sub-agent and agent-session management, cross-session messages,
+model and context changes, the `check_agents` memo and the canvas writes. The
+Workflow tools are not fenced yet.
 
 The binding to the runtime process uses Node's experimental `child_process`
 diagnostics channel. If a client start binds no runtime, the worker warns once

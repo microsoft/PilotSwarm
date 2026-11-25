@@ -507,8 +507,11 @@ retry on the same worker resumes the dead runtime's local dir. A runtime that
 stays alive but stops answering still ends at the inactivity watchdog.
 
 A tool call in flight when the runtime dies is not awaited. A worker tool's
-`turnSignal` is aborted, and the inline control tools (`spawn_agent`,
-`message_agent` and the like) stop before their next external step. The retry
+`turnSignal` is aborted, and the inline control tools stop before their next
+external step: sub-agent and agent-session management (`spawn_agent`,
+`message_agent`, `complete_agent`, `manage_agent_session` and the like),
+cross-session messages, model and context changes, the `check_agents` memo and
+the canvas writes. Reads and the Workflow tools are not fenced. The retry
 re-runs the turn from the last commit, so an effect completed before the loss
 can run again: tool effects are at-least-once.
 

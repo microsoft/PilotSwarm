@@ -8,9 +8,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * handler, so the handler would otherwise go on creating and starting a child after the retry began its own.
  *
  * The fence is check-based, never awaited: a bridge call runs in the context of the turn that made it, and the
- * bridge checks that the turn and the activity attempt are still open before each external step. A step already
- * started completes. The effects themselves are at-least-once: an effect completed before the loss runs again
- * when the retry asks for it again.
+ * bridge checks that the turn and the activity attempt are still open before each external step (session-proxy.ts's
+ * `bridgeStep` lists the tools it covers and those it does not). A step already started completes. The effects
+ * themselves are at-least-once: an effect completed before the loss runs again when the retry asks for it again.
  */
 const bridgeCallTurn = new AsyncLocalStorage<AbortSignal>();
 
