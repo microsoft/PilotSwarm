@@ -2,7 +2,26 @@
 
 ## Unreleased
 
-**Upgrade: deploy the workers.** No migration and no orchestration version.
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New Workflow runs start at Workflow controller
+1.3.0 (and spawn effects at workflow-effect 1.2.0), which older workers do not
+have. Session orchestration stays 1.0.86. Additive CMS migration 0103
+(`workflow_child_workflows`, extending `workflow_test_interceptions` to allow
+`spawn`) runs when the first new worker starts; keep it in place on rollback
+and drain or stop active 1.3.0 runs before restoring older workers.
+
+### Workflows: child Workflows
+
+A Workflow can now start another saved Workflow in the background with a `spawn`
+state (newest valid revision at entry, or a fixed `revision`) and continue
+without blocking. When a child run finishes, the runtime delivers a built-in
+`WorkflowEnded@1` message to its spawning parent run while that parent run is
+active, exempt from the standard inbox cap and truncating outputs above 16 KiB.
+Scripts and agent steps inside a parent Workflow can inspect and control direct
+children with the `child_workflows` tool (`list`, `read`, `stop`, `cancel`);
+only the parent Workflow can read a child through this tool. Ending a parent run
+automatically cancels its active child Workflows, and nesting is capped at level
+2 (a child Workflow cannot spawn another Workflow).
 
 ### A model step that fails without output no longer ends the turn as completed
 
