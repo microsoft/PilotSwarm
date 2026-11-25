@@ -64,7 +64,7 @@ function harness({ inFlight = () => 0, waitMs, delivered, notStarted = false, se
         registerActivity: (name, fn) => activities.set(name, fn),
         registerOrchestrationVersioned: () => {},
     }, {
-        store, catalog: {}, enabled: () => true,
+        store: { ...store, readSessionLink: async () => null }, catalog: { getSession: async () => null }, enabled: () => true,
         resolveToolBinding: async () => null, openToolExecutor: async () => { throw new Error("no tools"); },
         authorizeParentNotification: async () => authorized,
         notifyParent: async (parent, _prompt, _sender, clientMessageId) => {

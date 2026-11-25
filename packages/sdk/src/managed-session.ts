@@ -32,7 +32,8 @@ import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
 import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 import {
-    readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, updateWorkflowToolSpec, workflowToolErrorPayload,
+    CHILD_WORKFLOWS_TOOL_SPEC, readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, updateWorkflowToolSpec,
+    WORKFLOW_CHILD_WORKFLOWS_TOOL, workflowToolErrorPayload,
 } from "./workflow/tools.js";
 import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
 import { ENABLE_WORKFLOWS_TOOL, ENABLE_WORKFLOWS_TOOL_SPEC, type WorkflowContextMode } from "./workflow/guidance.js";
@@ -1610,7 +1611,10 @@ export class ManagedSession {
         const respondSessionRequestTools = workflowMilestone
             ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, { ...RESPOND_SESSION_REQUEST_TOOL_SPEC, handler: async () => "stub" })] : [];
         const completeWorkflowNodeTools = opts?.workflowAgentChild === true
-            ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, { ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC, handler: async () => "stub" })] : [];
+            ? [
+                defineTool(COMPLETE_WORKFLOW_NODE_TOOL, { ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC, handler: async () => "stub" }),
+                defineTool(WORKFLOW_CHILD_WORKFLOWS_TOOL, { ...CHILD_WORKFLOWS_TOOL_SPEC, handler: async () => "stub" }),
+            ] : [];
         // A1 (Workflow Simplified, spec 14): a session inside a Workflow is declared no definition tools; A5: every other
         // tool stays. spawn_workflow is no longer declared (owner 2026-11-08T16:55Z, ruling 18:12Z): workflow_definition
         // replaces it; its turn handler stays, so a stale call is still answered.
@@ -3689,19 +3693,29 @@ export class ManagedSession {
         // Workflow agent states: only an agent state's child, on a turn whose bridge can complete it, gets the tool; a
         // session declared it (workflowAgentChild) always has a handler, which refuses without the bridge.
         const completeWorkflowNodeTools: Tool<any>[] = controlBridge?.completeWorkflowNode || this.config.workflowAgentChild === true
-            ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, {
-                ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC,
-                handler: async (args: Record<string, unknown>) => {
-                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(COMPLETE_WORKFLOW_NODE_TOOL);
-                    if (!controlBridge?.completeWorkflowNode) return `Error: ${COMPLETE_WORKFLOW_NODE_TOOL} is not available in this session.`;
-                    // Adversarial review R2-RT-3: a failure of the bridge is the tool's coded answer, never the error's own text.
-                    try {
-                        return await controlBridge.completeWorkflowNode(args ?? {});
-                    } catch (error) {
-                        return workflowCompletionFailure(error);
-                    }
-                },
-            })]
+            ? [
+                defineTool(COMPLETE_WORKFLOW_NODE_TOOL, {
+                    ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC,
+                    handler: async (args: Record<string, unknown>) => {
+                        if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(COMPLETE_WORKFLOW_NODE_TOOL);
+                        if (!controlBridge?.completeWorkflowNode) return `Error: ${COMPLETE_WORKFLOW_NODE_TOOL} is not available in this session.`;
+                        // Adversarial review R2-RT-3: a failure of the bridge is the tool's coded answer, never the error's own text.
+                        try {
+                            return await controlBridge.completeWorkflowNode(args ?? {});
+                        } catch (error) {
+                            return workflowCompletionFailure(error);
+                        }
+                    },
+                }),
+                defineTool(WORKFLOW_CHILD_WORKFLOWS_TOOL, {
+                    ...CHILD_WORKFLOWS_TOOL_SPEC,
+                    handler: async (args: Record<string, unknown>) => {
+                        if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(WORKFLOW_CHILD_WORKFLOWS_TOOL);
+                        if (!controlBridge?.childWorkflows) return `Error: ${WORKFLOW_CHILD_WORKFLOWS_TOOL} is not available in this session.`;
+                        return await controlBridge.childWorkflows(args ?? {});
+                    },
+                }),
+            ]
             : [];
 
         const subAgentToolsForTurn = isServiceSession

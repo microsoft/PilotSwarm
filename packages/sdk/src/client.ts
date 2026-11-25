@@ -613,9 +613,10 @@ export class PilotSwarmClient {
         } catch (err) {
             console.error(`[PilotSwarmClient] descendant enumeration failed for ${sessionId}:`, err);
         }
+        const visited = new Set<string>();
         for (const descendantId of descendants) {
             try {
-                await this._deleteOneSession(descendantId);
+                await this._deleteOneSession(descendantId, visited);
             } catch (err) {
                 // Non-fatal (e.g. a system/service descendant): keep going so
                 // one refusal doesn't strand its siblings.
@@ -623,21 +624,40 @@ export class PilotSwarmClient {
             }
         }
 
-        await this._deleteOneSession(sessionId);
+        await this._deleteOneSession(sessionId, visited);
     }
 
     /**
      * Delete a single session row: CMS soft-delete, session-fact cleanup,
-     * best-effort duroxide cancel. No descendant handling — deleteSession()
-     * cascades before calling this.
+     * best-effort duroxide cancel. For a Workflow session, soft-deletes it first
+     * (blocking any in-flight spawn) and scans direct child Workflows and bare
+     * claims before cancelling the controller.
      */
-    private async _deleteOneSession(sessionId: string): Promise<void> {
+    private async _deleteOneSession(sessionId: string, visited: Set<string> = new Set()): Promise<void> {
+        if (visited.has(sessionId)) return;
+        visited.add(sessionId);
+        const existing = await this._catalog.getSession(sessionId);
         this.sessionConfigs.delete(sessionId);
         this.parentSessionIds.delete(sessionId);
         this.nestingLevels.delete(sessionId);
 
         // CMS: soft-delete (source of truth)
         await this._catalog.softDeleteSession(sessionId);
+
+        if (existing?.sessionKind === "workflow") {
+            const wfStore = this._catalog.workflowStore?.();
+            if (wfStore) {
+                const postChildren = await wfStore.listChildWorkflows(sessionId, { includeDeleted: false });
+                const postBare = await wfStore.listBareChildWorkflowClaims(sessionId);
+                for (const childId of [...postChildren.map(c => c.workflowSessionId), ...postBare]) {
+                    const nested = await this._catalog.getDescendantSessionIds(childId);
+                    for (const nid of nested) {
+                        if (!visited.has(nid)) await this._deleteOneSession(nid, visited);
+                    }
+                    if (!visited.has(childId)) await this._deleteOneSession(childId, visited);
+                }
+            }
+        }
 
         if (this._factStore) {
             try {

@@ -9,6 +9,7 @@ import { PROVIDER_TOOL_NAMES } from "../../dist/provider-tools.js";
 import { DECIDE_TOOL_NAME } from "../../dist/decision-tools.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL } from "../../dist/workflow/agent-node-service.js";
+import { WORKFLOW_CHILD_WORKFLOWS_TOOL } from "../../dist/workflow/tools.js";
 import { RESPOND_SESSION_REQUEST_TOOL } from "../../dist/workflow/request-service.js";
 
 test("Copilot-native and PilotSwarm control names are reserved", () => {
@@ -32,7 +33,7 @@ test("runtime-discovered Copilot names are reserved before the first turn", () =
 
 test("the workflow turn tools are reserved whatever a session declares", () => {
     // The same names as the tools a 1.0.83 turn declares (their modules are not imported by the reserved list).
-    assert.deepEqual([...WORKFLOW_TURN_TOOL_NAMES].sort(), [COMPLETE_WORKFLOW_NODE_TOOL, RESPOND_SESSION_REQUEST_TOOL].sort());
+    assert.deepEqual([...WORKFLOW_TURN_TOOL_NAMES].sort(), [COMPLETE_WORKFLOW_NODE_TOOL, RESPOND_SESSION_REQUEST_TOOL, WORKFLOW_CHILD_WORKFLOWS_TOOL].sort());
     // The worker checks package tools against an ordinary session's declarations, which never have them.
     const ordinary = [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()].map(tool => tool.name);
     const declared = ManagedSession.subAgentToolDefs({ workflowMilestone: true, workflowAgentChild: true }).map(tool => tool.name);

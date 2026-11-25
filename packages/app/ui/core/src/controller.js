@@ -3,7 +3,7 @@ import { normalizeWorkflowDecisionCapability } from "./workflow-decision.js";
 import { workflowDefinition, workflowReadModelView, workflowExecutionValueKey, workflowKvApplied, workflowKvRevisionKey, workflowOlderStart, workflowRunHistory, workflowRunRows, workflowShownExecution } from "./workflow-view.js";
 import { workflowVisitValueText } from "./workflow-visit-io.js";
 import {
-    normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
+    normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowViewChildSessionId, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
     workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewTestRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS,
     workflowPublicationChange, workflowPublicationConfirm, workflowPublicationDecision, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
@@ -10871,19 +10871,21 @@ export class PilotSwarmUiController {
     async openWorkflowViewChild() {
         const selection = selectWorkflowViewSelection(this.getState());
         if (!selection) return;
-        const occurrence = selection.occurrence;
-        if (!occurrence?.childSessionId) {
+        const targetSessionId = workflowViewChildSessionId(selection);
+        if (!targetSessionId) {
             this.dispatch({ type: "ui/status", text: selection.selected
                 ? `Node ${selection.selected.id} has no agent session to open`
                 : "No node is selected" });
             return;
         }
+        const occurrence = selection.occurrence;
         this.dispatch({ type: "ui/modal", modal: null });
         this.releaseWorkflowPaneWatch();
         if (selection.modal.previousFocus) this.setFocus(selection.modal.previousFocus);
-        this.dispatch({ type: "ui/status", text: `Opened the agent session of ${selection.selected.id}`
-            + `${occurrence.ordinal === null ? "" : ` (visit ${occurrence.ordinal})`}: people can read it; the server refuses their input to it` });
-        await this.loadSession(occurrence.childSessionId);
+        this.dispatch({ type: "ui/status", text: occurrence?.childSessionId
+            ? `Opened the agent session of ${selection.selected.id}${occurrence.ordinal === null ? "" : ` (visit ${occurrence.ordinal})`}: people can read it; the server refuses their input to it`
+            : `Opened child Workflow ${targetSessionId} of ${selection.selected.id}` });
+        await this.loadSession(targetSessionId);
     }
 
     /**

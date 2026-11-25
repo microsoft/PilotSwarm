@@ -4,6 +4,92 @@
 
 **Upgrade: deploy the workers.** No migration and no orchestration version.
 
+### Idle Copilot runtimes stop
+
+A worker now stops a pooled Copilot runtime after it has had no warm session
+and no short-lived user (a model list, a session delete) for 30 seconds (#331).
+The client leaves the pool before it stops; if `stop()` fails or is late, the
+worker force-stops it. The next session for that key starts a fresh runtime and
+resumes from its saved state. Set `copilotClientIdleStopMs` or
+`PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS` to change the period, or `0` to keep
+idle runtimes. Both take a whole number of milliseconds and are parsed alike;
+a numeric option is rounded down. Any other value (such as `30s`, `1e3` or
+`-1`) logs a warning and uses the default. An invalid option does not fall
+back to the env var. A session that moves to another credential or workspace
+key releases its old runtime, and a client the caller supplied is never
+stopped for being idle.
+
+### Session teardown ends tool shells
+
+Every teardown of a warm session now cancels its background shells: a
+dehydrate, an idle eviction, a complete, cancel or delete, the invalidation of
+a dead or replaced session, a state reset, an epoch start and a model rebind.
+A worker shutdown lists them (within 5 seconds) before it stops each runtime
+and kills them once that runtime has stopped, so a turn still running is ended
+by the stop alone, as before.
+Before, only workspace sessions, a user Stop and a Workflow's script tasks
+cancelled them, and stopping a runtime never did, because tool shells run in
+their own process session. On POSIX systems the worker also kills each shell's
+process session (on Linux) or process group, so processes the shell left
+behind stop too, including when the worker is PID 1 of its container. A
+process is signalled only while its pid still runs the process bound when the
+shell was listed (the exact start time), never when that cannot be read, never
+on Windows, and never after a teardown's deadline (20 seconds; 5 seconds when
+the runtime may be gone, as after a lost connection). A shutdown's kills have
+no deadline: they run right after each runtime's stop. Killed processes whose
+parent has gone are reaped only when the container runs a reaping init (such
+as `tini`) as PID 1; without one they remain zombies that hold only a PID slot.
+Sessions in one eviction sweep are torn down concurrently. **Behavior change:**
+a detached shell no longer survives its session's eviction or dehydrate, or its
+worker's shutdown. The default agent prompts say so.
+
+### Title summaries are bounded
+
+The one-shot session that writes a session's title summary now gives up after
+60 seconds, a budget that covers starting its Copilot client, creating the
+session and the prompt, instead of waiting for `session.idle` forever. It
+always stops its Copilot client, and force-stops it when the budget ran out.
+
+## 0.8.19 — 2026-11-25
+
+**Upgrade: stop every worker, the portal and the MCP server, deploy, then start
+them. Do not roll the workers.** New Workflow runs start at Workflow controller
+1.3.0 (and spawn effects at workflow-effect 1.2.0), which older workers do not
+have. Session orchestration stays 1.0.86. Additive CMS migration 0103
+(`workflow_child_workflows`, extending `workflow_test_interceptions` to allow
+`spawn`) runs when the first new worker starts; keep it in place on rollback
+and drain or stop active 1.3.0 runs before restoring older workers.
+
+### Workflows: simpler loops
+
+Three additions remove bookkeeping scripts and `carry` unwrapping from Workflow
+loops: (1) a `receive` state accepts a list of 2 to 8 contracts (including
+`WorkflowEnded@1`), routing directly on each contract name with output
+`{ contract, from, payload }`; (2) `${states.<id>.output}` reads the latest
+finished result of an earlier state in the same run and branch (or from root),
+frozen at state entry; (3) `maxVisits` bounds visits per non-terminal state
+(routing visit N+1 to `exhausted` before `carry` or `input:` with incoming input
+as output) and `wait: { totalSeconds }` sets one fixed deadline across all
+visits of a `receive` state from its first wait start. At acceptance, a list
+receive refuses any payload whose wrapped envelope exceeds the depth or size
+limit, and the `WorkflowEnded@1` 16 KiB truncation check counts the envelope.
+This change adds no migration and no controller version of its own. A worker
+without it ignores `maxVisits` and `wait.totalSeconds`; the upgrade rule above
+(no rolling deploy) prevents that.
+
+### Workflows: child Workflows
+
+A Workflow can now start another saved Workflow in the background with a `spawn`
+state (newest valid revision at entry, or a fixed `revision`) and continue
+without blocking. When a child run finishes, the runtime delivers a built-in
+`WorkflowEnded@1` message to its spawning parent run while that parent run is
+active, exempt from the standard inbox cap and truncating outputs above 16 KiB.
+Scripts and agent steps inside a parent Workflow can inspect and control direct
+children with the `child_workflows` tool (`list`, `read`, `stop`, `cancel`);
+only the parent Workflow can read a child through this tool. Ending a parent run
+automatically cancels its active child Workflows, and nesting is capped at level
+2 (a child Workflow cannot spawn another Workflow).
+
 ### A model step that fails without output no longer ends the turn as completed
 
 A model step can end with `finishReason: "error"` and with neither text nor a
@@ -80,51 +166,14 @@ hook made are kept; a setting the connection inherited (from its startup
 options or the server configuration) is reset rather than pinned, so a later
 configuration reload still reaches it.
 
-### Idle Copilot runtimes stop
+### Portal: the Workflow definition delete button is on the Workflow line
 
-A worker now stops a pooled Copilot runtime after it has had no warm session
-and no short-lived user (a model list, a session delete) for 30 seconds (#331).
-The client leaves the pool before it stops; if `stop()` fails or is late, the
-worker force-stops it. The next session for that key starts a fresh runtime and
-resumes from its saved state. Set `copilotClientIdleStopMs` or
-`PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS` to change the period, or `0` to keep
-idle runtimes. Both take a whole number of milliseconds and are parsed alike;
-a numeric option is rounded down. Any other value (such as `30s`, `1e3` or
-`-1`) logs a warning and uses the default. An invalid option does not fall
-back to the env var. A session that moves to another credential or workspace
-key releases its old runtime, and a client the caller supplied is never
-stopped for being idle.
-
-### Session teardown ends tool shells
-
-Every teardown of a warm session now cancels its background shells: a
-dehydrate, an idle eviction, a complete, cancel or delete, the invalidation of
-a dead or replaced session, a state reset, an epoch start and a model rebind.
-A worker shutdown lists them (within 5 seconds) before it stops each runtime
-and kills them once that runtime has stopped, so a turn still running is ended
-by the stop alone, as before.
-Before, only workspace sessions, a user Stop and a Workflow's script tasks
-cancelled them, and stopping a runtime never did, because tool shells run in
-their own process session. On POSIX systems the worker also kills each shell's
-process session (on Linux) or process group, so processes the shell left
-behind stop too, including when the worker is PID 1 of its container. A
-process is signalled only while its pid still runs the process bound when the
-shell was listed (the exact start time), never when that cannot be read, never
-on Windows, and never after a teardown's deadline (20 seconds; 5 seconds when
-the runtime may be gone, as after a lost connection). A shutdown's kills have
-no deadline: they run right after each runtime's stop. Killed processes whose
-parent has gone are reaped only when the container runs a reaping init (such
-as `tini`) as PID 1; without one they remain zombies that hold only a PID slot.
-Sessions in one eviction sweep are torn down concurrently. **Behavior change:**
-a detached shell no longer survives its session's eviction or dehydrate, or its
-worker's shutdown. The default agent prompts say so.
-
-### Title summaries are bounded
-
-The one-shot session that writes a session's title summary now gives up after
-60 seconds, a budget that covers starting its Copilot client, creating the
-session and the prompt, instead of waiting for `session.idle` forever. It
-always stops its Copilot client, and force-stops it when the budget ran out.
+In the portal's Definition view, the `Delete…` button sat on the wrapping revision
+info line and could drop onto its own row at phone width. When a latest Workflow
+status line is shown, `Delete…` now sits at the right end of that line; when no
+Workflow exists yet, it stays inline on the revision info line with single-line
+text truncation, keeping its 44 px touch target on narrow screens. No upgrade
+action beyond deploying the portal.
 
 ## 0.8.18 — 2026-11-25
 

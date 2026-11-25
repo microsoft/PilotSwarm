@@ -9,7 +9,7 @@ import { CapabilityGrantError } from "../tool-grant.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import { requireWorkflowToolRequirements } from "./tool-requirements.js";
 import {
-    compileWorkflow, declaredSemver, WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES,
+    compileWorkflow, declaredSemver, WORKFLOW_API_VERSION, WORKFLOW_ENDED_CONTRACT, WORKFLOW_MAX_YAML_BYTES,
     type WorkflowCompileResult, type WorkflowIR, type WorkflowIRAgent,
 } from "./compiler.js";
 import type { WorkflowAgentDefinition } from "./agent-host.js";
@@ -54,7 +54,7 @@ import {
     parseSessionCommandReceipt,
     runNotBegun,
     typedInputRequestSha256,
-    WORKFLOW_INPUT_TTL_SECONDS,
+    WORKFLOW_INBOX_LIMITS, WORKFLOW_INPUT_TTL_SECONDS,
     WorkflowStoreError,
     type RunAdmission,
     type StoredOperation,
@@ -87,7 +87,7 @@ export { WORKFLOW_INPUT_TTL_SECONDS } from "./store.js";
 export interface WorkflowHost {
     readPackagePins?: (workflowSessionId: string) => Promise<import("./package-pins.js").WorkflowPackagePin[]>;
     catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "createWorkflowSession">
-        & Partial<Pick<SessionCatalog, "getChildOutcome">>;
+        & Partial<Pick<SessionCatalog, "getChildOutcome" | "softDeleteSession">>;
     store: WorkflowStore;
     duroxideClient: {
         startOrchestrationVersioned(instanceId: string, name: string, input: unknown, version: string): Promise<void>;
@@ -366,6 +366,8 @@ export interface CreateWorkflowRequest {
      * transaction that admits the run (requireSessionStartLocked).
      */
     sessionPin?: { ownerSessionId: string; definitionId: string; revision: number } | null;
+    /** Internal spawn mode: passes the spawning nodeExecutionId to lock the exact parent run and verify the visit. */
+    spawn?: { nodeExecutionId: string } | null;
     /**
      * Stage 2.2: the Workflow is an agent's test bench for this revision of a session's definition (definition-test.ts): a service
      * session (service_kind workflow-test; its definition and revision in its creation config) that no list shows, never a Workflow of the definition.
@@ -656,7 +658,8 @@ async function notifyRecoveredRun(host: Pick<WorkflowHost, "store" | "duroxideCl
     const definition = await host.store.readDefinition(run.workflowSessionId);
     // With notifications off the notifier records that the parent was not told (batch 7, n-2).
     if (!definition?.parentSessionId) return;
-    if (workflowRunEndRequester(run) === definition.parentSessionId) return;
+    const parentLink = await host.store.readSessionLink(definition.parentSessionId);
+    if (parentLink?.sessionKind !== "workflow" && workflowRunEndRequester(run) === definition.parentSessionId) return;
     if (await host.store.runNoticeRecorded(run.workflowSessionId, run.runId)) return;
     // A controller still running reports its run's end itself.
     const controller = await host.duroxideClient.getStatus(run.controllerInstanceId);
@@ -726,7 +729,8 @@ async function notifyCancelledBeforeBegin(host: { store: WorkflowStore; duroxide
     const definition = await host.store.readDefinition(run.workflowSessionId);
     // With notifications off the notifier records that the parent was not told (batch 7, n-2).
     if (!definition?.parentSessionId) return;
-    if (details.requestedBy === definition.parentSessionId || callerSessionId === definition.parentSessionId) return;
+    const parentLink = await host.store.readSessionLink(definition.parentSessionId);
+    if (parentLink?.sessionKind !== "workflow" && (details.requestedBy === definition.parentSessionId || callerSessionId === definition.parentSessionId)) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_NOTIFY_NAME,
         { runId: run.runId }, WORKFLOW_NOTIFY_VERSION);
 }
@@ -946,8 +950,9 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
         if (prior) {
             if (structuralCompiled.ir) requireAgentModelsForRevision(requestedModels, structuralCompiled.ir, "this Workflow");
             const pin = request.sessionPin;
+            const expectedPinParent = request.spawn ? request.parentSessionId : pin?.ownerSessionId ?? null;
             if (pin ? pin.definitionId !== tombstone.sessionDefinitionId || pin.revision !== tombstone.sessionRevision
-                || pin.ownerSessionId !== tombstone.parentSessionId : tombstone.sessionDefinitionId !== null) {
+                || expectedPinParent !== tombstone.parentSessionId : tombstone.sessionDefinitionId !== null) {
                 throw new WorkflowStoreError("WORKFLOW_EXISTS",
                     `Workflow ${request.workflowSessionId} was created by a different request; use another key for another workflow.`);
             }
@@ -979,10 +984,11 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
             agentModels, decisionProviderBindings) : null;
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
+    const definitionOwnerId = request.sessionPin?.ownerSessionId ?? request.parentSessionId ?? request.workflowSessionId;
     const agentPinsText = publish && compiled.valid && tombstone === null
-        ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
+        ? await publicationAgentPins(host, compiled.ir, definitionOwnerId) : null;
     const delegationOffers = request.start
-        ? await workflowAgentOffers(host, compiled.ir, request.binding ?? null, request.parentSessionId ?? request.workflowSessionId) : {};
+        ? await workflowAgentOffers(host, compiled.ir, request.binding ?? null, definitionOwnerId) : {};
     if (request.start && request.binding?.agentStepTools === "selections") {
         requireWorkflowToolRequirements(compiled.ir, request.binding, compiled.name ?? "this Workflow", delegationOffers);
     }
@@ -1019,7 +1025,8 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
                 ...(compiled.name ? { name: compiled.name } : {}), ...(compiled.version ? { version: compiled.version } : {}),
                 yamlSha256: compiled.yamlSha256, ...(compiled.irSha256 ? { irSha256: compiled.irSha256 } : {}),
                 // S2RT-F5: a session Start's pin is part of its creation's identity: a replay continues only with this pin.
-                ...(request.sessionPin ? { sessionPin: { definitionId: request.sessionPin.definitionId, revision: request.sessionPin.revision } } : {}) },
+                ...(request.sessionPin ? { sessionPin: { ownerSessionId: request.sessionPin.ownerSessionId,
+                    definitionId: request.sessionPin.definitionId, revision: request.sessionPin.revision } } : {}) },
             ...(request.binding ? { workflowToolBinding: request.binding } : {}),
             ...(request.workspace ? { workflowWorkspace: request.workspace } : {}),
             ...(request.testBench ? { agentTest: { definitionId: request.testBench.definitionId, revision: request.testBench.revision,
@@ -1076,25 +1083,34 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
                 + "expect) under this operation; nothing was tested. Start another test for another expectation.");
         }
     }
-    const stored = await host.store.createDefinition({
-        workflowSessionId: request.workflowSessionId,
-        parentSessionId: request.parentSessionId,
-        notifyParent: request.notifyParent !== false,
-        yaml: request.yaml,
-        compiled,
-        actor: request.actor,
-        operationId: request.operationId,
-        requestSha256,
-        publish,
-        start: admission,
-        title: `Workflow: ${compiled.name ?? "draft"}`,
-        ...(request.start ? { delegatedTools: Object.values(delegationOffers).map(offer => offer.delegated) } : {}),
-        ...(agentPinsText !== null ? { agentPinsText } : {}),
-        // Review SDK3-F3: a resumed claim (this request found its row) was not checked when it was made, or was made by an
-        // earlier build that records no version: its definition is checked when it is stored.
-        ...(versionGuard && !claim.created ? { versionGuard: { ...versionGuard, nothingSaved: "Nothing was saved: the claim stays without a definition." } } : {}),
-        ...(request.sessionPin ? { sessionPin: request.sessionPin } : {}),
-    });
+    let stored;
+    try {
+        stored = await host.store.createDefinition({
+            workflowSessionId: request.workflowSessionId,
+            parentSessionId: request.parentSessionId,
+            notifyParent: request.notifyParent !== false,
+            yaml: request.yaml,
+            compiled,
+            actor: request.actor,
+            operationId: request.operationId,
+            requestSha256,
+            publish,
+            start: admission,
+            title: `Workflow: ${compiled.name ?? "draft"}`,
+            ...(request.start ? { delegatedTools: Object.values(delegationOffers).map(offer => offer.delegated) } : {}),
+            ...(agentPinsText !== null ? { agentPinsText } : {}),
+            // Review SDK3-F3: a resumed claim (this request found its row) was not checked when it was made, or was made by an
+            // earlier build that records no version: its definition is checked when it is stored.
+            ...(versionGuard && !claim.created ? { versionGuard: { ...versionGuard, nothingSaved: "Nothing was saved: the claim stays without a definition." } } : {}),
+            ...(request.sessionPin ? { sessionPin: request.sessionPin } : {}),
+            ...(request.spawn ? { spawn: request.spawn } : {}),
+        });
+    } catch (error) {
+        if (claim.created && error instanceof WorkflowStoreError && error.code === "RUN_ENDED" && host.catalog.softDeleteSession) {
+            await host.catalog.softDeleteSession(request.workflowSessionId);
+        }
+        throw error;
+    }
     await dispatchWorkflowRun(host, stored.receipt);
     return stored;
 }
@@ -1546,7 +1562,7 @@ async function applyLifecycleCommandToWorkflow(
  * holds, of them from one sender, and one sender's inputs to one workflow in
  * the rate window.
  */
-export const WORKFLOW_INBOX_LIMITS: WorkflowInboxLimits = { maxUnconsumed: 100, maxUnconsumedPerSender: 20, maxPerSenderPerWindow: 60, windowSeconds: 600 };
+export { WORKFLOW_INBOX_LIMITS } from "./store.js";
 
 /**
  * send_workflow_input: give a run of a workflow one typed input (R07,
@@ -1622,8 +1638,14 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     // Reading the contracts runs nothing: a run of request or agent states takes input as any run.
     const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
     const contract = ir.contracts[request.contract];
-    const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
-    if (!contract || !received.has(request.contract)) {
+    const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? (Array.isArray(node.contract) ? node.contract : [node.contract]) : []));
+    const listReceived = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" && Array.isArray(node.contract) ? node.contract : []));
+    if (request.contract === WORKFLOW_ENDED_CONTRACT && run.mode !== "test") {
+        throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `Contract '${WORKFLOW_ENDED_CONTRACT}' is reserved for the runtime and cannot be sent directly.`,
+            { receives: [...received].filter(c => c !== WORKFLOW_ENDED_CONTRACT).sort() });
+    }
+    const builtInEndedInTest = run.mode === "test" && request.contract === WORKFLOW_ENDED_CONTRACT && received.has(WORKFLOW_ENDED_CONTRACT);
+    if ((!contract && !builtInEndedInTest) || !received.has(request.contract)) {
         throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `This workflow does not receive contract '${request.contract}'.`, { receives: [...received].sort() });
     }
     let payloadText: string;
@@ -1632,7 +1654,21 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
         if (error instanceof WorkflowJsonError) throw new WorkflowStoreError("INPUT_INVALID", error.message);
         throw error;
     }
-    const problems = schemaSetFor(run.irSha256, ir.schemaDefs).validate(contract.schema, request.payload);
+    if (listReceived.has(request.contract)) {
+        try {
+            boundedCanonicalJson({ contract: request.contract, from: senderSessionId, payload: request.payload }, "The input payload");
+        } catch (error) {
+            if (error instanceof WorkflowJsonError) {
+                const reason = /nesting exceeds/i.test(error.message) ? "too deep" : "too large";
+                throw new WorkflowStoreError("INPUT_INVALID",
+                    `The input payload is ${reason} for a list receive: ${error.message}`);
+            }
+            throw error;
+        }
+    }
+    const problems = builtInEndedInTest
+        ? (isJsonObject(request.payload) ? [] : [{ path: "/", message: "WorkflowEnded@1 payload must be a JSON object." }])
+        : schemaSetFor(run.irSha256, ir.schemaDefs).validate(contract!.schema, request.payload);
     if (problems.length) {
         throw new WorkflowStoreError("INPUT_INVALID", `The payload does not match contract ${request.contract}.`,
             problems.map(problem => ({ path: problem.path, message: problem.message })));

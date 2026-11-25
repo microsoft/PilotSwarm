@@ -18,7 +18,7 @@ import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, wo
 } from "./workflow-words.js";
 
 // Agent and parallel states and stopped runs are read here as every other state and status is.
-const STATE_TYPES = new Set(["script", "wait", "approval", "messaging", "agent", "parallel", "decision", "terminal"]);
+const STATE_TYPES = new Set(["script", "wait", "approval", "messaging", "agent", "parallel", "decision", "spawn", "terminal"]);
 const MESSAGING_MODES = new Set(["receive", "send", "request"]);
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
 const RUN_STATUSES = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled", "stopped"]);
@@ -74,7 +74,9 @@ function checkState(node) {
     if (node.type === "wait" && typeof node.seconds !== "number" && typeof node.seconds !== "string" && !isRecord(node.at)) {
         throw invalidState(node, "it has no duration");
     }
-    if (node.type === "messaging" && (!MESSAGING_MODES.has(node.mode) || typeof node.contract !== "string")) {
+    const validContract = typeof node.contract === "string"
+        || (node.mode === "receive" && Array.isArray(node.contract) && node.contract.length >= 2 && node.contract.every(c => typeof c === "string"));
+    if (node.type === "messaging" && (!MESSAGING_MODES.has(node.mode) || !validContract)) {
         throw invalidState(node, "its messaging mode or message type is unknown");
     }
     if (node.type === "agent" && (!isRecord(node.invoke) || (node.invoke.source !== "prompt" && node.invoke.source !== "agent"))) {
@@ -82,6 +84,9 @@ function checkState(node) {
     }
     if (node.type === "decision" && (!isRecord(node.question) || !["choice", "noul", "score"].includes(node.question.type))) {
         throw invalidState(node, "its question is unknown");
+    }
+    if (node.type === "spawn" && (typeof node.definition !== "string" || !node.definition)) {
+        throw invalidState(node, "it names no child definition");
     }
     if (node.type === "parallel" && (!isRecord(node.body) || typeof node.body.initial !== "string" || !Array.isArray(node.body.states)
         || !Number.isSafeInteger(node.concurrency))) {
@@ -263,11 +268,12 @@ export function workflowNodeLabel(node) {
         case "approval": return "Owner approval";
         case "wait": return typeof node.seconds === "number" ? `Wait · ${formatSeconds(node.seconds)}`
             : workflowClockWaitShort(node.at) ? `Wait · ${workflowClockWaitShort(node.at)}` : "Wait";
-        case "receive": return `Receive · ${node.contract}`;
+        case "receive": return `Receive · ${Array.isArray(node.contract) ? node.contract.join(", ") : node.contract}`;
         case "send": return `Send · ${node.contract}`;
         case "request": return `Ask · ${node.contract}`;
         case "agent": return node.invoke?.source === "agent" ? `Agent · ${node.invoke.name}` : "Agent";
         case "decision": return "Decision";
+        case "spawn": return typeof node.definition === "string" && node.definition ? `Spawn · ${node.definition}` : "Spawn";
         // A parallel step with named branches says "Branches" and how many run at once.
         case "parallel": return Array.isArray(node.namedBranches) ? `Branches · ${namedBranchPace(node)}`
             : `For each · ${node.concurrency === 1 ? "one item at a time" : `up to ${node.concurrency} at a time`}`;
@@ -297,7 +303,7 @@ function workflowNodeCard(view, node, context) {
         runs: view.runs, partial: view.partial, itemsShown: Boolean(view.itemCounts),
         seconds: typeof node.seconds === "number" ? node.seconds : undefined, secondsText: typeof node.seconds === "number" ? formatSeconds(node.seconds) : undefined,
         clock: kind === "wait" ? workflowClockWaitShort(node.at) : null, deadline: view.pending?.deadline ?? null,
-        contract: node.contract, agentName: node.invoke?.source === "agent" ? node.invoke.name : null, items,
+        contract: node.contract, definition: node.definition, agentName: node.invoke?.source === "agent" ? node.invoke.name : null, items,
     });
     const badge = words.badge ?? (view.itemCounts ? null : workflowVisitBadge(view.runs, view.partial));
     // A For each at work says how many of its items succeeded, as its card does ("Running · 1/2 items").
@@ -741,6 +747,8 @@ export function projectWorkflowReadModel(model, { older = null, now = Date.now()
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
         // What publication pinned each named agent state to (migration 0088; only a definition with any has them).
         publishedAgentPins: isRecord(lifecycle.publishedAgentPins) ? lifecycle.publishedAgentPins : null,
+        ...(isRecord(model.spawnedBy) && typeof model.spawnedBy.workflowId === "string" ? { spawnedBy: model.spawnedBy } : {}),
+        ...(Array.isArray(model.run?.spawnChildren) ? { spawnChildren: model.run.spawnChildren } : {}),
         // The server's word that its test runs are shown (review UI-5; workflowTestRunsShown).
         ...(model.testMode === true ? { testMode: true } : {}),
     };
@@ -850,6 +858,7 @@ export function workflowExecutionOfRow(row) {
         receive: isRecord(row.receive) ? row.receive : undefined,
         approval: isRecord(row.approval) ? row.approval : undefined,
         agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
+        spawnChild: isRecord(row.spawnChild) && typeof row.spawnChild.workflowId === "string" ? row.spawnChild : undefined,
         scopeId: text(row.scopeId), branch: isRecord(row.branch) ? row.branch : undefined,
         branches: Number.isSafeInteger(row.branches) ? row.branches : undefined };
 }
@@ -1013,13 +1022,17 @@ export function describeWorkflowExecution(node, execution, sessionName = null) {
         else if (execution.outcome === "elapsed") lines.push("The wait elapsed.");
     } else if (kind === "receive") {
         const wanted = execution.receive ? { contract: execution.receive.contract, from: execution.receive.from } : { contract: node.contract, from: node.from };
+        const wantedText = Array.isArray(wanted.contract) ? wanted.contract.join(" or ") : wanted.contract;
         if (pending) {
-            lines.push(`Waiting for ${wanted.contract} from ${party(wanted.from)}.`);
+            lines.push(`Waiting for ${wantedText} from ${party(wanted.from)}.`);
             if (execution.deadline) lines.push(`If none arrives by ${workflowShortTime(execution.deadline) ?? execution.deadline}, the node continues on elapsed.`);
-        } else if (execution.outcome === "received") {
+        } else if (execution.outcome === "elapsed") {
+            lines.push("The wait limit passed before a matching message arrived.");
+        } else if (execution.outcome === "received" || (execution.outcome && execution.outcome !== "exhausted" && execution.resultKind !== "runtime_error")) {
+            const tookContract = execution.contract || execution.inbox?.contract || (execution.outcome !== "received" ? execution.outcome : null) || wantedText;
             const from = sessionNamed(sessionName, execution.senderSessionId ?? execution.inbox?.senderSessionId);
-            lines.push(`Received ${execution.contract || wanted.contract}${from ? ` from ${from}` : ""}.`);
-        } else if (execution.outcome === "elapsed") lines.push("The wait limit passed before a matching message arrived.");
+            lines.push(`Received ${tookContract}${from ? ` from ${from}` : ""}.`);
+        }
     } else if (kind === "send") {
         const to = recipient(execution.recipientSessionId || execution.outbox?.recipientSessionId);
         if (pending && execution.outbox?.state !== "delivered") lines.push(`Sending ${node.contract} to ${to}.`);
@@ -1425,9 +1438,21 @@ export function projectWorkflow({ definition = null, readModel = null, workflowM
         new Map(executions.filter(item => item.stateId === node.id && typeof item.id === "string" && Number.isSafeInteger(item.ordinal))
             .map(item => [item.id, item.ordinal]))]));
     // Workflow Simplified (F4): the node a Workflow starts at carries the Start marker.
-    const nodes = (active?.states || []).map(node => ({ ...nodeView(node, executions, context), initial: node.id === active.initial }));
+    const spawnChildren = Array.isArray(shared?.spawnChildren) ? shared.spawnChildren : [];
+    const nodes = (active?.states || []).map(node => {
+        const view = { ...nodeView(node, executions, context), initial: node.id === active.initial };
+        if (node.type === "spawn") {
+            const fromRun = spawnChildren.filter(child => isRecord(child) && child.stateId === node.id);
+            const fromVisits = (view.executions || []).map(ex => ex.spawnChild).filter(Boolean);
+            const byId = new Map();
+            for (const c of [...fromRun, ...fromVisits]) if (typeof c?.workflowId === "string" && !byId.has(c.workflowId)) byId.set(c.workflowId, c);
+            view.children = [...byId.values()];
+        }
+        return view;
+    });
     return {
         status, definition: active, nodes, banners, readModel: model, runId, bound,
+        ...(shared?.spawnedBy ? { spawnedBy: shared.spawnedBy } : {}),
         // Stage 2.4: every visit loaded (the replay's frames), and the replay's moment when one is shown.
         allExecutions: collected.executions, asOf: replaying ? asOf : null,
         historyComplete: Boolean(run && bound && run.history.complete), historyStale: Boolean(run && bound && run.history.staleOlder),

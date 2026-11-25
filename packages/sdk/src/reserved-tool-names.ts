@@ -100,7 +100,7 @@ const SESSION_ATTACHED_TOOL_NAMES = [
  * RESPOND_SESSION_REQUEST_TOOL and COMPLETE_WORKFLOW_NODE_TOOL (a unit test
  * keeps them equal; their modules are not imported here).
  */
-export const WORKFLOW_TURN_TOOL_NAMES = ["respond_session_request", "complete_workflow_node"] as const;
+export const WORKFLOW_TURN_TOOL_NAMES = ["respond_session_request", "complete_workflow_node", "child_workflows"] as const;
 
 /**
  * The Workflow tools a turn always has handlers for, declared or not: spawn_workflow is no longer declared (its handler

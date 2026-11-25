@@ -114,7 +114,7 @@ test("every complete example in the workflow skills compiles as written, with no
     assert.deepEqual(examples.map(item => `${item.skill}/${item.name}`).sort(),
         ["workflow-approval/owner-consent", "workflow-authoring/build-watch", "workflow-carry/carry-retry", "workflow-decision/refund-guard",
             "workflow-decision/ticket-triage", "workflow-long-agent/long-agent", "workflow-patterns/two-lane-summary", "workflow-patterns/two-views",
-            "workflow-polling/ci-poll", "workflow-polling/uncertain-send", "workflow-reference/change-review", "workflow-schedules/follow-ups",
+            "workflow-polling/ci-poll", "workflow-polling/uncertain-send", "workflow-reference/change-review", "workflow-reference/child-dispatch", "workflow-schedules/follow-ups",
             "workflow-schedules/twice-daily", "workflow-testing/release-notes"]);
     const kinds = new Set();
     for (const example of examples) {
@@ -124,5 +124,5 @@ test("every complete example in the workflow skills compiles as written, with no
         assert.equal(compiled.name, example.name);
         for (const node of Object.values(compiled.ir.nodes)) kinds.add(node.type === "messaging" ? node.mode : node.type);
     }
-    assert.deepEqual([...kinds].sort(), ["agent", "approval", "decision", "parallel", "receive", "request", "script", "send", "terminal", "wait"]);
+    assert.deepEqual([...kinds].sort(), ["agent", "approval", "decision", "parallel", "receive", "request", "script", "send", "spawn", "terminal", "wait"]);
 });

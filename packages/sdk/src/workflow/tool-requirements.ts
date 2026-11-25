@@ -61,6 +61,7 @@ export function workflowToolDiagnostics(ir: Pick<WorkflowIR, "nodes"> | null | u
         const requirements = scriptToolRequirements(node.source);
         diagnostics.push(...scriptToolWarnings(node.source, path));
         for (const tool of requirements.tools) {
+            if (tool === "child_workflows") continue;
             if (isWorkflowScriptRefusedCanvasTool(tool)) {
                 diagnostics.push({ severity: "warning", code: "WORKFLOW_TOOL_LIVE_SESSION", path, message: workflowScriptCanvasToolMessage(tool) });
             } else if (isWorkflowControlTool(tool)) {

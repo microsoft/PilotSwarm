@@ -57,6 +57,10 @@ export function workflowNodeWhat(node) {
             const first = workflowFirstSentence(node.question?.instructions);
             return first ? `Runs a Decision model: “${first}”` : "Runs a Decision model and routes its semantic result.";
         }
+        case "spawn":
+            return typeof node.definition === "string" && node.definition
+                ? `Starts child Workflow ${node.definition}${Number.isSafeInteger(node.revision) ? ` (revision ${node.revision})` : ""}.`
+                : "Starts a child Workflow.";
         case "script": return `Runs the script ${node.id}${Number.isFinite(node.timeoutSeconds) ? `, for at most ${formatSeconds(node.timeoutSeconds)}` : ""}.`;
         case "approval": return `Asks the Workflow owner: ${node.question ?? "Read the proposal and decide."}`;
         case "wait": return typeof node.seconds === "number" ? `Waits ${formatSeconds(node.seconds)}.`
@@ -70,7 +74,10 @@ export function workflowNodeWhat(node) {
         }
         case "receive": {
             const limit = seconds(node.waitSeconds);
-            return `Waits for ${an(node.contract)} message from ${party(node.from)}${limit ? `, for at most ${limit}` : ""}.`;
+            const total = seconds(node.waitTotalSeconds);
+            const target = Array.isArray(node.contract) ? node.contract.join(" or ") : an(node.contract);
+            const budget = limit ? `, for at most ${limit}` : total ? `, for at most ${total} total` : "";
+            return `Waits for ${target} message from ${party(node.from)}${budget}.`;
         }
         // Named branches by their names, and a named branch's end.
         case "parallel": return Array.isArray(node.namedBranches)
@@ -247,7 +254,7 @@ export function workflowNodeNext(node) {
  * The whole summary of a node for the Node panel: { what, now, runs, result, agent, next }. `execution` is the visit
  * shown (a branch step's chosen branch, else the node's current visit).
  */
-export function workflowNodeSummary(node, { execution = node?.current ?? null, ended = undefined, now = Date.now() } = {}) {
+export function workflowNodeSummary(node, { execution = node?.current ?? null, ended = undefined, now = Date.now(), sessionName = null } = {}) {
     if (!node) return null;
     const agent = node.kind === "agent" ? {
         sessionMode: workflowAgentSessionMode(node),
@@ -264,6 +271,30 @@ export function workflowNodeSummary(node, { execution = node?.current ?? null, e
         what: workflowNodeWhat(node), now: workflowNodeNow(node, execution, now), runs: workflowNodeRuns(node, execution, now),
         ...(typeof node.about?.notes === "string" ? { notes: node.about.notes } : {}),
         ...(node.kind === "decision" || node.type === "decision" ? { decision: workflowDecisionSummary(node, execution) } : {}),
+        ...(node.kind === "spawn" || node.type === "spawn" ? {
+            spawn: {
+                definition: typeof node.definition === "string" ? node.definition : null,
+                revision: Number.isSafeInteger(node.revision) ? node.revision : null,
+                children: Array.isArray(node.children) ? node.children : [],
+            },
+        } : {}),
+        ...(node.kind === "receive" ? {
+            receive: (() => {
+                const contracts = Array.isArray(node.contract) ? [...node.contract]
+                    : typeof node.contract === "string" ? [node.contract] : [];
+                const rawSender = execution?.senderSessionId ?? execution?.inbox?.senderSessionId ?? null;
+                const resolvedName = typeof sessionName === "function" && typeof rawSender === "string" && rawSender
+                    ? (sessionName(rawSender)?.trim() || null) : null;
+                const took = execution && execution.status === "completed" && execution.resultKind !== "runtime_error"
+                    && execution.outcome !== "elapsed" && execution.outcome !== "exhausted"
+                    ? {
+                        contract: execution.contract || execution.inbox?.contract
+                            || (execution.outcome && execution.outcome !== "received" ? execution.outcome : (contracts.length === 1 ? contracts[0] : null)),
+                        senderName: resolvedName,
+                    } : null;
+                return { contracts, taken: took };
+            })(),
+        } : {}),
         runsTitle: node.partial && node.runs ? "Older visits not loaded" : null,
         result: workflowNodeResult(node, execution, { ended }), agent, next: workflowNodeNext(node),
         // A chosen item (`ended` given) or a For each step that has no result of its own here says so (review UI-3).

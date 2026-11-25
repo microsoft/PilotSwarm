@@ -1096,7 +1096,9 @@ export class PilotSwarmManagementClient {
         throw new Error(`Timed out waiting for session ${sessionId.slice(0, 8)} to settle`);
     }
 
-    private async _forceDeleteSession(sessionId: string, reason?: string): Promise<void> {
+    private async _forceDeleteSession(sessionId: string, reason?: string, visited: Set<string> = new Set()): Promise<void> {
+        if (visited.has(sessionId)) return;
+        visited.add(sessionId);
         const session = await this._catalog!.getSession(sessionId);
         if (session?.isSystem) {
             throw systemSessionProtectedError("delete");
@@ -1110,6 +1112,21 @@ export class PilotSwarmManagementClient {
         }).catch(() => {});
 
         await this._catalog!.softDeleteSession(sessionId);
+
+        if (session?.sessionKind === "workflow") {
+            const wfStore = this._catalog!.workflowStore?.();
+            if (wfStore) {
+                const postChildren = await wfStore.listChildWorkflows(sessionId, { includeDeleted: false });
+                const postBare = await wfStore.listBareChildWorkflowClaims(sessionId);
+                for (const childId of [...postChildren.map(c => c.workflowSessionId), ...postBare]) {
+                    const nested = await this._catalog!.getDescendantSessionIds(childId);
+                    for (const nid of nested) {
+                        if (!visited.has(nid)) await this._forceDeleteSession(nid, `Ancestor ${sessionId} deleted: ${reason ?? "Deleted by management client"}`, visited);
+                    }
+                    if (!visited.has(childId)) await this._forceDeleteSession(childId, `Ancestor ${sessionId} deleted: ${reason ?? "Deleted by management client"}`, visited);
+                }
+            }
+        }
 
         if (this._factStore) {
             try {
@@ -1849,16 +1866,17 @@ export class PilotSwarmManagementClient {
             } catch (err) {
                 console.error(`[PilotSwarmManagementClient] descendant enumeration failed for ${sessionId}:`, err);
             }
+            const visited = new Set<string>();
             for (const descendantId of descendants) {
                 try {
-                    await this._forceDeleteSession(descendantId, `Ancestor ${sessionId} deleted: ${deleteReason}`);
+                    await this._forceDeleteSession(descendantId, `Ancestor ${sessionId} deleted: ${deleteReason}`, visited);
                 } catch (err) {
                     // Non-fatal (e.g. a system/service descendant): keep
                     // going so one refusal doesn't strand its siblings.
                     console.error(`[PilotSwarmManagementClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
                 }
             }
-            await this._forceDeleteSession(sessionId, deleteReason);
+            await this._forceDeleteSession(sessionId, deleteReason, visited);
             return;
         }
 

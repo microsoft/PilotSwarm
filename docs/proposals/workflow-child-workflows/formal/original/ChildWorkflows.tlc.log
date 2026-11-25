@@ -1,0 +1,167 @@
+$ java -Xmx768m -XX:+UseParallelGC -cp /tmp/tla2tools.jar tlc2.TLC -workers 1 -config ChildWorkflows.cfg ChildWorkflows.tla
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 46 and seed 1076960475616588388 with 1 worker on 2 cores with 683MB heap and 64MB offheap memory [pid: 66] (Linux 6.6.159.1-2.azl3 amd64, Microsoft 21.0.8 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-child-workflows/ChildWorkflows.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ChildWorkflows
+Starting... (2026-11-25 06:11:17)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-11-25 06:11:18.
+Error: Invariant NoRunningAfterCleanup is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ agentSteps = <<0, 0>>
+/\ hint = "none"
+/\ c = << [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE],
+   [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE] >>
+/\ p = "ready"
+/\ v = << [ pc |-> "done",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ],
+   [ pc |-> "done",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ] >>
+/\ endedOrder = <<>>
+/\ waiting = 0
+/\ receipts = <<>>
+/\ inbox = <<>>
+
+State 2: <AdmitSpawn line 45, col 5 to line 49, col 63 of module ChildWorkflows>
+/\ agentSteps = <<0, 0>>
+/\ hint = "none"
+/\ c = << [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE],
+   [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE] >>
+/\ p = "spawn"
+/\ v = << [ pc |-> "dispatch",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ],
+   [ pc |-> "done",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ] >>
+/\ endedOrder = <<>>
+/\ waiting = 1
+/\ receipts = <<>>
+/\ inbox = <<>>
+
+State 3: <DispatchSpawn line 52, col 5 to line 54, col 81 of module ChildWorkflows>
+/\ agentSteps = <<0, 0>>
+/\ hint = "none"
+/\ c = << [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE],
+   [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE] >>
+/\ p = "spawn"
+/\ v = << [ pc |-> "claim",
+     attempts |-> 1,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ],
+   [ pc |-> "done",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ] >>
+/\ endedOrder = <<>>
+/\ waiting = 1
+/\ receipts = <<>>
+/\ inbox = <<>>
+
+State 4: <ClaimSession line 58, col 5 to line 65, col 78 of module ChildWorkflows>
+/\ agentSteps = <<0, 0>>
+/\ hint = "none"
+/\ c = << [key |-> 1, level |-> 2, status |-> "claimed", controller |-> FALSE],
+   [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE] >>
+/\ p = "spawn"
+/\ v = << [ pc |-> "rows",
+     attempts |-> 1,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ],
+   [ pc |-> "done",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ] >>
+/\ endedOrder = <<>>
+/\ waiting = 1
+/\ receipts = <<>>
+/\ inbox = <<>>
+
+State 5: <ParentEnd line 170, col 5 to line 171, col 81 of module ChildWorkflows>
+/\ agentSteps = <<0, 0>>
+/\ hint = "none"
+/\ c = << [key |-> 1, level |-> 2, status |-> "claimed", controller |-> FALSE],
+   [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE] >>
+/\ p = "ended"
+/\ v = << [ pc |-> "rows",
+     attempts |-> 1,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ],
+   [ pc |-> "done",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ] >>
+/\ endedOrder = <<>>
+/\ waiting = 1
+/\ receipts = <<>>
+/\ inbox = <<>>
+
+State 6: <FinishCleanup line 180, col 5 to line 182, col 81 of module ChildWorkflows>
+/\ agentSteps = <<0, 0>>
+/\ hint = "none"
+/\ c = << [key |-> 1, level |-> 2, status |-> "claimed", controller |-> FALSE],
+   [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE] >>
+/\ p = "cleaned"
+/\ v = << [ pc |-> "rows",
+     attempts |-> 1,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ],
+   [ pc |-> "done",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ] >>
+/\ endedOrder = <<>>
+/\ waiting = 1
+/\ receipts = <<>>
+/\ inbox = <<>>
+
+State 7: <WriteChildRows line 70, col 5 to line 74, col 78 of module ChildWorkflows>
+/\ agentSteps = <<0, 0>>
+/\ hint = "none"
+/\ c = << [key |-> 1, level |-> 2, status |-> "running", controller |-> FALSE],
+   [key |-> 0, level |-> 0, status |-> "absent", controller |-> FALSE] >>
+/\ p = "cleaned"
+/\ v = << [ pc |-> "start",
+     attempts |-> 1,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ],
+   [ pc |-> "done",
+     attempts |-> 0,
+     cut |-> "none",
+     down |-> FALSE,
+     result |-> 0 ] >>
+/\ endedOrder = <<>>
+/\ waiting = 1
+/\ receipts = <<>>
+/\ inbox = <<>>
+
+109 states generated, 76 distinct states found, 33 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 4 and the 95th percentile is 3).
+Finished in 01s at (2026-11-25 06:11:18)

@@ -21,7 +21,7 @@ import {
     WORKFLOW_CONTROLLER_VERSIONS,
     WORKFLOW_EFFECT_NAME,
     WORKFLOW_EFFECT_VERSION,
-    WORKFLOW_DECISION_EFFECT_VERSION,
+    WORKFLOW_DECISION_EFFECT_VERSION, WORKFLOW_SPAWN_EFFECT_VERSION,
     WORKFLOW_NOTIFY_NAME,
     WORKFLOW_NOTIFY_VERSION,
     WORKFLOW_SEND_NAME,
@@ -108,8 +108,10 @@ test("workflow registers the controller at 1.0.0 and 1.1.0 and both frozen effec
         [WORKFLOW_CONTROLLER_NAME, "1.0.0"],
         [WORKFLOW_CONTROLLER_NAME, "1.1.0"],
         [WORKFLOW_CONTROLLER_NAME, "1.2.0"],
+        [WORKFLOW_CONTROLLER_NAME, "1.3.0"],
         [WORKFLOW_EFFECT_NAME, WORKFLOW_EFFECT_VERSION],
         [WORKFLOW_EFFECT_NAME, WORKFLOW_DECISION_EFFECT_VERSION],
+        [WORKFLOW_EFFECT_NAME, WORKFLOW_SPAWN_EFFECT_VERSION],
         [WORKFLOW_NOTIFY_NAME, WORKFLOW_NOTIFY_VERSION],
         [WORKFLOW_SEND_NAME, WORKFLOW_SEND_VERSION],
         [WORKFLOW_REQUEST_NAME, WORKFLOW_REQUEST_VERSION],
@@ -118,14 +120,14 @@ test("workflow registers the controller at 1.0.0 and 1.1.0 and both frozen effec
     ]);
     const helperRegistrations = registered.filter(entry => entry.name !== WORKFLOW_CONTROLLER_NAME);
     assert.deepEqual(helperRegistrations.filter(entry => entry.name === WORKFLOW_EFFECT_NAME).map(entry => entry.version),
-        ["1.0.0", "1.1.0"]);
+        ["1.0.0", "1.1.0", "1.2.0"]);
     assert.ok(helperRegistrations.filter(entry => entry.name !== WORKFLOW_EFFECT_NAME).every(entry => entry.version === "1.0.0"),
         "all helpers except the versioned effects remain at 1.0.0");
     assert.deepEqual(helperRegistrations.filter(entry => entry.name === WORKFLOW_EFFECT_NAME).map(entry => entry.fn.name),
-        ["workflowEffect_1_0_0", "workflowEffect_1_1_0"]);
-    // New runs use live code; both older handlers remain registered for their histories.
-    assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.2.0");
-    assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0", "1.2.0"]);
+        ["workflowEffect_1_0_0", "workflowEffect_1_1_0", "workflowEffect_1_2_0"]);
+    // New runs use live code; all older handlers remain registered for their histories.
+    assert.equal(WORKFLOW_CONTROLLER_VERSION, "1.3.0");
+    assert.deepEqual(WORKFLOW_CONTROLLER_VERSIONS, ["1.0.0", "1.1.0", "1.2.0", "1.3.0"]);
     assert.deepEqual({ ...workflowControllerFeatures("1.0.0") }, { carry: false, approval: false, succession: false });
     assert.deepEqual({ ...workflowControllerFeatures("1.1.0") }, { carry: true, approval: true, succession: false });
     assert.deepEqual(workflowControllerFeatures("1.2.0"), workflowControllerFeatures("1.1.0"));

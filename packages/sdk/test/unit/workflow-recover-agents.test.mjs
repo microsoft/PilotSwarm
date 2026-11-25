@@ -29,6 +29,9 @@ function fakeHost({ mode = "live", parent = "parent-1", childFails = false } = {
         recordSessionEvents: async (_id, events) => { log.events.push(...events.map(event => event.eventType)); },
         // R2-RT-2: an ended run's session row is put right first (its own test is in workflow-control).
         repairEndedRunSessionRow: async () => ({ repaired: false }),
+        readSessionLink: async () => null,
+        listChildWorkflows: async () => [],
+        listBareChildWorkflowClaims: async () => [],
     };
     const duroxideClient = {
         getStatus: async (instance) => {
