@@ -45,9 +45,10 @@ export interface CanvasOperationDeps {
     /** Test seam: the clock of the script-mode tick wait only. Default: the monotonic clock. */
     tickClock?: CanvasTickClock;
     /**
-     * Review S5 (#376): a synchronous check before each write. A turn's bridge passes its fence
-     * (control-bridge-fence.ts), which throws once the turn or its activity attempt has ended; the write then
-     * returns `{ error }` and writes nothing more. A writer without a turn passes none.
+     * Review S5 (#376): a synchronous check immediately before each write, after any await that precedes it. A
+     * turn's bridge passes its fence (control-bridge-fence.ts), which throws once the turn or its activity attempt
+     * has ended; the write then returns `{ error }` and writes nothing more. A draw whose event is recorded is
+     * published, and its cache writes finish. A writer without a turn passes none.
      */
     fence?: (tool: string, step: string) => void;
 }
@@ -480,9 +481,15 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 // stays honest because it is log-first.
                 deps.fence?.("draw_canvas", "drawing the canvas");
                 const seedRev = await latestCanvasRev(catalog, target, slot);
+                // The fence again before each write up to the event that
+                // publishes the draw: a turn that ended during an await
+                // writes nothing more (a stop after the mint burns a
+                // phantom rev, as a failed upload does).
+                deps.fence?.("draw_canvas", "minting the revision");
                 const rev = typeof (catalog as any).mintCanvasRev === "function"
                     ? await (catalog as any).mintCanvasRev(target, slot, seedRev)
                     : seedRev + 1;
+                deps.fence?.("draw_canvas", "uploading the canvas");
                 await artifactStore.uploadArtifact(
                     target, canvasArtifactFilename(slot), html, "text/html",
                     // Pinned on EVERY draw, not just the first: uploads
@@ -496,6 +503,7 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 // The response contract rides the event so every
                 // client learns it exactly where it learns the rev —
                 // live push and cold snapshot alike, no extra fetch.
+                deps.fence?.("draw_canvas", "recording the canvas");
                 await catalog.recordEvents(target, [{
                     eventType: "session.canvas_updated",
                     data: {
@@ -518,6 +526,10 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                         ...(crossSession ? { by: deps.writerSessionId } : {}),
                     },
                 }], workerNodeId);
+                // The draw is published. The cache writes below follow it
+                // without the fence: they describe the recorded rev, and
+                // a skipped KV-manifest write would leave the previous
+                // page's write switch armed for this one.
                 // The per-slot cache (migration 0045). Non-fatal on
                 // purpose: the event above is durable, and the next
                 // draw falls back to the event scan if this row is
@@ -642,6 +654,10 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                 // report success.
                 if (!planeAvailable || process.env.PILOTSWARM_CANVAS_DURABLE_TICKS !== "0") {
                     dataRev = (await latestCanvasDataRev(catalog, target, slot)) + 1;
+                    // Again after the awaits above. A stop after the plane
+                    // took the tick leaves the event log one tick behind
+                    // until the next tick, whose event carries the whole state.
+                    deps.fence?.("update_canvas", "recording the data");
                     await catalog.recordEvents(target, [{
                         eventType: "session.canvas_data",
                         data: {
@@ -729,8 +745,11 @@ export function createCanvasOperations(deps: CanvasOperationDeps) {
                         const op = args.op === "put"
                             ? { op: "put" as const, key: args.key, value: args.value, ifMatch: args.ifMatch ?? null }
                             : { op: "delete" as const, key: args.key, ifMatch: args.ifMatch ?? null };
-                        deps.fence?.("canvas_kv", `the ${args.op} of ${args.key}`);
-                        const written = await writeCanvasKv(store, target, slot, principal, [op]);
+                        const step = `the ${args.op} of ${args.key}`;
+                        deps.fence?.("canvas_kv", step);
+                        // Again before the store write, after writeCanvasKv's reads.
+                        const written = await writeCanvasKv(store, target, slot, principal, [op],
+                            deps.fence ? () => deps.fence!("canvas_kv", step) : undefined);
                         const result = written.results[0];
                         return result.ok
                             ? { ok: true, key: result.key, rev: result.rev }

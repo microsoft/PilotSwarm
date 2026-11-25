@@ -514,7 +514,9 @@ A tool call in flight when the runtime dies is not awaited. A worker tool's
 external step: sub-agent and agent-session management (`spawn_agent`,
 `message_agent`, `complete_agent`, `manage_agent_session` and the like),
 cross-session messages, model and context changes, the `check_agents` memo and
-the canvas writes. Reads and the Workflow tools are not fenced. The retry
+the canvas writes. Each check is made right before its write, after any await
+that precedes it; a canvas draw whose event is recorded is published, and its
+cache writes finish. Reads and the Workflow tools are not fenced. The retry
 re-runs the turn from the last commit, so an effect completed before the loss
 can run again: tool effects are at-least-once.
 

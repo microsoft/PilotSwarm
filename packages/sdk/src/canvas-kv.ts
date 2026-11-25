@@ -290,13 +290,17 @@ export async function readCanvasKv(
     };
 }
 
-/** Door-agnostic write: one or more ops, each answered individually. */
+/**
+ * Door-agnostic write: one or more ops, each answered individually. `beforeWrite` runs synchronously right before
+ * each store write; a throw stops the write and every later op (a turn's fence, review S5 #376).
+ */
 export async function writeCanvasKv(
     store: CanvasKvStore,
     sessionId: string,
     slot: number,
     principal: CanvasKvPrincipal,
     ops: CanvasKvWriteOp[],
+    beforeWrite?: () => void,
 ): Promise<{ results: CanvasKvWriteResult[]; me: CanvasKvMe }> {
     const viewer = await viewerFor(store, sessionId, slot, principal);
     const results: CanvasKvWriteResult[] = [];
@@ -329,6 +333,7 @@ export async function writeCanvasKv(
         const envelope = op.op === "delete"
             ? null
             : { v: decision.value === undefined ? null : decision.value, by: { kind: by.kind, id: by.id, label: by.label }, at: new Date().toISOString() };
+        beforeWrite?.();
         const outcome = await store.canvasKvWrite(sessionId, slot, op.key, envelope, ifMatch, {
             maxKeys: CANVAS_KV_MAX_KEYS, maxBytes: CANVAS_KV_MAX_BYTES, maxValueBytes: CANVAS_KV_VALUE_MAX_BYTES,
         });

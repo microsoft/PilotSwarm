@@ -1986,14 +1986,18 @@ describe("review S5 (#376): the control bridge's effectful tools take no step af
         resetSessionMessageRateLimitsForTests();
     });
 
-    async function bridgeOfEndedTurn(callerId, { duringTurn, childrenGate } = {}) {
+    const CANVAS_DRAWN = (types) => ((types ?? []).includes("session.canvas_updated")
+        ? [{ seq: 1, eventType: "session.canvas_updated", data: { rev: 1, slot: 1 } }]
+        : []);
+
+    async function bridgeOfEndedTurn(callerId, { duringTurn, childrenGate, heldInTurn, catalog = {}, uploadArtifact } = {}) {
         const effects = {
             enqueueEvent: vi.fn(async () => {}),
             deleteSession: vi.spyOn(PilotSwarmClient.prototype, "deleteSession").mockResolvedValue(undefined),
             managementStart: vi.spyOn(PilotSwarmManagementClient.prototype, "start").mockResolvedValue(undefined),
             upsertChildOutcome: vi.fn(async () => {}),
             canvasKvWrite: vi.fn(async () => ({ status: "written", rev: 1, sizeBytes: 1 })),
-            uploadArtifact: vi.fn(async () => {}),
+            uploadArtifact: uploadArtifact ?? vi.fn(async () => {}),
             storeFact: vi.fn(async () => {}),
         };
         vi.spyOn(PilotSwarmManagementClient.prototype, "stop").mockResolvedValue(undefined);
@@ -2021,6 +2025,7 @@ describe("review S5 (#376): the control bridge's effectful tools take no step af
             turn: async (opts) => {
                 bridge = opts.controlToolBridge;
                 inFlight = duringTurn?.(bridge);
+                if (heldInTurn) await heldInTurn;
                 return { type: "completed", content: "ok", events: [] };
             },
             catalogExtras: {
@@ -2030,9 +2035,8 @@ describe("review S5 (#376): the control bridge's effectful tools take no step af
                 canvasKvWrite: effects.canvasKvWrite,
                 getCanvasKvSettings: vi.fn(async () => ({ kvAccess: "owner", kvManifest: null, latestRev: 1 })),
                 canvasKvGet: vi.fn(async () => null),
-                getSessionEventsBefore: vi.fn(async (_id, _before, _limit, types) => (types ?? []).includes("session.canvas_updated")
-                    ? [{ seq: 1, eventType: "session.canvas_updated", data: { rev: 1, slot: 1 } }]
-                    : []),
+                getSessionEventsBefore: vi.fn(async (_id, _before, _limit, types) => CANVAS_DRAWN(types)),
+                ...catalog,
             },
         });
         const artifactStore = { uploadArtifact: effects.uploadArtifact, downloadArtifactText: vi.fn(async () => APP_HTML) };
@@ -2096,5 +2100,41 @@ describe("review S5 (#376): the control bridge's effectful tools take no step af
         release();
         expect(text(await ended.inFlight)).toContain(stopped("complete_agent", "recording the result"));
         expectNoWrite(ended);
+    });
+
+    // Copilot review (#376): each canvas write checks the fence again after the await before it. The call starts in
+    // the turn and is held at one await until its activity attempt has ended; released, it stops before its next
+    // write. A write made before the hold stands (a step already started completes).
+    const planeOn = { canvasLiveAvailable: async () => true };
+    it.each([
+        ["draw_canvas", "minting the revision", "the revision read", (b) => b.drawCanvas({ html: "<p>hello</p>" }),
+            (hold) => ({ catalog: { getSessionCanvases: hold(async () => []), mintCanvasRev: vi.fn(async () => 2) } }), ["mintCanvasRev", "uploadArtifact"]],
+        ["draw_canvas", "uploading the canvas", "the mint", (b) => b.drawCanvas({ html: "<p>hello</p>" }),
+            (hold) => ({ catalog: { mintCanvasRev: hold(async () => 2) } }), ["uploadArtifact"]],
+        ["draw_canvas", "recording the canvas", "the upload", (b) => b.drawCanvas({ html: "<p>hello</p>" }),
+            (hold) => ({ uploadArtifact: hold(async () => {}), catalog: { upsertSessionCanvas: vi.fn(async () => {}) } }), ["upsertSessionCanvas"]],
+        ["update_canvas", "recording the data", "the plane write", (b) => b.updateCanvas({ data: { n: 1 } }),
+            (hold) => ({ catalog: { ...planeOn, upsertCanvasLiveTick: hold(async () => ({ payload: { n: 1 }, seq: 2 })) } }), []],
+        ["update_canvas", "recording the data", "the data-rev read", (b) => b.updateCanvas({ data: { n: 1 } }),
+            (hold) => {
+                const read = hold(async () => []);
+                return { catalog: { getSessionEventsBefore: async (id, before, limit, types) => ((types ?? []).includes("session.canvas_data") ? read() : CANVAS_DRAWN(types)) } };
+            }, []],
+        ["canvas_kv", "the put of app/item", "the row read", (b) => b.canvasKv({ op: "put", key: "app/item", value: 1 }),
+            (hold) => ({ catalog: { canvasKvGet: hold(async () => null) } }), ["canvasKvWrite"]],
+    ])("%s stops before %s when its attempt ends during %s", async (tool, step, at, call, setup, untouched) => {
+        let entered;
+        const reached = new Promise((resolve) => { entered = resolve; });
+        let release;
+        const held = new Promise((resolve) => { release = resolve; });
+        const hold = (result) => vi.fn(async (...args) => { entered(); await held; return result(...args); });
+        const ended = await bridgeOfEndedTurn(`fence-held-${tool}-${at.replace(/\W+/g, "-")}`, {
+            ...setup(hold), heldInTurn: reached, duringTurn: call,
+        });
+        release();
+        expect(text(await ended.inFlight)).toContain(stopped(tool, step));
+        for (const name of untouched) expect(ended.h.catalog[name] ?? ended.effects[name], name).not.toHaveBeenCalled();
+        expect(ended.h.recordedEvents.filter((event) => WRITTEN_EVENTS.has(event.eventType))).toEqual([]);
+        expect(ended.h.traces.warn).toContainEqual(expect.stringContaining(stopped(tool, step)));
     });
 });
