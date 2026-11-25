@@ -595,6 +595,15 @@ function extractAssistantMessageContent(event: any): string | undefined {
     return typeof content === "string" && stripInvisibleContent(content) ? content : undefined;
 }
 
+function hasAssistantStepOutput(eventData: unknown): boolean {
+    if (!eventData || typeof eventData !== "object") return false;
+    const data = eventData as Record<string, unknown>;
+    if (extractAssistantMessageContent({ data }) !== undefined) return true;
+    return hasAssistantToolCalls(data)
+        || (Array.isArray(data.toolRequests) && data.toolRequests.length > 0)
+        || (Array.isArray(data.toolCalls) && data.toolCalls.length > 0);
+}
+
 /**
  * enable_workflows where Workflows are already on, in a session whose Workflows are on demand. Such a session stays declared the
  * tool once they are on: a call of a tool the CLI was not declared is refused by the CLI itself ("Tool 'enable_workflows'
@@ -758,6 +767,9 @@ function formatCurrentModelConfig(config: ManagedSessionConfig): string {
 // text and re-prompt the model — bounded — to actually invoke the tool.
 const MAX_TEXT_TOOL_CALL_CORRECTIONS = 2;
 const MAX_REQUIRED_TOOL_CORRECTIONS = 1;
+const MAX_MODEL_ERROR_CONTINUATIONS = 1;
+const MODEL_STEP_ERROR_MESSAGE =
+    "Model step ended with an upstream error (finishReason: error) without producing any text or tool call.";
 const TEXT_TOOL_CALL_INVOKE_RE = /<(?:antml:)?invoke\s+name\s*=\s*"([^"]+)"/i;
 const TEXT_TOOL_CALL_STRUCTURE_RE = /<\/(?:antml:)?invoke\s*>|<(?:antml:)?parameter\b/i;
 const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
@@ -830,6 +842,11 @@ function buildRequiredToolCorrection(toolName: string): string {
     return `[SYSTEM: Required-tool contract violation. Your previous response did not invoke the "${toolName}" tool. ` +
         `Claims, estimates, and remembered results do not satisfy this request. Invoke "${toolName}" now using the real ` +
         `tool-calling mechanism, then answer only from its result.]`;
+}
+
+function buildModelStepErrorContinuation(): string {
+    return `[SYSTEM: Your previous response ended with an upstream model error before producing any output. ` +
+        `Continue the task from where you stopped and do not repeat tool calls that already completed.]`;
 }
 
 function hasInvokedTool(events: CapturedEvent[], requiredTool: string): boolean {
@@ -4049,6 +4066,8 @@ export class ManagedSession {
         // Review Q1 of the owner batch: answer text seen in this run, streamed (a nonempty delta) or final. A run that streamed
         // text and then got the empty-answer error was cut short, not empty: it is never quieted.
         let sawAnswerText = false as boolean;
+        let stepProducedOutput = false as boolean;
+        let lastStepFailedEmpty = false as boolean;
         const textEmittedToolCallRef: { current: { toolName: string; rawContent: string } | null } = { current: null };
 
         // Streaming progress + turn timing state.
@@ -4278,6 +4297,27 @@ export class ManagedSession {
                         trackLateToolCallPiece(eventType, rawEventData);
                     }
                     if (eventType === "tool.execution_start" || eventType === "tool.execution_complete") this.noteNativeTaskCall(eventType, eventData);
+                    if (eventType === "assistant.turn_start") {
+                        stepProducedOutput = false;
+                        lastStepFailedEmpty = false;
+                    } else if (eventType === "tool.execution_start") {
+                        stepProducedOutput = true;
+                        lastStepFailedEmpty = false;
+                    } else if (eventType === "assistant.message") {
+                        if (hasAssistantStepOutput(eventData)) {
+                            stepProducedOutput = true;
+                            lastStepFailedEmpty = false;
+                        }
+                    } else if (eventType === "assistant.usage") {
+                        const finishReason = (eventData && typeof eventData === "object")
+                            ? (eventData as any).finishReason
+                            : undefined;
+                        if (finishReason === "error") {
+                            if (!stepProducedOutput) lastStepFailedEmpty = true;
+                        } else {
+                            lastStepFailedEmpty = false;
+                        }
+                    }
                     const captured: CapturedEvent = { eventType, data: eventData };
                     if (eventType === "session.error" && opts?.quietEmptyAnswer === true && quietedEmptyAnswer === null
                         && isEmptyAnswerQueryError(eventData)) {
@@ -4588,6 +4628,8 @@ export class ManagedSession {
             const intake = opts?.intakeAdmission;
             if (intake && (this.runInterrupt?.reason != null || intake.eligible?.() === false)) return false;
             hooks.beforeSend?.();
+            stepProducedOutput = false;
+            lastStepFailedEmpty = false;
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
             runLive = true;
@@ -4604,6 +4646,29 @@ export class ManagedSession {
             }
             runLive = false;
             return true;
+        };
+
+        const hasUnrecoveredModelStepError = (): boolean => (
+            lastStepFailedEmpty
+            && turnState.pendingActions.length === 0
+            && deferredSessionError === null
+            && quietedEmptyAnswer === null
+            && !collectedEvents.some((e) => e.eventType === "session.error")
+        );
+        const failModelStepError = (): TurnResult => {
+            const diagnostic: CapturedEvent = {
+                eventType: "runtime.model_step_error",
+                data: { final: true, sessionId: this.sessionId },
+            };
+            collectedEvents.push(diagnostic);
+            if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+            const accepted = acceptedWorkspaceChanges(turnState);
+            return {
+                type: "error",
+                message: MODEL_STEP_ERROR_MESSAGE,
+                events: collectedEvents,
+                ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
+            } as any;
         };
 
         const withRequiredTool = (text: string): string => (opts?.requiredTool
@@ -4701,6 +4766,25 @@ export class ManagedSession {
                 await turnComplete;
             }
             runLive = false;
+
+            // ── Guard: final model step ended with finishReason "error" and no output ──
+            let modelErrorContinuations = 0;
+            while (
+                modelErrorContinuations < MAX_MODEL_ERROR_CONTINUATIONS
+                && hasUnrecoveredModelStepError()
+            ) {
+                lastStepFailedEmpty = false;
+                stepProducedOutput = false;
+                modelErrorContinuations++;
+                const diagnostic: CapturedEvent = {
+                    eventType: "runtime.model_step_error",
+                    data: { attempt: modelErrorContinuations, sessionId: this.sessionId },
+                };
+                collectedEvents.push(diagnostic);
+                if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                if (!(await runCorrection({ prompt: buildModelStepErrorContinuation() }))) break;
+            }
+            if (hasUnrecoveredModelStepError()) return failModelStepError();
 
             // ── Guard: tool call emitted as text instead of executed ──────────
             // If the model typed a tool call as `<invoke .../>` text rather than
@@ -4818,6 +4902,7 @@ export class ManagedSession {
                 && scheduleEffect !== "set"
                 && deferredSessionError === null
                 && quietedEmptyAnswer === null
+                && !lastStepFailedEmpty
                 && !collectedEvents.some(event => event.eventType === "session.error")
                 && !hasInvokedTool(collectedEvents, COMPLETE_WORKFLOW_NODE_TOOL)
                 && !turnAskedForAnswer(collectedEvents)
@@ -4935,7 +5020,7 @@ export class ManagedSession {
                 && turnState.pendingActions.length === 0
                 && !collectedEvents.some(e => e.eventType === "tool.execution_start" || e.eventType === "session.error"
                     || e.eventType === "runtime.tool_call_as_text" || e.eventType === "runtime.required_tool_not_invoked"
-                    || e.eventType === "runtime.workflow_step_reminded")
+                    || e.eventType === "runtime.workflow_step_reminded" || e.eventType === "runtime.model_step_error")
                 && (this.steer?.sends ?? 0) === 0;
             if (!nothingElse) {
                 const held: CapturedEvent = quietedEmptyAnswer;
@@ -5028,6 +5113,10 @@ export class ManagedSession {
                 events: collectedEvents,
                 ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
             } as any;
+        }
+
+        if (hasUnrecoveredModelStepError()) {
+            return failModelStepError();
         }
 
         return {
