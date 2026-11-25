@@ -30,6 +30,13 @@ inline control-tool effect after the loss, not modelled (below); it moves the la
 outside the modelled paths). `a108c67d` (Copilot review) checks the fence again before each canvas write
 (`canvas-operations.ts`, `canvas-kv.ts`, a test and docs): the same unmodelled inline control-tool effect; it changes no
 `session-proxy.ts` line. The binding therefore holds at `a108c67d` too.
+`056eb496` merges main (#405: a model step that fails without output no longer ends the turn as completed;
+`managed-session.ts`, a test and the changelog). Its guard runs after a run settles, and its continuation goes through
+`runCorrection`, which races the same runtime-exit guard (`runtimePromise`), so a runtime death during it still settles
+as a transport loss; its own error message is not a transport-loss message, so it commits as an ordinary error turn. No
+modelled path changes. It moves the `managed-session.ts` lines cited below: 779 to 791, 1852-1857 to 1869-1874, the
+inactivity watchdog 4626 to 4666, the exit race 4651-4659 to 4691-4699 and the catch 4973-4985 to 5059-5071. The
+binding holds at `056eb496`.
 
 This file supersedes the rl1 table for the model's current text: every rl1 row is re-bound below to the lines at
 `0b338528`. The rl1 file stays as the record of batch rl1.

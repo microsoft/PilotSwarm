@@ -140,7 +140,9 @@ Bound to `f4ef5cd8` (`CORRESPONDENCE-f4ef5cd8-rl1.md`, on main `1f6af957`, 0.8.1
 
 Bound to `0b338528` (`CORRESPONDENCE-0b338528-rl2.md`, which re-binds every rl1 row; mode `"main"` stays bound to
 `ac86a39e`). The later commits `bc339020` (the control-bridge fence, review S5), `a62fc500` (a test), `d74443b0`
-(these notes), `fc898539` (a merge of main) and `a108c67d` (the canvas fence recheck) change no modelled path:
+(these notes), `fc898539` (a merge of main), `a108c67d` (the canvas fence recheck) and `056eb496` (a merge of main
+bringing in #405, whose model-step continuation races the same runtime-exit guard; it moves the cited
+`managed-session.ts` lines, as the correspondence file records) change no modelled path:
 
 | Module | Code (`packages/sdk/src/`) |
 |---|---|
@@ -408,8 +410,9 @@ invariant, and the PASS cases keep their state counts (an exhaustive search). A 
 where the two-worker search stopped, so it varies by a few states from run to run (9 of the 19 differ from the first
 run; `comparison.rl-pr-sweep-publishes`, for example, gave 52, and five more runs gave 50 to 51, where one worker
 gives 38 every time). The branch's later commits change no modelled path: `bc339020` adds the control-bridge fence
-checks (review S5; an inline control-tool effect, not modelled), `a62fc500` adds a test, `fc898539` merges main and
-`a108c67d` rechecks the fence before each canvas write (the same unmodelled effect).
+checks (review S5; an inline control-tool effect, not modelled), `a62fc500` adds a test, `fc898539` merges main,
+`a108c67d` rechecks the fence before each canvas write (the same unmodelled effect) and `056eb496` merges main (#405;
+its continuation races the same runtime-exit guard).
 
 | Case | Result |
 |---|---|
