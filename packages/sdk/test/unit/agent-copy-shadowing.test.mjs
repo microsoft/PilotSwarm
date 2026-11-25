@@ -15,6 +15,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     agentOwnerKey,
+    customAgentsForOwner,
     packageAgentKey,
     pickAgentCopyByPackageIdForOwner,
     pickAgentCopyForOwner,
@@ -236,4 +237,60 @@ test("required tool rejects missing and ambiguous visible owners", async () => {
         }),
         { status: "ambiguous", candidates: ["plain-helper", "second-helper"] },
     );
+});
+
+// ── The agent list for the Copilot runtime: one copy of each name ─────
+// The runtime refuses a session whose customAgents repeat a name. The worker
+// holds every copy of a name, so the list is cut to the copy the session's
+// owner gets, by the same rule as pickAgentCopyForOwner.
+
+const workerAgentList = [
+    { name: "helper", prompt: "ALICE HELPER", packageId: "pkg-alice", packageScope: "user", packageOwner: ALICE },
+    { name: "helper", prompt: "SHARED HELPER", packageId: "pkg-shared", packageScope: "shared" },
+    { name: "writer", prompt: "SHARED WRITER", packageId: "pkg-shared", packageScope: "shared" },
+    { name: "writer", prompt: "DEPLOYMENT WRITER" },
+    { name: "alice-only", prompt: "ALICE ONLY", packageId: "pkg-alice", packageScope: "user", packageOwner: ALICE },
+    { name: "helper", prompt: "BOB HELPER", packageId: "pkg-bob", packageScope: "user", packageOwner: BOB },
+    { name: "editor", prompt: "FIRST SHARED EDITOR", packageId: "pkg-shared", packageScope: "shared" },
+    { name: "editor", prompt: "SECOND SHARED EDITOR", packageId: "pkg-shared-2", packageScope: "shared" },
+];
+const passedTo = (ownerKey) => customAgentsForOwner(workerAgentList, ownerKey).map((agent) => [agent.name, agent.prompt]);
+
+test("the runtime's agent list has one copy of each name, for every owner", () => {
+    for (const ownerKey of [null, agentOwnerKey(ALICE), agentOwnerKey(BOB), agentOwnerKey({ provider: "test", subject: "carol" })]) {
+        const names = customAgentsForOwner(workerAgentList, ownerKey).map((agent) => agent.name);
+        assert.equal(new Set(names).size, names.length, `repeated name for ${ownerKey}`);
+    }
+});
+
+test("the runtime's agent list holds the owner's own copy, else the deployment agent, else the shared package", () => {
+    assert.deepEqual(passedTo(agentOwnerKey(ALICE)), [
+        ["helper", "ALICE HELPER"],
+        ["writer", "DEPLOYMENT WRITER"],
+        ["alice-only", "ALICE ONLY"],
+        ["editor", "FIRST SHARED EDITOR"],
+    ]);
+    assert.deepEqual(passedTo(agentOwnerKey(BOB)), [
+        ["helper", "BOB HELPER"],
+        ["writer", "DEPLOYMENT WRITER"],
+        ["editor", "FIRST SHARED EDITOR"],
+    ]);
+});
+
+test("the runtime's agent list never holds another user's private copy", () => {
+    // A session with no owner (a system session) gets public copies only, also when a private copy is the only one.
+    assert.deepEqual(passedTo(null), [
+        ["helper", "SHARED HELPER"],
+        ["writer", "DEPLOYMENT WRITER"],
+        ["editor", "FIRST SHARED EDITOR"],
+    ]);
+    const onlyPrivate = [{ name: "solo", prompt: "ALICE", packageId: "pa", packageScope: "user", packageOwner: ALICE }];
+    assert.deepEqual(customAgentsForOwner(onlyPrivate, agentOwnerKey(BOB)), []);
+    assert.deepEqual(customAgentsForOwner(onlyPrivate, null), []);
+});
+
+test("the runtime's agent list keeps a list with no repeated name as it is", () => {
+    const plain = [{ name: "a", prompt: "A" }, { name: "b", prompt: "B", packageId: "p", packageScope: "shared" }];
+    assert.deepEqual(customAgentsForOwner(plain, null), plain);
+    assert.deepEqual(customAgentsForOwner(undefined, null), []);
 });

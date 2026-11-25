@@ -270,4 +270,40 @@ describe("worker session assembly", () => {
             expect(rendered.includes("## Native local delegation")).toBe(enabled);
         } finally { await manager.shutdown(); rmSync(home, { recursive: true, force: true }); }
     });
+
+    // The Copilot runtime refuses a session whose customAgents repeat a name. A worker holds several copies of one name
+    // (a deployment agent, a shared package, each user's private package), and these sessions get the worker's agents.
+    it.each([
+        [{ promptLayering: { kind: "pilotswarm-system-agent" } }],
+        [{ agentIdentity: "regen-distiller" }],
+        [{ agentIdentity: "agent-tuner" }],
+    ])("gives a session without native tasks one copy of each agent name %j", async (config) => {
+        const home = mkdtempSync(join(tmpdir(), "ps-agent-copies-"));
+        const alice = { provider: "test", subject: "alice" };
+        const manager = new SessionManager(undefined, null, {
+            nativeSubagents: "sync",
+            customAgents: [
+                { name: "helper", prompt: "ALICE HELPER", packageId: "pkg-alice", packageScope: "user", packageOwner: alice },
+                { name: "helper", prompt: "SHARED HELPER", packageId: "pkg-shared", packageScope: "shared" },
+                { name: "helper", prompt: "DEPLOYMENT HELPER" },
+                { name: "alice-only", prompt: "ALICE ONLY", packageId: "pkg-alice", packageScope: "user", packageOwner: alice },
+                { name: "editor", prompt: "SHARED EDITOR", packageId: "pkg-shared", packageScope: "shared" },
+                { name: "editor", prompt: "SECOND SHARED EDITOR", packageId: "pkg-shared-2", packageScope: "shared" },
+            ],
+        }, join(home, "session-state"));
+        manager.setFeatureFlagCache((await createFeaturePolicy(true)).cache);
+        manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
+        const created = [];
+        manager.client = {
+            createSession: async options => { created.push(options); return new FakeSession(); },
+            start: async () => {},
+            rpc: { models: { list: async () => ({ models: [{ id: MODEL }] }) } },
+            stop: async () => {},
+        };
+        try {
+            await manager.getOrCreate("agent-copies", { model: MODEL, ...config }, { turnIndex: 0 });
+            const passed = created[0].customAgents.map(agent => [agent.name, agent.prompt]);
+            expect(passed).toEqual([["helper", "DEPLOYMENT HELPER"], ["editor", "SHARED EDITOR"]]);
+        } finally { await manager.shutdown(); rmSync(home, { recursive: true, force: true }); }
+    });
 });
