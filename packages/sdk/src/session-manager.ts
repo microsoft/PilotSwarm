@@ -3402,10 +3402,14 @@ export class SessionManager {
             } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
-            // Pass loaded skills and agents from worker defaults; MCP servers
+            // Pass loaded skills from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
             ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
-            ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            // A session without native tasks gets no custom agents. `task` is excluded for it (excludedTools
+            // above), so the runtime never uses the list, and PilotSwarm starts its agents with its own tools.
+            // The worker's list must not be passed: it holds every copy of a name (a deployment agent, a shared
+            // package, each user's private package), and the runtime refuses a list that repeats a name.
+            ...(!nativeEnabled && { customAgents: [] }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
             ...(options?.workflowTools ? {
                 availableTools: options.workflowTools.tools.map(tool => tool.namespacedName ?? tool.name),

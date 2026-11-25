@@ -257,7 +257,8 @@ describe("worker session assembly", () => {
             }, { turnIndex: 0 });
             const options = created[0];
             expect(options.excludedTools.includes("task")).toBe(!enabled);
-            expect(options.customAgents.map(a => a.name)).toEqual(enabled ? ["swarm-explore", "swarm-task"] : ["durable-agent"]);
+            // Without native tasks the runtime gets no custom agents: `task` is excluded, so nothing would use them.
+            expect(options.customAgents.map(a => a.name)).toEqual(enabled ? ["swarm-explore", "swarm-task"] : []);
             expect(options.customAgentsLocalOnly === true).toBe(enabled);
             expect(options.excludedBuiltinAgents).toEqual(enabled ? BUILTIN_AGENTS : undefined);
             expect(options.customAgents.some(agent => agent.name === "swarm-rubber-duck")).toBe(false);
@@ -268,6 +269,42 @@ describe("worker session assembly", () => {
             expect(rendered).toContain("APP_CONTEXT");
             expect(rendered).toContain("LEGACY_TURN_NOTE");
             expect(rendered.includes("## Native local delegation")).toBe(enabled);
+        } finally { await manager.shutdown(); rmSync(home, { recursive: true, force: true }); }
+    });
+
+    // The Copilot runtime refuses a session whose customAgents repeat a name. A worker holds several copies of one name
+    // (a deployment agent, a shared package, each user's private package), so its list must not reach the runtime.
+    it.each([
+        [{ promptLayering: { kind: "pilotswarm-system-agent" } }],
+        [{ agentIdentity: "regen-distiller" }],
+        [{ agentIdentity: "agent-tuner" }],
+    ])("gives a session without native tasks no custom agents when the worker holds a name twice %j", async (config) => {
+        const home = mkdtempSync(join(tmpdir(), "ps-agent-copies-"));
+        const alice = { provider: "test", subject: "alice" };
+        const manager = new SessionManager(undefined, null, {
+            nativeSubagents: "sync",
+            customAgents: [
+                { name: "helper", prompt: "ALICE HELPER", packageId: "pkg-alice", packageScope: "user", packageOwner: alice },
+                { name: "helper", prompt: "SHARED HELPER", packageId: "pkg-shared", packageScope: "shared" },
+                { name: "helper", prompt: "DEPLOYMENT HELPER" },
+                { name: "alice-only", prompt: "ALICE ONLY", packageId: "pkg-alice", packageScope: "user", packageOwner: alice },
+                { name: "editor", prompt: "SHARED EDITOR", packageId: "pkg-shared", packageScope: "shared" },
+                { name: "editor", prompt: "SECOND SHARED EDITOR", packageId: "pkg-shared-2", packageScope: "shared" },
+            ],
+        }, join(home, "session-state"));
+        manager.setFeatureFlagCache((await createFeaturePolicy(true)).cache);
+        manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
+        const created = [];
+        manager.client = {
+            createSession: async options => { created.push(options); return new FakeSession(); },
+            start: async () => {},
+            rpc: { models: { list: async () => ({ models: [{ id: MODEL }] }) } },
+            stop: async () => {},
+        };
+        try {
+            await manager.getOrCreate("agent-copies", { model: MODEL, ...config }, { turnIndex: 0 });
+            expect(created[0].excludedTools).toContain("task");
+            expect(created[0].customAgents).toEqual([]);
         } finally { await manager.shutdown(); rmSync(home, { recursive: true, force: true }); }
     });
 });

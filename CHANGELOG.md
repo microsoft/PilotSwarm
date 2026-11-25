@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.18 — 2026-11-25
+
+No CMS migration and no session orchestration or Workflow controller version change.
+
+### System agents and session regeneration start again when an agent name has two copies
+
+- Since 0.8.16, a session without native tasks failed at turn start on a deployment where one agent name is in two
+  enabled packages, for example a shared package and a user's own copy of it:
+  `Invalid customAgents: custom agent "<name>" is defined more than once; custom agent names must be unique`. The
+  sessions without native tasks are the system agents and the `regen-distiller` and `agent-tuner` sessions. So no
+  system agent could run a turn and no session could be regenerated. After three attempts the turn was dropped, and a
+  system agent's cron did not fire again.
+- Cause: these sessions got the worker's whole agent list as the Copilot SDK's `customAgents`. The list holds every
+  loaded copy of a name: a deployment agent, a shared package and each user's private package. Copilot runtime 1.0.112
+  refuses a list that repeats a name; runtime 1.0.83 accepted it.
+- These sessions now get an empty `customAgents` list. The runtime's `task` tool is excluded for them, so the runtime
+  never used the list: PilotSwarm binds a session to its agent and starts agents with its own tools. The runtime
+  process of such a session also no longer receives every loaded agent's prompt and MCP server settings. Sessions with
+  native tasks are unchanged.
+- After the upgrade, restart a system agent whose cron stopped (`restartSystemSession`).
+
 ## 0.8.17 — 2026-11-24
 
 No CMS migration and no session orchestration or Workflow controller version change.

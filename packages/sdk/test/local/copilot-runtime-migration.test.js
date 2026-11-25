@@ -141,6 +141,29 @@ describe("Copilot runtime 1.0.112 migration", () => {
         });
     });
 
+    // Why a session without native tasks gets an empty customAgents list (SessionManager): a worker holds several
+    // copies of one agent name, and the runtime refuses a list that repeats a name. Runtime 1.0.83 accepted it.
+    it("rejects a repeated custom agent name on create and resume, and accepts an empty list", { timeout: 45_000 }, async () => {
+        await withRuntime(async ({ clients, provider, options }) => {
+            const client = createCopilotClient(options, provider);
+            clients.push(client);
+            const agent = { name: "duplicate-probe", description: "A repeated agent.", prompt: "Unused." };
+            const base = { model: MODEL, provider, onPermissionRequest: () => ({ kind: "approved" }) };
+            await expect(client.createSession({ ...base, customAgents: [agent, { ...agent }] }))
+                .rejects.toThrow(/defined more than once/i);
+
+            const sessionId = randomUUID();
+            const session = await client.createSession({ ...base, sessionId, customAgents: [] });
+            await session.sendAndWait({ prompt: "Say hello." }, 20_000);
+            await session.disconnect();
+            await expect(client.resumeSession(sessionId, { ...base, customAgents: [agent, { ...agent }] }))
+                .rejects.toThrow(/defined more than once/i);
+            // The refused resume leaves the session usable, and an empty list is accepted.
+            const resumed = await client.resumeSession(sessionId, { ...base, customAgents: [] });
+            await resumed.disconnect();
+        });
+    });
+
     it("keeps the same 15 PilotSwarm tool names after the 1.0.112 additions", () => {
         const exposedOld = RUNTIME_1_0_83_TOOLS.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name));
         const exposedNew = RUNTIME_1_0_112_TOOLS.filter(name => !NATIVE_EXCLUDED_TOOLS.includes(name));
