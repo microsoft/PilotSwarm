@@ -116,6 +116,15 @@ hook made are kept; a setting the connection inherited (from its startup
 options or the server configuration) is reset rather than pinned, so a later
 configuration reload still reaches it.
 
+### Portal: the Workflow definition delete button is on the Workflow line
+
+In the portal's Definition view, the `Delete…` button sat on the wrapping revision
+info line and could drop onto its own row at phone width. When a latest Workflow
+status line is shown, `Delete…` now sits at the right end of that line; when no
+Workflow exists yet, it stays inline on the revision info line with single-line
+text truncation, keeping its 44 px touch target on narrow screens. No upgrade
+action beyond deploying the portal.
+
 ## 0.8.18 — 2026-11-25
 
 No CMS migration and no session orchestration or Workflow controller version change.
