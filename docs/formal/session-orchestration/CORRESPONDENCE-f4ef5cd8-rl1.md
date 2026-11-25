@@ -1,30 +1,38 @@
-# RuntimeLoss (rl1) correspondence to 261ea6c7
+# RuntimeLoss (rl1) correspondence to f4ef5cd8
 
 Issue #329: the Copilot runtime child behind a pooled `CopilotClient` dies (an OOM kill, for example) during a turn or
-between turns. Code at `261ea6c7` (branch `fix/329-dead-runtime`, based on main `ac86a39e`, 0.8.17), with
+between turns. Code at `f4ef5cd8` (branch `fix/329-dead-runtime`, based on main `1f6af957`, 0.8.18), with
 `@github/copilot-sdk` 1.0.34 (runtime `@github/copilot` 1.0.112). Mode `"main"` is bound to `ac86a39e`; its lines are
 marked **main**. SDK lines are `node_modules/@github/copilot-sdk/dist/client.js` at 1.0.34.
 
-The batch was first bound to `936bd2a2`, the same fix on main `45a01a81`. Between `45a01a81` and `ac86a39e`, main
-changed `session-lifecycle.ts`, `session-manager.ts` and `session-proxy.ts` only for #367 (a turn the worker's drain
-cuts is not saved, and the shutdown keeps that session), outside the modelled paths; the rebase moved the lines below
-and nothing else. `managed-session.ts`, `copilot-runtime-monitor.ts`, `orchestration/turn.ts` and
-`orchestration/utils.ts` are unchanged. Between `928e10dd` and `45a01a81`, main changed these files only outside the
-modelled paths: the decide tool's turn signal and per-turn tool call counts, the move to SDK 1.0.34 (runtime tool and
-session input validation, context tiers) and the worker-shutdown cut of a running turn (#364, below).
+Re-bound on 2026-11-24 after the branch was rebased onto main `1f6af957` (#392, 0.8.18): the fix `261ea6c7` became
+`f4ef5cd8`. Between `ac86a39e` and `1f6af957`, main changed `session-manager.ts` only to give a session without native
+tasks an empty `customAgents` list (session configuration, 3453-3460 here), which moved that file's later lines by 4,
+and `types.ts` only in doc comments; the SDK stays at 1.0.34. No modelled path changed, and the cases were re-run
+unchanged. Every line below was re-read at `f4ef5cd8`. Mode `"main"` stays bound to `ac86a39e`: `1f6af957` changes
+none of the code it models (its warm branch moves from 3451-3452 to 3455-3456; the other **main** lines are unchanged).
+
+The batch was first bound to `936bd2a2`, the same fix on main `45a01a81`, then to `261ea6c7` on main `ac86a39e`.
+Between `45a01a81` and `ac86a39e`, main changed `session-lifecycle.ts`, `session-manager.ts` and `session-proxy.ts`
+only for #367 (a turn the worker's drain cuts is not saved, and the shutdown keeps that session), outside the modelled
+paths; that rebase moved the bound lines and nothing else. `managed-session.ts`, `copilot-runtime-monitor.ts`,
+`orchestration/turn.ts` and `orchestration/utils.ts` are unchanged. Between `928e10dd` and `45a01a81`, main changed
+these files only outside the modelled paths: the decide tool's turn signal and per-turn tool call counts, the move to
+SDK 1.0.34 (runtime tool and session input validation, context tiers) and the worker-shutdown cut of a running turn
+(#364, below).
 
 | Model | Code | Label |
 |---|---|---|
 | `Start`: the preamble hydrates (and drops the warm handle) when `sentinel = "dirty"` or `local = "none"` | `session-lifecycle.ts` `runTurnPreamble` 248-365: `localTrusted = !sentinel && localDirUsable && !epochMismatch` 271; `resolveFromStore` 207-216 calls `dropWarmSession` 212, then hydrates | Code behavior |
 | `Start`: `sentinel' = "dirty"` | `session-proxy.ts` 2792-2798 `writeTurnSentinel`, after `getOrCreate`, before the turn body | Code behavior |
-| `Start`, `w = "live"`: the live warm handle is reused | `session-manager.ts` `_getOrCreateUnlocked` 2365, the warm branch 3512 onward (`else if (existing)`) | Code behavior |
-| `Start`, `w = "dead"`, `DropDeadWarm`: the dead handle is dropped and the session resumes on a client | `session-manager.ts` 3499-3511: `existing?.runtimeLost && turnIndex !== 0` 3500 destroys and forgets it; turn 0 resets any warm handle | Code behavior |
+| `Start`, `w = "live"`: the live warm handle is reused | `session-manager.ts` `_getOrCreateUnlocked` 2365, the warm branch 3516 onward (`else if (existing)`) | Code behavior |
+| `Start`, `w = "dead"`, `DropDeadWarm`: the dead handle is dropped and the session resumes on a client | `session-manager.ts` 3503-3515: `existing?.runtimeLost && turnIndex !== 0` 3504 destroys and forgets it; turn 0 resets any warm handle | Code behavior |
 | `Start`, `w = "dead"`, **main**: the dead handle is reused, and the send fails at once | **main** `session-manager.ts` 3451-3452: any warm handle is reused; SDK `markDisconnected` 3708-3731 marked its session disconnected | Code behavior |
 | `Start`, `OTHER`, `pooled /\ rt = "dead"` (`deadClientUse`): a session on a dead pooled client fails at once | **main** `session-manager.ts` `ensureClient` 1770 and `ensureClientForKey` 1936 return the pooled client. SDK `listModels` 2722 and `deleteSession` 2864 reach it through `getStartedConnection` 2695-2709, which throws "Client not connected" on a disconnected client without starting it | Code behavior |
 | `deadClientUse` for a create or resume, **main** | **main** `_startClient` 1830-1847 calls `client.start()` before each create and resume. SDK 1.0.34 `start()` 935-943 retires a closed connection and starts again, and a disconnected client starts again (`doStart` 959, which reaps the old child 968-969). After the SDK disconnects (`disconnectAfterDrain` 3732-3747 on the connection's close 3749, or 10 s after the exit 3763) a create or resume in main gets a fresh runtime in the same client; before that, a request on the closed connection fails. The model lets every use of a dead pooled client fail | Model simplification |
 | `Start`, `OTHER`, otherwise: a fresh client and runtime (`rt' = "live"`, `pooled' = TRUE`) | `session-manager.ts` `ensureClient` 1779-1781 and `ensureClientForKey` 1982-1984 evict a lost client and create another; `_startClient` 1847-1869 refuses a lost client 1853-1855 and starts inside the monitor's claim 1856 | Code behavior |
 | `Die`: `rt' = "dead"`, and with `EvictDeadClient` `pooled' = FALSE` | `copilot-runtime-monitor.ts` per-child `exit` listener 185-201 calls `onUnexpectedExit`; `session-manager.ts` `_onRuntimeLost` 1886-1894 logs pid, code and signal, `_evictClient` 1872-1876, then `forceStop` in the background 1891-1893 | Code behavior |
-| `Die`: `warm' = "dead"` | `managed-session.ts` `runtimeLost` 1843 reads the watch bound at creation (`bindRuntimeWatch` 1838, called at `session-manager.ts` 3660 and 3848) | Code behavior |
+| `Die`: `warm' = "dead"` | `managed-session.ts` `runtimeLost` 1843 reads the watch bound at creation (`bindRuntimeWatch` 1838, called at `session-manager.ts` 3664 and 3852) | Code behavior |
 | `Die` during a turn: `local'` is `local` or `Torn(local)` | the runtime may have written events of the turn to the session's local dir before it died | Model simplification |
 | `Die` between turns (`AllowIdleLoss`) | the same exit listener, with no turn running; the warm handle is dropped at its next `getOrCreate` | Code behavior |
 | `Finish` | the turn reaches `session.idle` on a live runtime | Model simplification |
@@ -51,7 +59,7 @@ Not modelled:
 - a first turn with an empty store;
 - a session that returns to the worker it left;
 - other sessions on the same client, apart from `deadClientUse`;
-- a worker shutdown during a turn: the manager marks its clients as stopping (`session-manager.ts` 4430), so their
+- a worker shutdown during a turn: the manager marks its clients as stopping (`session-manager.ts` 4434), so their
   exits are not losses, and #364's shutdown cut (`session-proxy.ts` 5047-5058, before the transport-loss block) fails
   the attempt without saving its result.
 

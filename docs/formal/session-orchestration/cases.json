@@ -8028,10 +8028,10 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "The PR before review M1 (ce74d928): the eviction sweep archives a first turn's dirty dir (an empty store, so no versioned head), and what the dying runtime wrote becomes the session's snapshot.",
+  "note": "The PR before review M1 (deb02556, before the rebase ce74d928): the eviction sweep archives a first turn's dirty dir (an empty store, so no versioned head), and what the dying runtime wrote becomes the session's snapshot.",
   "batch": "rl2",
   "tlc": {
-   "comment": "comparison.rl-pr-sweep-publishes (rl2; expected safety): The PR before review M1 (ce74d928): the eviction sweep archives a first turn's dirty dir (an empty store, so no versioned head), and what the dying runtime wrote becomes the session's snapshot.",
+   "comment": "comparison.rl-pr-sweep-publishes (rl2; expected safety): The PR before review M1 (deb02556, before the rebase ce74d928): the eviction sweep archives a first turn's dirty dir (an empty store, so no versioned head), and what the dying runtime wrote becomes the session's snapshot.",
    "spec": "Spec",
    "constants": {
     "MaxTries": "4",
@@ -8064,10 +8064,10 @@
   ],
   "properties": [],
   "deadlock": true,
-  "note": "The PR before review M1 (ce74d928): the dehydrate activity or the safety checkpoint archives a lost turn's dirty dir over a legacy snapshot.",
+  "note": "The PR before review M1 (deb02556, before the rebase ce74d928): the dehydrate activity or the safety checkpoint archives a lost turn's dirty dir over a legacy snapshot.",
   "batch": "rl2",
   "tlc": {
-   "comment": "comparison.rl-pr-publish-dirty (rl2; expected safety): The PR before review M1 (ce74d928): the dehydrate activity or the safety checkpoint archives a lost turn's dirty dir over a legacy snapshot.",
+   "comment": "comparison.rl-pr-publish-dirty (rl2; expected safety): The PR before review M1 (deb02556, before the rebase ce74d928): the dehydrate activity or the safety checkpoint archives a lost turn's dirty dir over a legacy snapshot.",
    "spec": "Spec",
    "constants": {
     "MaxTries": "4",
