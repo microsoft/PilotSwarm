@@ -8,7 +8,8 @@
  * controller's instance for real. None of them touches either run: the store counts both as active. Recover then
  * dispatches the lost run, which runs to its end, and ends the dead one as failed, with its receipt and the parent's
  * notice. An ended test bench and recovered Workflow remain readable; terminal controller instances can be pruned
- * independently. Finished live Workflows are kept while their owner is active (issue 412), with their whole record. Cleaning
+ * independently. Finished live Workflows are kept while their owner is active (issue 412), with their whole record, and
+ * their Log survives the Resource Manager's event purge. Cleaning
  * the ordinary owning session once it ended still deletes its test bench and other descendants.
  *
  * The owner session stands for a live session: its `session-<id>` instance is a stand-in orchestration that waits, so
@@ -29,6 +30,7 @@ import { saveSessionWorkflowDefinition } from "../../src/workflow/session-defini
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
+import { createResourceManagerTools } from "../../src/resourcemgr-tools.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -149,6 +151,16 @@ async function ageSessions(env, ids, minutes) {
     const db = new pg.Pool({ connectionString: env.store, max: 1 });
     try {
         await db.query(`UPDATE "${env.cmsSchema}".sessions SET updated_at = now() - make_interval(mins => $2) WHERE session_id = ANY($1::text[])`,
+            [ids, minutes]);
+    } finally {
+        await db.end();
+    }
+}
+
+async function ageEvents(env, ids, minutes) {
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    try {
+        await db.query(`UPDATE "${env.cmsSchema}".session_events SET created_at = now() - make_interval(mins => $2) WHERE session_id = ANY($1::text[])`,
             [ids, minutes]);
     } finally {
         await db.end();
@@ -288,7 +300,7 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
             }
         });
 
-    it("issue 412: a finished Workflow of an idle owner stays Terminated through every Sweeper pass, with its graph, steps, Log and variables",
+    it("issue 412: a finished Workflow of an idle owner stays through every Sweeper pass and the event purge, with its graph, steps, Log and variables",
         { timeout: TIMEOUT }, async () => {
             const env = getEnv();
             const h = await harness(env);
@@ -317,7 +329,11 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
                 const row = await h.catalog.getSession(workflowId);
                 expect(row?.deletedAt ?? null).toBeNull();
                 expect(row.state).toBe("completed");
-                expect((await h.catalog.listSessions()).map(s => s.sessionId)).toContain(workflowId);
+                // The Resource Manager's event maintenance, with the Workflow's events past its 24 h cutoff, keeps its Log.
+                await ageEvents(env, [workflowId], 2 * 24 * 60);
+                const purge = findTool(createResourceManagerTools({ catalog: h.catalog, duroxideClient: h.client, blobStore: null,
+                    cmsSchema: env.cmsSchema, duroxideSchema: env.duroxideSchema }), "purge_old_events");
+                expect((await purge.handler({})).error).toBeUndefined();
 
                 const view = JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: h.owner, host: h.host }));
                 expect(view, JSON.stringify(view)).toMatchObject({ ok: true, workflowId });
@@ -328,7 +344,10 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
                 expect(view.run.nodeExecutions.find(node => node.stateId === "second").outputPreview).toContain('"n":2');
                 expect(JSON.stringify(view.run.kv)).toContain("postgres");
                 const log = await h.catalog.getSessionEvents(workflowId, 0, 200);
-                expect(log.some(event => String(event.eventType).startsWith("workflow."))).toBe(true);
+                const second = log.find(event => event.eventType === "workflow.state_completed" && event.data?.stateId === "second");
+                expect(second?.data, `the Log holds the step "second": ${JSON.stringify(log.map(event => event.eventType))}`)
+                    .toMatchObject({ runId: run.runId, outcome: "ok" });
+                expect(second.data.outputPreview).toContain('"n":2');
             } finally {
                 await h.stop();
             }
