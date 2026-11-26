@@ -257,6 +257,19 @@ test("issue-to-pr: 10 boxes, 13 lines of business routes, 9 labels in plain word
     assertInside(layout);
 });
 
+test("the happy path follows each step's declared outcomes, also from a stored graph that lists states and routes by name", () => {
+    const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    const stored = workflowDefinition({ ...issueToPr, states: [...issueToPr.states].sort((a, b) => byName(a.id, b.id)).map(state => (state.next
+        ? { ...state, next: Object.fromEntries(Object.entries(state.next).sort(([a], [b]) => byName(a, b))) } : state)) });
+    const spineOf = layout => layout.edges.filter(edge => edge.spine).map(name).sort();
+    assert.deepEqual(spineOf(layoutWorkflowGraphTB(stored)), spineOf(layoutWorkflowGraphTB(issueToPr)));
+    const layout = layoutWorkflowGraphTB(stored);
+    const centre = id => layout.positions.get(id).x + layout.positions.get(id).width / 2;
+    for (const [from, to] of [["fetch_issue", "acquire_env"], ["acquire_env", "implement"], ["implement", "review"], ["review", "gate"], ["gate", "renew"]]) {
+        assert.equal(centre(from), centre(to), `${from} stands over ${to}`);
+    }
+});
+
 test("error handlers' dashed arrows: the selected step's, every one, those into the hovered end or a replay's; into a target's box or a ghost end", () => {
     const layout = layoutWorkflowGraphTB(issueToPr);
     const boxes = new Map(layout.positions);

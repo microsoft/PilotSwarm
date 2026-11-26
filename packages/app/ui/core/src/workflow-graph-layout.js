@@ -342,7 +342,8 @@ function spineOf(edges, byId, parts, start, success) {
     const outer = edges.filter(edge => !edge.join && !parts.memberOf.has(edge.from) && !parts.memberOf.has(edge.to));
     const order = edge => {
         const node = byId.get(edge.owner ?? edge.from);
-        const labels = Object.keys(node?.next ?? {});
+        // The step's declared outcomes give the order (a stored graph's `next` keys come back sorted by name).
+        const labels = [...businessOutcomes(node), ...Object.keys(node?.next ?? {})];
         const business = edge.outcomes.some(label => workflowRouteMark(node, label) === "outcome");
         return [business ? 0 : 1, Math.min(...edge.outcomes.map(label => labels.indexOf(label)))];
     };
@@ -488,6 +489,26 @@ function runDagre(boxes, links, margin, align = undefined) {
     for (const link of links) graph.setEdge(link.v, link.w, { width: link.width, height: link.height, labelpos: "c", minlen: 1, weight: link.weight ?? 1 });
     dagreLayout(graph);
     return graph;
+}
+
+/**
+ * The states in flow order: breadth first from `initial`, each step's routes in its declared outcomes' order, then its
+ * other routes; a parallel step's body after it; states not reached, in their listed order, last. Pure.
+ */
+function flowOrder(states, byId, initial) {
+    const seen = new Set([initial.id]);
+    const out = [initial];
+    for (let index = 0; index < out.length; index += 1) {
+        const node = out[index];
+        const labels = [...businessOutcomes(node), ...Object.keys(node.next ?? {})];
+        const targets = [...labels.map(label => node.next?.[label]), ...(Array.isArray(node.body?.states) ? [node.body.initial, ...node.body.states] : [])];
+        for (const id of targets) {
+            if (typeof id !== "string" || seen.has(id) || !byId.has(id)) continue;
+            seen.add(id);
+            out.push(byId.get(id));
+        }
+    }
+    return [...out, ...states.filter(node => !seen.has(node.id))];
 }
 
 /** Dagre's alignments, tried in this order: its balanced default first. */
@@ -707,8 +728,10 @@ export function layoutWorkflowGraphTB(definition) {
         lanes: model.lanes, chipRoom: reserve };
     if (!states.length) return finish(definition, { width: 300, height: 150, positions: new Map(), edges, groups: new Map(), joins: new Map(), ...marks });
     // The first step leads the order dagre breaks cycles in, so the loop's closing edge is the one that goes back to it.
+    // The rest follow the flow from it (breadth first, each step's declared outcomes first), so a stored graph, which
+    // lists its states by name, lays out as the definition was written.
     const initial = states.find(node => node.id === definition.initial);
-    const order = initial ? [initial, ...states.filter(node => node !== initial)] : states;
+    const order = initial ? flowOrder(states, byId, initial) : states;
     // R2, B1: ends drawn as chips or lines into a join bar, and parallel steps drawn as their box, have no box of their own.
     const outer = order.filter(node => !parts.memberOf.has(node.id) && !hidden.has(node.id) && !parts.bodies.has(node.id));
     // Each branch box's own routes (and its lines into its join bar) are laid out with its steps; every other edge is the graph's.
