@@ -91,6 +91,8 @@ export interface ComputeSessionReleaseRequest {
 export interface ComputeProvider {
     readonly kind: string;
     readonly supportedStatePolicies: readonly ComputeStatePolicy[];
+    /** Mode 1 (`statePolicy: "store-owned"`): open a per-turn lease to a remote runtime. */
+    openStoreOwned?(request: import("./remote-store-owned.js").RemoteStoreOwnedOpenRequest): Promise<import("./remote-store-owned.js").RemoteStoreOwnedLease>;
     /** Best-effort cleanup when a session ends or is destroyed on this worker. */
     releaseSession?(request: ComputeSessionReleaseRequest): Promise<void> | void;
     /** Called when the worker stops to release provider-owned resources (slots, listeners, caches). */
@@ -265,6 +267,9 @@ function validateAndSnapshotComputeProvider(provider: ComputeProvider): Register
     const policies = provider.supportedStatePolicies;
     if (!Array.isArray(policies) || policies.length === 0 || !policies.every(isComputeStatePolicy)) {
         throw new ComputeTargetError(`compute provider ${kind} must declare at least one valid supportedStatePolicies entry`);
+    }
+    if (provider.openStoreOwned !== undefined && typeof provider.openStoreOwned !== "function") {
+        throw new ComputeTargetError(`compute provider ${provider.kind} openStoreOwned must be a function when set`);
     }
     if (provider.releaseSession !== undefined && typeof provider.releaseSession !== "function") {
         throw new ComputeTargetError(`compute provider ${kind} releaseSession must be a function when set`);

@@ -66,9 +66,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { ComputeTargetError, parseSessionComputeTargetRef } from "./compute-target.js";
-import { RemoteRuntimeError, isRemoteRuntimeError } from "./remote-runtime.js";
-import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
-import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
+import { RemoteRuntimeError, isRemoteRuntimeError, type RemoteRuntimeBindingToken } from "./remote-runtime.js";
+import { StoreOwnedError, beginStoreOwnedTurn, classifyStoreOwnedSessionFailure, isStoreOwnedError, checkStoreOwnedTurn, type StoreOwnedTurnPolicy } from "./remote-store-owned.js";
+import { REMOTE_NO_STORE, attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
+import { isOpaqueArchiveError, readTurnCommitFile, supportsOpaqueArchives, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
 import { workflowVisitOfStopRequestId, type WorkflowLineage, type WorkflowStore, type WorkflowTurnVisit } from "./workflow/store.js";
 import { CapabilityGrantError } from "./tool-grant.js";
@@ -2082,19 +2083,51 @@ export function registerActivities(
 
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
-        // A session on a compute target runs only on a remote runtime bound for this turn. A worker that has none refuses here, before the
-        // lifecycle preamble can hydrate or discard anything in its own session directory.
+        // Store-owned remote state (remote-store-owned.ts, opt-in). The turn's policy is begun after the gates below; whatever ends the turn, it is settled in the finally.
+        let storeOwnedPolicy = null as StoreOwnedTurnPolicy | null;
+        let storeOwnedBindingToken: RemoteRuntimeBindingToken | undefined;
+        let storeOwnedBodyError: unknown;
+        try {
+            return await (async () => {
+        // A session on a compute target runs only on a remote runtime bound for it. A worker with no enabled target/provider for it refuses here, before the lifecycle preamble
+        // can hydrate or discard anything in its own session directory, and before any model, tool or lease.
         const computeTargetRef = parseSessionComputeTargetRef(input.config?.computeTarget);
+        const computeRegistry = sessionManager.getComputeRegistry();
+        const resolvedCompute = computeTargetRef ? computeRegistry?.resolveTarget(computeTargetRef.targetId) : undefined;
+        const storeOwnedTarget = resolvedCompute?.target.statePolicy === "store-owned" ? resolvedCompute.parsed : undefined;
+        const storeOwnedProvider = storeOwnedTarget ? resolvedCompute?.provider : undefined;
         const hasRemoteRuntime = sessionManager.hasRemoteRuntime(input.sessionId);
-        if (computeTargetRef && !hasRemoteRuntime) {
+        if (computeTargetRef && !storeOwnedTarget && !hasRemoteRuntime) {
             throw new RemoteRuntimeError("REMOTE_RUNTIME_UNAVAILABLE", "this session runs on a compute target and no remote runtime is bound for it on this worker", { terminal: false });
+        }
+        if (storeOwnedTarget) {
+            if (!input.snapshot) throw new StoreOwnedError("STORE_OWNED_PROTOCOL_REQUIRED", "a store-owned session needs the session lifecycle protocol (orchestration 1.0.57 or later)");
+            if (typeof storeOwnedProvider?.openStoreOwned !== "function") {
+                throw new StoreOwnedError("STORE_OWNED_EXECUTOR_UNAVAILABLE", "this worker has no compute provider implementing openStoreOwned for this target; the turn is held and nothing runs locally", { terminal: false });
+            }
+            if (!sessionStore || !supportsOpaqueArchives(sessionStore)) throw new StoreOwnedError("STORE_OWNED_STORE_UNSUPPORTED", "this worker's session store cannot keep opaque archives");
+            if (runConfig.workspace) throw new StoreOwnedError("STORE_OWNED_UNSUPPORTED", "session workspaces are not served on a store-owned remote sandbox");
         }
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
         // Only active when the orchestration (1.0.57+) supplied snapshot
         // coordinates AND the store implements the versioned CAS contract.
-        // Remote runtimes never enter the worker-local snapshot lifecycle.
-        const lifecycle: TurnLifecycleContext | null =
-            !computeTargetRef && !hasRemoteRuntime && input.snapshot && sessionStore && supportsVersionedSnapshots(sessionStore)
+        // Remote runtimes never enter the worker-local snapshot lifecycle; store-owned targets use REMOTE_NO_STORE.
+        const lifecycle: TurnLifecycleContext | null = storeOwnedTarget
+            ? {
+                store: REMOTE_NO_STORE,
+                sessionStateDir: sessionManager.getSessionStateDir(),
+                sessionId: input.sessionId,
+                expectedVersion: input.snapshot!.expectedVersion ?? 0,
+                turnKey: input.snapshot!.turnKey,
+                transcriptEpoch: input.transcriptEpoch ?? 0,
+                dropWarmSession: () => sessionManager.dropWarmSession(input.sessionId),
+                trace,
+                storeOwned: {
+                    check: () => checkStoreOwnedTurn({ store: sessionStore, sessionId: input.sessionId, epoch: input.transcriptEpoch ?? 0, turnKey: input.snapshot!.turnKey }),
+                    policy: null,
+                },
+            }
+            : !computeTargetRef && !hasRemoteRuntime && input.snapshot && sessionStore && supportsVersionedSnapshots(sessionStore)
                 ? {
                     store: sessionStore,
                     sessionStateDir: sessionManager.getSessionStateDir(),
@@ -2149,7 +2182,7 @@ export function registerActivities(
                     `[runTurn] session=${input.sessionId} already-committed recovery at v${pre.version}; ` +
                     `returning stored result without re-running the turn`,
                 );
-                await recordLifecycleHydration(pre.version);
+                if (!lifecycle.storeOwned) await recordLifecycleHydration(pre.version);
                 // Session workspaces: a committed turn got past the
                 // workspace check (a refusal returns before the commit).
                 const stored: TurnResult = {
@@ -2661,6 +2694,26 @@ export function registerActivities(
         // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
         // and its reminder and completion name only that visit. Null for every other session (session: new included).
         const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
+        // Store-owned remote state: the turn begins here, after the deleted-session, budget and workspace gates (a turn they end opens no sandbox) and before the native
+        // session is created or resumed. The lease's client is bound for getOrCreate; the sandbox holds exactly the stored head, or nothing when the store has none.
+        if (storeOwnedTarget && storeOwnedProvider && lifecycle?.storeOwned) {
+            const begun = await beginStoreOwnedTurn({
+                sessionId: input.sessionId,
+                transcriptEpoch: input.transcriptEpoch ?? 0,
+                turnKey: input.snapshot!.turnKey,
+                target: storeOwnedTarget,
+                provider: storeOwnedProvider,
+                store: sessionStore,
+                requestHandler: sessionManager.createRemoteModelRequestHandler(input.sessionId),
+                requireHead: (input.turnIndex ?? 0) > 0 && input.epochStart !== true,
+                bindRuntime: (binding, hints) => { storeOwnedBindingToken = sessionManager.bindRemoteRuntime(input.sessionId, binding, hints); },
+                releaseRuntime: () => sessionManager.releaseRemoteRuntime(input.sessionId, storeOwnedBindingToken),
+                trace,
+            });
+            storeOwnedPolicy = begun;
+            lifecycle.storeOwned.policy = begun;
+            lifecycleBaseVersion = begun.baseVersion;
+        }
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -2688,6 +2741,13 @@ export function registerActivities(
                 ...(workflowAgentTools ? { workflowAgentTools } : {}),
             });
         } catch (err: any) {
+            // A native session that cannot be created or resumed on the remote sandbox is never repaired by store recovery, a reset or a lossy replay: the sandbox is a cache,
+            // so the turn fails (retryable unless the configuration is what is wrong) and the next attempt starts from the stored head.
+            if (lifecycle?.storeOwned) {
+                const failure = classifyStoreOwnedSessionFailure(err);
+                traceWarn(`[runTurn] session=${input.sessionId} store-owned native session create/resume failed: ${String((failure as Error)?.message ?? failure).slice(0, 200)}`);
+                throw failure;
+            }
             const message = err?.message || String(err);
             if (isMissingSessionStateErrorMessage(message) || isLiveSessionLostErrorMessage(message)) {
                 const detail = isMissingSessionStateErrorMessage(message)
@@ -2790,7 +2850,8 @@ export function registerActivities(
         // ── Lifecycle p3: sentinel marks the dir as mid-mutation from here
         // until the post-turn commit clears it. Written after getOrCreate so
         // the turn-0 reset path cannot wipe it, before any body mutation.
-        if (lifecycle) {
+        // A store-owned turn has no local session directory: nothing is written.
+        if (lifecycle && !lifecycle.storeOwned) {
             writeTurnSentinel(
                 path.join(sessionManager.getSessionStateDir(), input.sessionId),
                 input.snapshot!.turnKey,
@@ -5080,6 +5141,21 @@ export function registerActivities(
             if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });
             let result = await runTurnWithPrompt(session, effectivePrompt);
 
+            // Store-owned: a lost live session or an inconsistent transcript on the sandbox is never repaired by a reset or a replay (that would repeat effects and replace the
+            // stored head). The sandbox cache is dropped and the turn is retried from the stored head. A refusal the worker's broker made is permanent.
+            if (lifecycle?.storeOwned && result.type === "error") {
+                const text = (result as any).message as string | undefined;
+                const refusal = classifyStoreOwnedSessionFailure(undefined, text);
+                if (isStoreOwnedError(refusal) && refusal.terminal) throw refusal;
+                if (isLiveSessionLostErrorMessage(text) || isToolCallTranscriptCorruptionErrorMessage(text)) {
+                    throw new StoreOwnedError(
+                        "STORE_OWNED_SESSION_LOST",
+                        "the native session on the remote sandbox was lost or its transcript is inconsistent; the sandbox cache is dropped and the turn may be retried from the stored head",
+                        { terminal: false },
+                    );
+                }
+            }
+
             if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
                 activityCtx.traceInfo(
                     `[runTurn] live Copilot session lost for ${input.sessionId}; invalidating warm session and attempting recovery`,
@@ -5437,7 +5513,7 @@ export function registerActivities(
             : null;
         // Turn control: the cursor the conversation provably holds.
         const liveCursor = tc ? Math.max(tc.startCursor, tc.live?.cursor ?? 0) : 0;
-        if (lifecycle && lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))) {
+        if (lifecycle && (lifecycle.storeOwned || (lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))))) {
             // T7: the save carries the cursor only when it is not 0.
             let toSave: TurnResult = tc && liveCursor > 0 && bodyResult.type !== "stopped"
                 ? { ...bodyResult, controlCursor: { turn: tc.turn, cursor: liveCursor } } as TurnResult
@@ -5518,6 +5594,21 @@ export function registerActivities(
             return tc ? await finishTurnControl(saved, committed.published ? liveCursor : 0) : saved;
         }
         return tc ? await finishTurnControl(bodyResult, liveCursor) : bodyResult;
+            })();
+        } catch (error) {
+            storeOwnedBodyError = error;
+            throw error;
+        } finally {
+            // A store-owned turn that did not reach its commit drops its sandbox cache and closes its lease, and its binding is released. This never replaces the error that
+            // ended the turn (a body failure, a refusal, or the cut a worker drain makes).
+            if (storeOwnedPolicy) {
+                if (storeOwnedBodyError !== undefined) traceWarn(`[runTurn] session=${input.sessionId} store-owned turn ended before its commit: ${String((storeOwnedBodyError as Error)?.name ?? "Error")}`);
+                // The native session is disconnected before the lease (its connection) is closed.
+                await sessionManager.releaseRemoteRuntime(input.sessionId, storeOwnedBindingToken)
+                    .catch((error: unknown) => traceWarn(`[runTurn] session=${input.sessionId} remote runtime release did not complete: ${error instanceof Error ? error.name : "error"}`));
+                await storeOwnedPolicy.abort(storeOwnedBodyError).catch(() => undefined);
+            }
+        }
             }, { trace });
             if (!finalTurnResult) {
                 throw new Error("runTurn completed without a turn result");
@@ -5563,9 +5654,9 @@ export function registerActivities(
                 finalTurnResult = withIntakeWitness({ type: "error", message } as TurnResult);
                 return finalTurnResult;
             }
-            // Remote-runtime and compute-target refusals that repeating cannot fix settle non-retryable; retryable ones rethrow.
-            if (isRemoteRuntimeError(err) || err instanceof ComputeTargetError) {
-                const terminal = err instanceof ComputeTargetError ? true : err.terminal;
+            // Remote-runtime, compute-target and store-owned refusals that repeating cannot fix settle non-retryable; retryable ones rethrow.
+            if (isStoreOwnedError(err) || isRemoteRuntimeError(err) || isOpaqueArchiveError(err) || err instanceof ComputeTargetError) {
+                const terminal = (isOpaqueArchiveError(err) || err instanceof ComputeTargetError) ? true : err.terminal;
                 activityCtx.traceInfo(`[runTurn] remote runtime ${terminal ? "refusal" : "retryable failure"}: ${err.message}`);
                 if (terminal) {
                     finalTurnResult = withIntakeWitness({ type: "error", message: err.message, retryable: false } as TurnResult);

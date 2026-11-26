@@ -37,6 +37,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { faultPoint } from "./fault-injection.js";
 import { measureLifecycle } from "./runtime-metrics.js";
+import { StoreOwnedError, type checkStoreOwnedTurn, type StoreOwnedTurnPolicy } from "./remote-store-owned.js";
 import {
     SnapshotConflictError,
     clearTurnSentinel,
@@ -50,7 +51,7 @@ import {
 } from "./snapshot-protocol.js";
 
 export type TurnPreambleOutcome =
-    | { kind: "warm"; baseVersion: number }
+    | { kind: "warm"; baseVersion: number; storeOwned?: true }
     | {
         kind: "hydrated";
         baseVersion: number;
@@ -101,7 +102,7 @@ export interface TurnCommitOutcome {
      */
     published: boolean;
     /** Why the snapshot was not published (only when `published` is false). */
-    unpublishedReason?: "stopped" | "superseded";
+    unpublishedReason?: "stopped" | "superseded" | "conflict";
     /**
      * For a `superseded` unpublish: the store coordinates of the writer that
      * won the base — carried from the `SnapshotConflictError` so the emitted
@@ -111,7 +112,33 @@ export interface TurnCommitOutcome {
      */
     observedStoreVersion?: number;
     observedStoreTurnKey?: string;
+    /** The turn ran on a store-owned remote sandbox: the store holds the committed head (or a conflicting head won); the sandbox is a disposable cache. */
+    storeOwned?: true;
 }
+
+/**
+ * Opt-in `statePolicy: "store-owned"` (remote-store-owned.ts). The turn start and commit do no local probe, hydrate, import, sentinel or local file write, and never unpack an
+ * archive: the store owns the state under `store-wins`, and the remote sandbox hands the worker one opaque archive per turn.
+ */
+export interface StoreOwnedLifecycle {
+    /** The read-only start of the turn: the result of a turn key the store already carries, or the head's version. No sandbox is contacted. */
+    check: () => ReturnType<typeof checkStoreOwnedTurn>;
+    /** Set by the runTurn activity once the turn began (after its gates); the commit needs it. */
+    policy: StoreOwnedTurnPolicy | null;
+}
+
+/**
+ * The `store` of a store-owned turn's lifecycle context. The ordinary protocol must never reach the store for such a turn; if some path does, it is refused rather than
+ * run against a local tar chain the session does not have.
+ */
+export const REMOTE_NO_STORE: VersionedSnapshotStore = new Proxy({} as VersionedSnapshotStore, {
+    get(_target, member) {
+        if (typeof member === "symbol" || member === "then") return undefined;
+        return () => {
+            throw new StoreOwnedError("STORE_OWNED_UNSUPPORTED", `a store-owned session has no local snapshot chain (${String(member)} was refused); the turn is held`);
+        };
+    },
+});
 
 export interface TurnLifecycleContext {
     store: VersionedSnapshotStore;
@@ -132,6 +159,8 @@ export interface TurnLifecycleContext {
     /** Destroy the in-memory ManagedSession only — disk untouched. */
     dropWarmSession: () => Promise<void>;
     trace: (message: string) => void;
+    /** Store-owned remote state. Absent: the ordinary protocol, unchanged. */
+    storeOwned?: StoreOwnedLifecycle;
 }
 
 const COMMIT_TRANSIENT_RETRIES = 3;
@@ -241,6 +270,7 @@ async function resolveFromStore(
  * (already-committed — the caller returns the stored result without a body).
  */
 export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
+    if (ctx.storeOwned) return runStoreOwnedTurnStart(ctx, ctx.storeOwned);
     const sessionDir = sessionDirOf(ctx);
     const sentinel = readTurnSentinel(sessionDir);
     const marker = readSnapshotMarker(sessionDir);
@@ -350,6 +380,9 @@ export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPr
  * store-deleting reset is a no-op against an empty store.
  */
 export async function attemptStoreRecovery(ctx: TurnLifecycleContext): Promise<number | null> {
+    if (ctx.storeOwned) {
+        throw new StoreOwnedError("STORE_OWNED_UNSUPPORTED", "a store-owned session is never restored by the ordinary store recovery (the worker does not unpack its archive); the turn is held");
+    }
     const probe = await ctx.store.probeSnapshot(ctx.sessionId, ctx.transcriptEpoch);
     if (!probe.exists) return null;
     const sessionDir = sessionDirOf(ctx);
@@ -373,6 +406,7 @@ export async function runTurnCommit(
     baseVersion: number,
     result: unknown,
 ): Promise<TurnCommitOutcome> {
+    if (ctx.storeOwned) return runStoreOwnedTurnCommit(ctx, ctx.storeOwned, result);
     // Stop-turn divergence guard: a user-stopped turn (result type "stopped")
     // is discarded by the orchestration (stop won the ctx.race →
     // handleTurnStopped; this runTurn is the dropped race loser) and its
@@ -401,6 +435,64 @@ export async function runTurnCommit(
     }
     return measureLifecycle("dehydration", () => commitTurnSnapshot(ctx, baseVersion, result),
         outcome => outcome.published ? "completed" : "superseded");
+}
+
+// ─── Store-owned remote state (remote-store-owned.ts) ─────────────────────────────────
+
+/**
+ * Turn start on a store-owned session: a read-only look at the store. A turn key it already carries returns its stored result (no sandbox is contacted); otherwise the turn goes on
+ * to its gates and then begins on a remote sandbox. No local probe, hydrate, import or directory access happens, and no archive is ever unpacked here.
+ */
+async function runStoreOwnedTurnStart(ctx: TurnLifecycleContext, storeOwned: StoreOwnedLifecycle): Promise<TurnPreambleOutcome> {
+    const start = await storeOwned.check();
+    if (start.kind === "stored") {
+        ctx.trace(`session=${ctx.sessionId} store-owned: turn ${ctx.turnKey} already committed at v${start.version}; returning its stored result`);
+        return { kind: "already-committed", version: start.version, result: start.result };
+    }
+    ctx.trace(`session=${ctx.sessionId} store-owned: the store owns the state (head v${start.baseVersion})`);
+    return { kind: "warm", baseVersion: start.baseVersion, storeOwned: true };
+}
+
+/**
+ * Turn commit on a store-owned session: the worker's native session is released first, then the turn takes the sandbox's opaque archive and writes it with the conditional
+ * `store-wins` commit. A conflict is not an error: the turn is reported unpublished (reason "conflict") and the next turn rehydrates whatever won.
+ */
+async function runStoreOwnedTurnCommit(ctx: TurnLifecycleContext, storeOwned: StoreOwnedLifecycle, result: unknown): Promise<TurnCommitOutcome> {
+    const policy = storeOwned.policy;
+    if (!policy) throw new StoreOwnedError("STORE_OWNED_INVALID", "the store-owned turn has not begun");
+    if (policy.sessionId !== ctx.sessionId || policy.transcriptEpoch !== ctx.transcriptEpoch || policy.turnKey !== ctx.turnKey) {
+        throw new StoreOwnedError("STORE_OWNED_INVALID", "the store-owned turn belongs to another session, epoch or turn key");
+    }
+    await policy.quiesce();
+    const outcome = await policy.commit(result);
+    if (outcome.status === "unpublished") {
+        ctx.trace(`session=${ctx.sessionId} store-owned: turn not published (${outcome.unpublishedReason}); the stored head v${outcome.version} stands`);
+        return {
+            version: outcome.version,
+            contentHash: "",
+            alreadyCommitted: false,
+            published: false,
+            unpublishedReason: outcome.unpublishedReason,
+            ...(outcome.unpublishedReason === "conflict"
+                ? { observedStoreVersion: outcome.version, ...(outcome.storedTurnKey ? { observedStoreTurnKey: outcome.storedTurnKey } : {}) }
+                : {}),
+            storeOwned: true,
+        };
+    }
+    if (outcome.status === "stored") {
+        // A racing attempt of this turn committed first: its result is the durable one.
+        return { version: outcome.version, contentHash: "", alreadyCommitted: true, storedResult: outcome.result, published: true, storeOwned: true };
+    }
+    ctx.trace(`session=${ctx.sessionId} store-owned: turn committed at v${outcome.version} (${outcome.sizeBytes} bytes${outcome.reusedWarm ? ", warm sandbox" : ""})`);
+    return {
+        version: outcome.version,
+        contentHash: outcome.contentHash,
+        sizeBytes: outcome.sizeBytes,
+        ...(outcome.rawSizeBytes !== undefined ? { rawSizeBytes: outcome.rawSizeBytes } : {}),
+        alreadyCommitted: false,
+        published: true,
+        storeOwned: true,
+    };
 }
 
 async function commitTurnSnapshot(

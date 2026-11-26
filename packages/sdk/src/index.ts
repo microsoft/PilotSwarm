@@ -120,6 +120,22 @@ export type {
     TrustedTurnCommit,
     VersionedSnapshotStore,
 } from "./snapshot-protocol.js";
+export type { SnapshotCodec } from "./session-store.js";
+// Store-owned remote state (opt-in `statePolicy: "store-owned"` compute targets): lease and turn execution helpers.
+export {
+    StoreOwnedError,
+    isStoreOwnedError,
+    parseStoreOwnedTarget,
+} from "./remote-store-owned.js";
+export type {
+    RemoteStoreOwnedArchive,
+    RemoteStoreOwnedDehydrateRequest,
+    RemoteStoreOwnedHead,
+    RemoteStoreOwnedLease,
+    RemoteStoreOwnedOpenRequest,
+    StoreOwnedErrorCode,
+    StoreOwnedTarget,
+} from "./remote-store-owned.js";
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 // Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
 export { horizonConfigFromEnv } from "./horizon-env.js";

@@ -13,6 +13,7 @@ import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-sco
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
 import { ComputeRegistry, type ComputeProvider } from "./compute-target.js";
+import { supportsOpaqueArchives } from "./snapshot-protocol.js";
 import { registerActivities } from "./session-proxy.js";
 import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
@@ -766,8 +767,17 @@ export class PilotSwarmWorker {
         this._starting = true;
         this._stopRequested = false;
         try {
-            // Remote compute: fail closed synchronously before starting duroxide if any enabled target lacks a compatible provider.
-            this._computeRegistry?.validateForStart();
+            // Remote compute: fail closed synchronously before starting duroxide if any enabled target lacks a compatible provider or required store capability.
+            this._computeRegistry?.validateForStart((resolved) => {
+                if (resolved.target.statePolicy === "store-owned") {
+                    if (typeof resolved.provider.openStoreOwned !== "function") {
+                        throw new TypeError(`compute provider ${resolved.provider.kind} declares statePolicy "store-owned" but does not implement openStoreOwned(request)`);
+                    }
+                    if (!supportsOpaqueArchives(this.sessionStore)) {
+                        throw new TypeError("store-owned compute targets need a session store that implements the opaque-archive methods (the blob and filesystem stores do)");
+                    }
+                }
+            });
             this._computeRegistry?.seal();
         } catch (err) {
             this._starting = false;
