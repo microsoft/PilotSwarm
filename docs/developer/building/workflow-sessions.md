@@ -436,7 +436,11 @@ lists them; a connection without them keeps the stage 1 grouping above):
 - **Compare** shows any two revisions side by side.
 - **Delete…** asks first. It is refused while one of the definition's
   Workflows runs, in the server's words. Its revisions stay, so a finished
-  Workflow keeps its copy.
+  Workflow keeps its copy. A Start at the same moment is either admitted
+  before the delete looks for running Workflows (so the delete sees its run)
+  or refused `DEFINITION_DELETED` with no run. A Start refused this way, or one
+  interrupted before its admission, no longer counts against the session's 50
+  running children once the definition is deleted.
 - The **Workflows** view lists each Workflow with the revision it runs. A
   Workflow's own view says its revision and offers **Run again…**: a new
   Workflow from the same revision, filled with that Workflow's inputs when
