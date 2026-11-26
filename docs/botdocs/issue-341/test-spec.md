@@ -129,8 +129,25 @@ what proves it and where each part runs.
 | T1 | 0096-0103 escape the schema name. For a plain name, the SHA-256 of the 0098 SQL is the value on `main` before the change. | This step (unit) |
 | T4 | The changed SQL (a name with `"`) installs and works on PostgreSQL 16. | This step (local PostgreSQL 16) |
 | `provider-decision-default.test.js` | Fresh install, upgrade from 0097, re-run of 0098 and the setter, on PostgreSQL 16. | This step (local PostgreSQL 16) |
-| Full SDK unit suite: `npm run test:unit --workspace=pilotswarm-sdk` | Every SDK unit test on the pull request head. | `pr-checks.yml`, Linux and Windows, on every push to the pull request |
-| `./scripts/run-tests.sh --all-providers`: the PostgreSQL baseline plus live HorizonDB | The full suite on PostgreSQL and the HorizonDB contracts on the pull request head. | `tests.yml`, started by a maintainer's `/test all` comment on the pull request |
+| Full SDK unit suite: `npm run test:unit --workspace=pilotswarm-sdk` | Every SDK unit test on GitHub's generated merge commit (see below). | `pr-checks.yml`, Linux and Windows, on every push to the pull request |
+| `./scripts/run-tests.sh --all-providers`: the PostgreSQL baseline plus live HorizonDB | The full suite on PostgreSQL and the HorizonDB contracts on the pull request head commit. | `tests.yml`, started by a maintainer's `/test all` comment on the pull request |
+
+The two pull request gates test different commits:
+
+- `pr-checks.yml` runs on the `pull_request` event with the default
+  `actions/checkout`. It checks out `refs/pull/<n>/merge`: a merge commit that
+  GitHub makes from the pull request head and the `main` of that moment. The
+  run's `head_sha` names the pull request head, but the tested tree is the
+  merge. Example: the branch head is `H`, `main` is `M`; the run tests
+  `merge(H, M)`. When `H` already contains `M` (the branch has the latest
+  `main` merged in), that merge has the same tree as `H`.
+- `tests.yml` (`/test all`) resolves the pull request head with
+  `.github/scripts/pr-test-target.mjs` (`pr.head.sha`) and checks out exactly
+  that commit (`source_sha`). It never tests a merge commit.
+
+Each test record names the commit it tested. The implementation report does
+this for the runs in this step. For the two gates, the pull request gives the
+head SHA and, for `pr-checks.yml`, the `main` SHA that the merge used.
 
 This implementation step does not run the last two rows. The Workflow that
 runs it allows only targeted tests, a local PostgreSQL 16 and no HorizonDB.
