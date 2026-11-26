@@ -29,6 +29,13 @@
  *   and purges every other old event as before. A run writer that holds an active Workflow keeps its old events for that
  *   pass (the purge never waits); a purge that holds an active Workflow first makes the run's end wait until the events
  *   are gone.
+ * - Issue 412 (review R2-1): lists and the portal reach a session through its parent, so a prune (a delete without
+ *   cascade) never removes a session that has a Workflow under it that the delete leaves in place: a pending root whose
+ *   ordinary child owns a finished Workflow stays, and the Workflow stays in its owner's Terminated row of the session
+ *   list; the final check refuses (WorkflowBelow) whatever the Workflow's run. A prune that leaves only ordinary sessions
+ *   and test benches under its target deletes it as before, but holds them (NOWAIT): a held one refuses it (Busy), and
+ *   one created under them between the read and the locks refuses it (Changed).
+ * - Issue 412 (review R2-2): a purge that fails deletes nothing (its two passes are one transaction).
  *
  * Run: npx vitest run test/local/sweeper-final-check.test.js
  */
@@ -39,10 +46,12 @@ import pg from "pg";
 import { describe, it, beforeAll, beforeEach, afterEach, expect } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
+import { createManagementClient } from "../helpers/local-workers.js";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
 import { createResourceManagerTools } from "../../src/resourcemgr-tools.ts";
 import { WorkflowStore } from "../../src/workflow/store.ts";
 import { PilotSwarmClient } from "../../src/index.ts";
+import { buildSessionTree } from "../../../app/ui/core/src/session-tree.js";
 
 const { Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const TIMEOUT = 120_000;
@@ -616,6 +625,116 @@ describe("the Sweeper's final check and delete under concurrency", () => {
         }
     });
 
+    // Issue 412 (review R2-1): a prune deletes its target and the Workflow sessions the owner trigger deletes with it, and
+    // leaves the other sessions under the target in place. Lists and the portal reach a session through its parent.
+    it("issue 412 (prune): a pending root whose ordinary child owns a finished Workflow is not pruned; the Workflow stays in its owner's Terminated row", { timeout: TIMEOUT }, async () => {
+        const root = randomUUID();
+        const owner = randomUUID();
+        await catalog.createSession(root);
+        await catalog.createSession(owner, { parentSessionId: root });
+        await setState(db, schema, owner, "idle");
+        const workflow = await makeLiveWorkflow(catalog, db, schema, owner);
+        await ageSessions(db, schema, [root, owner, workflow.id], 60);
+        // The root never accepted a message (it reads NotFound); the idle owner's orchestration runs; the Workflow's run ended.
+        const tools = createSweeperTools({ catalog, duroxideClient: stubDuroxide(new Map([[`session-${root}`, { status: "NotFound" }],
+            [workflow.controller, { status: "Completed" }]])), factStore: null });
+        for (const minutes of [5, 0]) {
+            const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: minutes });
+            expect(pruned, JSON.stringify(pruned)).toMatchObject({ ok: true, cmsCleanedUp: 0 });
+        }
+        for (const id of [root, owner, workflow.id]) expect(await rowState(db, schema, id), id.slice(0, 8)).toBe("kept");
+        const mgmt = await createManagementClient(env);
+        try {
+            const tree = buildSessionTree(await mgmt.listSessions(), new Set(), [], null, null, { openTerminatedIds: [owner] });
+            expect(tree.some(row => row.sessionId === root), "the root is listed").toBe(true);
+            const terminated = tree.find(row => row.virtual?.kind === "terminated" && row.virtual.parentSessionId === owner);
+            expect(terminated?.virtual.memberIds, "the Workflow is in its owner's Terminated row").toContain(workflow.id);
+        } finally {
+            await mgmt.stop();
+        }
+    });
+
+    for (const status of ["completed", "running", null]) {
+        it(`issue 412 (prune): the final check refuses to remove a session above a ${status ?? "draft"} Workflow that the delete leaves in place (WorkflowBelow)`, { timeout: TIMEOUT }, async () => {
+            const root = randomUUID();
+            const owner = randomUUID();
+            await catalog.createSession(root);
+            await catalog.createSession(owner, { parentSessionId: root });
+            await setState(db, schema, root, "completed");
+            await setState(db, schema, owner, "idle");
+            const workflow = await makeLiveWorkflow(catalog, db, schema, owner, status);
+            const store = catalog.workflowStore();
+            const version = await store.sweeperRowVersion(root);
+            const result = await store.sweeperSoftDelete({ sessionId: root, version: version.version, cascade: false, orchestrationNotFound: true });
+            expect(result, JSON.stringify(result)).toMatchObject({ refused: { status: "WorkflowBelow", workflowSessionId: workflow.id } });
+            expect(result.refused.detail).toContain(workflow.id);
+            for (const id of [root, owner, workflow.id]) expect(await rowState(db, schema, id), id.slice(0, 8)).toBe("kept");
+        });
+    }
+
+    it("issue 412 (prune): a prune that leaves only ordinary sessions and test benches under its target deletes it as before; a held one refuses it at once (Busy)", { timeout: TIMEOUT }, async () => {
+        const root = randomUUID();
+        const owner = randomUUID();
+        await catalog.createSession(root);
+        await catalog.createSession(owner, { parentSessionId: root });
+        await setState(db, schema, owner, "idle");
+        const bench = await makeBench(catalog, db, schema, owner);
+        await ageSessions(db, schema, [root, owner, bench.id], 60);
+        const tools = createSweeperTools({ catalog, duroxideClient: stubDuroxide(new Map([[`session-${root}`, { status: "NotFound" }]])), factStore: null });
+        const prune = () => findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+        const other = await db.connect();
+        try {
+            // A child being created under the owner holds the owner's row (lockLiveParent: FOR SHARE).
+            await other.query("BEGIN");
+            await other.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR SHARE`, [owner]);
+            const otherPid = (await other.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+            const pruning = prune();
+            const waited = await untilLockWait(db, "blocker", otherPid, pruning, 5_000).catch(() => false);
+            if (waited) await other.query("ROLLBACK").catch(() => {});
+            const result = await pruning;
+            expect(waited, `prune never waits for the held session: ${JSON.stringify(waited)}`).toBe(false);
+            expect(result, JSON.stringify(result)).toMatchObject({ cmsCleanedUp: 0, cmsRefused: 1 });
+            expect(await rowState(db, schema, root)).toBe("kept");
+            await other.query("COMMIT");
+        } finally {
+            await other.query("ROLLBACK").catch(() => {});
+            other.release();
+        }
+        const result = await prune();
+        expect(result, JSON.stringify(result)).toMatchObject({ cmsCleanedUp: 1, cmsRefused: 0 });
+        expect(await rowState(db, schema, root)).toBe("soft-deleted");
+        for (const id of [owner, bench.id]) expect(await rowState(db, schema, id), `${id.slice(0, 8)} is left in place as before`).toBe("kept");
+    });
+
+    it("issue 412 (prune): a session created under the target's ordinary child between the read and the locks makes the prune refuse (Changed)", { timeout: TIMEOUT }, async () => {
+        const root = randomUUID();
+        const owner = randomUUID();
+        const grandchild = randomUUID();
+        await catalog.createSession(root);
+        await catalog.createSession(owner, { parentSessionId: root });
+        await setState(db, schema, owner, "idle");
+        await ageSessions(db, schema, [root, owner], 60);
+        // The Sweeper stops just before it locks the sessions it read under the root ([owner]); the grandchild is created then.
+        const held = gate();
+        const sweeperPool = gatedPool(env.store, { matches: (sql, params) => sql.includes("FOR NO KEY UPDATE NOWAIT")
+            && Array.isArray(params[0]) && params[0].includes(owner), held });
+        try {
+            const store = new WorkflowStore(sweeperPool, env.cmsSchema);
+            const version = await store.sweeperRowVersion(root);
+            const pruning = store.sweeperSoftDelete({ sessionId: root, version: version.version, cascade: false, orchestrationNotFound: true });
+            const first = await Promise.race([held.reached.then(() => "locking"), pruning.then(result => JSON.stringify(result))]);
+            expect(first, "the final check locks the sessions it leaves under the target").toBe("locking");
+            await catalog.createSession(grandchild, { parentSessionId: owner });
+            held.open();
+            const result = await pruning;
+            expect(result, JSON.stringify(result)).toMatchObject({ refused: { status: "Changed" } });
+            for (const id of [root, owner, grandchild]) expect(await rowState(db, schema, id), id.slice(0, 8)).toBe("kept");
+        } finally {
+            held.open();
+            await sweeperPool.end();
+        }
+    });
+
     // Issue 412 (review R1-2): the Resource Manager's event maintenance keeps a finished Workflow's Log.
     it("issue 412: purge_old_events keeps the old events of a finished Workflow and of the sessions under it, and purges every other old event as before", { timeout: TIMEOUT }, async () => {
         const owner = randomUUID();
@@ -706,6 +825,30 @@ describe("the Sweeper's final check and delete under concurrency", () => {
             other.release();
             await purgePool.end();
         }
+    });
+
+    it("issue 412 (review R2-2): a purge that fails deletes nothing: its two passes are one transaction", { timeout: TIMEOUT }, async () => {
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        const running = await makeLiveWorkflow(catalog, db, schema, owner, "running");
+        await addEvents(catalog, db, schema, [owner, running.id]);
+        // The pass over the Workflow trees fails: a trigger refuses the delete of the running Workflow's events.
+        await db.query(`CREATE FUNCTION ${schema}.issue412_refuse_delete() RETURNS trigger LANGUAGE plpgsql
+            AS $$ BEGIN RAISE EXCEPTION 'issue 412: delete refused'; END $$`);
+        await db.query(`CREATE TRIGGER issue412_refuse_delete BEFORE DELETE ON ${schema}.session_events FOR EACH ROW
+            WHEN (OLD.session_id = '${running.id}') EXECUTE FUNCTION ${schema}.issue412_refuse_delete()`);
+        try {
+            const result = await purgeEvents(catalog, env);
+            expect(result, JSON.stringify(result)).toMatchObject({ error: expect.stringContaining("issue 412: delete refused") });
+            expect(await eventTypes(db, schema, owner), "the other pass's delete was rolled back").toEqual(["test.fresh", "test.old"]);
+            expect(await eventTypes(db, schema, running.id)).toEqual(["test.fresh", "test.old"]);
+        } finally {
+            await db.query(`DROP TRIGGER IF EXISTS issue412_refuse_delete ON ${schema}.session_events`);
+            await db.query(`DROP FUNCTION IF EXISTS ${schema}.issue412_refuse_delete()`);
+        }
+        const result = await purgeEvents(catalog, env);
+        expect(result.eventsDeleted, JSON.stringify(result)).toBeGreaterThanOrEqual(2);
+        for (const id of [owner, running.id]) expect(await eventTypes(db, schema, id)).toEqual(["test.fresh"]);
     });
 
     describe("AR-01: an ordinary session's first message and the Sweeper", () => {
