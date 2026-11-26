@@ -7,9 +7,9 @@ must fail before steps 2-6.
 
 ## Step 1: failing tests first
 
-Write the new tests named in `test-spec.md` (T1, T2, T3), build the SDK, and
-confirm that T1 and T2 fail for the stated reason and that T3 passes (T3
-guards limits that must not change).
+Write the new tests named in `test-spec.md` (T1, T2, T3, T4), build the SDK,
+and confirm that T1, T2 and T4 fail for the stated reason and that T3 passes
+(T3 guards limits that must not change). T4 needs the local PostgreSQL 16.
 
 ## Step 2: escape the schema name in migration 0098 (item 1)
 
@@ -76,7 +76,8 @@ File: `CHANGELOG.md`.
 2. In the `## 0.8.14 — 2026-11-21` section, after `### Workflow controller
    1.2.0` and before `## 0.8.13`, add `### Other changes in this release` with
    one bullet each for: the portal `foundry-wif` rule (item 6),
-   `applyWorkflowUpdate` receipt-first replay, the test bench claim and replay,
+   `applyWorkflowUpdate` replay of a receipt stored for the same request before
+   the Decision catalog check, the test bench claim and replay,
    `resolveProviderCredential`, and `buildRuntimeRegistry` (F14).
 
 ## Step 7: verify and commit

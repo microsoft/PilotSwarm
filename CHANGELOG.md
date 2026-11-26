@@ -436,10 +436,15 @@ These changes came with the Decision work but also apply without a Decision.
   as the SDK rule already did. Adding a `foundry-wif` provider shows "Use the
   Workload Identity configured in the worker" instead of a key field, and the
   provider offers no "Update key".
-- **A repeated publish, publish-and-start or start returns its stored result
-  first.** With the same operation id, `applyWorkflowUpdate` reads the stored
-  receipt before it checks the Decision catalog again, so a retry returns the
-  original result even if the Cluster Decision Default changed in between.
+- **A repeat of the same publish, publish-and-start or start is replayed
+  before the Decision catalog check.** `applyWorkflowUpdate` reads the stored
+  receipt for the operation id and a hash of the request before it checks the
+  revision against the Decision catalog again. When that operation id was
+  stored for the same request, the call returns the original result, even if
+  the Cluster Decision Default changed in between. An operation id already
+  used for a different request is refused with `OPERATION_CONFLICT`. A `start`
+  on a deleted Workflow that has no Decision is refused with `WORKFLOW_DELETED`
+  before the receipt is read.
 - **A repeated Workflow test reuses its test bench.** A repeated `test` call
   with the same operation id uses the definition, revision and `expect` that
   its bench already claimed, not the current default revision. A repeat that
@@ -447,8 +452,10 @@ These changes came with the Decision work but also apply without a Decision.
   nothing is tested.
 - **A runtime provider resolves only the models its type lists.**
   `resolveProviderCredential` gives no credential for a model name that the
-  model-providers file does not list under the provider's type. Before, any
-  model name under a known type resolved.
+  model-providers file does not list under the provider's type. Before, it did
+  not check that the type lists the model: an unlisted model name still
+  resolved when the type was known and the instance had the credential and
+  endpoint that its type needs.
 - **The worker keeps a cluster default model only when a shared provider can
   run it.** `buildRuntimeRegistry` keeps the configured cluster default only
   when it is a chat model that a shared provider instance resolves. Otherwise

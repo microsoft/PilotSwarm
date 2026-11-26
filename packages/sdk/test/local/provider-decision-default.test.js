@@ -181,6 +181,36 @@ describe("Cluster Decision Default migration", () => {
             await pool.end();
         }
     });
+
+    it("0098 installs and its setter runs in a schema whose name contains a double quote", { timeout: TIMEOUT }, async () => {
+        const tag = randomUUID().replaceAll("-", "").slice(0, 12);
+        const plain = `decision_${tag}_q`, quotedName = `decision"${tag}_q`;
+        const quoted = `"${quotedName.replaceAll('"', '""')}"`;
+        const pool = new pg.Pool({ connectionString: getEnv().store, max: 1 });
+        let renamed = false;
+        try {
+            // Migrations before 0096 do not escape the schema name, so build 0097 under a plain name and rename it.
+            await runMigrations(pool, plain, CMS_MIGRATIONS(plain).filter(item => item.version <= LAST_AT_PIN), CMS_LOCK_SEED);
+            await pool.query(`ALTER SCHEMA "${plain}" RENAME TO ${quoted}`);
+            renamed = true;
+            await rerun(pool, registered(quotedName));
+            const singleton = async () => (await pool.query(
+                `SELECT ${COLUMNS.join(", ")} FROM ${quoted}.provider_cluster_settings WHERE singleton`)).rows[0];
+            expect(Object.values(await singleton())).toEqual([null, null, null, null]);
+            await pool.query(`INSERT INTO ${quoted}.provider_instances (name, type_id, class, secret_ref)
+                VALUES ('team', 'mixed-type', 'shared', '{"kind":"apiKey","value":"test-key"}'::jsonb)`);
+            const set = (provider, model, isAdmin) => pool.query(
+                `SELECT ${quoted}.cms_provider_set_cluster_decision_default($1, $2, NULL, NULL, $3) AS ok`, [provider, model, isAdmin]);
+            await expect(set("team", "team:decision-model", false)).rejects.toThrow(/PROVIDER_FORBIDDEN/);
+            expect((await set("team", "team:decision-model", true)).rows[0].ok).toBe(true);
+            expect(await singleton()).toMatchObject({ decision_default_provider: "team", decision_default_model: "team:decision-model" });
+            expect((await set(null, null, true)).rows[0].ok).toBe(true);
+            expect(Object.values(await singleton())).toEqual([null, null, null, null]);
+        } finally {
+            await pool.query(`DROP SCHEMA IF EXISTS ${renamed ? quoted : `"${plain}"`} CASCADE`);
+            await pool.end();
+        }
+    });
 });
 
 describe("Cluster Decision Default store and management", () => {

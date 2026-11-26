@@ -35,7 +35,7 @@ Terms used below:
 | 5 | `effect_1_0_0` and `effect_1_1_0` duplicate about 110 lines of redaction | Both files already give the reason (`effect_1_0_0/index.ts:77-78`, `effect_1_1_0/index.ts:88-89`): "Keep its redaction and clipping here, rather than importing ... helpers whose later releases must not change old histories." `effect_1_2_0` has a third copy. | **Add one comment** where the three modules are imported, `workflow/runtime.ts:2-10`: the copies are deliberate and must not be merged. The frozen files stay untouched. |
 | 6 | `selectors.js` gained `foundry-wif` | `packages/app/ui/core/src/selectors.js:67-69` returns true for `anthropic-wif` or `foundry-wif`; \#328 added `foundry-wif`. The SDK rule (`model-providers.ts:143-145`) already had both. The 0.8.14 notes do not mention it. | **Release note** in the 0.8.14 section of `CHANGELOG.md`. |
 | 7 | `noul` fixture skeleton includes `probabilities` | `workflow/definition-test.ts:205-206` suggests `{ type: "noul", noul: 1, probabilities: { true: 1, false: 0 } }`. The live service answers `noul` with only `noul` (comment at `decision-provider.ts:598`); the parser derives yes and no from it (`decision-provider.ts:599-600`). | **Fix.** Suggest `{ type: "noul", noul: 1 }`. |
-| F14 | \#328 touched paths that do not involve a Decision | (a) `applyWorkflowUpdate` (`workflow/service.ts:1149-1200`): publish, publish-and-start and start return the stored receipt for a repeated operation id before they check the Decision catalog again. (b) `definitionTestBench` claim and replay in `definition-test.ts`: a repeat reuses the claimed definition, revision and `expect`, and refuses another with `WORKFLOW_EXISTS`. (c) `resolveProviderCredential` (`provider-catalog.ts:425-433`) returns null for a model that the type catalog does not list. (d) `buildRuntimeRegistry` (`provider-catalog.ts:205-280`) keeps a configured default only when it is a resolvable chat model of a shared instance; otherwise it uses the first shared runtime model. | **Release notes** in the 0.8.14 section of `CHANGELOG.md`. |
+| F14 | \#328 touched paths that do not involve a Decision | (a) `applyWorkflowUpdate` (`workflow/service.ts:1149-1200`): publish, publish-and-start and start read the stored receipt with the operation id and the request hash (`readOperationReceipt`) and replay a receipt stored for the same request before they check the Decision catalog again; the same id with a different request is refused with `OPERATION_CONFLICT`, and a start on a deleted Workflow without a Decision is refused before the read. (b) `definitionTestBench` claim and replay in `definition-test.ts`: a repeat reuses the claimed definition, revision and `expect`, and refuses another with `WORKFLOW_EXISTS`. (c) `resolveProviderCredential` (`provider-catalog.ts:425-433`) returns null for a model that the type catalog does not list. (d) `buildRuntimeRegistry` (`provider-catalog.ts:205-280`) keeps a configured default only when it is a resolvable chat model of a shared instance; otherwise it uses the first shared runtime model. | **Release notes** in the 0.8.14 section of `CHANGELOG.md`. |
 
 ## Chosen design
 
@@ -121,7 +121,12 @@ escaping), as earlier fix PRs did.
 
 - No public API, tool, wire shape, orchestration version, controller version,
   effect version or migration version changes.
-- The SQL of 0098 is unchanged for every schema name without `"`.
+- The SQL of 0098 is unchanged for every schema name without `"`. The test
+  spec pins this with a SHA-256 of the SQL, and a local PostgreSQL 16 test runs
+  the changed SQL (a schema name with `"`). For every other schema name,
+  PostgreSQL 16 and HorizonDB receive the same bytes that 0.8.14 to 0.8.19
+  already sent. A database that applied 0098 does not apply it again: the
+  migrator runs a migration only when its version is not recorded.
 - The `agent-models.ts` limits are unchanged: 64 for requests, 100 for stored
   maps.
 - The fixture skeleton is advice in a test report. A fixture written from the
