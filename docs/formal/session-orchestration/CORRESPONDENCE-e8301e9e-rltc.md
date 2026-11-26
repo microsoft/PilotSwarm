@@ -1,19 +1,9 @@
 # RuntimeLoss (rl2) and TurnCut (tc2) correspondence to e8301e9e
 
-`e8301e9ee3efdd8f2aa8f3cbfab8cf73917abf82` (branch `fix/turn-cut-lost-lock`) merges main `b79be29d` (0.8.19) into the
-branch at `64854093`, whose binding is `CORRESPONDENCE-16e5c481-rltc.md`. Main's three commits since `9099aaa2` change
-no modelled path. In the bound files only #406 (Workflow loops) changed code: it adds the `child_workflows` tool to
-`managed-session.ts` and its bridge to `session-proxy.ts`, and a Workflow spawn host to `worker.ts`, whose client
-`stop()` ends (1272-1276, before the drain at 1357; it holds no session). These insertions only move the bound lines.
-`session-lifecycle.ts`, `session-manager.ts`, `session-store.ts`, `blob-store.ts`, `snapshot-protocol.ts`,
-`copilot-runtime-monitor.ts`, `orchestration/` and the cited tests are unchanged. The merge resolved only `CHANGELOG.md`.
-
-Every line cited below maps, by a line diff from `16e5c481`, to the same unchanged source line at this head, and each
-moved line was re-read. The models, the case tables and the labels are unchanged. All 233 cases were re-run at this
-head (folder README, §4).
-
-The `16e5c481` file stays as the record of that run, and the rl2 and tc2 files as the record of theirs. This file
-supersedes their code columns; the model rows and labels are theirs, unchanged.
+`e8301e9ee3efdd8f2aa8f3cbfab8cf73917abf82` (branch `fix/turn-cut-lost-lock`) holds both fixes: the TurnCut branch with
+main `9099aaa2` (#376) and then main `b79be29d` (0.8.19) merged in. Every cited line was checked at this head. The
+models, the case tables and the labels are rl2's and tc2's, unchanged; this file replaces only their code columns. All
+233 cases were run at this head (folder README, §4).
 
 ## Merge interactions
 
