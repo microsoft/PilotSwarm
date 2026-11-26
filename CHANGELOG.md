@@ -6,49 +6,32 @@
 
 ### Idle Copilot runtimes stop
 
-A worker now stops a pooled Copilot runtime after it has had no warm session
-and no short-lived user (a model list, a session delete) for 30 seconds (#331).
-The client leaves the pool before it stops; if `stop()` fails or is late, the
-worker force-stops it. The next session for that key starts a fresh runtime and
-resumes from its saved state. Set `copilotClientIdleStopMs` or
-`PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS` to change the period, or `0` to keep
-idle runtimes. Both take a whole number of milliseconds and are parsed alike;
-a numeric option is rounded down. Any other value (such as `30s`, `1e3` or
-`-1`) logs a warning and uses the default. An invalid option does not fall
-back to the env var. A session that moves to another credential or workspace
-key releases its old runtime, and a client the caller supplied is never
-stopped for being idle.
+A worker now stops a pooled Copilot runtime after 30 seconds with no session
+and no short-lived user, such as a model list (#331). The next session for
+that key starts a fresh runtime and resumes from its saved state. Set
+`copilotClientIdleStopMs` or `PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS` to change
+the period, or `0` to keep idle runtimes; see
+[configuration](docs/developer/reference/configuration.md). A client the caller
+supplied is never stopped for being idle.
 
 ### Session teardown ends tool shells
 
-Every teardown of a warm session now cancels its background shells: a
-dehydrate, an idle eviction, a complete, cancel or delete, the invalidation of
-a dead or replaced session, a state reset, an epoch start and a model rebind.
-A worker shutdown lists them (within 5 seconds) before it stops each runtime
-and kills them once that runtime has stopped, so a turn still running is ended
-by the stop alone, as before.
-Before, only workspace sessions, a user Stop and a Workflow's script tasks
-cancelled them, and stopping a runtime never did, because tool shells run in
-their own process session. On POSIX systems the worker also kills each shell's
-process session (on Linux) or process group, so processes the shell left
-behind stop too, including when the worker is PID 1 of its container. A
-process is signalled only while its pid still runs the process bound when the
-shell was listed (the exact start time), never when that cannot be read, never
-on Windows, and never after a teardown's deadline (20 seconds; 5 seconds when
-the runtime may be gone, as after a lost connection). A shutdown's kills have
-no deadline: they run right after each runtime's stop. Killed processes whose
-parent has gone are reaped only when the container runs a reaping init (such
-as `tini`) as PID 1; without one they remain zombies that hold only a PID slot.
-Sessions in one eviction sweep are torn down concurrently. **Behavior change:**
-a detached shell no longer survives its session's eviction or dehydrate, or its
-worker's shutdown. The default agent prompts say so.
+**Behavior change:** a background shell no longer survives its session's
+eviction, dehydrate, complete, cancel or delete, or its worker's shutdown.
+Every teardown of a warm session now cancels the session's shells. Before,
+only workspace sessions, a user Stop and Workflow script tasks did, and
+stopping a runtime never did. Except on Windows, the worker also kills the
+processes each shell left behind, and signals a pid only while it still
+belongs to the process it recorded. A shutdown still lets the runtime's stop
+end a running turn, and kills the shells after it. Killed orphans are reaped
+only when the container runs a reaping init, such as `tini`, as PID 1. The
+default agent prompts say so. See
+[the design](docs/architecture/orchestration/design.md#idle-copilot-runtimes-and-tool-shells).
 
 ### Title summaries are bounded
 
-The one-shot session that writes a session's title summary now gives up after
-60 seconds, a budget that covers starting its Copilot client, creating the
-session and the prompt, instead of waiting for `session.idle` forever. It
-always stops its Copilot client, and force-stops it when the budget ran out.
+Writing a session's title summary now gives up after 60 seconds instead of
+waiting forever, and always stops its Copilot client.
 
 ## 0.8.19 — 2026-11-25
 

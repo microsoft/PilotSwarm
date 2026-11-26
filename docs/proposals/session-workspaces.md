@@ -632,14 +632,12 @@ the session:
   listed as running, with its pid. The host may give that pid to another
   process later. A pid counts as the shell only if its process did not start
   after the task did (`/proc/<pid>/stat` on Linux, `ps -o lstart=`
-  elsewhere, with 2 s of slack). That process's exact start is recorded then,
-  and a later kill signals the pid, and each process listed below it, only
-  while it still has the recorded start. Any other process with that pid is
-  never killed, and nothing is killed when a start cannot be read.
+  elsewhere, with 2 s of slack). Its exact start is recorded, and a later
+  kill signals the pid, or a process below it, only while it still has that
+  start. Nothing is killed when a start cannot be read.
 - **One deadline.** Steps 1 to 3 run under one 20 s deadline on the worker. A
   CLI frozen by a hung mount never answers; the handle is dropped anyway, and
-  step 4 still runs. Nothing is signalled after the deadline, even by a cancel
-  loop still running after its caller stopped waiting.
+  step 4 still runs. Nothing is signalled after the deadline.
 
 Step 1 is required. Live check on CLI 1.0.83: `disconnect()`, `client.stop()`,
 `abort()`, `forceStop()` and `rpc.shutdown()` all left a background shell

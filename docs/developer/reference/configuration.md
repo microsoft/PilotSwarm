@@ -324,17 +324,15 @@ Duroxide runtime concurrency, and process-wide worker limits.
   `PilotSwarmWorker({ turnTimeoutMs })` option takes precedence over the env var.
 - `PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS`
   Stops a pooled Copilot runtime (one `copilot` process per credential,
-  transport and workspace root) after it has had no warm session and no
-  short-lived user, such as a model list or a session delete, for this many
-  ms. The next session for that key starts a fresh runtime and resumes from
-  its saved state. Default: `30000` (30 seconds). Set `0` to keep idle
-  runtimes running. The value must be a whole number of milliseconds; any
-  other value (for example `30s` or `1e3`) logs a warning and the default
-  applies. A period above `2147483647` (about 24.8 days) is waited as that
-  limit. An explicit `PilotSwarmWorker({ copilotClientIdleStopMs })` option
-  takes precedence over the env var. It is parsed the same way, except that a
-  number is rounded down. An invalid option logs a warning and uses the
-  default, not the env var.
+  transport and workspace root) after it has had no session and no
+  short-lived user, such as a model list, for this many ms. The next session
+  for that key starts a fresh runtime. Default: `30000`. `0` keeps idle
+  runtimes. The value must be a whole number of milliseconds; anything else
+  (`30s`, `1e3`, `-1`) logs a warning and uses the default. Values above
+  `2147483647` (about 24.8 days) are capped there. The
+  `PilotSwarmWorker({ copilotClientIdleStopMs })` option takes precedence. It
+  is parsed the same way, except that a number is rounded down, and an
+  invalid option falls back to the default, not to the env var.
 - Duroxide lock settings. Each has a matching `PilotSwarmWorker` option
   (`workerLockTimeoutMs`, `workerLockRenewalBufferMs`, `orchestratorLockTimeoutMs`,
   `orchestratorLockRenewalBufferMs`, `sessionLockTimeoutMs`,

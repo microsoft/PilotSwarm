@@ -8,16 +8,14 @@ PilotSwarm agents. Model-specific compatibility measurements remain in
 
 ## 2026-11-24 — Background shells end with the session's warm state
 
-- **Agent:** `default` (base v1), `1.24.0` to `1.25.0`, and the base v2 prompt.
-- **Model tested:** none; a lifetime statement, not a model experiment.
-- **Observed behavior:** nothing told agents that a background shell started
-  before a durable wait is ended when the session's live state on its worker
-  is torn down (idle eviction, dehydration, worker drain or shutdown) or the
-  session is cancelled (issue 331).
-- **Expected behavior:** after a wait, check that such a process still runs
-  and restart it if needed, instead of relying on it outliving the wait. The
-  prompt states the contract only; it names no way around it.
-- **Validation:** prompt contract suites; no live model-compliance claim.
+- **Agent:** `default` (base v1) `1.24.0` to `1.25.0`, and the base v2 prompt.
+- **Model tested:** none; the change states a lifetime rule.
+- **Observed behavior:** the prompts did not say that background shells end
+  when the session's warm state is torn down or the session is cancelled
+  (issue 331).
+- **Expected behavior:** after a wait, the agent checks that such a process
+  still runs and restarts it if needed.
+- **Validation:** prompt contract suites only; no live model test.
 
 ## 2026-09-22 — Maintainer PR comment command
 
