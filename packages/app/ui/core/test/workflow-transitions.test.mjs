@@ -16,7 +16,9 @@ import {
     workflowDefinition, workflowReplayFrames,
 } from "../src/workflow-view.js";
 import { workflowGraphEdgeKey, workflowGraphEdgeKeys, workflowGroupId, workflowJoinId } from "../src/workflow-graph-layout.js";
-import { WORKFLOW_LIT_TRANSITIONS, workflowLitLevel, workflowLitTransitions, workflowTransitions } from "../src/workflow-transitions.js";
+import {
+    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorTransitions, workflowLitLevel, workflowLitTransitions, workflowTransitions,
+} from "../src/workflow-transitions.js";
 import { WorkflowGraph } from "../../react/src/workflow-graph.js";
 
 const at = seconds => new Date(Date.UTC(2026, 10, 9, 3, 0, seconds)).toISOString();
@@ -31,9 +33,11 @@ const LOOP = workflowDefinition({ revision: 1, initial: "check", states: [
 ] });
 const loopVisits = names => names.map((stateId, index) => visit(`nx-${index}`, stateId, index * 10, { ordinal: index + 1 }));
 
+const entries = list => list.map(({ nodeExecutionId, fromStateId, toStateId, edgeKey }) => ({ nodeExecutionId, fromStateId, toStateId, edgeKey }));
+
 test("the root's chain: each visit came from the visit before it; the run's first visit is its step only", () => {
     const transitions = workflowTransitions(loopVisits(["check", "wait", "check", "done"]), LOOP);
-    assert.deepEqual(transitions, [
+    assert.deepEqual(entries(transitions), [
         { nodeExecutionId: "nx-0", fromStateId: null, toStateId: "check", edgeKey: null },
         { nodeExecutionId: "nx-1", fromStateId: "check", toStateId: "wait", edgeKey: key("check", "wait") },
         { nodeExecutionId: "nx-2", fromStateId: "wait", toStateId: "check", edgeKey: key("wait", "check") },
@@ -67,16 +71,17 @@ test("the last four transitions are lit, newest age 0; a part taken twice among 
     assert.deepEqual(workflowLitTransitions(null), { edges: new Map(), nodes: new Map(), current: null });
 });
 
-test("a catch-all's arrival lights its step only; a predecessor named by the read model is taken over the chain", () => {
+test("a catch-all's arrival comes from the step whose error it took, and lights no line; a predecessor named by the read model is taken over the chain", () => {
     const transitions = workflowTransitions([
         visit("nx-0", "check", 0), visit("nx-1", "wait", 10), visit("nx-2", "done", 20, { catchAll: true }),
     ], LOOP);
-    assert.deepEqual(transitions[2], { nodeExecutionId: "nx-2", fromStateId: null, toStateId: "done", edgeKey: null });
+    assert.deepEqual(transitions[2], { nodeExecutionId: "nx-2", fromStateId: "wait", toStateId: "done", edgeKey: null, route: "@catchAll",
+        words: "✕ error", error: true });
     const lit = workflowLitTransitions(transitions);
     assert.ok(lit.nodes.has("done") && !lit.edges.has(key("wait", "done")) && !lit.edges.has(key("check", "done")));
     // A visit whose predecessor the read model names comes from it, not from the visit before it.
     const named = workflowTransitions([visit("nx-0", "check", 0), visit("nx-1", "wait", 10), visit("nx-2", "done", 20, { predecessorId: "nx-0" })], LOOP);
-    assert.deepEqual(named[2], { nodeExecutionId: "nx-2", fromStateId: "check", toStateId: "done", edgeKey: key("check", "done") });
+    assert.deepEqual(entries(named)[2], { nodeExecutionId: "nx-2", fromStateId: "check", toStateId: "done", edgeKey: key("check", "done") });
     // A predecessor not loaded: the chain decides.
     const missing = workflowTransitions([visit("nx-1", "wait", 10), visit("nx-2", "check", 20, { predecessorId: "nx-gone" })], LOOP);
     assert.equal(missing[1].fromStateId, "wait");
@@ -92,11 +97,11 @@ const FAN = workflowDefinition({ revision: 1, initial: "fan", states: [
 ] });
 const item = index => ({ scopeId: `nx-fan#${index}`, branch: { parallelNodeExecutionId: "nx-fan", index } });
 
-test("branches: each its own chain; a branch's first visit came from its parallel visit; the routes after a box leave its join bar", () => {
+test("branches: each its own chain; a branch's success end is its line into the join bar; the routes after a box leave its join bar", () => {
     const keys = workflowGraphEdgeKeys(FAN);
-    assert.ok(keys.has(key("fan", workflowGroupId("fan"))) && keys.has(key(workflowJoinId("fan"), "report")) && keys.has(key("fetch", "save")));
-    // No line into a join bar is ever one a visit takes.
-    assert.ok(![...keys].some(edge => JSON.parse(edge)[1].startsWith("join:")));
+    // B1: no line from the parallel step into its box; B2: the branch's success end is its line into the join bar.
+    assert.deepEqual([...keys].sort(), [key("fetch", workflowJoinId("fan")), key(workflowJoinId("fan"), "report")].sort());
+    assert.equal(keys.has(key("fan", workflowGroupId("fan"))), false);
     const transitions = workflowTransitions([
         visit("nx-fan", "fan", 0),
         visit("nx-a0", "fetch", 1, item(0)), visit("nx-a1", "fetch", 2, item(1)),
@@ -105,21 +110,20 @@ test("branches: each its own chain; a branch's first visit came from its paralle
     ], FAN);
     assert.deepEqual(transitions.map(item => [item.nodeExecutionId, item.fromStateId, item.edgeKey]), [
         ["nx-fan", null, null],
-        ["nx-a0", "fan", key("fan", workflowGroupId("fan"))],
-        ["nx-a1", "fan", key("fan", workflowGroupId("fan"))],
-        ["nx-b0", "fetch", key("fetch", "save")],
-        ["nx-b1", "fetch", key("fetch", "save")],
+        ["nx-a0", "fan", null],
+        ["nx-a1", "fan", null],
+        ["nx-b0", "fetch", key("fetch", workflowJoinId("fan"))],
+        ["nx-b1", "fetch", key("fetch", workflowJoinId("fan"))],
         ["nx-report", "fan", key(workflowJoinId("fan"), "report")],
     ]);
     // Counted across every branch in the timeline's order: the last four are both saves, the second fetch and the report.
     const lit = workflowLitTransitions(transitions);
     assert.deepEqual(Object.fromEntries(lit.edges), {
-        [key(workflowJoinId("fan"), "report")]: { count: 1, age: 0 }, [key("fetch", "save")]: { count: 2, age: 1 },
-        [key("fan", workflowGroupId("fan"))]: { count: 1, age: 3 },
+        [key(workflowJoinId("fan"), "report")]: { count: 1, age: 0 }, [key("fetch", workflowJoinId("fan"))]: { count: 2, age: 1 },
     });
 });
 
-test("named branches: a lane's first visit came by its lane's line from the parallel step", () => {
+test("named branches: a lane's first visit lights its lane's pill (no line fans out to the lanes)", () => {
     const NAMED = workflowDefinition({ revision: 1, initial: "views", states: [
         { id: "views", type: "parallel", concurrency: 2, join: "all_required",
             branches: [{ name: "quick", initial: "quick_work", states: ["quick_work"] }, { name: "careful", initial: "careful_work", states: ["careful_work"] }],
@@ -131,7 +135,77 @@ test("named branches: a lane's first visit came by its lane's line from the para
     const transitions = workflowTransitions([visit("nx-views", "views", 0),
         visit("nx-q", "quick_work", 1, { scopeId: "nx-views#0", branch: { parallelNodeExecutionId: "nx-views", index: 0, name: "quick" } }),
         visit("nx-c", "careful_work", 2, { scopeId: "nx-views#1", branch: { parallelNodeExecutionId: "nx-views", index: 1, name: "careful" } })], NAMED);
-    assert.deepEqual(transitions.slice(1).map(item => item.edgeKey), [key("views", "quick_work"), key("views", "careful_work")]);
+    assert.deepEqual(transitions.slice(1).map(item => item.edgeKey), ["lane:views:quick", "lane:views:careful"]);
+});
+
+// The owner's issue-to-pr shape, small: a gate whose error ends the run as failed (✕ badge), a blocked end and a business
+// route into the failed end (chips), a review loop, and a root catchAll covering a step with no failure route.
+const GATED = workflowDefinition({ revision: 1, initial: "fetch", catchAll: "failed", states: [
+    { id: "fetch", type: "script", outcomes: ["ok", "not_open"], next: { ok: "review", not_open: "rejected", failure: "failed" } },
+    { id: "review", type: "script", outcomes: ["approved", "changes_required"], next: { approved: "gate", changes_required: "gate" } },
+    { id: "gate", type: "script", outcomes: ["next", "done", "error"], next: { next: "review", done: "done", error: "failed", failure: "failed" } },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+    { id: "rejected", type: "terminal", outcome: "blocked" },
+    { id: "failed", type: "terminal", outcome: "failed" },
+] });
+
+test("a route drawn as a badge or a chip is keyed by it; each transition says its route in words and whether it was an error", () => {
+    const run = [
+        visit("nx-0", "fetch", 0, { status: "completed", outcome: "ok", resultKind: "business" }),
+        visit("nx-1", "review", 10, { status: "completed", outcome: "changes_required", resultKind: "business" }),
+        visit("nx-2", "gate", 20, { status: "completed", outcome: "next", resultKind: "business" }),
+        visit("nx-3", "review", 30, { ordinal: 2, status: "completed", outcome: "approved", resultKind: "business" }),
+        visit("nx-4", "gate", 40, { ordinal: 2, status: "completed", outcome: "execution_failed", resultKind: "runtime_error",
+            errorWords: "the script stopped with an error: boom" }),
+        visit("nx-5", "failed", 50),
+    ];
+    const transitions = workflowTransitions(run, GATED);
+    assert.deepEqual(transitions.map(item => [item.edgeKey, item.route, item.words, item.error]), [
+        [null, null, null, false],
+        [key("fetch", "review"), "ok", "ok", false],
+        [key("review", "gate"), "changes_required", "changes required", false],
+        [key("gate", "review"), "next", "next", false],
+        [key("review", "gate"), "approved", "approved", false],
+        // R1: the gate's error into the failed end has no line; its key is the gate's ✕ badge.
+        ["badge:gate", "failure", "✕ script failed", true],
+    ]);
+    // R2: a business route into an end drawn as a chip has the chip's key.
+    const chipped = workflowTransitions([visit("nx-0", "fetch", 0, { status: "completed", outcome: "not_open", resultKind: "business" }),
+        visit("nx-1", "rejected", 10)], GATED);
+    assert.deepEqual([chipped[1].edgeKey, chipped[1].words, chipped[1].error], ["chip:fetch:rejected", "not open", false]);
+    const business = workflowTransitions([visit("nx-0", "fetch", 0, { status: "completed", outcome: "ok", resultKind: "business" }),
+        visit("nx-1", "review", 10, { status: "completed", outcome: "approved", resultKind: "business" }),
+        visit("nx-2", "gate", 20, { status: "completed", outcome: "error", resultKind: "business" }), visit("nx-3", "failed", 30)], GATED);
+    assert.equal(business[3].edgeKey, "chip:gate:failed");
+    // R1: a catch-all's arrival from a step it covers (review has no failure route) is that step's badge.
+    const caught = workflowTransitions([visit("nx-0", "review", 0, { status: "completed", outcome: "timed_out", resultKind: "runtime_error" }),
+        visit("nx-1", "failed", 10, { catchAll: true })], GATED);
+    assert.deepEqual([caught[1].fromStateId, caught[1].edgeKey, caught[1].route, caught[1].error], ["review", "badge:review", "@catchAll", true]);
+    // A route not known (the step's visit has no outcome): the pair decides.
+    const unknown = workflowTransitions([visit("nx-0", "gate", 0), visit("nx-1", "failed", 10)], GATED);
+    assert.equal(unknown[1].edgeKey, "chip:gate:failed");
+});
+
+test("the moment shown: what the run had taken by then, the transition shown, the end reached and the error marks", () => {
+    const run = [
+        visit("nx-0", "fetch", 0, { status: "completed", outcome: "ok", resultKind: "business" }),
+        visit("nx-1", "review", 10, { status: "completed", outcome: "approved", resultKind: "business" }),
+        visit("nx-2", "gate", 20, { status: "completed", outcome: "boom", resultKind: "runtime_error" }),
+        visit("nx-3", "failed", 30),
+    ];
+    const transitions = workflowTransitions(run, GATED);
+    const live = workflowLitTransitions(transitions);
+    assert.deepEqual([...live.visited].sort(), [key("fetch", "review"), key("review", "gate"), "badge:gate"].sort());
+    assert.deepEqual([live.transition.edgeKey, live.transition.words], ["badge:gate", "✕ boom"]);
+    assert.deepEqual(live.edges.get("badge:gate"), { count: 1, age: 0 });
+    // At the second visit, only the first line had been taken.
+    const back = workflowLitTransitions(transitions, 1);
+    assert.deepEqual([...back.visited], [key("fetch", "review")]);
+    assert.equal(back.edges.has("badge:gate"), false);
+    assert.equal(workflowEndReached(transitions, ["done", "rejected", "failed"]), "failed");
+    assert.equal(workflowEndReached(transitions, ["done", "rejected", "failed"], 2), null);
+    assert.deepEqual(workflowErrorTransitions(transitions), [3]);
+    assert.deepEqual(workflowErrorTransitions(null), []);
 });
 
 test("both renderers draw the lit parts: data-lit, data-lit-age and the current step (the plain picture here)", () => {

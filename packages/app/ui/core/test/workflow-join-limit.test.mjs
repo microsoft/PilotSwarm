@@ -16,7 +16,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal } from "../src/index.js";
 import {
-    projectWorkflow, workflowEventText, workflowDefinition, workflowJoinFirst, workflowJoinLimit, workflowJoinRule, workflowJoinWords,
+    projectWorkflow, workflowEventText, workflowDefinition, workflowJoinFirst, workflowJoinLimit, workflowJoinRule, workflowJoinShort, workflowJoinWords,
     workflowVisitEnding,
 } from "../src/workflow-view.js";
 import {
@@ -129,8 +129,13 @@ test("a visit that timed out: the bar says so with its time limit; the branches 
 
     const bar = renderToStaticMarkup(WorkflowJoinBar({ join: { id: "join:fan", parallel: "fan" }, node: parallel, selected: false, onSelect() {} }));
     assert.match(bar, /class="ps-workflow-join is-timed_out" data-join="fan"/);
-    assert.match(bar, /<span class="ps-workflow-join-rule">Joins when all succeed · ✕ limit<\/span><span class="ps-workflow-join-limit">limit 30 s<\/span>/);
+    // B5: one short line on the bar: its rule, its own time limit, then its state; no separate time-limit line.
+    assert.equal(workflowJoinShort(parallel, parallel.joinBar), "⋈ all ended · 30 s · ✕ limit");
+    assert.match(bar, /<span class="ps-workflow-join-rule">⋈ all ended · 30 s · ✕ limit<\/span><\/div>$/);
+    assert.ok(!bar.includes("ps-workflow-join-limit"), bar);
+    // The full words stay in its description and its title.
     assert.match(bar, /aria-label="fan: Joins when all succeed · ✕ limit · limit 30 s\. Inspect fan"/);
+    assert.match(bar, /title="Joins when all succeed · ✕ limit\. The nodes after fan start from here\. Time limit 30 s from the node&#x27;s start\. It passed before the join, at 2026-11-04 20:30:00 UTC\."/);
 
     const html = details(projection, "fan");
     // Review 21:15Z: a time limit reads "Limit" (its tooltip "Time limit"); when it ends, "Limit ends".
@@ -279,12 +284,31 @@ test("J1-R1: a branch's last step is the end of its chain of steps, whatever ord
     assert.deepEqual(byId(projection, "fan").evidence.rows.map(row => [row.index, row.status, row.step]), [[0, "ok", "reviewed"]]);
 });
 
-test("the graph: timed_out leaves from the join bar as a runtime-error route; a bar with a time limit has a line for it", () => {
+test("the graph: timed_out, a runtime-error route of the parallel step to a blocked end, is a red end chip; a bar with a time limit is taller", () => {
     const timed = workflowDefinition({ revision: 1, initial: "fan", states: statesOf(fan({ timeoutSeconds: 30 })) });
     const layout = layoutWorkflowGraphTB(timed);
-    const late = layout.edges.find(edge => edge.from === "join:fan" && edge.to === "late");
-    assert.deepEqual([late.kind, late.owner, late.outcome], ["error", "fan", "timed_out"]);
-    assert.equal(layout.edges.some(edge => edge.from === "fan" && edge.to === "late"), false);
+    // R2: the root's blocked ends are no boxes and no lines; the parallel step's routes there are end chips, timed_out red.
+    for (const end of ["late", "review_blocked"]) {
+        assert.equal(layout.positions.has(end), false, end);
+        assert.ok(layout.hidden.has(end), end);
+        assert.equal(layout.edges.some(edge => edge.to === end), false, end);
+    }
+    assert.deepEqual(layout.chips.get("fan").map(chip => [chip.key, chip.end, chip.routes, chip.text, chip.tone]), [
+        ["chip:fan:review_blocked", "review_blocked", ["blocked"], "blocked → ⏹ review_blocked", "amber"],
+        ["chip:fan:late", "late", ["timed_out"], "✕ → ⏹ late", "red"],
+    ]);
+    // Not a ✕ badge: its end is blocked, not failed.
+    assert.equal(layout.badges.has("fan"), false);
+    assert.deepEqual(layout.ends.map(end => [end.id, end.outcome, end.box, end.keys]), [
+        ["review_blocked", "blocked", false, ["chip:fan:review_blocked"]],
+        ["late", "blocked", false, ["chip:fan:late"]],
+        ["done", "succeeded", true, [JSON.stringify(["pause", "done"])]],
+    ]);
+    // B1: the parallel step is its box; its routes to boxes still leave from its join bar, none from the step.
+    assert.equal(layout.positions.has("fan"), false);
+    assert.equal(layout.edges.some(edge => edge.from === "fan"), false);
+    const joined = layout.edges.find(edge => edge.from === "join:fan");
+    assert.deepEqual([joined.to, joined.owner, joined.outcome, joined.kind, joined.labelText], ["pause", "fan", "joined", "outcome", "joined"]);
     assert.equal(layout.joins.get("fan").height, WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT);
     const plain = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "fan",
         states: statesOf(fan()).filter(state => state.id !== "late") }));

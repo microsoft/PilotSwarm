@@ -716,7 +716,8 @@ export function layoutWorkflowGraphTB(definition) {
         keyOf.set(workflowGroupId(id), `g${index}`);
         sizes.set(workflowGroupId(id), { width: width + stack, height: height + stack });
         keyOf.set(workflowJoinId(id), `j${index}`);
-        sizes.set(workflowJoinId(id), { width: WORKFLOW_GRAPH_JOIN_WIDTH,
+        // A parallel step's routes leave its join bar: its end chips sit beside the bar, with room on both sides.
+        sizes.set(workflowJoinId(id), { width: WORKFLOW_GRAPH_JOIN_WIDTH + 2 * (reserve.get(id) ?? 0),
             height: byId.get(id).timeoutSeconds !== undefined ? WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT : WORKFLOW_GRAPH_JOIN_HEIGHT });
     });
     const links = mainEdges.map(edge => ({ v: keyOf.get(edge.from), w: keyOf.get(edge.to), width: edge.labelWidth,
@@ -738,7 +739,9 @@ export function layoutWorkflowGraphTB(definition) {
         const group = { id: workflowGroupId(id), parallel: id, x: slot.x, y: slot.y, width, height, stack: lanes.length ? 0 : WORKFLOW_GRAPH_GROUP_STACK,
             members: parts.bodies.get(id), ...(lanes.length ? { lanes } : {}) };
         groups.set(id, group);
-        joins.set(id, { id: workflowJoinId(id), parallel: id, ...placed(workflowJoinId(id)) });
+        const bar = placed(workflowJoinId(id));
+        const room = reserve.get(id) ?? 0;
+        joins.set(id, { id: workflowJoinId(id), parallel: id, ...bar, x: bar.x + room, width: bar.width - 2 * room });
         boxes.set(group.id, group);
         boxes.set(workflowJoinId(id), joins.get(id));
         // The box's steps are centred in it, under its label.
@@ -776,7 +779,8 @@ export function layoutWorkflowGraphTB(definition) {
     }
     // Dagre sizes the drawing by its boxes and labels, not by the bends of long edges: measure everything (a step's chips
     // too), then move it all so the smallest coordinate sits at the margin.
-    const drawn = [...[...positions].map(([id, box]) => withRoom(box, reserve.get(id) ?? 0)), ...joins.values(),
+    const drawn = [...[...positions].map(([id, box]) => withRoom(box, reserve.get(id) ?? 0)),
+        ...[...joins].map(([id, box]) => withRoom(box, reserve.get(id) ?? 0)),
         ...[...groups.values()].map(group => ({ x: group.x, y: group.y, width: group.width + group.stack, height: group.height + group.stack }))];
     const { minX, minY, maxX, maxY } = extentOf(drawn, edges);
     const dx = MARGIN - minX, dy = MARGIN - minY;

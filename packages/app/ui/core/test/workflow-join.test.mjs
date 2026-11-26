@@ -79,23 +79,42 @@ test("while it runs: the box counts its branches and the bar waits; once joined 
     assert.deepEqual([idle.state, idle.stateText, idle.group.text, idle.label], ["idle", null, null, "Joins when all succeed"]);
 });
 
-test("the box and the bar as drawn: counts, state and rule; a click on the bar selects the parallel step", () => {
+test("the box and the bar as drawn: the step as the box's title with its counts, the bar's short rule and state; a click on either selects the parallel step", () => {
     const fanView = byId(running(), "fan");
     const box = renderToStaticMarkup(React.createElement(WorkflowGroupBox, { group: { id: "group:fan", parallel: "fan" }, node: fanView }));
-    assert.match(box, /class="ps-workflow-group is-waiting" data-group="fan" role="group"/);
-    assert.match(box, /<span class="ps-workflow-group-label">For each item<\/span><span class="ps-workflow-group-counts">2 running · 1 waiting · 0 ended<\/span>/);
+    assert.match(box, /class="ps-workflow-group is-waiting" data-group="fan" role="group" aria-label="For each item of fan: 2 running · 1 waiting · 0 ended"/);
+    // B1: the parallel step is no box of its own: its box's head is the step (its id without a description), with its counts.
+    assert.match(box, /<div class="ps-workflow-group-head" role="button" tabindex="0" aria-pressed="false" aria-label="Inspect fan" data-node-id="fan"/);
+    assert.match(box, /<span class="ps-workflow-group-label">fan<\/span><span class="ps-workflow-group-counts">2 running · 1 waiting · 0 ended<\/span>/);
+    assert.ok(box.includes("title=\"fan · For each · up to 2 at a time\nRunning · 0/3 ok\nThe nodes in the box run once for each item.\""), box);
+    // With a description, the head says it, and its id stays in the words a screen reader reads.
+    const described = renderToStaticMarkup(React.createElement(WorkflowGroupBox, { group: { id: "group:fan", parallel: "fan" },
+        node: { ...fanView, about: { description: "Review each reviewer" } } }));
+    assert.match(described, /aria-label="Inspect fan: Review each reviewer" data-node-id="fan"/);
+    assert.match(described, /<span class="ps-workflow-group-label">Review each reviewer<\/span>/);
+    const picked = [];
+    const head = WorkflowGroupBox({ group: { id: "group:fan", parallel: "fan" }, node: fanView, onSelect: id => picked.push(id) }).props.children[0];
+    head.props.onClick();
+    head.props.onKeyDown({ key: " ", preventDefault() {} });
+    assert.deepEqual(picked, ["fan", "fan"], "the box's head selects the parallel step");
     const selected = [];
     const element = WorkflowJoinBar({ join: { id: "join:fan", parallel: "fan" }, node: fanView, selected: false, onSelect: id => selected.push(id) });
     const bar = renderToStaticMarkup(element);
     assert.match(bar, /class="ps-workflow-join is-waiting" data-join="fan" role="button"/);
-    assert.match(bar, /<span class="ps-workflow-join-rule">Joins when all succeed · waiting<\/span><\/div>$/);
+    // B5: one short line, the rule then its state; the full words are its description.
+    assert.match(bar, /<span class="ps-workflow-join-rule">⋈ all ended · waiting<\/span><\/div>$/);
+    assert.match(bar, /aria-label="fan: Joins when all succeed · waiting\. Inspect fan"/);
+    assert.ok(!bar.includes("ps-workflow-join-limit"), bar);
     assert.ok(!bar.includes("⏱") && !bar.includes("ps-workflow-join-time"), "no time limit is shown");
     element.props.onClick();
     element.props.onKeyDown({ key: "Enter", preventDefault() {} });
     assert.deepEqual(selected, ["fan", "fan"], "the bar is not a step: it selects the parallel step");
-    // Before any run the box has no counts.
+    // Before any run the box has no counts (and the bar its rule alone).
     const quiet = renderToStaticMarkup(React.createElement(WorkflowGroupBox, { group: { id: "group:fan", parallel: "fan" }, node: null }));
-    assert.ok(quiet.includes(">For each item<") && !quiet.includes("ps-workflow-group-counts"), quiet);
+    assert.ok(quiet.includes('aria-label="For each item of fan"') && quiet.includes('<span class="ps-workflow-group-label">fan</span>')
+        && !quiet.includes("ps-workflow-group-counts"), quiet);
+    const idleBar = renderToStaticMarkup(WorkflowJoinBar({ join: { id: "join:fan", parallel: "fan" }, node: null, selected: false, onSelect() {} }));
+    assert.match(idleBar, /<span class="ps-workflow-join-rule">⋈ all ended<\/span><\/div>$/);
 });
 
 test("a parallel step's details: For each, Branch steps, Branches with deadlines and agent sessions, and its next steps from the join", () => {

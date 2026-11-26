@@ -6,7 +6,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { projectWorkflow, workflowDefinition } from "../src/workflow-view.js";
 import { workflowNodeSummary } from "../src/workflow-node-summary.js";
-import { layoutWorkflowGraphTB, workflowGraphNodeHeight } from "../src/workflow-graph-layout.js";
+import { WORKFLOW_GRAPH_GROUP_HEADER, layoutWorkflowGraphTB, workflowGraphNodeHeight } from "../src/workflow-graph-layout.js";
 import { WorkflowGraph, WorkflowStepCard, WorkflowEdgeShape, workflowGraphKey } from "../../react/src/workflow-graph.js";
 import { WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
 import { NodeFacts, BottomPanel } from "../../react/src/workflow-tab.js";
@@ -99,10 +99,24 @@ for (const width of [1440, 390]) {
         };
         const layout = layoutWorkflowGraphTB(nested);
         assert.equal(layout.positions.get("item").height, 100);
-        assert.equal(layout.positions.get("end").height, 120);
-        assert.equal(layout.positions.get("done").height, 66);
-        const item = layout.positions.get("item"), end = layout.positions.get("end");
-        assert.ok(end.y > item.y + item.height, "body edges have room below the taller card");
+        // B1, R2: the parallel step is its box's title; the end inside its box and the root's end that is not a success
+        // (it has no outcome) are no boxes. With no outcomes listed, "ok" reads as an error route: a red end chip.
+        assert.deepEqual([...layout.positions.keys()], ["item"]);
+        assert.deepEqual([...layout.hidden].sort(), ["done", "end"]);
+        assert.deepEqual(layout.chips.get("item").map(chip => [chip.end, chip.text, chip.tone]), [["end", "✕ → ⏹ end", "red"]]);
+        const group = layout.groups.get("parallel"), item = layout.positions.get("item");
+        assert.ok(item.y >= group.y + WORKFLOW_GRAPH_GROUP_HEADER && item.y + item.height <= group.y + group.height, "the box has room for the taller card");
+        // An end drawn as a box (a root success end) reserves room for its label too; one without a label does not.
+        const rooted = layoutWorkflowGraphTB({
+            initial: "item", states: [
+                { id: "item", type: "script", about: { description: "Check the build" }, outcomes: ["ok", "skipped"], next: { ok: "end", skipped: "done" } },
+                { id: "end", type: "terminal", outcome: "succeeded", about: { description: "Finished checking the build" } },
+                { id: "done", type: "terminal", outcome: "succeeded" },
+            ],
+        });
+        assert.deepEqual(["item", "end", "done"].map(id => rooted.positions.get(id)?.height), [100, 120, 66]);
+        const first = rooted.positions.get("item"), end = rooted.positions.get("end");
+        assert.ok(end.y > first.y + first.height, "edges have room below the taller card");
     });
 }
 

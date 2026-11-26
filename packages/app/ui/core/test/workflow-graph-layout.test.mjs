@@ -101,12 +101,13 @@ const quality = definitionOf({ name: "branching-workflow-test", initial: "collec
 
 test("the owner's loop comes out top to bottom: each step below the one before it, and only 'yes' goes back up", () => {
     const layout = layoutWorkflowGraphTB(jokes);
-    assert.equal(layout.positions.size, 5);
-    assert.equal(layout.edges.length, 6);
+    // R2: the failed end is a chip on review, not a box.
+    assert.deepEqual([...layout.positions.keys()].sort(), ["ask_more", "done", "review", "tell_joke"]);
+    assert.equal(layout.edges.length, 5);
+    assert.deepEqual(layout.chips.get("review").map(chip => [chip.text, chip.tone]), [["rejected → ⏹ failed", "red"]]);
     assert.ok(top(layout, "review") > top(layout, "tell_joke"));
     assert.ok(top(layout, "ask_more") > top(layout, "review"));
     assert.ok(top(layout, "done") > top(layout, "ask_more"));
-    assert.ok(top(layout, "failed") > top(layout, "review"));
     // The steps of the loop are not forced onto one row.
     assert.equal(new Set(["tell_joke", "review", "ask_more"].map(id => top(layout, id))).size, 3);
     assert.deepEqual(upward(layout), ["ask_more->tell_joke"]);
@@ -132,34 +133,115 @@ test("a four-step retry loop is four rows, not one, and its closing edge curves 
     assertInside(layout);
 });
 
-test("forward edges go downward, siblings share a row, and nothing is drawn out of a terminal", () => {
+test("forward edges go downward, nothing is drawn out of a terminal, and blocked and failed ends are chips on the step that leads there", () => {
     const layout = layoutWorkflowGraphTB(quality);
     for (const edge of layout.edges) assert.ok(top(layout, edge.to) > top(layout, edge.from), `${name(edge)} goes down`);
     assert.deepEqual(upward(layout), []);
-    const terminals = ["approved", "blocked", "failed"].map(id => layout.positions.get(id));
-    assert.equal(new Set(terminals.map(box => box.y)).size, 1);
-    assert.equal(new Set(terminals.map(box => box.x)).size, 3);
-    assert.equal(layout.edges.length, 5);
-    assert.deepEqual(layout.edges.filter(edge => ["approved", "blocked", "failed"].includes(edge.from)), []);
+    // R2: the success end is a box; the blocked and failed ends are chips, and the Ends row lists each end once.
+    assert.deepEqual([...layout.positions.keys()].sort(), ["approved", "collect_metrics", "evaluate_quality"]);
+    assert.deepEqual(layout.edges.map(name), ["collect_metrics->evaluate_quality", "evaluate_quality->approved"]);
+    assert.deepEqual(layout.chips.get("evaluate_quality").map(chip => [chip.key, chip.text, chip.tone]),
+        [["chip:evaluate_quality:blocked", "⏹ blocked", "amber"], ["chip:evaluate_quality:failed", "failure → ⏹ failed", "red"]]);
+    assert.deepEqual(layout.ends.map(end => [end.id, end.box, end.keys.length]), [["approved", true, 1], ["blocked", false, 1], ["failed", false, 2]]);
+    assert.deepEqual([...layout.hidden].sort(), ["blocked", "failed"]);
     assertCurvesClearOfSteps(layout);
     assertInside(layout);
 });
 
-test("version 2: merged outcomes, runtime-error routes, the loop back to poll, and no edge out of a terminal", () => {
+test("version 2: error routes into the failed end are ✕ badges, labels only where a line does not carry every outcome", () => {
     const layout = layoutWorkflowGraphTB(definitionOf(startedData));
-    assert.equal(layout.positions.size, 6);
-    assert.equal(layout.edges.length, 7);
-    assert.equal(edgeOf(layout, "poll", "failed").kind, "error");
-    assert.equal(edgeOf(layout, "poll", "failed").outcome, "failure / timed_out");
-    assert.deepEqual(edgeOf(layout, "poll", "failed").outcomes, ["failure", "timed_out"]);
-    assert.equal(edgeOf(layout, "notify", "failed").kind, "error");
-    assert.equal(edgeOf(layout, "poll", "notify").kind, "outcome");
+    assert.deepEqual([...layout.positions.keys()].sort(), ["await_ack", "done", "notify", "pause", "poll"]);
+    assert.equal(layout.edges.length, 5);
+    // R1: poll's failure and timed_out and notify's delivery_failed end the run as failed: a badge each, no line.
+    assert.equal(edgeOf(layout, "poll", "failed"), undefined);
+    assert.deepEqual([layout.badges.get("poll").routes, layout.badges.get("poll").key, layout.badges.get("poll").title],
+        [["failure", "timed_out"], "badge:poll", "Any error here ends the run: failed"]);
+    assert.deepEqual(layout.badges.get("notify").routes, ["delivery_failed"]);
+    // R3: a line that carries every business outcome of its step has no label; the others name theirs.
+    assert.deepEqual(layout.edges.map(edge => [name(edge), edge.labelText]), [
+        ["poll->notify", "changed"], ["poll->pause", "unchanged"], ["pause->poll", ""], ["notify->await_ack", ""], ["await_ack->done", ""]]);
     assert.equal(edgeOf(layout, "await_ack", "done").outcome, "received / elapsed");
+    assert.equal(edgeOf(layout, "await_ack", "done").labelWidth, 0);
     assert.ok(top(layout, "pause") > top(layout, "poll"), "the wait is below the poll that leads to it");
     assert.deepEqual(upward(layout), ["pause->poll"]);
-    assert.deepEqual(layout.edges.filter(edge => edge.from === "done" || edge.from === "failed"), []);
     assertCurvesClearOfSteps(layout);
     assertInside(layout);
+});
+
+// The owner's issue-to-pr Workflow, in its shape: 9 steps, 6 ends, a review loop, error routes into failed everywhere.
+const issueToPr = workflowDefinition({ revision: 3, initial: "fetch_issue", states: [
+    { id: "fetch_issue", type: "script", outcomes: ["ok", "not_open"], next: { ok: "acquire_env", not_open: "rejected", failure: "failed" } },
+    { id: "acquire_env", type: "script", maxVisits: 37, outcomes: ["acquired", "busy", "create", "exhausted"],
+        next: { acquired: "implement", busy: "wait_for_env", create: "create_env", exhausted: "no_env", failure: "failed" } },
+    { id: "create_env", type: "script", maxVisits: 1, outcomes: ["created", "not_created", "exhausted"],
+        next: { created: "acquire_env", not_created: "wait_for_env", exhausted: "wait_for_env", failure: "wait_for_env" } },
+    { id: "wait_for_env", type: "wait", seconds: 600, outcomes: ["elapsed"], next: { elapsed: "acquire_env", failure: "failed" } },
+    { id: "implement", type: "script", maxVisits: 6, outcomes: ["ready_for_review", "published", "declined", "exhausted"],
+        next: { ready_for_review: "review", published: "finish", declined: "finish", exhausted: "finish", failure: "finish" } },
+    { id: "review", type: "script", outcomes: ["approved", "changes_required"], next: { approved: "gate", changes_required: "gate", failure: "gate" } },
+    { id: "gate", type: "script", outcomes: ["next"], next: { next: "renew", failure: "failed" } },
+    { id: "renew", type: "script", outcomes: ["renewed"], next: { renewed: "implement", failure: "implement" } },
+    { id: "finish", type: "script", outcomes: ["verified", "unverified", "declined", "error"],
+        next: { verified: "done", unverified: "unverified", declined: "declined", error: "failed", failure: "failed" } },
+    ...["done:succeeded", "unverified:blocked", "declined:blocked", "rejected:blocked", "no_env:blocked", "failed:failed"].map(item => {
+        const [id, outcome] = item.split(":");
+        return { id, type: "terminal", outcome };
+    }),
+] });
+
+test("issue-to-pr: 10 boxes, 13 lines, 9 labels and no line into failed; the happy path is one straight column", () => {
+    const layout = layoutWorkflowGraphTB(issueToPr);
+    assert.equal(layout.positions.size, 10);
+    assert.equal(layout.edges.length, 13);
+    assert.deepEqual(layout.edges.filter(edge => edge.labelText).map(edge => edge.labelText).sort(),
+        ["acquired", "busy", "create", "created", "not created · ⟳ · ✕", "ok", "published · declined · ⟳ · ✕", "ready for review", "verified"].sort());
+    assert.equal(layout.edges.filter(edge => edge.to === "failed").length, 0);
+    assert.deepEqual([...layout.badges.keys()].sort(), ["acquire_env", "fetch_issue", "finish", "gate", "wait_for_env"]);
+    assert.deepEqual([...layout.chips].map(([step, list]) => [step, list.map(chip => chip.text)]), [
+        ["fetch_issue", ["not open → ⏹ rejected"]], ["acquire_env", ["⟳ limit → ⏹ no_env"]],
+        ["finish", ["⏹ unverified", "⏹ declined", "error → ⏹ failed"]]]);
+    assert.deepEqual(layout.ends.map(end => [end.id, end.keys.length]),
+        [["done", 1], ["unverified", 1], ["declined", 1], ["rejected", 1], ["no_env", 1], ["failed", 6]]);
+    // R4: the happy path's lines are weighted, and its downward lines stand straight under each other.
+    const spine = layout.edges.filter(edge => edge.spine).map(name);
+    assert.deepEqual(spine.sort(), ["acquire_env->implement", "fetch_issue->acquire_env", "finish->done", "gate->renew", "implement->finish",
+        "implement->review", "renew->implement", "review->gate"].sort());
+    assert.ok(layout.edges.filter(edge => edge.spine).every(edge => edge.weight === 8));
+    const centre = id => layout.positions.get(id).x + layout.positions.get(id).width / 2;
+    for (const [from, to] of [["fetch_issue", "acquire_env"], ["acquire_env", "implement"], ["implement", "review"], ["review", "gate"], ["gate", "renew"]]) {
+        assert.equal(centre(from), centre(to), `${from} stands over ${to}`);
+    }
+    // Every chip has room beside its step: nothing else is drawn there.
+    for (const [step] of layout.chips) {
+        const box = layout.positions.get(step);
+        for (const [id, other] of layout.positions) {
+            if (id === step || other.y + other.height <= box.y || other.y >= box.y + box.height) continue;
+            assert.ok(other.x >= box.x + box.width + 100 || other.x + other.width <= box.x, `${id} leaves room for ${step}'s chips`);
+        }
+    }
+    assertCurvesClearOfSteps(layout);
+    assertInside(layout);
+});
+
+test("the root catchAll: every root step without a failure route carries the ✕ badge, and the catch-all's end counts its ways in", () => {
+    const layout = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "a", catchAll: "failed", states: [
+        { id: "a", type: "script", outcomes: ["ok"], next: { ok: "b" } },
+        { id: "b", type: "script", outcomes: ["ok"], next: { ok: "done", failure: "cleanup" } },
+        { id: "cleanup", type: "script", outcomes: ["ok"], next: { ok: "failed" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "failed", type: "terminal", outcome: "failed" },
+    ] }));
+    assert.equal(layout.catchAll, "failed");
+    assert.deepEqual([...layout.badges.values()].map(badge => [badge.step, badge.catchAll, badge.routes, badge.title]), [
+        ["a", true, [], "Any error here ends the run: failed (catchAll)"],
+        ["cleanup", true, [], "Any error here ends the run: failed (catchAll)"]]);
+    assert.equal(layout.badges.has("b"), false, "a step with a failure route is not covered");
+    assert.deepEqual(layout.chips.get("cleanup").map(chip => chip.text), ["ok → ⏹ failed"]);
+    assert.deepEqual(layout.ends.find(end => end.id === "failed").keys.sort(), ["badge:a", "badge:cleanup", "chip:cleanup:failed"]);
+    // Without a catchAll, nothing is covered.
+    const plain = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "a", states: [
+        { id: "a", type: "script", outcomes: ["ok"], next: { ok: "done" } }, { id: "done", type: "terminal", outcome: "succeeded" }] }));
+    assert.equal(plain.badges.size, 0);
 });
 
 // Owner batch 7 (H2): fork, branch box, join bar. An agent review leads to a parallel step whose body is a script and a
@@ -179,49 +261,47 @@ const fanned = () => workflowDefinition({ revision: 1, initial: "review", states
 const within = (inner, outer) => inner.x >= outer.x && inner.y >= outer.y
     && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
 
-test("a parallel step's body is a branch box under it, its branch ends lead to a join bar, and its routes leave from the bar", () => {
+test("a parallel step is its branch box's title, its branch's success end is its line into the join bar, and its routes leave from the bar", () => {
     const layout = layoutWorkflowGraphTB(fanned());
     assert.deepEqual([...layout.groups.keys()], ["fan"]);
     const group = layout.groups.get("fan");
     assert.deepEqual([group.id, group.parallel, group.members], ["group:fan", "fan", ["work", "branch_done"]]);
+    // B1: the parallel step has no box of its own; B2: the branch end has none either.
+    assert.deepEqual([...layout.positions.keys()].sort(), ["done", "review", "work"]);
     // Its steps are inside it, under its label; nothing else is.
     const steps = { x: group.x, y: group.y + WORKFLOW_GRAPH_GROUP_HEADER, width: group.width, height: group.height - WORKFLOW_GRAPH_GROUP_HEADER };
-    for (const id of ["work", "branch_done"]) assert.ok(within(layout.positions.get(id), steps), `${id} is inside the branch box`);
-    for (const id of ["review", "fan", "done", "failed"]) {
+    assert.ok(within(layout.positions.get("work"), steps), "work is inside the branch box");
+    for (const id of ["review", "done"]) {
         const box = layout.positions.get(id);
         const overlaps = box.x < group.x + group.width + group.stack && box.x + box.width > group.x
             && box.y < group.y + group.height + group.stack && box.y + box.height > group.y;
         assert.equal(overlaps, false, `${id} is outside the branch box and its stack`);
     }
-    assert.ok(top(layout, "work") > top(layout, "fan") && group.y > top(layout, "fan"), "the box is under the parallel step");
-    assert.ok(top(layout, "branch_done") > top(layout, "work"));
-    // The join bar is under the box; done and failed are under the bar.
+    // The line into the parallel step enters its box at the top; no line fans out of it.
+    const into = edgeOf(layout, "review", "group:fan");
+    assert.deepEqual([into.kind, into.labelText, into.spine], ["outcome", "", true]);
+    assert.ok(group.y > top(layout, "review") && Math.abs(into.points.at(-1)[1] - group.y) <= 1, "it ends at the top of the box");
+    assert.ok(layout.edges.every(edge => !edge.branch && edge.from !== "fan" && edge.to !== "fan"));
+    // The join bar is under the box; done is under the bar.
     const join = layout.joins.get("fan");
     assert.deepEqual([join.id, join.parallel], ["join:fan", "fan"]);
     assert.ok(join.y >= group.y + group.height, "the join bar is under the box");
-    assert.ok(top(layout, "done") > join.y && top(layout, "failed") > join.y);
-    // One edge from the parallel step into the box, without a label; none from it to its body's first step or to its targets.
-    const into = edgeOf(layout, "fan", "group:fan");
-    assert.deepEqual([into.kind, into.branch, into.start, into.outcomes, into.labelText, into.labelWidth], ["branch", true, "work", [], "", 0]);
-    assert.ok(Math.abs(into.points.at(-1)[1] - group.y) <= 1, "it ends at the top of the box");
-    assert.equal(edgeOf(layout, "fan", "work"), undefined);
-    assert.equal(edgeOf(layout, "fan", "done"), undefined);
-    assert.equal(edgeOf(layout, "fan", "failed"), undefined);
-    // The branch's own route stays inside the box; its end leads to the join bar.
-    assert.equal(edgeOf(layout, "work", "branch_done").kind, "outcome");
-    const end = edgeOf(layout, "branch_done", "join:fan");
-    assert.deepEqual([end.kind, end.join, end.owner, end.labelText, end.labelWidth], ["join", true, "fan", "", 0]);
+    assert.ok(top(layout, "done") > join.y);
+    // B2: work's line into the join bar is its branch's success end; it carries all of work's outcomes, so it has no label.
+    const end = edgeOf(layout, "work", "join:fan");
+    assert.deepEqual([end.kind, end.join, end.step, end.parallel, end.outcomes, end.labelText, end.labelWidth],
+        ["join", true, "work", "fan", ["ok"], "", 0]);
     assert.deepEqual(end.points.at(-1), [end.points.at(-1)[0], join.y], "it ends on the bar");
     assert.ok(end.points.at(-1)[0] >= join.x && end.points.at(-1)[0] <= join.x + join.width);
-    assert.ok(end.points[0][1] >= layout.positions.get("branch_done").y, "it leaves from the branch end");
-    // Joined and blocked leave from the bar, as the parallel step's routes.
-    for (const [target, outcome] of [["done", "joined"], ["failed", "blocked"]]) {
-        const route = edgeOf(layout, "join:fan", target);
-        assert.deepEqual([route.kind, route.owner, route.outcome, route.labelText], ["outcome", "fan", outcome, outcome]);
-    }
-    assert.equal(edgeOf(layout, "review", "failed").kind, "error");
-    assert.equal(edgeOf(layout, "review", "fan").kind, "outcome");
-    assert.equal(layout.edges.length, 7);
+    assert.ok(end.points[0][1] >= layout.positions.get("work").y, "it leaves from the step");
+    // Joined leaves from the bar; blocked ends the run as failed: a chip on the parallel step (beside its bar).
+    const joined = edgeOf(layout, "join:fan", "done");
+    assert.deepEqual([joined.kind, joined.owner, joined.outcome, joined.labelText], ["outcome", "fan", "joined", "joined"]);
+    assert.deepEqual(layout.chips.get("fan").map(chip => [chip.text, chip.tone]), [["blocked → ⏹ failed", "red"]]);
+    assert.ok(join.x >= 0 && layout.width - (join.x + join.width) >= 100, "the bar's chips have room beside it");
+    // review's time limit ends the run as failed: a badge.
+    assert.deepEqual(layout.badges.get("review").routes, ["timed_out"]);
+    assert.equal(layout.edges.length, 3);
     assertCurvesClearOfSteps(layout);
     assertInside(layout);
     for (const box of [group, join]) assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= layout.width && box.y + box.height <= layout.height);
@@ -238,7 +318,7 @@ test("bodies: a parallel step's body steps in body order, each step in one body;
     for (const definition of [jokes, retry, quality, definitionOf(startedData)]) {
         const layout = layoutWorkflowGraphTB(definition);
         assert.deepEqual([layout.groups.size, layout.joins.size], [0, 0]);
-        assert.ok(layout.edges.every(edge => !edge.join && !edge.owner && edge.labelWidth > 0));
+        assert.ok(layout.edges.every(edge => !edge.join && !edge.owner));
     }
 });
 
@@ -277,7 +357,7 @@ test("a step that loops on itself keeps one edge with its outcomes joined, besid
     ] }));
     assert.equal(layout.edges.length, 2);
     const loop = edgeOf(layout, "poll", "poll");
-    assert.deepEqual([loop.outcome, loop.labelText, loop.back], ["unchanged / retry", "unchanged / retry", true]);
+    assert.deepEqual([loop.outcome, loop.labelText, loop.back], ["unchanged / retry", "unchanged · retry", true]);
     const box = layout.positions.get("poll");
     assert.ok(loop.labelX > box.x + box.width, "the loop's label sits beside the step");
     // The loop leaves and enters the step's right side and never crosses the step.
@@ -286,20 +366,25 @@ test("a step that loops on itself keeps one edge with its outcomes joined, besid
     assertInside(layout);
 });
 
-test("a long outcome is drawn to 20 characters, and its box is sized to what is drawn", () => {
+test("an outcome is drawn in plain words, cut after 32 characters, and its box is sized to what is drawn", () => {
     assert.equal(workflowEdgeLabelText("short"), "short");
     assert.equal(workflowEdgeLabelText("exactly_twenty_chars"), "exactly_twenty_chars");
     assert.equal(workflowEdgeLabelText("a_very_long_outcome_name_indeed"), "a_very_long_outcome…");
     const layout = layoutWorkflowGraphTB(definitionOf({ initial: "a", states: [
-        { id: "a", type: "script", next: { a_very_long_outcome_name_indeed: "b" } },
+        { id: "a", type: "script", next: { a_very_long_outcome_name_that_goes_on: "b", other: "c" } },
         { id: "b", type: "terminal", outcome: "succeeded" },
+        { id: "c", type: "terminal", outcome: "succeeded" },
     ] }));
     const edge = edgeOf(layout, "a", "b");
-    assert.equal(edge.outcome, "a_very_long_outcome_name_indeed");
-    assert.equal(edge.labelText, "a_very_long_outcome…");
-    assert.ok(edge.labelWidth > edgeOf(layoutWorkflowGraphTB(definitionOf({ initial: "a", states: [
+    assert.equal(edge.outcome, "a_very_long_outcome_name_that_goes_on");
+    assert.equal(edge.labelText, "a very long outcome name that g…");
+    assert.equal(edgeOf(layout, "a", "c").labelText, "other");
+    assert.ok(edge.labelWidth > edgeOf(layout, "a", "c").labelWidth);
+    // A line that carries every outcome of its step has no label and takes no room.
+    const one = edgeOf(layoutWorkflowGraphTB(definitionOf({ initial: "a", states: [
         { id: "a", type: "script", next: { ok: "b" } }, { id: "b", type: "terminal", outcome: "succeeded" },
-    ] })), "a", "b").labelWidth);
+    ] })), "a", "b");
+    assert.deepEqual([one.labelText, one.labelWidth], ["", 0]);
     assertInside(layout);
 });
 

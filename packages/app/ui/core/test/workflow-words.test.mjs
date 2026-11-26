@@ -19,7 +19,7 @@ import { workflowElapsedText } from "../src/workflow-owner.js";
 import {
     formatSeconds, projectWorkflow,
 } from "../src/workflow-view.js";
-import { layoutWorkflowGraphTB, WORKFLOW_ERROR_EDGE_LABEL } from "../src/workflow-graph-layout.js";
+import { layoutWorkflowGraphTB, WORKFLOW_ERROR_GLYPH } from "../src/workflow-graph-layout.js";
 import { WorkflowEdgeShape, WorkflowStepCard } from "../../react/src/workflow-graph.js";
 import { listedState } from "../../react/src/workflow-session-tab.js";
 import { done, readModel, row } from "./workflow-fixtures.mjs";
@@ -130,24 +130,51 @@ test("the cards: two rows, no type word, no 'Done by its agent', 'in the loaded 
     assert.match(html.pause, /class="ps-workflow-node-visits" title="Ran 3 times"/);
 });
 
-test("runtime-error routes are one red label, '✕ error', with every outcome in its title and its description", () => {
+test("runtime-error routes read ✕ on their line, with every outcome in its title and its description; into a failed end they are a ✕ badge", () => {
     const layout = layoutWorkflowGraphTB({ ...DAD });
     const error = layout.edges.find(edge => edge.from === "generate_joke" && edge.to === "done");
     assert.equal(error.kind, "error");
-    assert.equal(error.labelText, WORKFLOW_ERROR_EDGE_LABEL);
+    // R3: a line of error routes alone says the error glyph alone.
+    assert.equal(WORKFLOW_ERROR_GLYPH, "✕");
+    assert.equal(error.labelText, WORKFLOW_ERROR_GLYPH);
     assert.equal(error.outcome, "execution_failed / timed_out");
     const svg = renderToStaticMarkup(React.createElement("svg", null, React.createElement(WorkflowEdgeShape, { edge: error, markerEnd: "" })));
     // Review 18:45Z: the title and the description name the error routes in the Next words, never their raw outcome ids.
-    assert.ok(svg.includes(">✕ error<title>Error routes: ✕ agent failed · ✕ limit</title>"), svg);
+    assert.ok(svg.includes(">✕<title>Error routes: ✕ agent failed · ✕ limit</title>"), svg);
     assert.ok(svg.includes('aria-label="generate_joke: ✕ agent failed · ✕ limit → done"'), svg);
+    assert.ok(svg.includes('stroke-dasharray="5 4"'), svg);
     assert.ok(!svg.includes("timed_out") && !svg.includes("execution_failed"), svg);
-    // A business route keeps its outcome as written.
-    assert.equal(layout.edges.find(edge => edge.from === "generate_joke" && edge.to === "send_joke").labelText, "generated");
-    // A route that takes both: its business outcomes, then "✕ error".
+    // R3: a line that carries every business outcome of its step needs no label; its routes are still named on hover.
+    const generated = layout.edges.find(edge => edge.from === "generate_joke" && edge.to === "send_joke");
+    assert.deepEqual([generated.labelText, generated.labelWidth, generated.outcome], ["", 0, "generated"]);
+    const plain = renderToStaticMarkup(React.createElement("svg", null, React.createElement(WorkflowEdgeShape, { edge: generated, markerEnd: "" })));
+    assert.ok(!plain.includes("ps-workflow-edge-label") && plain.includes('<path class="ps-workflow-edge-hit"') && plain.includes("<title>generated</title>"), plain);
+    // A line with every business outcome and an error route has no label either; its title keeps both.
     const mixed = layoutWorkflowGraphTB({ revision: 1, initial: "a", states: [
         { id: "a", type: "script", runtime: "node", outcomes: ["ok"], next: { ok: "b", failure: "b" } }, { id: "b", type: "terminal", outcome: "succeeded" }] });
-    assert.equal(mixed.edges[0].kind, "mixed");
-    assert.equal(mixed.edges[0].labelText, "ok / ✕ error");
+    assert.deepEqual([mixed.edges[0].kind, mixed.edges[0].labelText, mixed.edges[0].outcome], ["mixed", "", "ok / failure"]);
+    // A line with some of its step's outcomes: their plain words, then ⟳ for its visit limit and ✕ for its error routes;
+    // business words are cut at 32 characters, never the glyphs.
+    const some = layoutWorkflowGraphTB({ revision: 1, initial: "a", states: [
+        { id: "a", type: "script", runtime: "node", maxVisits: 3, outcomes: ["ok", "not_created", "exhausted"],
+            next: { ok: "c", not_created: "b", exhausted: "b", failure: "b" } },
+        { id: "w", type: "script", runtime: "node", outcomes: ["ok", "awaiting_second_review", "awaiting_final_sign_off"],
+            next: { ok: "c", awaiting_second_review: "b", awaiting_final_sign_off: "b", failure: "b" } },
+        { id: "b", type: "terminal", outcome: "succeeded" }, { id: "c", type: "terminal", outcome: "succeeded" }] });
+    const line = (from, to) => some.edges.find(edge => edge.from === from && edge.to === to);
+    assert.deepEqual([line("a", "b").kind, line("a", "b").labelText, line("a", "b").outcome],
+        ["mixed", "not created · ⟳ · ✕", "not_created / exhausted / failure"]);
+    assert.equal(line("a", "c").labelText, "ok");
+    assert.equal(line("w", "b").labelText, "awaiting second review · awaiti… · ✕");
+    // R1: error routes into an end that fails the run are no line but a ✕ badge on the step; that end is no box.
+    const failing = layoutWorkflowGraphTB({ ...DAD, states: [
+        { ...DAD.states[0], next: { generated: "send_joke", execution_failed: "failed", timed_out: "failed" } },
+        ...DAD.states.slice(1), { id: "failed", type: "terminal", outcome: "failed" }] });
+    assert.equal(failing.edges.some(edge => edge.to === "failed"), false);
+    assert.equal(failing.positions.has("failed"), false);
+    assert.deepEqual(failing.badges.get("generate_joke"), { step: "generate_joke", key: "badge:generate_joke", routes: ["execution_failed", "timed_out"],
+        end: "failed", catchAll: false, title: "Any error here ends the run: failed" });
+    assert.deepEqual(failing.ends.find(end => end.id === "failed"), { id: "failed", outcome: "failed", box: false, keys: ["badge:generate_joke"] });
 });
 
 // OF-S2-2 part 2: the one vocabulary every Workflow screen reads (the inventory's decisions D-W1 to D-W8).

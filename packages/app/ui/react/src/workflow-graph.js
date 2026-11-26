@@ -53,10 +53,15 @@ export function WorkflowStepCard({ marks = null, ...props }) {
     return h("div", { className: "ps-workflow-step" }, card,
         badge ? h("span", { className: "ps-workflow-badge", role: "img", "aria-label": badge.title, title: badge.title, ...markAttributes(badge) },
             h("span", { className: "ps-workflow-badge-mark", "aria-hidden": "true" }, "✕"), badge.ghost ? h(WorkflowGhost, { ghost: badge.ghost }) : null) : null,
-        chips.length ? h("span", { className: `ps-workflow-chips${badge ? " has-badge" : ""}` },
-            chips.map(chip => h("span", { key: chip.key, className: `ps-workflow-chip is-${chip.tone}`, "data-end": chip.end, ...markAttributes(chip),
-                title: `${chip.routes.map(route => route.replace(/_/g, " ")).join(", ")} → end ${chip.end} (${chip.outcome})` },
-            h("span", { className: "ps-workflow-chip-text" }, chip.text), chip.ghost ? h(WorkflowGhost, { ghost: chip.ghost }) : null))) : null);
+        chips.length ? h(WorkflowChips, { chips, badge: Boolean(badge) }) : null);
+}
+
+/** A step's end chips (R2), beside it; each says its routes and its end, lit and with its ghost end while replay shows it. */
+function WorkflowChips({ chips, badge = false }) {
+    return h("span", { className: `ps-workflow-chips${badge ? " has-badge" : ""}` },
+        chips.map(chip => h("span", { key: chip.key, className: `ps-workflow-chip is-${chip.tone}`, "data-end": chip.end, ...markAttributes(chip),
+            title: `${chip.routes.map(route => route.replace(/_/g, " ")).join(", ")} → end ${chip.end} (${chip.outcome})` },
+        h("span", { className: "ps-workflow-chip-text" }, chip.text), chip.ghost ? h(WorkflowGhost, { ghost: chip.ghost }) : null)));
 }
 
 /** A badge's or chip's state as attributes: lit (replay), not taken by the moment shown (R5), its end hovered in the Ends row. */
@@ -224,7 +229,16 @@ export function WorkflowGroupBox({ group, node = null, selected = false, onSelec
  * decision join-k-of-n) its own time limit. It is not a step of its own: a click, Enter or Space selects the parallel
  * step. `node` is the parallel step's view.
  */
-export function WorkflowJoinBar({ join, node = null, selected = false, onSelect }) {
+export function WorkflowJoinBar({ join, node = null, selected = false, onSelect, marks = null }) {
+    const chips = marks?.chips ?? [];
+    // The bar alone is the bar's own element (no wrapper), as before.
+    const bar = WorkflowJoinBarFace({ join, node, selected, onSelect });
+    if (!chips.length) return bar;
+    // R2: the parallel step's routes leave its join bar, so its end chips sit beside the bar.
+    return h("div", { className: "ps-workflow-step is-join" }, bar, h(WorkflowChips, { chips }));
+}
+
+function WorkflowJoinBarFace({ join, node = null, selected = false, onSelect }) {
     const view = node?.joinBar ?? null;
     const rule = `${view?.label ?? "Joins when all succeed"}${view?.stateText ? ` · ${view.stateText}` : ""}`;
     // Owner decision join-k-of-n: its own time limit, which the engine enforces; B5: said short on the bar ("⋈ all ended · 24 h").
@@ -296,7 +310,8 @@ function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hove
                         current: lit?.current === node.id, marks: workflowStepMarks(layout, node.id, lit, hoverEnd) })) : null;
             }),
             [...(layout.joins?.values() ?? [])].map(join => slot(join, "ps-workflow-join-slot",
-                h(WorkflowJoinBar, { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selected?.id, onSelect: select }), join.id))));
+                h(WorkflowJoinBar, { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selected?.id, onSelect: select,
+                    marks: { chips: workflowStepMarks(layout, join.parallel, lit, hoverEnd).chips } }), join.id))));
 }
 
 // React Flow, loaded once on first use and kept; a failed load is tried again by the next graph.

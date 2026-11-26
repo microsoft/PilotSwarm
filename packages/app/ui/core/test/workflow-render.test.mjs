@@ -26,6 +26,10 @@ function mount({ view = {}, events = [] } = {}) {
 const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, icon: null }));
 const node = controller => renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller }));
 
+// R1: a step whose runtime-error routes end the run as failed carries one ✕ badge with the end in its words.
+const BADGE = /<span class="ps-workflow-badge" role="img" aria-label="Any error here ends the run: failed" title="Any error here ends the run: failed"[^>]*><span class="ps-workflow-badge-mark" aria-hidden="true">✕<\/span><\/span>/g;
+const badged = (html, id) => new RegExp(`<div class="ps-workflow-step"><div class="ps-workflow-node [^"]*"[^>]*data-node-id="${id}"[^>]*>[\\s\\S]*?</div><span class="ps-workflow-badge"`).test(html);
+
 test("a graph shows typed state labels, runtime-error routes and run status from the read model", () => {
     const model = readModel({ nodeExecutions: [row("pause", 1, "pending", { deadline: "2026-11-01T12:00:30.000Z" }), done("poll", 1, "changed")] });
     const html = main(mount({ view: { definition: workflowDefinition(startedData), readModel: model } }));
@@ -33,8 +37,15 @@ test("a graph shows typed state labels, runtime-error routes and run status from
     assert.ok(html.includes("Send · Alert@1"));
     assert.ok(html.includes("Receive · Ack@1"));
     assert.ok(html.includes("Done · changed"));
-    assert.ok(html.includes("data-kind=\"error\""));
-    assert.ok(html.includes("stroke-dasharray=\"5 4\""));
+    // R1: the runtime-error routes into the failed end are ✕ badges on poll and notify, not dashed lines; the failed end
+    // is no box but is listed in the Ends row with its two ways in.
+    assert.equal([...html.matchAll(BADGE)].length, 2, html);
+    assert.ok(badged(html, "poll") && badged(html, "notify"), html);
+    assert.ok(!html.includes("data-kind=\"error\"") && !html.includes("stroke-dasharray=\"5 4\""), "no error line is drawn");
+    assert.ok(!html.includes("data-node-id=\"failed\""), "the failed end has no box");
+    assert.match(html, /<div class="ps-workflow-ends" role="group" aria-label="Ends">/);
+    assert.match(html, /<button type="button" data-end="done" class="ps-workflow-end is-succeeded[^"]*"[^>]*><span class="ps-workflow-end-mark" aria-hidden="true">●<\/span> done · 1 way in<\/button>/);
+    assert.match(html, /<button type="button" data-end="failed" class="ps-workflow-end is-failed[^"]*"[^>]*><span class="ps-workflow-end-mark" aria-hidden="true">⏹<\/span> failed · 2 ways in<\/button>/);
     assert.ok(html.includes("data-phase=\"waiting\""));
     assert.ok(html.includes(">Running<"), "the header shows the run status");
     assert.ok(html.includes("aria-label=\"Inspect notify\"") && html.includes("tabindex=\"0\""), "nodes keep their keyboard and button semantics");
@@ -142,20 +153,29 @@ test("an unverified run status is shown with its notice", () => {
 
 // Batch 5 (g-01, g-02): the server, and the browser until React Flow has loaded, draw the same top-to-bottom layout as a
 // plain picture: each step a button card at its layout position, each edge a curve with its label box.
-const slots = html => [...html.matchAll(/<div class="ps-workflow-node-slot" style="left:([\d.]+)px;top:([\d.]+)px;width:202px;height:66px"><div class="ps-workflow-node[^"]*"[^>]*data-node-id="([^"]+)"/g)]
+const slots = html => [...html.matchAll(/<div class="ps-workflow-node-slot" style="left:([\d.]+)px;top:([\d.]+)px;width:202px;height:66px">(?:<div class="ps-workflow-step">)?<div class="ps-workflow-node[^"]*"[^>]*data-node-id="([^"]+)"/g)]
     .map(match => ({ id: match[3], x: Number(match[1]), y: Number(match[2]) }));
 
 test("the graph is drawn top to bottom: each step below the one that leads to it, its card a button, its edges curves", () => {
     const html = main(mount({ view: { definition: workflowDefinition(startedData), readModel: readModel({ nodeExecutions: [done("poll", 1, "changed")] }) } }));
     assert.ok(html.includes("role=\"group\" aria-label=\"Workflow graph\" data-renderer=\"static\""));
     const at = Object.fromEntries(slots(html).map(slot => [slot.id, slot]));
-    assert.deepEqual(Object.keys(at).sort(), ["await_ack", "done", "failed", "notify", "pause", "poll"]);
+    // R2: the failed end is no box (poll's and notify's routes there are ✕ badges).
+    assert.deepEqual(Object.keys(at).sort(), ["await_ack", "done", "notify", "pause", "poll"]);
     assert.ok(at.notify.y > at.poll.y && at.pause.y > at.poll.y && at.await_ack.y > at.notify.y && at.done.y > at.await_ack.y);
-    assert.equal([...html.matchAll(/<g class="ps-workflow-edge"/g)].length, 7);
+    const edges = [...html.matchAll(/<g class="ps-workflow-edge" data-from="([^"]+)" data-to="([^"]+)" data-kind="([^"]+)"([^>]*)>/g)];
+    assert.deepEqual(edges.map(match => [match[1], match[2], match[3]]), [["poll", "notify", "outcome"], ["poll", "pause", "outcome"],
+        ["pause", "poll", "outcome"], ["notify", "await_ack", "outcome"], ["await_ack", "done", "outcome"]]);
+    // R4: the happy path, from the first step to the success end.
+    assert.deepEqual(edges.filter(match => match[4].includes('data-spine="true"')).map(match => [match[1], match[2]]),
+        [["poll", "notify"], ["notify", "await_ack"], ["await_ack", "done"]]);
     assert.match(html, /<path class="ps-workflow-edge-path" d="M[\d.]+,[\d.]+ L[^"]* C[^"]*" fill="none" marker-end="url\(#wf-arrow-[^)]+\)"/);
-    // OF-S2-2: runtime-error routes are one label, "✕ error"; its title lists every outcome.
-    assert.ok(html.includes("<title>Error routes: ✕ error · ✕ limit</title>"), "a merged label keeps every outcome in its title");
-    assert.ok(html.includes(">✕ error<title>"), html.slice(0, 200));
+    // R3: a line that carries only some of its step's outcomes says them; one that carries all of them has no label,
+    // its routes still named on hover.
+    assert.ok(html.includes(">changed<title>changed</title>") && html.includes(">unchanged<title>unchanged</title>"), html);
+    assert.equal([...html.matchAll(/<g class="ps-workflow-edge-label"/g)].length, 2);
+    assert.ok(html.includes('<path class="ps-workflow-edge-hit"') && html.includes("<title>received · elapsed</title>"), html);
+    assert.ok(!html.includes("✕ error") && !html.includes("Error routes:"), "no error line, so no error label");
     assert.match(html, /<div class="ps-workflow-node is-done[^"]*"[^>]*data-node-id="poll" role="button" tabindex="0" aria-label="Inspect poll" aria-pressed="(true|false)"/);
     // The old picture's controls are gone; the browser's zoom, fit and hand belong to React Flow (browser specs).
     assert.ok(!html.includes("Full graph") && !html.includes(">100%<") && !html.includes("Scrollable workflow graph"));

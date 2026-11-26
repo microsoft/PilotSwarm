@@ -1,9 +1,9 @@
 // Named branches (owner decision 2026-11-08T00:35Z), the minimal UI: a parallel step with branches says their
 // names instead of "Item N" in its Node panel (its Branches section and results table), a branch step says its branch,
 // the branch picker and a step's places name the branch, and the TUI's node details count and list branches by name.
-// Slice 2: the graph draws the branches as lanes side by side in one box (no stack), the parallel step leading into
-// each lane by an edge labelled with its name; the card, the box, a blocked join, why a visit was canceled and the
-// replay say "branch" (and its name) where a For each says "item".
+// Slice 2: the graph draws the branches as lanes side by side in one box (no stack), each lane under a pill with its
+// name (owner 2026-11-26, B3: the parallel step is the box's title, no edges fan out of it); the card, the box, a blocked
+// join, why a visit was canceled and the replay say "branch" (and its name) where a For each says "item".
 //
 // Run: node --test packages/app/ui/core/test/workflow-named-branches.test.mjs
 import test from "node:test";
@@ -19,9 +19,11 @@ import {
     projectWorkflow, workflowEventText, workflowDefinition, workflowItemList, workflowNodeLabel, workflowReplayFrames, workflowReplayLabel,
     workflowVisitEnding,
 } from "../src/workflow-view.js";
-import { WORKFLOW_GRAPH_GROUP_HEADER, layoutWorkflowGraphTB, workflowGroupId } from "../src/workflow-graph-layout.js";
+import {
+    WORKFLOW_GRAPH_GROUP_HEADER, WORKFLOW_GRAPH_LABEL_HEIGHT, WORKFLOW_GRAPH_LANE_PILL_WIDTH, layoutWorkflowGraphTB, workflowGroupId,
+} from "../src/workflow-graph-layout.js";
 import { WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
-import { WorkflowEdgeShape, WorkflowGroupBox } from "../../react/src/workflow-graph.js";
+import { WorkflowEdgeShape, WorkflowGroupBox, workflowGroupProps } from "../../react/src/workflow-graph.js";
 import { done, readModel } from "./workflow-fixtures.mjs";
 
 process.env.TZ = "UTC";
@@ -123,7 +125,7 @@ test("the TUI's node details count branches and list them by name", async () => 
     assert.deepEqual(order.slice(order.indexOf("views"), order.indexOf("views") + 5), ["views", "quick_work", "quick_end", "careful_work", "careful_end"]);
 });
 
-test("the graph draws named branches as lanes side by side in one box, each entered by an edge with its name", () => {
+test("the graph draws named branches as lanes side by side in one box, each under a pill with its name", () => {
     // A longer careful lane: its tops still line up with quick's.
     const longer = states.map(node => (node.id === "views" ? { ...node,
         branches: [node.branches[0], { name: "careful", initial: "careful_prep", states: ["careful_prep", "careful_work", "careful_end"] }],
@@ -134,44 +136,69 @@ test("the graph draws named branches as lanes side by side in one box, each ente
     const group = layout.groups.get("views");
     assert.deepEqual(group.lanes, ["quick", "careful"]);
     assert.equal(group.stack, 0, "lanes, not a stack of items");
-    // No edge into the box itself: one edge into each lane, from the parallel step, labelled with the branch's name.
+    // B1: the parallel step is its box (no box of its own), with no fan-out: no edge from it, none into the box or a lane.
+    assert.equal(layout.positions.has("views"), false);
     assert.equal(layout.edges.some(edge => edge.to === workflowGroupId("views")), false);
-    const lanes = layout.edges.filter(edge => edge.branch && edge.lane !== undefined);
-    assert.deepEqual(lanes.map(edge => [edge.from, edge.to, edge.lane, edge.labelText, edge.kind]),
-        [["views", "quick_work", "quick", "quick", "branch"], ["views", "careful_prep", "careful", "careful", "branch"]]);
+    assert.equal(layout.edges.some(edge => edge.from === "views" || edge.branch), false);
+    // B3: each lane has a pill with its branch's name, in declared order, relative to its box.
+    assert.deepEqual(group.lanePills.map(pill => [pill.name, pill.initial, pill.width]),
+        [["quick", "quick_work", WORKFLOW_GRAPH_LANE_PILL_WIDTH], ["careful", "careful_prep", WORKFLOW_GRAPH_LANE_PILL_WIDTH]]);
     const at = id => layout.positions.get(id);
     // Side by side in declared order, their first steps on one row, inside the box under its label row.
     assert.ok(at("quick_work").x + at("quick_work").width <= at("careful_prep").x, "quick's lane stands left of careful's");
     assert.equal(at("quick_work").y, at("careful_prep").y);
-    for (const id of ["quick_work", "quick_end", "careful_prep", "careful_work", "careful_end"]) {
+    // Inside the box, its ends are no boxes (B2: a lane's success end is its line into the join bar).
+    for (const id of ["quick_end", "careful_end"]) {
+        assert.equal(at(id), undefined, id);
+        assert.ok(layout.hidden.has(id), id);
+    }
+    for (const id of ["quick_work", "careful_prep", "careful_work"]) {
         const box = at(id);
         assert.ok(box.x >= group.x && box.x + box.width <= group.x + group.width && box.y >= group.y + WORKFLOW_GRAPH_GROUP_HEADER
             && box.y + box.height <= group.y + group.height, id);
     }
-    assert.equal(at("quick_end").x, at("quick_work").x, "a lane is a column");
-    for (const edge of lanes) {
-        const parallel = at("views"), first = at(edge.to);
-        assert.deepEqual(edge.points[0], [parallel.x + parallel.width / 2, parallel.y + parallel.height], "it leaves the parallel step");
-        assert.deepEqual(edge.points.at(-1), [first.x + first.width / 2, first.y], "it reaches its lane's first step");
-        assert.ok(edge.labelY > group.y + WORKFLOW_GRAPH_GROUP_HEADER && edge.labelY < first.y, "its name sits in the lane, above its first step");
-        assert.ok(edge.labelX > first.x && edge.labelX < first.x + first.width, "over its lane");
+    assert.equal(at("careful_work").x, at("careful_prep").x, "a lane is a column");
+    assert.ok(at("careful_work").y > at("careful_prep").y + at("careful_prep").height);
+    for (const pill of group.lanePills) {
+        const first = at(pill.initial);
+        assert.ok(pill.y - WORKFLOW_GRAPH_LABEL_HEIGHT / 2 >= WORKFLOW_GRAPH_GROUP_HEADER && group.y + pill.y < first.y,
+            `${pill.name}: its pill sits in the lane, above its first step`);
+        assert.ok(group.x + pill.x > first.x && group.x + pill.x < first.x + first.width, `${pill.name}: over its lane`);
     }
-    // Each lane's end leads straight down to the join bar, and says its branch.
+    // Each lane's last step leads straight down to the join bar, and says its branch; it carries the step's every
+    // outcome, so it has no label.
     const ends = layout.edges.filter(edge => edge.join);
-    assert.deepEqual(ends.map(edge => [edge.from, edge.lane]), [["quick_end", "quick"], ["careful_end", "careful"]]);
-    assert.equal(ends[0].points[0][0], at("quick_end").x + at("quick_end").width / 2);
+    assert.deepEqual(ends.map(edge => [edge.from, edge.to, edge.step, edge.parallel, edge.lane, edge.kind, edge.labelText, edge.labelWidth]), [
+        ["quick_work", "join:views", "quick_work", "views", "quick", "join", "", 0],
+        ["careful_work", "join:views", "careful_work", "views", "careful", "join", "", 0],
+    ]);
+    assert.equal(ends[0].points[0][0], at("quick_work").x + at("quick_work").width / 2);
+    assert.deepEqual(layout.edges.filter(edge => !edge.join).map(edge => [edge.from, edge.to, edge.owner, edge.labelText]), [
+        ["join:views", "done", "views", "joined"], ["careful_prep", "careful_work", undefined, ""],
+    ]);
+    // Its blocked route ends the run as failed: a chip on the step (R2), red for its failed end.
+    assert.deepEqual(layout.chips.get("views").map(chip => [chip.end, chip.text, chip.tone]), [["failed", "blocked → ⏹ failed", "red"]]);
     // The box and the edges in words.
     const box = renderToStaticMarkup(React.createElement(WorkflowGroupBox, { group }));
     assert.match(box, /class="ps-workflow-group is-idle is-named"/);
     assert.match(box, /aria-label="Branches of views \(quick, careful\)"/);
-    assert.match(box, /title="Each branch of views runs its own nodes: quick, careful\."/);
-    assert.match(box, /<span class="ps-workflow-group-label">Branches<\/span>/);
-    const edge = renderToStaticMarkup(React.createElement("svg", null, React.createElement(WorkflowEdgeShape, { edge: lanes[0] })));
-    assert.match(edge, /aria-label="views: branch quick starts at quick_work"/);
-    assert.match(edge, /<title>Branch quick starts here<\/title>quick|>quick<title>Branch quick starts here<\/title>/);
+    assert.ok(box.includes('title="views · Branches\nEach branch runs its own nodes: quick, careful."'), box);
+    assert.match(box, /aria-label="Inspect views" data-node-id="views"/);
+    assert.match(box, /<span class="ps-workflow-group-label">views<\/span>/);
+    // Its pills as drawn: the branch's name, before a run.
+    const pills = renderToStaticMarkup(React.createElement(WorkflowGroupBox, workflowGroupProps(layout, group, new Map())));
+    assert.deepEqual([...pills.matchAll(/<span class="ps-workflow-lane-pill" title="([^"]*)" style="[^"]*width:168px">([^<]*)<\/span>/g)]
+        .map(match => [match[1], match[2]]), [["Branch quick", "quick"], ["Branch careful", "careful"]]);
     assert.match(renderToStaticMarkup(React.createElement("svg", null, React.createElement(WorkflowEdgeShape, { edge: ends[1] }))),
-        /aria-label="careful_end: branch careful ends at the join of views"/);
-    // A For each keeps its box with a stack, entered by one edge without a label.
+        /aria-label="careful_work: branch careful ends at the join of views"/);
+    // In a run, a lane's pill says the end its branch reached.
+    const shown = layoutWorkflowGraphTB(workflowDefinition(graph));
+    const run = new Map(projectWorkflow({ readModel: model() }).nodes.map(node => [node.id, node]));
+    const live = workflowGroupProps(shown, shown.groups.get("views"), run);
+    assert.deepEqual(live.pills.map(pill => [pill.name, pill.text, pill.tone]), [["quick", "quick · end", "green"], ["careful", "careful", null]]);
+    assert.match(renderToStaticMarkup(React.createElement(WorkflowGroupBox, live)),
+        /<span class="ps-workflow-lane-pill is-green" title="Branch quick ended at quick_end" style="[^"]*">quick · end<\/span>/);
+    // A For each keeps its box with a stack and no pills; its body's last step leads into the join bar.
     const forEach = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "fan", states: [
         { id: "fan", type: "parallel", forEach: { count: 2 }, concurrency: 2, join: "all_required", failFast: false,
             body: { initial: "work", states: ["work", "end"] }, outcomes: ["joined", "blocked"], next: { joined: "done", blocked: "done" } },
@@ -181,7 +208,11 @@ test("the graph draws named branches as lanes side by side in one box, each ente
     ] }));
     assert.equal(forEach.groups.get("fan").stack > 0, true);
     assert.equal(Object.hasOwn(forEach.groups.get("fan"), "lanes"), false);
-    assert.deepEqual(forEach.edges.filter(item => item.branch).map(item => [item.to, item.labelText]), [[workflowGroupId("fan"), ""]]);
+    assert.deepEqual(forEach.groups.get("fan").lanePills, []);
+    assert.deepEqual([...forEach.positions.keys()].sort(), ["done", "work"]);
+    assert.deepEqual(forEach.edges.map(item => [item.from, item.to, item.kind, item.labelText, Boolean(item.branch)]), [
+        ["join:fan", "done", "outcome", "", false], ["work", "join:fan", "join", "", false],
+    ]);
 });
 
 test("the card, the box, a blocked join, why a visit was canceled and the replay say branch and its name", () => {

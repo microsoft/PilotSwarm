@@ -372,7 +372,8 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
             if (!place) return [];
             return [keep({ id: join.id, type: "workflowJoin", position: { x: place.at.x, y: place.at.y }, width: join.width, height: join.height,
                 ...(place.parent ? { parentId: place.parent } : {}),
-                data: { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selectedId, onSelect },
+                data: { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selectedId, onSelect,
+                    marks: { chips: workflowStepMarks(layout, join.parallel, lit, hoverEnd).chips } },
                 ...fixed, draggable: false, className: "nopan", style: NODE_STYLE, handles: handles(join.width, join.height) })];
         });
         made.current = next;
