@@ -5670,7 +5670,9 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-handler-label text, .ps-workflow-handler-tag text { fill: var(--ps-foreground); font-size: 10.5px; }
 .ps-workflow-handler-ghost circle { fill: var(--ps-surface); stroke: var(--ps-warning); stroke-width: 2; stroke-dasharray: 3 3; }
 .ps-workflow-handler-ghost text { fill: var(--ps-foreground); font-size: 11px; }
-.ps-workflow-handler-ghost.is-failed circle { stroke: var(--ps-wf-danger-text, var(--ps-danger)); }
+/* A failed end's ghost is neutral on select; red when a replay shows the run going there. */
+.ps-workflow-handler-ghost.is-failed circle { stroke: var(--ps-muted); }
+.ps-workflow-handler[data-lit] .ps-workflow-handler-ghost.is-failed circle { stroke: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-workflow-handler-ghost.is-succeeded circle { stroke: var(--ps-success); }
 .ps-workflow-handler[data-lit] .ps-workflow-handler-path { stroke: var(--ps-wf-lit, var(--ps-warning)); }
 .ps-workflow-handler[data-lit] .ps-workflow-handler-label rect { stroke: var(--ps-wf-lit, var(--ps-warning)); }
@@ -5720,8 +5722,11 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   width: 14px;
   border-top: 1.5px dotted color-mix(in srgb, var(--ps-warning) 75%, transparent);
 }
-.ps-workflow-chip.is-red { border-color: var(--ps-wf-danger-text, var(--ps-danger)); background: color-mix(in srgb, var(--ps-danger) 12%, var(--ps-surface)); }
-.ps-workflow-chip.is-red::before { border-top-color: color-mix(in srgb, var(--ps-wf-danger-text, var(--ps-danger)) 75%, transparent); }
+/* A chip into a failed end is neutral until the run takes it (lit: a failure that really happened). */
+.ps-workflow-chip.is-red { border-color: var(--ps-muted); background: var(--ps-surface); }
+.ps-workflow-chip.is-red::before { border-top-color: color-mix(in srgb, var(--ps-muted) 75%, transparent); }
+.ps-workflow-chip.is-red[data-lit] { border-color: var(--ps-wf-danger-text, var(--ps-danger)); background: color-mix(in srgb, var(--ps-danger) 12%, var(--ps-surface)); }
+.ps-workflow-chip.is-red[data-lit]::before { border-top-color: color-mix(in srgb, var(--ps-wf-danger-text, var(--ps-danger)) 75%, transparent); }
 .ps-workflow-chip[data-visited="false"] { opacity: 0.5; }
 .ps-workflow-chip[data-lit] { opacity: 1; box-shadow: 0 0 0 2px var(--ps-wf-lit, var(--ps-warning)); }
 .ps-workflow-chip[data-hover="true"] { opacity: 1; box-shadow: 0 0 0 2px var(--ps-accent); }
@@ -5802,24 +5807,35 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-lane-pill.is-red { border-color: var(--ps-wf-danger-text, var(--ps-danger)); background: color-mix(in srgb, var(--ps-danger) 12%, var(--ps-surface)); }
 .ps-workflow-lane-pill.is-blue { border-color: var(--ps-accent); }
 .ps-workflow-lane-pill[data-lit] { box-shadow: 0 0 0 2px var(--ps-wf-lit, var(--ps-warning)); }
+/* Replay: the join bar is lit while a transition that left the parallel step is among the last four. */
+.ps-workflow-join[data-lit] { outline: 1.5px solid var(--ps-wf-lit, var(--ps-warning)); outline-offset: 2px; }
+.ps-workflow-join[data-lit="2"] { outline-width: 3px; }
+.ps-workflow-join[data-lit-age="1"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 75%, transparent); }
+.ps-workflow-join[data-lit-age="2"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 50%, transparent); }
+.ps-workflow-join[data-lit-age="3"] { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 35%, transparent); }
+.ps-workflow-join[data-current="true"] { background: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 16%, var(--ps-surface)); }
+/* The Ends row is one line above the graph (it scrolls sideways when it is long); the graph takes the rest. */
+.ps-workflow-graph:has(> .ps-workflow-ends) { display: flex; flex-direction: column; }
+.ps-workflow-graph:has(> .ps-workflow-ends) > .ps-workflow-flow,
+.ps-workflow-graph:has(> .ps-workflow-ends) > .ps-workflow-graph-static { flex: 1 1 0; min-height: 0; height: auto; }
 .ps-workflow-ends {
-  position: absolute;
-  z-index: 5;
-  top: 4px;
-  right: 4px;
+  flex: none;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 4px 6px;
-  max-width: min(640px, calc(100% - 8px));
-  padding: 4px 6px;
-  border: 1px solid var(--ps-border);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--ps-chrome) 92%, transparent);
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--ps-border);
+  background: var(--ps-chrome);
   color: var(--ps-foreground);
   font-size: 11px;
+  white-space: nowrap;
+  scrollbar-width: thin;
 }
+.ps-workflow-ends > * { flex: none; }
+.ps-workflow-graph:has(> .ps-workflow-ends) > .ps-workflow-definition-notes { top: 38px; }
 .ps-workflow-ends-label { color: var(--ps-muted); font-weight: 600; }
 .ps-workflow-end {
   padding: 1px 8px;
@@ -5833,8 +5849,10 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-end.is-succeeded { border-color: var(--ps-success); }
 .ps-workflow-end.is-succeeded .ps-workflow-end-mark { color: var(--ps-success); }
 .ps-workflow-end.is-blocked, .ps-workflow-end.is-cancelled { border-color: var(--ps-warning); }
-.ps-workflow-end.is-failed { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }
-.ps-workflow-end.is-failed .ps-workflow-end-mark { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+/* Red only for a failure that really happened (R1, 2026-11-26 12:00 PST): a failed end is red once the run reached it. */
+.ps-workflow-end.is-failed { border-color: var(--ps-muted); }
+.ps-workflow-end.is-failed.is-reached { border-color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-end.is-failed.is-reached .ps-workflow-end-mark { color: var(--ps-wf-danger-text, var(--ps-danger)); }
 .ps-workflow-end.is-dim { opacity: 0.55; }
 .ps-workflow-end.is-reached { font-weight: 600; background: color-mix(in srgb, currentColor 10%, transparent); box-shadow: 0 0 0 1.5px var(--ps-wf-lit, var(--ps-warning)); }
 .ps-workflow-end.is-failed.is-reached { background: color-mix(in srgb, var(--ps-danger) 35%, transparent); }

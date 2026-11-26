@@ -3,7 +3,7 @@ import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import {
     layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphNodeHeight, workflowHandlerArrows, WORKFLOW_GRAPH_LABEL_HEIGHT,
 } from "../../core/src/workflow-graph-layout.js";
-import { workflowEdgeShown, workflowLanePill, workflowStepMarks } from "../../core/src/workflow-transitions.js";
+import { workflowEdgeShown, workflowJoinShown, workflowLanePill, workflowStepMarks } from "../../core/src/workflow-transitions.js";
 import { workflowJoinShort } from "../../core/src/workflow-view.js";
 
 const h = React.createElement;
@@ -240,7 +240,8 @@ export function WorkflowGroupBox({ group, node = null, selected = false, onSelec
         "data-group": group.parallel, role: "group",
         "aria-label": `${named ? `Branches of ${group.parallel} (${group.lanes.join(", ")})` : `For each item of ${group.parallel}`}${view?.group.text ? `: ${view.group.text}` : ""}` },
     h("div", { className: `ps-workflow-group-head${selected ? " is-selected" : ""}`, role: "button", tabIndex: 0, "aria-pressed": selected,
-        "aria-label": `Inspect ${group.parallel}${description ? `: ${description}` : ""}`, "data-node-id": group.parallel,
+        // The shield inside the button is not read on its own: the button says where the step's errors go.
+        "aria-label": `Inspect ${group.parallel}${description ? `: ${description}` : ""}${marks?.mark ? `. ${marks.mark.title}` : ""}`, "data-node-id": group.parallel,
         ...litAttributes(litCount, litAge), ...(current ? { "data-current": "true" } : {}),
         title: [`${group.parallel} · ${node?.label ?? (named ? "Branches" : "For each item")}`, description || null, node?.stateLabel ?? null,
             view?.limit?.title ?? null, named ? `Each branch runs its own nodes: ${group.lanes.join(", ")}.` : "The nodes in the box run once for each item."]
@@ -264,16 +265,16 @@ export function WorkflowGroupBox({ group, node = null, selected = false, onSelec
  * decision join-k-of-n) its own time limit. It is not a step of its own: a click, Enter or Space selects the parallel
  * step. `node` is the parallel step's view.
  */
-export function WorkflowJoinBar({ join, node = null, selected = false, onSelect, marks = null }) {
+export function WorkflowJoinBar({ join, node = null, selected = false, onSelect, marks = null, litCount = 0, litAge = null, current = false }) {
     const chips = marks?.chips ?? [];
     // The bar alone is the bar's own element (no wrapper), as before.
-    const bar = WorkflowJoinBarFace({ join, node, selected, onSelect });
+    const bar = WorkflowJoinBarFace({ join, node, selected, onSelect, litCount, litAge, current });
     if (!chips.length) return bar;
     // R2: the parallel step's routes leave its join bar, so its end chips sit beside the bar.
     return h("div", { className: "ps-workflow-step is-join" }, bar, h(WorkflowChips, { chips }));
 }
 
-function WorkflowJoinBarFace({ join, node = null, selected = false, onSelect }) {
+function WorkflowJoinBarFace({ join, node = null, selected = false, onSelect, litCount = 0, litAge = null, current = false }) {
     const view = node?.joinBar ?? null;
     const rule = `${view?.label ?? "Joins when all succeed"}${view?.stateText ? ` · ${view.stateText}` : ""}`;
     // Owner decision join-k-of-n: its own time limit, which the engine enforces; B5: said short on the bar ("⋈ all ended · 24 h").
@@ -281,6 +282,8 @@ function WorkflowJoinBarFace({ join, node = null, selected = false, onSelect }) 
     const short = workflowJoinShort(node, view);
     return h("div", {
         className: `ps-workflow-join is-${view?.state ?? "idle"}${selected ? " is-selected" : ""}`, "data-join": join.parallel, role: "button", tabIndex: 0,
+        // Replay: lit while a transition that left the parallel step is among the last four (workflowJoinShown).
+        ...litAttributes(litCount, litAge), ...(current ? { "data-current": "true" } : {}),
         "aria-label": `${join.parallel}: ${rule}${limit ? ` · ${limit.text}` : ""}. Inspect ${join.parallel}`, "aria-pressed": selected,
         title: `${rule}. The nodes after ${join.parallel} start from here.${limit ? ` ${limit.title}` : ""}`,
         onClick: () => onSelect(join.parallel),
@@ -349,7 +352,7 @@ function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hove
             }),
             [...(layout.joins?.values() ?? [])].map(join => slot(join, "ps-workflow-join-slot",
                 h(WorkflowJoinBar, { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selected?.id, onSelect: select,
-                    marks: { chips: workflowStepMarks(layout, join.parallel, lit, hoverEnd).chips } }), join.id)),
+                    marks: { chips: workflowStepMarks(layout, join.parallel, lit, hoverEnd).chips }, ...workflowJoinShown(layout, join.parallel, lit) }), join.id)),
             h(WorkflowHandlerArrows, { arrows })));
 }
 

@@ -88,11 +88,11 @@ export function workflowOutcomePlain(label) {
 
 /**
  * What a route of `node` is (R1, updated 2026-11-26 12:00 PST): "outcome" a declared business outcome; "limit" its visit
- * limit (`exhausted`); "error" a runtime-error route (`failure`, error codes). Limit and error routes are error handlers:
- * never drawn as lines.
+ * limit (`exhausted` on a step with maxVisits, of any type); "error" a runtime-error route (`failure`, error codes). Limit
+ * and error routes are error handlers: never drawn as lines.
  */
 export function workflowRouteMark(node, label) {
-    if (label === EXHAUSTED && node?.type !== "decision") return "limit";
+    if (label === EXHAUSTED && Number.isSafeInteger(node?.maxVisits)) return "limit";
     return workflowRouteKind(node, label) === "error" ? "error" : "outcome";
 }
 
@@ -134,33 +134,35 @@ function handlerWords(kinds) {
 
 /**
  * The success end of one scope (the root, a For each body, or one named branch): of its terminals with outcome
- * `succeeded`, the one farthest from its first step (breadth first over its routes), then one reached by a business
- * outcome, then the first declared. Null when it has none. Pure.
+ * `succeeded`, one reached from its first step by business outcomes alone, then the one farthest from its first step
+ * (breadth first over its routes), then the first declared. Null when it has none. Pure.
  */
 function successEndOf(ids, initial, byId) {
     const inScope = new Set(ids);
-    const depth = new Map();
-    const byBusiness = new Set();
-    if (inScope.has(initial)) {
+    const reach = businessOnly => {
+        const depth = new Map();
+        if (!inScope.has(initial)) return depth;
         depth.set(initial, 0);
         const queue = [initial];
         while (queue.length) {
             const id = queue.shift();
             const node = byId.get(id);
             for (const [label, target] of Object.entries(node?.next ?? {})) {
-                if (!inScope.has(target)) continue;
-                if (workflowRouteMark(node, label) === "outcome") byBusiness.add(target);
-                if (depth.has(target)) continue;
+                if (!inScope.has(target) || depth.has(target)) continue;
+                if (businessOnly && workflowRouteMark(node, label) !== "outcome") continue;
                 depth.set(target, depth.get(id) + 1);
                 queue.push(target);
             }
         }
-    }
+        return depth;
+    };
+    const depth = reach(false);
+    const byBusiness = reach(true);
     let best = null;
     for (const id of ids) {
         const node = byId.get(id);
         if (node?.type !== "terminal" || node.outcome !== "succeeded") continue;
-        const rank = [depth.get(id) ?? -1, byBusiness.has(id) ? 1 : 0];
+        const rank = [byBusiness.has(id) ? 1 : 0, depth.get(id) ?? -1];
         if (!best || rank[0] > best.rank[0] || (rank[0] === best.rank[0] && rank[1] > best.rank[1])) best = { id, rank };
     }
     return best?.id ?? null;
@@ -175,7 +177,7 @@ function successEndOf(ids, initial, byId) {
  *   branch's line into its join bar (B2) is `join` with `step`, the step it leaves, and `parallel`.
  * - `handlers` (R1, updated 2026-11-26 12:00 PST): step -> its error handlers, one per target: its error and limit
  *   routes (`routes`, `kinds`), never drawn as lines; `words` ("on error", "on limit", "on error or limit"); `from`, the
- *   box it leaves (a parallel step's join bar); `to`, the target's drawn box, or `end`, an end drawn only as a ghost;
+ *   box it leaves (a parallel step's join bar); `to`, the target step's drawn box, or `end`, an end (drawn as its ghost);
  *   `catchAll` when the root catchAll covers the step (a root step without a failure route); `key`
  *   "handler:<step>:<target>". `marks`: step -> its quiet "has an error handler" mark with its `title`.
  * - `chips` (R2): step -> its end chips, one per end its business routes reach: `end`, `routes`, `text`, `tone` ("red"
@@ -221,14 +223,14 @@ export function workflowGraphModel(definition) {
     const pairs = new Map();
     const handlers = new Map();
     const chips = new Map();
-    // R1: an error handler, one per step and target; its target is a drawn box (`to`), or an end drawn as a ghost (`end`).
+    // R1: an error handler, one per step and target; its target is a step's drawn box (`to`), or an end drawn as a ghost (`end`).
     const addHandler = (step, target, kind, label) => {
         const list = handlers.get(step) ?? [];
         let handler = list.find(item => item.target === target);
         if (!handler) {
             const node = byId.get(target);
-            const hiddenEnd = hidden.has(target);
-            const to = hiddenEnd ? (joinEnds.has(target) ? workflowJoinId(joinEnds.get(target)) : null) : boxOf(target);
+            // A handler into an end is drawn to a ghost of that end, whether or not the end has a box of its own.
+            const to = node?.type === "terminal" ? null : boxOf(target);
             handler = { step, from: parts.bodies.has(step) ? workflowJoinId(step) : step, target, to, end: to === null ? target : null,
                 outcome: node?.type === "terminal" ? node.outcome : null, routes: [], kinds: new Set(), catchAll: false,
                 key: `handler:${step}:${target}` };
@@ -626,6 +628,8 @@ function withRoom(box, room) {
  */
 function layoutBody(parallel, members, byId, edges, lanes, reserve) {
     if (lanes.length) return layoutLanes(lanes, byId, edges, reserve);
+    // A body of ends only (each item ends at once): an empty box under its title.
+    if (!members.length) return { positions: new Map(), exits: [], pills: [], sink: null, width: 0, height: 0 };
     const first = members.includes(parallel.body?.initial) ? parallel.body.initial : members[0];
     return layoutSteps([first, ...members.filter(id => id !== first)], byId, edges, null, reserve);
 }
@@ -932,9 +936,16 @@ export function workflowHandlerArrows(layout, boxes, { selectedId = null, all = 
                 labelX = (sx + ex) / 2 + 6;
                 labelY = (sy + gy) / 2 - 12;
                 ghost = { x: round(gx), y: round(gy), end: handler.end, outcome: handler.outcome };
+            } else if (handler.to === list[0].from) {
+                // A step that handles its own errors (it is tried again): a dashed loop off its right side and back in.
+                const top = from.y + from.height * 0.3, bottom = from.y + from.height * 0.7;
+                const out = sx + room + HANDLER_SWING;
+                path = `M${round(sx)},${round(top)} C${round(out)},${round(top - 18)} ${round(out)},${round(bottom + 18)} ${round(sx + 2)},${round(bottom)}`;
+                labelX = sx + room + HANDLER_SWING * 0.75;
+                labelY = sy;
             } else {
                 const to = boxes.get(handler.to);
-                if (!to || handler.to === list[0].from) continue;
+                if (!to) continue;
                 const tx = to.x + to.width, ty = to.y + to.height / 2;
                 const swing = Math.max(sx, tx) + HANDLER_SWING;
                 path = `M${round(sx)},${round(sy)} C${round(swing)},${round(sy)} ${round(swing)},${round(ty)} ${round(tx + 2)},${round(ty)}`;

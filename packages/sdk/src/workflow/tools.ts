@@ -14,6 +14,7 @@ import {
     type WorkflowReadCursor, type WorkflowReadSection,
 } from "./read-pages.js";
 import { describeWorkflowStates, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
+import { CATCH_ALL_ROUTE } from "./controller/runtime.js";
 import { workflowStoreFailure } from "./failure.js";
 import { redactWorkflowErrorValue } from "./redact.js";
 import { workflowErrorWords } from "./error-words.js";
@@ -1588,6 +1589,9 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
         // A parallel branch's state: its branch's parallel state execution and index, and the state before
         // it in its branch (its last state is the one no other names; owner decision join-k-of-n, review J1-R1).
         ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId), predecessorId: node.predecessorId } : {}),
+        // Entered as the catch-all after an unhandled error (its stored arrival route), as its start event says: a graph's
+        // replay draws that arrival from the failed step even when only read rows are loaded.
+        ...(node.arrivalRoute === CATCH_ALL_ROUTE ? { catchAll: true } : {}),
         ...(node.nodeType === "parallel" && Array.isArray(node.input) ? { branches: node.input.length } : {}),
         // When a parallel state or a branch state ended (J1c): a success counts only when stored by the time limit.
         ...((node.nodeType === "parallel" || node.scopeId !== ROOT_SCOPE) && node.completedAt !== null ? { completedAt: node.completedAt.toISOString() } : {}),

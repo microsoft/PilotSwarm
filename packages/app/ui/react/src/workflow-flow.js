@@ -5,7 +5,7 @@ import {
 import "@xyflow/react/dist/base.css";
 import { WorkflowEdgeShape, WorkflowGroupBox, WorkflowHandlerArrows, WorkflowJoinBar, WorkflowStepCard, workflowGroupProps } from "./workflow-graph.js";
 import { workflowGraphPlaces, workflowHandlerArrows, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
-import { workflowEdgeShown, workflowStepMarks } from "../../core/src/workflow-transitions.js";
+import { workflowEdgeShown, workflowJoinShown, workflowStepMarks } from "../../core/src/workflow-transitions.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 
 const h = React.createElement;
@@ -75,16 +75,20 @@ const GROUP_STYLE = Object.freeze({ pointerEvents: "none" });
 
 /**
  * The box around every box at its place (`moved`: Map place key -> { x, y } for the boxes moved; workflowGraphPlaces),
- * or the layout's own box. A branch box counts its stack; a step moved on its own, room for its loop beside it.
+ * or the layout's own box. A branch box counts its stack; a step moved on its own, room for its loop beside it; a step or
+ * join bar with end chips (R2), the chips beside it, wherever it now is.
  */
 export function workflowGraphBounds(layout, moved = null) {
     if (!moved?.size) return { x: 0, y: 0, width: layout.width, height: layout.height };
+    const rooms = layout.chipRoom instanceof Map ? layout.chipRoom : new Map();
+    const chipRoomOf = new Map([...layout.positions.keys()].map(id => [id, rooms.get(id) ?? 0]));
+    for (const join of layout.joins?.values() ?? []) chipRoomOf.set(join.id, rooms.get(join.parallel) ?? 0);
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-    for (const box of workflowGraphPlaces(layout, moved).values()) {
+    for (const [id, box] of workflowGraphPlaces(layout, moved)) {
         const stack = box.stack ?? 0;
         left = Math.min(left, box.x);
         top = Math.min(top, box.y);
-        right = Math.max(right, box.x + box.width + stack + (box.self && box.stack === undefined ? LOOP_REACH_PX / 2 : 0));
+        right = Math.max(right, box.x + box.width + stack + Math.max(box.self && box.stack === undefined ? LOOP_REACH_PX / 2 : 0, chipRoomOf.get(id) ?? 0));
         bottom = Math.max(bottom, box.y + box.height + stack);
     }
     return Number.isFinite(left) ? { x: left, y: top, width: right - left, height: bottom - top } : { x: 0, y: 0, width: layout.width, height: layout.height };
@@ -373,7 +377,7 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
             return [keep({ id: join.id, type: "workflowJoin", position: { x: place.at.x, y: place.at.y }, width: join.width, height: join.height,
                 ...(place.parent ? { parentId: place.parent } : {}),
                 data: { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selectedId, onSelect,
-                    marks: { chips: workflowStepMarks(layout, join.parallel, lit, hoverEnd).chips } },
+                    marks: { chips: workflowStepMarks(layout, join.parallel, lit, hoverEnd).chips }, ...workflowJoinShown(layout, join.parallel, lit) },
                 ...fixed, draggable: false, className: "nopan", style: NODE_STYLE, handles: handles(join.width, join.height) })];
         });
         made.current = next;

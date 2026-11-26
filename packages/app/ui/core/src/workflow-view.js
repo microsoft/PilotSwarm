@@ -858,6 +858,7 @@ export function workflowExecutionOfRow(row) {
         kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), completedAt: text(row.completedAt),
         enteredAt: text(row.enteredAt), endedAt: text(row.endedAt),
         predecessorId: text(row.predecessorId),
+        catchAll: row.catchAll === true ? true : undefined,
         receive: isRecord(row.receive) ? row.receive : undefined,
         approval: isRecord(row.approval) ? row.approval : undefined,
         agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,

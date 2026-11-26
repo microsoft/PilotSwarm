@@ -191,11 +191,12 @@ test("the graph draws named branches as lanes side by side in one box, each unde
         .map(match => [match[1], match[2]]), [["Branch quick", "quick"], ["Branch careful", "careful"]]);
     assert.match(renderToStaticMarkup(React.createElement("svg", null, React.createElement(WorkflowEdgeShape, { edge: ends[1] }))),
         /aria-label="careful_work: branch careful ends at the join of views"/);
-    // In a run, a lane's pill says the end its branch reached.
+    // In a run, a lane's pill says the end its branch reached; careful's step crashed with no route on, so its branch
+    // ended there, unsuccessfully.
     const shown = layoutWorkflowGraphTB(workflowDefinition(graph));
     const run = new Map(projectWorkflow({ readModel: model() }).nodes.map(node => [node.id, node]));
     const live = workflowGroupProps(shown, shown.groups.get("views"), run);
-    assert.deepEqual(live.pills.map(pill => [pill.name, pill.text, pill.tone]), [["quick", "quick · end", "green"], ["careful", "careful", null]]);
+    assert.deepEqual(live.pills.map(pill => [pill.name, pill.text, pill.tone]), [["quick", "quick · end", "green"], ["careful", "careful · failed", "red"]]);
     assert.match(renderToStaticMarkup(React.createElement(WorkflowGroupBox, live)),
         /<span class="ps-workflow-lane-pill is-green" title="Branch quick ended at quick_end" style="[^"]*">quick · end<\/span>/);
     // A For each keeps its box with a stack and no pills; its body's last step leads into the join bar.

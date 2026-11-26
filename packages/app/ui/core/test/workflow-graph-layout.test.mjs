@@ -408,14 +408,14 @@ test("a parallel step is its branch box's title, its branch's success end is its
     assert.ok(group.x + group.width + group.stack <= layout.width && group.y + group.height + group.stack <= layout.height, "the stack is drawn too");
 });
 
-test("a parallel step's error handler leaves its join bar; a handler into a branch's success end goes into the join bar", () => {
+test("a parallel step's error handler leaves its join bar; a handler into a branch's success end goes to a ghost of that end", () => {
     const base = fanned();
     const layout = layoutWorkflowGraphTB({ ...base, states: base.states.map(node => (node.id === "fan" ? { ...node, next: { ...node.next, failure: "failed" } }
         : node.id === "work" ? { ...node, next: { ok: "branch_done", failure: "branch_done" } } : node)) });
     assert.deepEqual(layout.handlers.get("fan").map(handler => [handler.key, handler.from, handler.to, handler.end, handler.outcome, handler.routes]),
         [["handler:fan:failed", "join:fan", null, "failed", "failed", ["failure"]]]);
     assert.deepEqual(layout.handlers.get("work").map(handler => [handler.key, handler.from, handler.to, handler.end, handler.outcome, handler.words]),
-        [["handler:work:branch_done", "work", "join:fan", null, "succeeded", "on error"]]);
+        [["handler:work:branch_done", "work", null, "branch_done", "succeeded", "on error"]]);
     // Its business routes are unchanged: work's line into the bar, blocked a chip beside the bar.
     assert.deepEqual(edgeOf(layout, "work", "join:fan").outcomes, ["ok"]);
     assert.deepEqual(layout.chips.get("fan").map(chip => chip.text), ["blocked → ⏹ failed"]);
@@ -427,8 +427,50 @@ test("a parallel step's error handler leaves its join bar; a handler into a bran
     assert.deepEqual([fan.ghost.end, fan.ghost.outcome], ["failed", "failed"]);
     assert.ok(fan.ghost.y > join.y + join.height / 2, "the ghost stands under the bar's chips");
     const [work] = workflowHandlerArrows(layout, boxes, { selectedId: "work" });
-    assert.deepEqual([work.target, work.ghost], ["branch_done", null]);
-    assert.ok(work.path.endsWith(` ${r(join.x + join.width + 2)},${r(join.y + join.height / 2)}`), work.path);
+    assert.deepEqual([work.target, work.ghost.end, work.ghost.outcome], ["branch_done", "branch_done", "succeeded"]);
+    // An end with a box of its own (the root's success end) is a ghost too: a handler's arrow always ends at a ghost of its end.
+    const intoDone = layoutWorkflowGraphTB({ ...base, states: base.states.map(node => (node.id === "review" ? { ...node, next: { ...node.next, timed_out: "done" } } : node)) });
+    assert.deepEqual(intoDone.handlers.get("review").map(handler => [handler.to, handler.end]), [[null, "done"]]);
+});
+
+test("a step that handles its own errors has a dashed loop beside it; a body of ends only is an empty box", () => {
+    const layout = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "retry", states: [
+        { id: "retry", type: "script", outcomes: ["ok"], next: { ok: "fan", failure: "retry" } },
+        { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
+            body: { initial: "item_done", states: ["item_done"] }, outcomes: ["joined"], next: { joined: "done" } },
+        { id: "item_done", type: "terminal", outcome: "succeeded", parallel: "fan" },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+    ] }));
+    assert.deepEqual(layout.handlers.get("retry").map(handler => [handler.from, handler.to, handler.end]), [["retry", "retry", null]]);
+    const [loop] = workflowHandlerArrows(layout, new Map(layout.positions), { selectedId: "retry" });
+    const box = layout.positions.get("retry");
+    assert.equal(loop.key, "handler:retry:retry");
+    assert.ok(loop.labelX > box.x + box.width, "the loop and its words are beside the step");
+    const group = layout.groups.get("fan");
+    assert.deepEqual([...layout.positions.keys()].sort(), ["done", "retry"]);
+    assert.ok(group.width > 0 && group.height > 0 && layout.joins.get("fan").y >= group.y + group.height);
+    assertInside(layout);
+});
+
+test("a visit limit is a handler only on a step with maxVisits; a branch's success end is the one its business outcomes reach", () => {
+    const limited = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "ask", states: [
+        { id: "ask", type: "decision", maxVisits: 3, question: { type: "choice", criteria: { yes: "y", no: "n" } },
+            outcomes: ["yes", "no"], next: { yes: "done", no: "ask", exhausted: "stop" } },
+        { id: "count", type: "script", outcomes: ["more", "exhausted"], next: { more: "count", exhausted: "done" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "stop", type: "terminal", outcome: "blocked" },
+    ] }));
+    assert.deepEqual(limited.handlers.get("ask").map(handler => [handler.key, handler.words]), [["handler:ask:stop", "on limit"]]);
+    assert.equal(limited.chips.has("ask"), false);
+    assert.equal(limited.handlers.has("count"), false, "a declared outcome named exhausted, without maxVisits, is business");
+    assert.deepEqual(edgeOf(limited, "count", "done").outcomes, ["exhausted"]);
+    const base = fanned();
+    const recovering = layoutWorkflowGraphTB({ ...base, states: [...base.states.map(node => (node.id === "fan" ? { ...node, body: { initial: "work", states: ["work", "recover", "recovered", "branch_done"] } }
+        : node.id === "work" ? { ...node, next: { ok: "branch_done", failure: "recover" } } : node)),
+    { id: "recover", type: "script", runtime: "node", outcomes: ["ok"], next: { ok: "recovered" }, parallel: "fan" },
+    { id: "recovered", type: "terminal", outcome: "succeeded", parallel: "fan" }] });
+    assert.deepEqual(recovering.edges.filter(edge => edge.join).map(name), ["work->join:fan"]);
+    assert.deepEqual(recovering.chips.get("recover").map(chip => chip.end), ["recovered"]);
 });
 
 test("bodies: a parallel step's body steps in body order, each step in one body; a graph without one has no box or bar", () => {

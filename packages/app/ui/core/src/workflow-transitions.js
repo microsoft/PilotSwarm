@@ -71,10 +71,12 @@ export function workflowTransitions(executions, definition) {
         let from = null;
         if (execution.catchAll !== true && typeof execution.predecessorId === "string" && byId.has(execution.predecessorId)) from = byId.get(execution.predecessorId);
         else if (lastInScope.has(scope)) from = lastInScope.get(scope);
+        // A branch's first visit: the runtime stores its parallel visit as its predecessor (or none is loaded).
+        const parallelVisit = scope !== "root" ? parallelVisitOf(execution, scope) : null;
+        let laneEntry = parallelVisit !== null && from !== null && from.id === parallelVisit;
         let fromStateId = from?.stateId ?? null;
-        let laneEntry = false;
-        if (fromStateId === null && scope !== "root") {
-            fromStateId = byId.get(parallelVisitOf(execution, scope))?.stateId ?? null;
+        if (fromStateId === null && parallelVisit !== null) {
+            fromStateId = byId.get(parallelVisit)?.stateId ?? null;
             laneEntry = fromStateId !== null;
         }
         lastInScope.set(scope, execution);
@@ -214,20 +216,46 @@ export function workflowEdgeShown(edge, lit = null, hoverEnd = null) {
 }
 
 /**
+ * A parallel step's join bar as drawn now (replay): lit while a transition that left the parallel step (a line from its
+ * bar, one of its error handlers or end chips) is among the last four, at the newest one's age; `current` when the
+ * transition shown left it. Pure.
+ */
+export function workflowJoinShown(layout, parallelId, lit = null) {
+    const bar = workflowJoinId(parallelId);
+    const keys = [...(layout?.edges ?? []).filter(edge => edge.from === bar).map(edge => workflowGraphEdgeKey(edge.from, edge.to)),
+        ...(layout?.handlers?.get?.(parallelId) ?? []).map(handler => handler.key), ...(layout?.chips?.get?.(parallelId) ?? []).map(chip => chip.key)];
+    let litCount = 0;
+    let litAge = null;
+    for (const key of keys) {
+        const on = litOf(lit, key);
+        if (!on) continue;
+        litCount += on.count;
+        litAge = litAge === null ? on.age : Math.min(litAge, on.age);
+    }
+    const shown = lit?.transition ?? null;
+    return { litCount, litAge, current: Boolean(shown && shown.fromStateId === parallelId && keys.includes(shown.edgeKey)) };
+}
+
+/**
  * A lane's pill as it stands (B3): its name and, from its steps' views (`byId`, as of the moment shown), its state:
  * the end it reached ("ended", "not started": the end's name without the lane's prefix), "running" while one of its
- * steps runs, else nothing. `lit` lights it while its first visit is among the last four. Pure.
+ * steps runs, "failed" when a step failed with no route on (the branch ended there), "cancelled" when it was stopped,
+ * else nothing (not started yet). `lit` lights it while its first visit is among the last four. Pure.
  */
 export function workflowLanePill(parallelId, pill, members, byId, lit = null) {
     const views = (Array.isArray(members) ? members : []).map(id => byId.get(id)).filter(Boolean);
     const words = id => workflowOutcomePlain(id.startsWith(`${pill.name}_`) ? id.slice(pill.name.length + 1) : id);
     const ended = views.find(view => view.type === "terminal" && ["done", "failed", "cancelled"].includes(view.state));
     const running = views.find(view => view.type !== "terminal" && view.state === "running");
-    const status = ended ? words(ended.id) : running ? "running" : null;
-    const tone = ended ? (ended.outcome === "failed" || ended.state === "failed" ? "red" : ended.outcome === "succeeded" ? "green" : "amber") : running ? "blue" : null;
+    const stopped = ended || running ? null : views.find(view => view.type !== "terminal" && (view.state === "failed" || view.state === "cancelled"));
+    const status = ended ? words(ended.id) : running ? "running" : stopped ? stopped.state : null;
+    const tone = ended ? (ended.outcome === "failed" || ended.state === "failed" ? "red" : ended.outcome === "succeeded" ? "green" : "amber")
+        : running ? "blue" : stopped ? (stopped.state === "failed" ? "red" : "amber") : null;
     const on = litOf(lit, `lane:${parallelId}:${pill.name}`);
     return { ...pill, text: status ? `${pill.name} · ${status}` : pill.name, status, tone,
-        title: ended ? `Branch ${pill.name} ended at ${ended.id}` : running ? `Branch ${pill.name}: ${running.id} is running` : `Branch ${pill.name}`,
+        title: ended ? `Branch ${pill.name} ended at ${ended.id}` : running ? `Branch ${pill.name}: ${running.id} is running`
+            : stopped ? (stopped.state === "failed" ? `Branch ${pill.name} ended unsuccessfully: ${stopped.id} failed and has no route on`
+                : `Branch ${pill.name} was cancelled at ${stopped.id}`) : `Branch ${pill.name}`,
         litCount: on?.count ?? 0, litAge: on?.age ?? null };
 }
 

@@ -13,11 +13,12 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-    workflowDefinition, workflowReplayFrames,
+    workflowDefinition, workflowExecutionOfRow, workflowReplayFrames,
 } from "../src/workflow-view.js";
 import { layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphEdgeKeys, workflowGroupId, workflowJoinId } from "../src/workflow-graph-layout.js";
 import {
-    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorTransitions, workflowLitLevel, workflowLitTransitions, workflowStepMarks, workflowTransitions,
+    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorTransitions, workflowJoinShown, workflowLanePill, workflowLitLevel, workflowLitTransitions,
+    workflowStepMarks, workflowTransitions,
 } from "../src/workflow-transitions.js";
 import { WorkflowGraph } from "../../react/src/workflow-graph.js";
 
@@ -136,6 +137,46 @@ test("named branches: a lane's first visit lights its lane's pill (no line fans 
         visit("nx-q", "quick_work", 1, { scopeId: "nx-views#0", branch: { parallelNodeExecutionId: "nx-views", index: 0, name: "quick" } }),
         visit("nx-c", "careful_work", 2, { scopeId: "nx-views#1", branch: { parallelNodeExecutionId: "nx-views", index: 1, name: "careful" } })], NAMED);
     assert.deepEqual(transitions.slice(1).map(item => item.edgeKey), ["lane:views:quick", "lane:views:careful"]);
+    // As read_workflow gives them: a branch's first visit names its parallel visit as its predecessor; the parallel visit
+    // has ended (joined), and its route is not the way into the lane.
+    const read = workflowTransitions([visit("nx-views", "views", 0, { status: "completed", outcome: "joined", resultKind: "business" }),
+        visit("nx-q", "quick_work", 1, { scopeId: "nx-views#0", branch: { parallelNodeExecutionId: "nx-views", index: 0 }, predecessorId: "nx-views" }),
+        visit("nx-c", "careful_work", 2, { scopeId: "nx-views#1", branch: { parallelNodeExecutionId: "nx-views", index: 1 }, predecessorId: "nx-views" })], NAMED);
+    assert.deepEqual(read.slice(1).map(item => [item.fromStateId, item.edgeKey, item.route]),
+        [["views", "lane:views:quick", null], ["views", "lane:views:careful", null]]);
+});
+
+test("a catch-all arrival known only from its read row (catchAll) takes the catch-all handler, not a chip into the same end", () => {
+    const SCRIPTED = workflowDefinition({ revision: 1, initial: "work", catchAll: "failed", states: [
+        { id: "work", type: "script", outcomes: ["ok", "failed"], next: { ok: "done", failed: "failed" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "failed", type: "terminal", outcome: "failed" },
+    ] });
+    const row = workflowExecutionOfRow({ nodeExecutionId: "nx-1", stateId: "failed", ordinal: 1, state: "completed", outcome: "failed",
+        resultKind: "business", enteredAt: at(10), catchAll: true });
+    assert.equal(row.catchAll, true);
+    const [, caught] = workflowTransitions([visit("nx-0", "work", 0, { status: "completed", outcome: "execution_failed", resultKind: "runtime_error" }), row], SCRIPTED);
+    assert.deepEqual([caught.fromStateId, caught.edgeKey, caught.route, caught.error], ["work", "handler:work:failed", "@catchAll", true]);
+});
+
+test("a lane's pill: its end, running, failed with no route on (the branch ended there), or nothing yet; a join bar lights when the run leaves it", () => {
+    const pill = { name: "c", initial: "start_c" };
+    const views = states => new Map(Object.entries(states).map(([id, state]) => [id, { id, type: id.startsWith("c_") ? "terminal" : "script", state,
+        outcome: id === "c_not_started" ? "blocked" : undefined }]));
+    const members = ["start_c", "wait_c", "c_not_started"];
+    const of = states => workflowLanePill("fan", pill, members, views(states));
+    assert.deepEqual([of({ start_c: "failed", c_not_started: "done" }).text, of({ start_c: "failed", c_not_started: "done" }).tone], ["c · not started", "amber"]);
+    assert.deepEqual([of({ start_c: "running" }).text, of({ start_c: "running" }).tone], ["c · running", "blue"]);
+    const crashed = of({ start_c: "done", wait_c: "failed" });
+    assert.deepEqual([crashed.text, crashed.tone, crashed.title], ["c · failed", "red", "Branch c ended unsuccessfully: wait_c failed and has no route on"]);
+    assert.deepEqual([of({}).text, of({}).tone], ["c", null]);
+    const layout = layoutWorkflowGraphTB(FAN);
+    const out = key(workflowJoinId("fan"), "report");
+    assert.deepEqual(workflowJoinShown(layout, "fan", null), { litCount: 0, litAge: null, current: false });
+    const lit = { edges: new Map([[out, { count: 1, age: 0 }]]), transition: { fromStateId: "fan", edgeKey: out } };
+    assert.deepEqual(workflowJoinShown(layout, "fan", lit), { litCount: 1, litAge: 0, current: true });
+    const older = { edges: new Map([[out, { count: 1, age: 2 }]]), transition: { fromStateId: "report", edgeKey: null } };
+    assert.deepEqual(workflowJoinShown(layout, "fan", older), { litCount: 1, litAge: 2, current: false });
 });
 
 // The owner's issue-to-pr shape, small: a gate whose error ends the run as failed (an error handler), a blocked end and a
