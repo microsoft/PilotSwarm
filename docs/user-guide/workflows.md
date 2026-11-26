@@ -262,13 +262,20 @@ gives the steps already started up to 60 seconds to finish.
 **When the session ends:** a Workflow belongs to the session that started it.
 Completing, cancelling or deleting that session ends its Workflows too: a
 running one is cancelled. A finished live Workflow saves its complete terminal
-output/error text, status and run identity under the owning session. Automatic
-session cleanup can then remove the finished Workflow after the normal grace
-period, as it removes a completed sub-agent. The end notice still has a short
-preview; read the owner-scoped child outcome for the full saved result after the
-Workflow session is gone. Deleting the owning session removes its saved child
-outcomes and Workflows. Tests have a separate retention limit; this rule does
-not clean definition test benches as ordinary finished Workflows.
+output/error text, status and run identity under the owning session.
+
+**A finished Workflow stays** while the session that started it, or any
+session above that one, is still in use (idle counts: it has not been
+completed, canceled or failed). It shows under its session's **Terminated**
+row, and its graph, timeline, Log, Node panel and **Run again…** work as they
+did right after it ended, also the next day: the cleanup of old events keeps a
+finished Workflow's Log. Automatic session cleanup removes
+it only after it and every session above it have ended, and then removes them
+together. Delete a finished Workflow yourself to remove it sooner. The end
+notice still has a short preview; once the Workflow session is gone, read the
+owner-scoped child outcome for the full saved result. Deleting the owning
+session removes its saved child outcomes and Workflows. Tests have a separate
+retention limit; this rule does not apply to definition test benches.
 
 ## 4. Change it
 
