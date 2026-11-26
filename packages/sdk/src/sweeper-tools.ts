@@ -158,14 +158,20 @@ export function createSweeperTools(opts: {
 
     /**
      * Issue 412: the first kept session a cleanup of `sessionId` would delete (with `cascade`, its whole subtree; without,
-     * the Workflow sessions the owner trigger deletes with it), or `unreadable` when the read fails. A catalog without the
-     * store's check (a test double) keeps nothing, as it has no final check either.
+     * the Workflow sessions the owner trigger deletes with it), or `unreadable` when the read fails; without `cascade`, also
+     * the first live Workflow under it that the delete would leave in place (review R2-1). A catalog without the store's
+     * check (a test double) keeps nothing, as it has no final check either.
      */
-    async function readKept(sessionId: string, cascade: boolean): Promise<{ kept: SweeperKeptSession | null } | { unreadable: string }> {
+    async function readKept(sessionId: string, cascade: boolean)
+        : Promise<{ kept: SweeperKeptSession | null; workflowLeftBelow: string | null } | { unreadable: string }> {
         const store = typeof catalog.workflowStore === "function" ? catalog.workflowStore() : null;
-        if (!store || typeof store.sweeperKeptSession !== "function") return { kept: null };
+        if (!store || typeof store.sweeperKeptSession !== "function") return { kept: null, workflowLeftBelow: null };
         try {
-            return { kept: await store.sweeperKeptSession({ sessionId, cascade }) };
+            const kept = await store.sweeperKeptSession({ sessionId, cascade });
+            // Review R2-1: without cascade, a Workflow under the session that the delete would leave in place keeps it too.
+            const workflowLeftBelow = !kept && !cascade && typeof store.sweeperWorkflowLeftBelow === "function"
+                ? await store.sweeperWorkflowLeftBelow(sessionId) : null;
+            return { kept, workflowLeftBelow };
         } catch (err: any) {
             return { unreadable: `the sessions a cleanup of ${sessionId} would delete: ${String(err?.message ?? err)}` };
         }
@@ -179,6 +185,8 @@ export function createSweeperTools(opts: {
                     + "It ends through its controller; nothing was deleted.";
             case "WorkflowKept":
                 return `Refusing to clean session ${sessionId}: ${refused.detail}. ${WORKFLOW_KEPT_RULE} Nothing was deleted.`;
+            case "WorkflowBelow":
+                return `Refusing to prune session ${sessionId}: ${refused.detail}. Nothing was deleted; a cleanup removes it with the sessions under it once nothing there is kept.`;
             case "StartUnresolved":
                 return `Refusing to clean session ${sessionId}: ${refused.detail}. Nothing was deleted; a later scan reads it again.`;
             case "Busy":
@@ -557,7 +565,8 @@ export function createSweeperTools(opts: {
             "instances older than N minutes, and (2) prune old executions from all instances, " +
             "keeping only the last N executions per instance. " +
             "It then soft-deletes the session rows (older than the same cutoff) whose orchestration is NotFound " +
-            "(a row whose delete would remove a finished live Workflow, or a session under one, while a session above that Workflow is active is kept; definition test bench rows are retained); " +
+            "(a row whose delete would remove a finished live Workflow, or a session under one, while a session above that Workflow is active is kept; " +
+            "a row with a live Workflow under it that the delete would leave in place is kept, so the Workflow stays in the session lists; definition test bench rows are retained); " +
             "a status read that fails deletes nothing (cmsUnreadable counts them), and a row that changed since its read " +
             "(a run admitted, a message that started it), or has a session another transaction holds is kept (cmsRefused " +
             "counts them); an ordinary session whose accepted start has not been seen to end is not a candidate. " +
@@ -636,7 +645,7 @@ export function createSweeperTools(opts: {
                             console.warn(`[sweeper] prune: could not read ${kept.unreadable}; not deleted`);
                             continue;
                         }
-                        if (kept.kept) continue;
+                        if (kept.kept || kept.workflowLeftBelow) continue;
                         try {
                             // The final check and the soft delete in one transaction (reviews AS-02, AR-01..AR-03): a row
                             // changed or started since its read, or one another transaction holds, is kept.

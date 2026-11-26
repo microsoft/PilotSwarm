@@ -1264,7 +1264,13 @@ every session above its target `FOR SHARE` when a Workflow is in or above what
 it deletes, so a session above cannot become active, and a Workflow above
 cannot end its run, between the check and the delete. The Sweeper
 also keeps an ended session whose cleanup would delete such a Workflow, for
-example an ended owner whose parent is still active. Once the Workflow and
+example an ended owner whose parent is still active. Its prune
+(`prune_orchestrations`, which deletes a row whose orchestration reads
+`NotFound` without its ordinary descendants) never deletes a session that has a
+Workflow under it that the delete would leave in place: lists and the portal
+reach a session through its parent, so that Workflow would no longer be shown.
+The final check refuses such a delete (`WorkflowBelow`) under NOWAIT locks on the
+sessions the prune leaves under its target. Once the Workflow and
 every session above it have ended, the Sweeper cleans them together. A legacy
 finished Workflow gets the same owner result during the guarded cleanup
 transaction before its session is deleted. `read_workflow` is the full

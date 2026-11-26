@@ -15,10 +15,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "R ended, W finished: the Sweeper cleans W (with A) while R restarts. R is held FOR SHARE: the restart commits before the check (kept), or waits until the delete commits.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "ret.restart-cleanup-workflow (ret1; expected PASS): R ended, W finished: the Sweeper cleans W (with A) while R restarts. R is held FOR SHARE: the restart commits before the check (kept), or waits until the delete commits.",
+   "comment": "ret.restart-cleanup-workflow (ret2; expected PASS): R ended, W finished: the Sweeper cleans W (with A) while R restarts. R is held FOR SHARE: the restart commits before the check (kept), or waits until the delete commits.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -57,10 +57,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "R active, W running: the Sweeper cleans A while W's run ends. W is held FOR SHARE: the run ends before the check (A kept), or waits until A's delete commits.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "ret.runend-cleanup-agent (ret1; expected PASS): R active, W running: the Sweeper cleans A while W's run ends. W is held FOR SHARE: the run ends before the check (A kept), or waits until A's delete commits.",
+   "comment": "ret.runend-cleanup-agent (ret2; expected PASS): R active, W running: the Sweeper cleans A while W's run ends. W is held FOR SHARE: the run ends before the check (A kept), or waits until A's delete commits.",
    "spec": "Spec",
    "constants": {
     "Target": "\"A\"",
@@ -99,10 +99,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "R ended, W running: R restarts and W's run ends while the Sweeper cleans A.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "ret.restart-runend-cleanup-agent (ret1; expected PASS): R ended, W running: R restarts and W's run ends while the Sweeper cleans A.",
+   "comment": "ret.restart-runend-cleanup-agent (ret2; expected PASS): R ended, W running: R restarts and W's run ends while the Sweeper cleans A.",
    "spec": "Spec",
    "constants": {
     "Target": "\"A\"",
@@ -141,10 +141,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "The purge runs while W's run ends: a held W's old events go only while its run has not ended; a W a writer holds is skipped.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "ret.purge-runend (ret1; expected PASS): The purge runs while W's run ends: a held W's old events go only while its run has not ended; a W a writer holds is skipped.",
+   "comment": "ret.purge-runend (ret2; expected PASS): The purge runs while W's run ends: a held W's old events go only while its run has not ended; a W a writer holds is skipped.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -183,10 +183,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "A finished W's Log is kept whatever R's state.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "ret.purge-finished (ret1; expected PASS): A finished W's Log is kept whatever R's state.",
+   "comment": "ret.purge-finished (ret2; expected PASS): A finished W's Log is kept whatever R's state.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -225,10 +225,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Every change at once, the Sweeper cleaning W.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "ret.all-workflow (ret1; expected PASS): Every change at once, the Sweeper cleaning W.",
+   "comment": "ret.all-workflow (ret2; expected PASS): Every change at once, the Sweeper cleaning W.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -267,10 +267,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Every change at once, the Sweeper cleaning A.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "ret.all-agent (ret1; expected PASS): Every change at once, the Sweeper cleaning A.",
+   "comment": "ret.all-agent (ret2; expected PASS): Every change at once, the Sweeper cleaning A.",
    "spec": "Spec",
    "constants": {
     "Target": "\"A\"",
@@ -306,10 +306,10 @@
   "expected": "VIOLATION:Inv_NoKeptDelete",
   "deadlock": true,
   "note": "Round 1 (17142cd0, review R1-1): the final check reads R with no lock; R restarts between the check and the commit, which deletes a kept W.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "find.ret-r1-restart (ret1; expected VIOLATION:Inv_NoKeptDelete): Round 1 (17142cd0, review R1-1): the final check reads R with no lock; R restarts between the check and the commit, which deletes a kept W.",
+   "comment": "find.ret-r1-restart (ret2; expected VIOLATION:Inv_NoKeptDelete): Round 1 (17142cd0, review R1-1): the final check reads R with no lock; R restarts between the check and the commit, which deletes a kept W.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -342,10 +342,10 @@
   "expected": "VIOLATION:Inv_NoKeptDelete",
   "deadlock": true,
   "note": "Round 1: W's run ends between the check of A and its commit, which deletes a session the finished W keeps.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "find.ret-r1-runend (ret1; expected VIOLATION:Inv_NoKeptDelete): Round 1: W's run ends between the check of A and its commit, which deletes a session the finished W keeps.",
+   "comment": "find.ret-r1-runend (ret2; expected VIOLATION:Inv_NoKeptDelete): Round 1: W's run ends between the check of A and its commit, which deletes a session the finished W keeps.",
    "spec": "Spec",
    "constants": {
     "Target": "\"A\"",
@@ -378,10 +378,10 @@
   "expected": "VIOLATION:Inv_NoFinishedLogPurge",
   "deadlock": true,
   "note": "Round 1 (review R1-2): purge_old_events deletes every old event, a finished W's Log too.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "find.ret-r1-purge (ret1; expected VIOLATION:Inv_NoFinishedLogPurge): Round 1 (review R1-2): purge_old_events deletes every old event, a finished W's Log too.",
+   "comment": "find.ret-r1-purge (ret2; expected VIOLATION:Inv_NoFinishedLogPurge): Round 1 (review R1-2): purge_old_events deletes every old event, a finished W's Log too.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -414,10 +414,10 @@
   "expected": "VIOLATION:Inv_NoFinishedLogPurge",
   "deadlock": true,
   "note": "A purge that protects a finished W but decides without holding it: the run ends between the decision and the commit.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "find.ret-purge-nolock (ret1; expected VIOLATION:Inv_NoFinishedLogPurge): A purge that protects a finished W but decides without holding it: the run ends between the decision and the commit.",
+   "comment": "find.ret-purge-nolock (ret2; expected VIOLATION:Inv_NoFinishedLogPurge): A purge that protects a finished W but decides without holding it: the run ends between the decision and the commit.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -450,10 +450,10 @@
   "expected": "VIOLATION:Wit_Deleted",
   "deadlock": true,
   "note": "The Sweeper deletes W.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "wit.ret-deleted (ret1; expected VIOLATION:Wit_Deleted): The Sweeper deletes W.",
+   "comment": "wit.ret-deleted (ret2; expected VIOLATION:Wit_Deleted): The Sweeper deletes W.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -486,10 +486,10 @@
   "expected": "VIOLATION:Wit_RestartAfterDelete",
   "deadlock": true,
   "note": "R restarts after W's delete committed.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "wit.ret-restart-after-delete (ret1; expected VIOLATION:Wit_RestartAfterDelete): R restarts after W's delete committed.",
+   "comment": "wit.ret-restart-after-delete (ret2; expected VIOLATION:Wit_RestartAfterDelete): R restarts after W's delete committed.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -522,10 +522,10 @@
   "expected": "VIOLATION:Wit_Busy",
   "deadlock": true,
   "note": "A restart that holds R first makes the Sweeper refuse (Busy).",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "wit.ret-busy (ret1; expected VIOLATION:Wit_Busy): A restart that holds R first makes the Sweeper refuse (Busy).",
+   "comment": "wit.ret-busy (ret2; expected VIOLATION:Wit_Busy): A restart that holds R first makes the Sweeper refuse (Busy).",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -558,10 +558,10 @@
   "expected": "VIOLATION:Wit_Kept",
   "deadlock": true,
   "note": "A restart that commits first makes the check keep W.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "wit.ret-kept (ret1; expected VIOLATION:Wit_Kept): A restart that commits first makes the check keep W.",
+   "comment": "wit.ret-kept (ret2; expected VIOLATION:Wit_Kept): A restart that commits first makes the check keep W.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -594,10 +594,10 @@
   "expected": "VIOLATION:Wit_Kept",
   "deadlock": true,
   "note": "A run end that commits first makes the check keep A.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "wit.ret-kept-runend (ret1; expected VIOLATION:Wit_Kept): A run end that commits first makes the check keep A.",
+   "comment": "wit.ret-kept-runend (ret2; expected VIOLATION:Wit_Kept): A run end that commits first makes the check keep A.",
    "spec": "Spec",
    "constants": {
     "Target": "\"A\"",
@@ -630,10 +630,10 @@
   "expected": "VIOLATION:Wit_PurgedThenEnded",
   "deadlock": true,
   "note": "The purge deletes a running W's old events, then the run ends.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "wit.ret-purged-then-ended (ret1; expected VIOLATION:Wit_PurgedThenEnded): The purge deletes a running W's old events, then the run ends.",
+   "comment": "wit.ret-purged-then-ended (ret2; expected VIOLATION:Wit_PurgedThenEnded): The purge deletes a running W's old events, then the run ends.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -666,10 +666,10 @@
   "expected": "VIOLATION:Wit_KeptLogThenEnded",
   "deadlock": true,
   "note": "A run writer holds W, the purge skips it and keeps its Log, then the run ends.",
-  "batch": "ret1",
-  "head": "issue-412-r2",
+  "batch": "ret2",
+  "head": "issue-412-r3",
   "tlc": {
-   "comment": "wit.ret-kept-log-then-ended (ret1; expected VIOLATION:Wit_KeptLogThenEnded): A run writer holds W, the purge skips it and keeps its Log, then the run ends.",
+   "comment": "wit.ret-kept-log-then-ended (ret2; expected VIOLATION:Wit_KeptLogThenEnded): A run writer holds W, the purge skips it and keeps its Log, then the run ends.",
    "spec": "Spec",
    "constants": {
     "Target": "\"W\"",
@@ -684,6 +684,468 @@
    },
    "invariants": [
     "Wit_KeptLogThenEnded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.prune-finished",
+  "module": "WorkflowPrune",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.prune-finished.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_KeptShown"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "R pending, O idle, W finished: the prune refuses (WorkflowBelow); W stays reachable.",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "ret.prune-finished (ret2; expected PASS): R pending, O idle, W finished: the prune refuses (WorkflowBelow); W stays reachable.",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"finished\"",
+    "OActive": "TRUE",
+    "RActive": "TRUE",
+    "Create": "FALSE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "FALSE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_KeptShown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.prune-runend",
+  "module": "WorkflowPrune",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.prune-runend.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_KeptShown"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "W's run ends while R is pruned: W is held; the run ends after the refusal, or the prune refuses at once (Busy).",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "ret.prune-runend (ret2; expected PASS): W's run ends while R is pruned: W is held; the run ends after the refusal, or the prune refuses at once (Busy).",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"active\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "FALSE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "TRUE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_KeptShown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.prune-create-share",
+  "module": "WorkflowPrune",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.prune-create-share.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_KeptShown"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A Workflow is created under O (O locked FOR SHARE) and its run ends while R is pruned.",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "ret.prune-create-share (ret2; expected PASS): A Workflow is created under O (O locked FOR SHARE) and its run ends while R is pruned.",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"none\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "TRUE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "TRUE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_KeptShown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.prune-create-nku",
+  "module": "WorkflowPrune",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.prune-create-nku.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_KeptShown"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "As above, the creation locking O FOR NO KEY UPDATE (the child budget's lock).",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "ret.prune-create-nku (ret2; expected PASS): As above, the creation locking O FOR NO KEY UPDATE (the child budget's lock).",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"none\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "TRUE",
+    "CreateMode": "\"nku\"",
+    "RunEnd": "TRUE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_KeptShown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.prune-ended",
+  "module": "WorkflowPrune",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.prune-ended.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_KeptShown"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "O ended, R ended, W finished (W is not kept): the prune still refuses; a cascading cleanup removes the subtree.",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "ret.prune-ended (ret2; expected PASS): O ended, R ended, W finished (W is not kept): the prune still refuses; a cascading cleanup removes the subtree.",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"finished\"",
+    "OActive": "FALSE",
+    "RActive": "FALSE",
+    "Create": "FALSE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "FALSE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_KeptShown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.ret-r2-prune",
+  "module": "WorkflowPrune",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.ret-r2-prune.cfg",
+  "invariants": [
+   "Inv_KeptShown"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_KeptShown",
+  "deadlock": true,
+  "note": "Round 2 (7824eafc, review R2-1): the check reads only the target and its Workflow children; R is deleted and the kept W under O is no longer reachable.",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "find.ret-r2-prune (ret2; expected VIOLATION:Inv_KeptShown): Round 2 (7824eafc, review R2-1): the check reads only the target and its Workflow children; R is deleted and the kept W under O is no longer reachable.",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"finished\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "FALSE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "FALSE",
+    "Check": "\"none\""
+   },
+   "invariants": [
+    "Inv_KeptShown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.ret-prune-kept-only",
+  "module": "WorkflowPrune",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.ret-prune-kept-only.cfg",
+  "invariants": [
+   "Inv_KeptShown"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_KeptShown",
+  "deadlock": true,
+  "note": "A check that refuses only for a Workflow kept now: W's run has not ended, R is deleted, then the run ends and W is kept out of reach.",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "find.ret-prune-kept-only (ret2; expected VIOLATION:Inv_KeptShown): A check that refuses only for a Workflow kept now: W's run has not ended, R is deleted, then the run ends and W is kept out of reach.",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"active\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "FALSE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "TRUE",
+    "Check": "\"kept\""
+   },
+   "invariants": [
+    "Inv_KeptShown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.ret-prune-nolock",
+  "module": "WorkflowPrune",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.ret-prune-nolock.cfg",
+  "invariants": [
+   "Inv_KeptShown"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_KeptShown",
+  "deadlock": true,
+  "note": "A check that does not lock the sessions it leaves: a Workflow created under O between the check and the commit, then its run ends.",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "find.ret-prune-nolock (ret2; expected VIOLATION:Inv_KeptShown): A check that does not lock the sessions it leaves: a Workflow created under O between the check and the commit, then its run ends.",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"none\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "TRUE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "TRUE",
+    "Check": "\"nolock\""
+   },
+   "invariants": [
+    "Inv_KeptShown"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-prune-deleted",
+  "module": "WorkflowPrune",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-prune-deleted.cfg",
+  "invariants": [
+   "Wit_Deleted"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_Deleted",
+  "deadlock": true,
+  "note": "With no Workflow under O, the prune deletes R as before.",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "wit.ret-prune-deleted (ret2; expected VIOLATION:Wit_Deleted): With no Workflow under O, the prune deletes R as before.",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"none\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "FALSE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "FALSE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "Wit_Deleted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-prune-below",
+  "module": "WorkflowPrune",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-prune-below.cfg",
+  "invariants": [
+   "Wit_Below"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_Below",
+  "deadlock": true,
+  "note": "The prune refuses (WorkflowBelow).",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "wit.ret-prune-below (ret2; expected VIOLATION:Wit_Below): The prune refuses (WorkflowBelow).",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"finished\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "FALSE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "FALSE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "Wit_Below"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-prune-busy",
+  "module": "WorkflowPrune",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-prune-busy.cfg",
+  "invariants": [
+   "Wit_Busy"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_Busy",
+  "deadlock": true,
+  "note": "A creation that holds O first makes the prune refuse (Busy).",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "wit.ret-prune-busy (ret2; expected VIOLATION:Wit_Busy): A creation that holds O first makes the prune refuse (Busy).",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"none\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "TRUE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "TRUE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "Wit_Busy"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-prune-changed",
+  "module": "WorkflowPrune",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-prune-changed.cfg",
+  "invariants": [
+   "Wit_Changed"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_Changed",
+  "deadlock": true,
+  "note": "A Workflow created between the read and the locks makes the prune refuse (Changed).",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "wit.ret-prune-changed (ret2; expected VIOLATION:Wit_Changed): A Workflow created between the read and the locks makes the prune refuse (Changed).",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"none\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "TRUE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "TRUE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "Wit_Changed"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-prune-created-after",
+  "module": "WorkflowPrune",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-prune-created-after.cfg",
+  "invariants": [
+   "Wit_CreatedAfter"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_CreatedAfter",
+  "deadlock": true,
+  "note": "A creation that waited for the prune's lock creates W after R's delete committed (the case Inv_KeptShown leaves out).",
+  "batch": "ret2",
+  "head": "issue-412-r3",
+  "tlc": {
+   "comment": "wit.ret-prune-created-after (ret2; expected VIOLATION:Wit_CreatedAfter): A creation that waited for the prune's lock creates W after R's delete committed (the case Inv_KeptShown leaves out).",
+   "spec": "Spec",
+   "constants": {
+    "WInit": "\"none\"",
+    "OActive": "TRUE",
+    "RActive": "FALSE",
+    "Create": "TRUE",
+    "CreateMode": "\"share\"",
+    "RunEnd": "TRUE",
+    "Check": "\"locked\""
+   },
+   "invariants": [
+    "Wit_CreatedAfter"
    ],
    "properties": [],
    "deadlock": true

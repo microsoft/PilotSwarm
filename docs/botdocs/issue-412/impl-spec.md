@@ -175,3 +175,53 @@ Add the public method `purgeSessionEventsBefore(cutoff: Date): Promise<number>`
 2. `docs/developer/building/workflow-sessions.md` and `docs/user-guide/workflows.md`:
    the event purge keeps a finished Workflow's Log.
 3. `CHANGELOG.md`: the same in the Unreleased entry.
+
+## Round 3 (review round 2)
+
+Steps 10 to 13 answer the findings of review round 2 (design-spec.md §3.6,
+§3.7, §7). Their regression tests come first.
+
+## Step 10. `packages/sdk/src/workflow/store.ts`: the prune never leaves a Workflow under a deleted session
+
+1. Add the exported function `sweeperWorkflowBelowDetail(workflowSessionId)`:
+   the refusal's words.
+2. Add the private method `sweeperLeftBelow(client, sessionId, deleteSet)`:
+   `SELECT session_id FROM cms_get_descendant_session_ids($1) WHERE NOT
+   (session_id = ANY($2))`, the live descendants outside the delete set.
+3. Add the public method `sweeperWorkflowLeftBelow(sessionId)`: the first live
+   Workflow (not a test bench) among `sweeperLeftBelow(sessionId,
+   sweeperDeleteSet(sessionId, false))`, or null.
+4. In `sweeperSoftDelete`:
+   - `enumerate()` returns `{ ids, left }`: the delete set, and without cascade
+     `sweeperLeftBelow` of it (with cascade, `left` is empty).
+   - The NOWAIT lock statement locks `ids` and `left` together; `locked` and
+     `lockedWorkflow` come from the rows in `ids` only, `leftRows` are the
+     others.
+   - The DR-02 re-read compares both sets.
+   - After it: when a row of `leftRows` is a live Workflow, return
+     `{ refused: { status: "WorkflowBelow", workflowSessionId, detail } }`.
+   - The status union gains `"WorkflowBelow"` and `workflowSessionId?`.
+
+## Step 11. `packages/sdk/src/sweeper-tools.ts`: the prune's first check
+
+1. `readKept(sessionId, cascade)` also returns `workflowLeftBelow`: without
+   cascade and when nothing is kept, `store.sweeperWorkflowLeftBelow(sessionId)`.
+2. `prune_orchestrations` skips a row with `kept.workflowLeftBelow`, as one with
+   `kept.kept`. Its description says so.
+3. `finalCheckRefusal` words a `WorkflowBelow` refusal.
+
+## Step 12. `packages/sdk/src/workflow/store.ts`: one purge transaction
+
+In `purgeSessionEventsBefore`, run phase 1 inside the transaction of phase 2,
+before the `FOR SHARE ... SKIP LOCKED` statement, and return the sum from the
+transaction. The doc comment says that a failure deletes nothing.
+
+## Step 13. Formal model and documents
+
+1. `docs/formal/workflow/retention/WorkflowPrune.tla`: the prune of `R` with the
+   ordinary session `O` between `R` and the Workflow `W`, a Workflow created
+   under `O`, and a run end. `gen-cases.py` adds its cases (batch ret2), the
+   README its binding and results, `SHA256SUMS` the new file.
+2. `docs/developer/building/workflow-sessions.md`, `docs/user-guide/workflows.md`
+   and `CHANGELOG.md`: the prune keeps a session with a Workflow under it that
+   it would leave in place.

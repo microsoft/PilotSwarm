@@ -74,6 +74,20 @@ called).
 |---|---|---|---|
 | `is grouped under its owner's Terminated row, and its agent node Log and steps stay readable` | A real owner session made idle by one turn. A Workflow with one agent state `verify` (`session: new`) whose agent answers with a marker text and completes the state `unverified`; the run ends `blocked`. The agent session's orchestration ends. The rows are aged 60 minutes and every event 2 days. Then the scan, `cleanup_session` (default grace and 0) on the Workflow and on the agent session, `prune_orchestrations` (5 and 0), and `purge_old_events`. | The scan lists neither; every cleanup refuses `WorkflowKept`. The owner's old events are purged. The management client's `listSessions`, grouped by the session list's own `buildSessionTree`, puts the Workflow in the owner's Terminated row and the agent session in the Workflow's Terminated row; the owner is `idle`. `getSessionEvents` of the agent session still holds the agent's `assistant.message` with the marker; the Workflow's events hold `workflow.state_completed` for `verify` with outcome `unverified` and the marker in its output. `read_workflow` returns the graph and the `verify` visit with its output. | Fails: the agent's Log is empty after the purge. |
 
+### `packages/sdk/test/local/sweeper-final-check.test.js` (round 3)
+
+The same harness. The prune's targets read `NotFound` from the stub duroxide
+client; the final check is also called directly (`store.sweeperSoftDelete` with
+`cascade: false`, as the prune calls it).
+
+| Test | Setup | Expected after the fix | On round 2 (`7824eafc`) |
+|---|---|---|---|
+| `issue 412 (prune): a pending root whose ordinary child owns a finished Workflow is not pruned; the Workflow stays in its owner's Terminated row` | Root `R` pending (never accepted a message); ordinary child `O` idle; finished Workflow `W` under `O`; all 60 minutes old. `prune_orchestrations` at cutoffs 5 and 0. | Both prunes delete nothing (`cmsCleanedUp` 0); `R`, `O`, `W` stay. The management client's `listSessions`, grouped by `buildSessionTree`, lists `R` and puts `W` in `O`'s Terminated row. | Fails: the prune deletes `R`. |
+| `issue 412 (prune): the final check refuses to remove a session above a completed / running / draft Workflow that the delete leaves in place (WorkflowBelow)` (three tests) | Root `R` completed; `O` idle under it; `W` under `O`, with a completed run, a running run, or no run. | `sweeperSoftDelete(R, cascade: false)` refuses `WorkflowBelow` naming `W`; nothing is deleted. | Fails: `R` is deleted. |
+| `issue 412 (prune): a prune that leaves only ordinary sessions and test benches under its target deletes it as before; a held one refuses it at once (Busy)` | Root `R` pending; `O` idle under it; a test bench under `O`. Another transaction holds `O` `FOR SHARE` (as a child's creation does). | The prune never waits and refuses (`cmsRefused` 1); `R` stays. After the other transaction ends, the prune deletes `R` and leaves `O` and the bench in place, as `main` does. | Fails: `R` is deleted while `O` is held. |
+| `issue 412 (prune): a session created under the target's ordinary child between the read and the locks makes the prune refuse (Changed)` | Root `R` pending; `O` idle. The final check stops just before its NOWAIT lock statement; a session is created under `O`. | The lock statement includes `O`; the check refuses `Changed`; nothing is deleted. | Fails: no lock statement on `O`; `R` is deleted. |
+| `issue 412 (review R2-2): a purge that fails deletes nothing: its two passes are one transaction` | Owner and a running Workflow, each with an old and a new event. A trigger makes the delete of the Workflow's events fail. | `purge_old_events` returns the error; the owner's old event is still there. After the trigger is dropped, a purge deletes both old events. | Fails: the owner's old event is deleted although the purge failed. |
+
 Command (the new tests only; each has these words in its name, or is the new file):
 
 ```bash
@@ -102,7 +116,7 @@ its state).
 |---|---|
 | `packages/sdk/test/local/sweeper-cleanup-guard.test.js` (whole file) | Scan, cleanup and prune rules: live roots, terminal children, batches, Workflow sessions by their runs, failed reads, test benches. |
 | `packages/sdk/test/local/workflow-sweeper-recover.test.js` | Every Sweeper pass on the real runtime with active, lost, dead and finished runs. |
-| `packages/sdk/test/local/sweeper-final-check.test.js` | The final check under concurrency: lock order, `Busy`, `Changed`, the subtree re-read, `StartUnresolved`. The new check runs inside this transaction. |
+| `packages/sdk/test/local/sweeper-final-check.test.js` | The final check under concurrency: lock order, `Busy`, `Changed`, the subtree re-read, `StartUnresolved`, the prune of an owner with a held Workflow child (`AR-03 (prune)`). The new checks run inside this transaction. |
 | `packages/sdk/test/local/sweeper-queued-start.test.js` | A queued start kept by scan, cleanup and prune. |
 | `packages/sdk/test/local/facts.test.js` | The Sweeper's cleanup of descendants' facts. |
 
@@ -117,7 +131,7 @@ npm run test:unit
 pool; its catalog has no Workflow store, so `purge_old_events` keeps its old
 `DELETE` there.
 
-Formal model (design-spec.md §3.5, §3.6), from
+Formal models (design-spec.md §3.5, §3.6, §3.7), from
 `docs/formal/workflow/retention/`, with Java 17 or later and `tla2tools.jar`
 v1.7.4 in `$TLA_TOOLS`:
 

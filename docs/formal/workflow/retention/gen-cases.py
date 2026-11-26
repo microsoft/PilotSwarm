@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes cases.tsv, cases.json and tlc-templates.json for the issue 412 retention model (no TLC is run here). The .cfg
+"""Writes cases.tsv, cases.json and tlc-templates.json for the issue 412 retention models (no TLC is run here). The .cfg
 files are generated from these by run-tlc.sh (../../tlc_cases.py)."""
 import json
 import os as _os
@@ -7,9 +7,10 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import tlc_cases   # docs/formal/tlc_cases.py
 
-BATCH = "ret1"
-HEAD = "issue-412-r2"
+BATCH = "ret2"
+HEAD = "issue-412-r3"
 M = "WorkflowRetention"
+MP = "WorkflowPrune"
 
 
 def q(x):
@@ -66,6 +67,44 @@ CASES = [
 ]
 
 
+def p(w="finished", o=True, r=False, create=False, cmode="share", runend=False, check="locked"):
+    return dict(WInit=q(w), OActive=o, RActive=r, Create=create, CreateMode=q(cmode), RunEnd=runend, Check=q(check))
+
+
+PSAFE = ["TypeOK", "Inv_Locks", "Inv_KeptShown"]
+P_CREATE = p(w="none", create=True, runend=True)
+
+# Review R2-1: the prune of R, with the ordinary session O between R and the Workflow W (module WorkflowPrune).
+PRUNE_CASES = [
+ ("ret.prune-finished", "design", p(r=True), PSAFE, "PASS",
+  "R pending, O idle, W finished: the prune refuses (WorkflowBelow); W stays reachable."),
+ ("ret.prune-runend", "design", p(w="active", runend=True), PSAFE, "PASS",
+  "W's run ends while R is pruned: W is held; the run ends after the refusal, or the prune refuses at once (Busy)."),
+ ("ret.prune-create-share", "design", P_CREATE, PSAFE, "PASS",
+  "A Workflow is created under O (O locked FOR SHARE) and its run ends while R is pruned."),
+ ("ret.prune-create-nku", "design", p(w="none", create=True, cmode="nku", runend=True), PSAFE, "PASS",
+  "As above, the creation locking O FOR NO KEY UPDATE (the child budget's lock)."),
+ ("ret.prune-ended", "design", p(o=False), PSAFE, "PASS",
+  "O ended, R ended, W finished (W is not kept): the prune still refuses; a cascading cleanup removes the subtree."),
+ ("find.ret-r2-prune", "finding", p(o=True, check="none"), ["Inv_KeptShown"], "VIOLATION:Inv_KeptShown",
+  "Round 2 (7824eafc, review R2-1): the check reads only the target and its Workflow children; R is deleted and the kept W under O is no longer reachable."),
+ ("find.ret-prune-kept-only", "finding", p(w="active", runend=True, check="kept"), ["Inv_KeptShown"],
+  "VIOLATION:Inv_KeptShown",
+  "A check that refuses only for a Workflow kept now: W's run has not ended, R is deleted, then the run ends and W is kept out of reach."),
+ ("find.ret-prune-nolock", "finding", p(w="none", create=True, runend=True, check="nolock"), ["Inv_KeptShown"],
+  "VIOLATION:Inv_KeptShown",
+  "A check that does not lock the sessions it leaves: a Workflow created under O between the check and the commit, then its run ends."),
+ ("wit.ret-prune-deleted", "witness", p(w="none"), ["Wit_Deleted"], "VIOLATION:Wit_Deleted",
+  "With no Workflow under O, the prune deletes R as before."),
+ ("wit.ret-prune-below", "witness", p(), ["Wit_Below"], "VIOLATION:Wit_Below", "The prune refuses (WorkflowBelow)."),
+ ("wit.ret-prune-busy", "witness", P_CREATE, ["Wit_Busy"], "VIOLATION:Wit_Busy", "A creation that holds O first makes the prune refuse (Busy)."),
+ ("wit.ret-prune-changed", "witness", P_CREATE, ["Wit_Changed"], "VIOLATION:Wit_Changed",
+  "A Workflow created between the read and the locks makes the prune refuse (Changed)."),
+ ("wit.ret-prune-created-after", "witness", P_CREATE, ["Wit_CreatedAfter"], "VIOLATION:Wit_CreatedAfter",
+  "A creation that waited for the prune's lock creates W after R's delete committed (the case Inv_KeptShown leaves out)."),
+]
+
+
 def cfg(cid, consts, invs, note, expected):
     lines = [f"\\* {cid} ({BATCH}; expected {expected}): {note}", "SPECIFICATION Spec", "CONSTANTS"]
     lines += [f"    {k} = {str(v).upper() if isinstance(v, bool) else v}" for k, v in consts.items()]
@@ -76,12 +115,13 @@ def cfg(cid, consts, invs, note, expected):
 
 def main():
     rows, meta, texts = [], [], []
-    for cid, group, consts, invs, expected, note in CASES:
-        name = f"{cid}.cfg"
-        texts.append(cfg(cid, consts, invs, note, expected))
-        rows.append(f"{cid}\t{name}\t{M}")
-        meta.append(dict(id=cid, module=M, group=group, spec="Spec", config=name, invariants=invs, properties=[],
-                         expected=expected, deadlock=True, note=note, batch=BATCH, head=HEAD))
+    for module, cases in ((M, CASES), (MP, PRUNE_CASES)):
+        for cid, group, consts, invs, expected, note in cases:
+            name = f"{cid}.cfg"
+            texts.append(cfg(cid, consts, invs, note, expected))
+            rows.append(f"{cid}\t{name}\t{module}")
+            meta.append(dict(id=cid, module=module, group=group, spec="Spec", config=name, invariants=invs, properties=[],
+                             expected=expected, deadlock=True, note=note, batch=BATCH, head=HEAD))
     assert len({r.split()[0] for r in rows}) == len(rows)
     tlc_cases.dump_json("tlc-templates.json", tlc_cases.attach(meta, texts), 2)
     with open("cases.tsv", "w") as f:

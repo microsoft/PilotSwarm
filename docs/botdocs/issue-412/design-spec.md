@@ -83,8 +83,8 @@ that deletes:
 |---|---|---|
 | `scan_completed_sessions` | (lists candidates) | It does not list a candidate whose cleanup would delete a kept session. |
 | `cleanup_session` | The target and all its descendants | It refuses, with status `WorkflowKept` and a reason, when one of them is kept. |
-| `prune_orchestrations`, session pass | The target and the Workflow sessions the owner trigger deletes with it | It skips the target when one of them is kept. |
-| Final check (`sweeperSoftDelete`) | Exactly the sessions it has locked, and the target | It refuses with `WorkflowKept` when one of them is kept. It checks after it takes the locks, so a change after the tool's first check cannot slip through. When a Workflow is among those sessions or above the target, it first holds every session above the target `FOR SHARE` (§3.5). |
+| `prune_orchestrations`, session pass | The target and the Workflow sessions the owner trigger deletes with it | It skips the target when one of them is kept, or when a Workflow lies under the target and the delete would leave it in place (§3.7). |
+| Final check (`sweeperSoftDelete`) | Exactly the sessions it has locked, and the target | It refuses with `WorkflowKept` when one of them is kept. It checks after it takes the locks, so a change after the tool's first check cannot slip through. When a Workflow is among those sessions or above the target, it first holds every session above the target `FOR SHARE` (§3.5). Without cascade, it also refuses with `WorkflowBelow` when a Workflow lies under the target and the delete would leave it in place (§3.7). |
 
 The event purge keeps the Log of a finished Workflow (§3.6).
 
@@ -145,6 +145,8 @@ agent session of `W`, `B` a definition test bench of `O`.
 | 6. Only a test bench | `O` completed root, `B` ended test | `O` | Cleaned with `B`, as before. |
 | 7. Active run under an ended owner | `O` completed root, `W2` running | `O` | Cleaned; the run is cancelled with the delete, as before. |
 | 8. Explicit delete | `O` idle | (person deletes `O` or `W`) | Deleted at once, as before. |
+| 9. Prune above an ordinary owner | `R` pending root (reads `NotFound`), `O` idle child of `R`, `W` completed | `R` (prune) | Skipped; the final check would refuse `WorkflowBelow` (§3.7). `R`, `O` and `W` stay listed. |
+| 10. Prune with only ordinary sessions under it | `R` pending root, `O` idle child of `R` | `R` (prune) | Deleted, `O` left in place, as before. |
 
 Trace of case 3 through `cleanup_session(O)`:
 
@@ -229,16 +231,21 @@ Workflow, and a root can restart (§3.5) after a purge has deleted the Log of a
 Workflow it is about to keep again. The wider set depends only on the Workflow
 itself, so the purge needs no lock on any session above it.
 
-The purge has two phases:
+The purge is one transaction with two phases, so a failed statement rolls the
+whole purge back and a failure deletes nothing, as the single `DELETE` on
+`main` did (review round 2, finding 2):
 
 1. One statement deletes the old events of every session that is **not in a
    Workflow tree**. Whether a session is in a Workflow tree never changes while
    it exists, so this phase takes no lock. It is the bulk of the events.
-2. One transaction handles the Workflow trees. It first holds `FOR SHARE`,
+2. Then the Workflow trees. The transaction first holds `FOR SHARE`,
    `SKIP LOCKED`, every Workflow session (not a test bench) that has not
    finished: a draft, or one with an active run. Then it deletes the old events
    of the Workflow trees, except those of a Workflow that has finished or that
    it does not hold, and of every session under such a Workflow.
+
+Phase 1 runs first, so the share locks of phase 2 are held only for phase 2's
+two statements and the commit, not during the bulk delete.
 
 A run can end while the purge runs. Every writer of a Workflow's runs holds the
 Workflow's row first (`FOR NO KEY UPDATE`). So a Workflow that the purge holds
@@ -255,6 +262,71 @@ one event two days old. After the purge, `W` and `A` keep theirs; `O`, `X`,
 `W2` and `A2` lose theirs, as on `main`. After a person deletes `W`, the next
 purge deletes the old events of `W` and `A`.
 
+### 3.7 A prune never leaves a Workflow under a deleted session
+
+The prune (`prune_orchestrations`, step 3) soft-deletes a session row whose
+orchestration reads `NotFound` **without cascade**: it deletes the session and
+the Workflow sessions that the owner trigger deletes with it (its Workflow
+children, and theirs), and leaves every other session under it in place. That
+is `main`'s behavior. The session list and the portal reach a session only
+through its parent: the tree builder skips a child whose parent is not listed
+(`packages/app/ui/core/src/session-tree.js:274-304`).
+
+Review round 2 (finding 1) showed what that means for a kept Workflow.
+Example: root `R` is pending (it never accepted a message, so it reads
+`NotFound`), its ordinary child `O` is idle, and `O` started the Workflow `W`,
+which has finished. `W` is kept: `O` (and `R`) are active. Round 2's final
+check looked only at `R` and its Workflow children, so the prune deleted `R`.
+`O` and `W` stayed stored, but no longer appeared in the session list or the
+portal, so the owner could not open `W` under `Terminated`.
+
+The rule: **a delete without cascade refuses while a Workflow session that is
+not a test bench lies under its target and the delete would leave it in
+place.** The refusal is `WorkflowBelow`. It does not depend on the Workflow's
+run or on any session's state:
+
+- A Workflow whose run has not ended (or a draft) becomes kept when its run
+  ends while `O` is active. If the prune deleted `R` first, that Workflow would
+  be kept out of reach. Model case `find.ret-prune-kept-only` shows this for a
+  rule that refuses only for a Workflow kept now.
+- When every session above the Workflow has ended, the cleanup that cascades
+  removes the whole subtree once nothing in it is kept (§3.3, case 4). The
+  prune does not need to.
+
+How the final check applies it (`sweeperSoftDelete`, without cascade):
+
+1. It reads the delete set (as before) and the sessions under the target that
+   the delete leaves in place (`sweeperLeftBelow`: every live descendant that is
+   not in the delete set).
+2. It locks both, `FOR NO KEY UPDATE NOWAIT`, in one statement (a held one:
+   `Busy`), and reads both again (a set that grew: `Changed`). This is the
+   existing rule for the delete set (review DR-02) applied to the sessions it
+   leaves: creation locks its parent first (`lockLiveParent`: `FOR SHARE`, or
+   `FOR NO KEY UPDATE` under the child budget), so no Workflow can be created
+   under them before the delete commits.
+3. If a locked session it leaves is a Workflow that is not a test bench, it
+   refuses (`WorkflowBelow`) and deletes nothing.
+
+The prune also asks before its final check (`sweeperWorkflowLeftBelow`) and
+skips such a row without a refusal, as it skips a row with a kept session.
+
+When no session is left under the target (the usual prune), nothing changes.
+When only ordinary sessions or test benches are left under it, the target is
+deleted as on `main`; the only difference is the NOWAIT lock on them, so one
+that another transaction holds at that moment refuses the prune (`Busy`) and a
+later prune tries again.
+
+A Workflow that a session under the target creates **after** the prune has
+committed is created by a session that the prune already left without its
+parent. That is `main`'s prune behavior for the sessions under its target, and
+outside this issue. The model names this case (`Wit_CreatedAfter`) and leaves
+it out of its invariant.
+
+The model `docs/formal/workflow/retention/WorkflowPrune.tla` checks the rule
+with TLC against a Workflow created under `O` and a run that ends during the
+prune; round 2's check, a check that refuses only for a Workflow kept now, and
+a check without the locks each reach a kept Workflow under a deleted `R` (§7).
+
 ## 4. Alternatives considered
 
 | Alternative | Why not |
@@ -269,8 +341,13 @@ purge deletes the old events of `W` and `A`.
 | Wait for the locks above the target instead of NOWAIT | The Sweeper would wait while it holds the target's lock; a writer that locks parent before child could then form a lock cycle. NOWAIT keeps the existing rule: refuse, and a later scan tries again. |
 | Event purge: keep exactly the kept sessions' events | It depends on the states above each Workflow, which change (a root restart), so the purge would need the share locks of §3.5 on every such session in a bulk delete. Keeping every finished Workflow's Log needs no lock above it, and the extra events (a finished Workflow whose ancestors all ended) go when the Sweeper cleans it. |
 | Event purge: keep the events of every Workflow, also a running one | Changes the rule for active runs, which the issue keeps, and lets a long polling Workflow's events grow without limit while it runs. |
-| Event purge: one transaction that holds the active Workflows for the whole purge | Every running Workflow would wait for the whole bulk delete. Phase 1 deletes the events outside Workflow trees without any lock. |
+| Event purge: hold the active Workflows before the bulk delete | Every running Workflow would wait for the whole bulk delete. Phase 1 runs first in the same transaction and holds nothing. |
+| Event purge: two transactions, phase 1 committed on its own (round 2) | A failure in phase 2 returned only an error after phase 1 had deleted events (review round 2, finding 2). One transaction rolls both back. |
 | Event purge: decide without holding the active Workflows | A run that ends between the delete's decision and its commit loses its Log after it was seen (model case `find.ret-purge-nolock`). |
+| Prune: refuse only when a kept Workflow is under the target | A Workflow whose run has not ended becomes kept later, under a deleted target (model case `find.ret-prune-kept-only`). |
+| Prune: refuse whenever any session would be left under the target | Changes `main`'s prune of a session with only ordinary sessions under it, which the issue does not ask. |
+| Prune: delete with cascade | Would delete active sessions under a root whose orchestration reads `NotFound`. |
+| Prune: no lock on the sessions it leaves under the target | A Workflow created under one of them between the check and the commit is left under the deleted target (model case `find.ret-prune-nolock`). |
 
 ## 5. Compatibility
 
@@ -284,6 +361,12 @@ purge deletes the old events of `W` and `A`.
 - A cleanup with a Workflow in or above it can now refuse `Busy` when a session
   above the target is being changed at that moment. `Busy` is an existing
   refusal; a later scan tries again.
+- A prune whose target has sessions under it that the delete leaves in place
+  locks them NOWAIT, so it can refuse `Busy` when one of them is being changed
+  at that moment; a later prune tries again. With only ordinary sessions and
+  test benches under it, the target is deleted as before. The prune's result
+  counts a `WorkflowBelow` refusal of its final check in `cmsRefused`; a row it
+  skips before that check is not counted, as a kept row.
 - `purge_old_events` keeps its parameters and result shape (`eventsDeleted`,
   `cutoff`, `olderThanMinutes`). Its description says that a finished
   Workflow's Log is kept. A catalog without a Workflow store (a test double)
@@ -308,14 +391,20 @@ purge deletes the old events of `W` and `A`.
 - Phase 2 of the purge holds the unfinished Workflows for the length of the
   delete of the Workflow trees' old events. A run writer of such a Workflow
   waits that long. Phase 1, the bulk, holds nothing.
+- The purge is one transaction again, so the row locks of the deleted events
+  are held until the whole purge commits, as with `main`'s single statement.
+- A root that never accepts a message, with a Workflow under its ordinary child,
+  is never pruned: it reads as active (pending) and is not a cleanup candidate.
+  It stays with its subtree until a person deletes it. This follows the issue's
+  definition of active, as case 5 does for a Workflow child of such a root.
 
 ## 7. Quality gates
 
 | Gate | Applies | Evidence | Status |
 |---|---|---|---|
-| Database: targeted tests on disposable PostgreSQL 16 | Yes: new queries in `WorkflowStore` (no schema change, no migration) | test-spec.md: 60 of 60 in the six targeted local files; every new regression failed before its fix | Run |
+| Database: targeted tests on disposable PostgreSQL 16 | Yes: new queries in `WorkflowStore` (no schema change, no migration) | test-spec.md: every targeted local file passes; every new regression failed before its fix | Run |
 | Database: `--all-providers` matrix (PostgreSQL 16 and live HorizonDB) | Yes (new SQL: recursive CTEs, `FOR SHARE NOWAIT`, `FOR SHARE OF s SKIP LOCKED`, a `DELETE` with CTEs) | The task's rules for this step allow only the targeted tests and forbid HorizonDB. PostgreSQL 16 only. | Not run |
-| Formal model (locks, concurrent deleters) | Yes: new share locks in the final check and the purge (§3.5, §3.6) | `docs/formal/workflow/retention/`: batch ret1, 18 of 18 as expected with TLC 2.19 (7 PASS, 4 deliberate faults violated on their named invariant, both round-1 behaviors among them, 7 witnesses reached) | Run |
+| Formal model (locks, concurrent deleters) | Yes: new share locks in the final check and the purge (§3.5, §3.6); the prune's rule and locks (§3.7) | `docs/formal/workflow/retention/` (`WorkflowRetention`, `WorkflowPrune`): batch ret2, 31 of 31 as expected with TLC 2.19 (12 PASS, 7 deliberate faults violated on their named invariant, the round-1 and round-2 behaviors among them, 12 witnesses reached). The raw output of the run (generated settings files, each case's TLC output, the run table) is kept with the review of round 3. | Run |
 | Prompts and skills: size budgets | Yes: `sweeper.agent.md`, the Sweeper `SKILL.md`, tool descriptions of the Sweeper and `purge_old_events` | `npm run test:unit` (prompt and skill size budget tests) | Run |
 | Prompts and skills: positive and negative live-model checks | Yes: the Sweeper's instructions describe the new `WorkflowKept` refusal | This step has no model access (a placeholder `GITHUB_TOKEN`), and its rules allow no live-model suite. | Not run |
 | Portal and UX | No UI code change; the Terminated grouping is checked through the production list and tree builder (`workflow-kept-terminated.test.js`) | — | Not applicable |

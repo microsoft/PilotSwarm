@@ -16,3 +16,16 @@ wit.ret-kept	wit.ret-kept.cfg	WorkflowRetention
 wit.ret-kept-runend	wit.ret-kept-runend.cfg	WorkflowRetention
 wit.ret-purged-then-ended	wit.ret-purged-then-ended.cfg	WorkflowRetention
 wit.ret-kept-log-then-ended	wit.ret-kept-log-then-ended.cfg	WorkflowRetention
+ret.prune-finished	ret.prune-finished.cfg	WorkflowPrune
+ret.prune-runend	ret.prune-runend.cfg	WorkflowPrune
+ret.prune-create-share	ret.prune-create-share.cfg	WorkflowPrune
+ret.prune-create-nku	ret.prune-create-nku.cfg	WorkflowPrune
+ret.prune-ended	ret.prune-ended.cfg	WorkflowPrune
+find.ret-r2-prune	find.ret-r2-prune.cfg	WorkflowPrune
+find.ret-prune-kept-only	find.ret-prune-kept-only.cfg	WorkflowPrune
+find.ret-prune-nolock	find.ret-prune-nolock.cfg	WorkflowPrune
+wit.ret-prune-deleted	wit.ret-prune-deleted.cfg	WorkflowPrune
+wit.ret-prune-below	wit.ret-prune-below.cfg	WorkflowPrune
+wit.ret-prune-busy	wit.ret-prune-busy.cfg	WorkflowPrune
+wit.ret-prune-changed	wit.ret-prune-changed.cfg	WorkflowPrune
+wit.ret-prune-created-after	wit.ret-prune-created-after.cfg	WorkflowPrune
