@@ -1,0 +1,32 @@
+{
+  "WorkflowPrune": {
+    "indent": 4,
+    "constants": [
+      "WInit",
+      "OActive",
+      "RActive",
+      "Create",
+      "CreateMode",
+      "RunEnd",
+      "Check"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "WorkflowRetention": {
+    "indent": 4,
+    "constants": [
+      "Target",
+      "RInit",
+      "WInit",
+      "Sweep",
+      "Restart",
+      "RunEnd",
+      "Purge",
+      "AncLock",
+      "PurgeMode"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

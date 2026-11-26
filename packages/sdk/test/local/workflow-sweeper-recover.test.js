@@ -8,7 +8,9 @@
  * controller's instance for real. None of them touches either run: the store counts both as active. Recover then
  * dispatches the lost run, which runs to its end, and ends the dead one as failed, with its receipt and the parent's
  * notice. An ended test bench and recovered Workflow remain readable; terminal controller instances can be pruned
- * independently. Finished live Workflows become normal terminal cleanup candidates. Deleting the ordinary owning session still deletes its test bench and other descendants.
+ * independently. Finished live Workflows are kept while their owner is active (issue 412), with their whole record, and
+ * their Log survives the Resource Manager's event purge. Cleaning
+ * the ordinary owning session once it ended still deletes its test bench and other descendants.
  *
  * The owner session stands for a live session: its `session-<id>` instance is a stand-in orchestration that waits, so
  * the Sweeper reads it as Running (a session's lifecycle owns its children's: cleaning an ended owner removes them).
@@ -22,12 +24,13 @@ import pg from "pg";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
-import { updateWorkflowFromTool } from "../../src/workflow/tools.ts";
+import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 import { registerWorkflow, sessionQueueTransport, workflowNotifyInstanceId } from "../../src/workflow/runtime.ts";
 import { saveSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
+import { createResourceManagerTools } from "../../src/resourcemgr-tools.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -154,13 +157,23 @@ async function ageSessions(env, ids, minutes) {
     }
 }
 
+async function ageEvents(env, ids, minutes) {
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    try {
+        await db.query(`UPDATE "${env.cmsSchema}".session_events SET created_at = now() - make_interval(mins => $2) WHERE session_id = ANY($1::text[])`,
+            [ids, minutes]);
+    } finally {
+        await db.end();
+    }
+}
+
 const isLive = async (catalog, sessionId) => {
     const row = await catalog.getSession(sessionId);
     return !!row && row.deletedAt == null;
 };
 
 describe("the Sweeper and Workflow recovery on the real runtime", () => {
-    it("every Sweeper pass preserves active Workflow recovery, cleans finished live Workflows, and lets ancestor deletion remove retained test benches",
+    it("every Sweeper pass preserves active Workflow recovery, keeps finished live Workflows while their owner is active, and lets ancestor deletion remove them and retained test benches",
         { timeout: TIMEOUT }, async () => {
             const env = getEnv();
             const h = await harness(env);
@@ -265,21 +278,76 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
                 expect(h.notices.map(notice => [notice.parentSessionId, notice.clientMessageId]).sort()).toEqual([
                     [h.owner, `workflow:${deadId}:${dead.runId}:terminal`], [h.owner, `workflow:${lostId}:${lost.runId}:terminal`]].sort());
 
-                // A completed live Workflow is independently cleanable after its full outcome is saved for the owner.
+                // A completed live Workflow is kept while its owner is active (issue 412); its full outcome is also saved for the owner.
                 const after = await tool("cleanup_session").handler({ sessionId: lostId, graceMinutes: 0 });
-                expect(after, JSON.stringify(after)).toMatchObject({ ok: true });
-                expect(await isLive(h.catalog, lostId)).toBe(false);
+                expect(after, JSON.stringify(after)).toMatchObject({ ok: false, refused: true, status: "WorkflowKept" });
+                expect(await isLive(h.catalog, lostId)).toBe(true);
                 expect((await h.store.readRun(lost.runId)).status).toBe("completed");
                 expect((await h.catalog.getChildOutcome(lostId))?.resultJson?.current).toMatchObject({
                     parentSessionId: h.owner, status: "completed", outputText: '{"n":2}',
                 });
 
-                // The ordinary owner's lifecycle still owns its other descendants, including the retained test bench and failed Workflow.
+                // The ordinary owner's lifecycle still owns its descendants: once it ended (its orchestration, and its state as
+                // a session's end sets it), its cleanup removes the retained test bench and its finished Workflows.
                 await h.client.raiseEvent(`session-${h.owner}`, "end", {});
                 await until(async () => (await h.client.getStatus(`session-${h.owner}`)).status === "Completed", "the owner to end");
+                await h.catalog.updateSession(h.owner, { state: "completed" });
                 const ancestor = await tool("cleanup_session").handler({ sessionId: h.owner, graceMinutes: 0 });
                 expect(ancestor, JSON.stringify(ancestor)).toMatchObject({ ok: true });
-                for (const id of [h.owner, benchId, deadId]) expect(await isLive(h.catalog, id), id).toBe(false);
+                for (const id of [h.owner, benchId, deadId, lostId]) expect(await isLive(h.catalog, id), id).toBe(false);
+            } finally {
+                await h.stop();
+            }
+        });
+
+    it("issue 412: a finished Workflow of an idle owner stays through every Sweeper pass and the event purge, with its graph, steps, Log and variables",
+        { timeout: TIMEOUT }, async () => {
+            const env = getEnv();
+            const h = await harness(env);
+            try {
+                const tool = name => findTool(createSweeperTools({ catalog: h.catalog, duroxideClient: h.client, factStore: null }), name);
+                await h.catalog.updateSession(h.owner, { state: "idle" });
+                const workflowId = randomUUID();
+                const run = (await createWorkflow(h.host, { workflowSessionId: workflowId, parentSessionId: h.owner, yaml: TWO_STEPS, notifyParent: true,
+                    actor: ACTOR, operationId: "start", start: { inputs: {}, vars: { topic: "postgres" } } })).receipt.run;
+                await until(async () => (await h.store.readRun(run.runId))?.status === "completed", "the Workflow to complete");
+                await until(async () => (await h.client.getStatus(run.controllerInstanceId)).status === "Completed", "its controller to complete");
+                await ageSessions(env, [workflowId], 60);
+
+                const scanned = await tool("scan_completed_sessions").handler({ graceMinutes: 5 });
+                expect(scanned.sessions.map(s => s.sessionId)).not.toContain(workflowId);
+                for (const grace of [undefined, 0]) {
+                    const kept = await tool("cleanup_session").handler({ sessionId: workflowId, ...(grace === undefined ? {} : { graceMinutes: grace }) });
+                    expect(kept, `grace ${grace ?? "default"}`).toMatchObject({ ok: false, refused: true, status: "WorkflowKept" });
+                }
+                for (const minutes of [5, 0]) {
+                    const pruned = await tool("prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: minutes });
+                    expect(pruned.ok, JSON.stringify(pruned)).toBe(true);
+                }
+                // The prune deleted the ended controller's instance for real; the session and its record stay.
+                expect((await h.client.getStatus(run.controllerInstanceId)).status).toBe("NotFound");
+                const row = await h.catalog.getSession(workflowId);
+                expect(row?.deletedAt ?? null).toBeNull();
+                expect(row.state).toBe("completed");
+                // The Resource Manager's event maintenance, with the Workflow's events past its 24 h cutoff, keeps its Log.
+                await ageEvents(env, [workflowId], 2 * 24 * 60);
+                const purge = findTool(createResourceManagerTools({ catalog: h.catalog, duroxideClient: h.client, blobStore: null,
+                    cmsSchema: env.cmsSchema, duroxideSchema: env.duroxideSchema }), "purge_old_events");
+                expect((await purge.handler({})).error).toBeUndefined();
+
+                const view = JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: h.owner, host: h.host }));
+                expect(view, JSON.stringify(view)).toMatchObject({ ok: true, workflowId });
+                expect(view.deleted).toBeUndefined();
+                expect(view.graph).toMatchObject({ initial: "first" });
+                expect(view.run).toMatchObject({ runId: run.runId, status: "completed" });
+                expect(view.run.nodeExecutions.map(node => node.stateId).sort()).toEqual(["done", "first", "second"]);
+                expect(view.run.nodeExecutions.find(node => node.stateId === "second").outputPreview).toContain('"n":2');
+                expect(JSON.stringify(view.run.kv)).toContain("postgres");
+                const log = await h.catalog.getSessionEvents(workflowId, 0, 200);
+                const second = log.find(event => event.eventType === "workflow.state_completed" && event.data?.stateId === "second");
+                expect(second?.data, `the Log holds the step "second": ${JSON.stringify(log.map(event => event.eventType))}`)
+                    .toMatchObject({ runId: run.runId, outcome: "ok" });
+                expect(second.data.outputPreview).toContain('"n":2');
             } finally {
                 await h.stop();
             }

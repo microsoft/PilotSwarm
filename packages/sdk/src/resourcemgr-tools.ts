@@ -529,7 +529,9 @@ export function createResourceManagerTools(opts: {
         description:
             "Delete CMS session_events rows older than N minutes. Events are write-once " +
             "diagnostic logs — safe to prune after consumption. The events table is the " +
-            "fastest-growing table. Minimum age: 60 minutes (enforced).",
+            "fastest-growing table. Minimum age: 60 minutes (enforced). " +
+            "The events of a finished Workflow session, and of the sessions under it, are kept: they are its Log, " +
+            "which stays readable until the session is deleted.",
         parameters: {
             type: "object" as const,
             properties: {
@@ -547,13 +549,14 @@ export function createResourceManagerTools(opts: {
                 const minutes = Math.max(args.olderThanMinutes ?? 1440, 60);
                 const cutoff = new Date(Date.now() - minutes * 60 * 1000);
 
-                const result = await pool.query(
-                    `DELETE FROM ${cmsSchema}.session_events WHERE created_at < $1`,
-                    [cutoff],
-                );
+                // Issue 412: the Workflow store keeps a finished Workflow's Log. A catalog without one (a test double) deletes as before.
+                const store = catalog.workflowStore?.();
+                const eventsDeleted = store
+                    ? await store.purgeSessionEventsBefore(cutoff)
+                    : (await pool.query(`DELETE FROM ${cmsSchema}.session_events WHERE created_at < $1`, [cutoff])).rowCount ?? 0;
 
                 return {
-                    eventsDeleted: result.rowCount ?? 0,
+                    eventsDeleted,
                     cutoff: cutoff.toISOString(),
                     olderThanMinutes: minutes,
                 };

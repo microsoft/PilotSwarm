@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-**Upgrade: deploy the workers.** No migration and no orchestration version.
+**Upgrade: deploy the workers.** No CMS migration and no session orchestration
+or Workflow controller version change.
 
 ### Decision cleanups
 
@@ -13,6 +14,27 @@
 - Migration 0098 (the Cluster Decision Default) writes the schema name with any
   double quote escaped, like the other Decision migrations. Its SQL is the same
   for every schema name without a double quote, so nothing runs again.
+
+### A finished Workflow stays while its session is in use
+
+The Sweeper deleted a finished Workflow session at its next scan (every 6 hours)
+once the run had ended more than 5 minutes before, like a completed sub-agent
+(#412). Only the terminal result stayed with
+the owning session, so the next day the graph, the timeline, the Log and the
+input and output of each step were gone. The Sweeper now keeps a finished
+Workflow session, and the sessions under it (its agent node sessions and child
+Workflows), while any session above it is active: it exists, is not deleted,
+and is not completed, cancelled or failed (an idle session is active). The
+Workflow shows in its owner's Terminated row and reads in full. An ended
+session that holds such a Workflow is kept too. Once the Workflow and every
+session above it have ended, the Sweeper cleans them together. `cleanup_session`
+refuses such a cleanup with the status `WorkflowKept`. The prune of a session
+whose orchestration is gone no longer deletes a session that has a Workflow
+under one of its sub-agents, so that Workflow stays in the session list. The
+Resource Manager's
+`purge_old_events` keeps the events of a finished Workflow and of the sessions
+under it, so its Log stays whole. An explicit delete is unchanged. There is no
+retention cap: delete a finished Workflow to remove it.
 
 ## 0.8.19 — 2026-11-25
 
