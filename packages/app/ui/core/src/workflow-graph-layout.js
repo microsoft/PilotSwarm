@@ -1002,7 +1002,8 @@ export function workflowPlaceKey(layout, id) {
 /** A boundary event's step from the box's right corner, and from the one before it (owner 12:05 PST: 22 px). */
 export const WORKFLOW_BOUNDARY_EVENT_INSET = 22;
 const GHOST_RADIUS = 11;
-const GHOST_SPACING = 30;
+/** Two ghosts of one step stand this far apart, so the second one's words clear the first ghost. */
+const GHOST_SPACING = 44;
 const GHOST_REACH = 60;
 const GHOST_DROP = 20;
 

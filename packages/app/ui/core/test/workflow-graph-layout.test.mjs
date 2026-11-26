@@ -366,7 +366,9 @@ test("error handlers' dashed arrows: the selected step's, every one, those into 
     acquire.forEach((arrow, index) => {
         const [x, y] = workflowBoundaryEventAt(step, index);
         assert.ok(arrow.path.startsWith(`M${r(x)},${r(y)} C`), arrow.path);
-        assert.deepEqual([arrow.ghost.x, arrow.ghost.y], [r(step.x + step.width + 60 + 11), r(step.y + step.height + 20 + index * 30)]);
+        assert.deepEqual([arrow.ghost.x, arrow.ghost.y], [r(step.x + step.width + 60 + 11), r(step.y + step.height + 20 + index * 44)]);
+        // The second ghost's words stand clear of the first ghost (radius 11, words 18 high, 20 above their ghost).
+        if (index > 0) assert.ok(arrow.labelY - 9 > acquire[index - 1].ghost.y + 11, "the words clear the ghost above");
         assert.ok(arrow.path.endsWith(` ${r(arrow.ghost.x - 13)},${r(arrow.ghost.y)}`), arrow.path);
         assert.deepEqual([arrow.labelX, arrow.labelY], [r(arrow.ghost.x - 34), r(arrow.ghost.y - 20)]);
         assert.deepEqual([arrow.litCount, arrow.litAge, arrow.current, arrow.tag], [0, null, false, null]);
