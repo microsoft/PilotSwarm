@@ -919,9 +919,16 @@ export function layoutWorkflowGraphTB(definition) {
     }
     // Dagre sizes the drawing by its boxes and labels, not by the bends of long edges: measure everything (a step's chips
     // too), then move it all so the smallest coordinate sits at the margin.
+    // With Show all handlers, every ghost end and its words are drawn too: they stay inside the drawing (and a fitted view).
+    const ghosts = workflowHandlerArrows({ handlers: model.handlers, chipRoom: reserve, chips: model.chips }, boxes, { all: true }).flatMap(arrow => {
+        const words = Math.ceil(arrow.words.length * 6.2) + 12;
+        return [{ x: arrow.ghost.x - GHOST_RADIUS, y: arrow.ghost.y - GHOST_RADIUS, width: 2 * GHOST_RADIUS + 16 + Math.ceil(arrow.ghost.end.length * 7),
+            height: 2 * GHOST_RADIUS }, { x: arrow.labelX - words / 2, y: arrow.labelY - 9, width: words, height: 18 }];
+    });
     const drawn = [...[...positions].map(([id, box]) => withRoom(box, reserve.get(id) ?? 0)),
         ...[...joins].map(([id, box]) => withRoom(box, reserve.get(id) ?? 0)),
-        ...[...groups.values()].map(group => ({ x: group.x, y: group.y, width: group.width + group.stack, height: group.height + group.stack }))];
+        ...[...groups.values()].map(group => ({ x: group.x, y: group.y, width: group.width + group.stack, height: group.height + group.stack })),
+        ...ghosts];
     const { minX, minY, maxX, maxY } = extentOf(drawn, edges);
     const dx = MARGIN - minX, dy = MARGIN - minY;
     for (const box of [...positions.values(), ...groups.values(), ...joins.values()]) { box.x = round(box.x + dx); box.y = round(box.y + dy); }

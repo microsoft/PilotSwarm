@@ -379,6 +379,10 @@ test("error handlers' dashed arrows: the selected step's, every one, those into 
     assert.deepEqual(workflowHandlerArrows(layout, boxes, { selectedId: "implement" }), []);
     // Show all handlers: every one; an end hovered in the Ends row: those into it.
     assert.equal(workflowHandlerArrows(layout, boxes, { all: true }).length, 6);
+    // Every ghost end and its words fit inside the drawing, so a fitted view shows them all.
+    for (const arrow of workflowHandlerArrows(layout, boxes, { all: true })) {
+        assert.ok(arrow.ghost.x + 11 + 16 + arrow.ghost.end.length * 7 <= layout.width && arrow.ghost.y + 11 <= layout.height, arrow.key);
+    }
     assert.deepEqual(workflowHandlerArrows(layout, boxes, { hoverEnd: "failed" }).map(arrow => arrow.key),
         ["handler:fetch_issue:failed", "handler:acquire_env:failed", "handler:wait_for_env:failed", "handler:gate:failed", "handler:finish:failed"]);
     // A replay lights the handler a transition took; the one shown now carries the transition's words.
