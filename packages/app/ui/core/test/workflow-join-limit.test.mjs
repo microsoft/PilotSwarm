@@ -20,7 +20,7 @@ import {
     workflowVisitEnding,
 } from "../src/workflow-view.js";
 import {
-    layoutWorkflowGraphTB, WORKFLOW_GRAPH_JOIN_HEIGHT, WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT,
+    layoutWorkflowGraphTB, workflowHandlerArrows, WORKFLOW_GRAPH_JOIN_HEIGHT, WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT,
 } from "../src/workflow-graph-layout.js";
 import { WorkflowNodeContent } from "../../react/src/workflow-panels.js";
 import { WorkflowJoinBar } from "../../react/src/workflow-graph.js";
@@ -284,26 +284,34 @@ test("J1-R1: a branch's last step is the end of its chain of steps, whatever ord
     assert.deepEqual(byId(projection, "fan").evidence.rows.map(row => [row.index, row.status, row.step]), [[0, "ok", "reviewed"]]);
 });
 
-test("the graph: timed_out, a runtime-error route of the parallel step to a blocked end, is a red end chip; a bar with a time limit is taller", () => {
+test("the graph: timed_out, a runtime-error route of the parallel step to a blocked end, is an error handler leaving its join bar; a bar with a time limit is taller", () => {
     const timed = workflowDefinition({ revision: 1, initial: "fan", states: statesOf(fan({ timeoutSeconds: 30 })) });
     const layout = layoutWorkflowGraphTB(timed);
-    // R2: the root's blocked ends are no boxes and no lines; the parallel step's routes there are end chips, timed_out red.
+    // R2: the root's blocked ends are no boxes and no lines.
     for (const end of ["late", "review_blocked"]) {
         assert.equal(layout.positions.has(end), false, end);
         assert.ok(layout.hidden.has(end), end);
         assert.equal(layout.edges.some(edge => edge.to === end), false, end);
     }
+    // R2: blocked, a business route, is an amber end chip beside the bar.
     assert.deepEqual(layout.chips.get("fan").map(chip => [chip.key, chip.end, chip.routes, chip.text, chip.tone]), [
         ["chip:fan:review_blocked", "review_blocked", ["blocked"], "blocked → ⏹ review_blocked", "amber"],
-        ["chip:fan:late", "late", ["timed_out"], "✕ → ⏹ late", "red"],
     ]);
-    // Not a ✕ badge: its end is blocked, not failed.
-    assert.equal(layout.badges.has("fan"), false);
+    // R1: timed_out is an error handler, not a chip: it leaves the join bar for a ghost of the late end; the step's mark says so.
+    assert.deepEqual(layout.handlers.get("fan"), [{ key: "handler:fan:late", step: "fan", from: "join:fan", target: "late", to: null, end: "late",
+        outcome: "blocked", routes: ["timed_out"], kinds: ["error"], words: "on error", catchAll: false }]);
+    assert.deepEqual(layout.marks.get("fan"), { step: "fan", key: "mark:fan",
+        title: "Has an error handler: on error → late. Select the step to see where errors go." });
     assert.deepEqual(layout.ends.map(end => [end.id, end.outcome, end.box, end.keys]), [
         ["review_blocked", "blocked", false, ["chip:fan:review_blocked"]],
-        ["late", "blocked", false, ["chip:fan:late"]],
+        ["late", "blocked", false, ["handler:fan:late"]],
         ["done", "succeeded", true, [JSON.stringify(["pause", "done"])]],
     ]);
+    const bar = layout.joins.get("fan");
+    const [arrow] = workflowHandlerArrows(layout, new Map([[bar.id, bar]]), { selectedId: "fan" });
+    const r = value => Math.round(value * 10) / 10;
+    assert.deepEqual([arrow.key, arrow.words, arrow.ghost.end, arrow.ghost.outcome], ["handler:fan:late", "on error", "late", "blocked"]);
+    assert.ok(arrow.path.startsWith(`M${r(bar.x + bar.width)},${r(bar.y + bar.height / 2)} C`), arrow.path);
     // B1: the parallel step is its box; its routes to boxes still leave from its join bar, none from the step.
     assert.equal(layout.positions.has("fan"), false);
     assert.equal(layout.edges.some(edge => edge.from === "fan"), false);

@@ -7,9 +7,9 @@
  * workflowLitTransitions: the last four of them up to the visit shown, by edge and by step, each with how often it was
  * taken among the four and how long ago (0 the newest).
  *
- * Owner 2026-11-26 (the simpler graph): a route drawn as a ✕ badge or an end chip has no line; a transition through it
- * has the badge's or chip's key ("badge:<step>", "chip:<step>:<end>"), so the viewer draws a temporary dashed line to a
- * ghost of the end while it is lit. A branch's first visit has its lane's key ("lane:<parallel>:<name>").
+ * Owner 2026-11-26 (the simpler graph): an error handler or an end chip has no line; a transition through it has the
+ * handler's or chip's key ("handler:<step>:<target>", "chip:<step>:<end>"), so the viewer draws its dashed arrow to the
+ * target (or a ghost of the end) while it is lit. A branch's first visit has its lane's key ("lane:<parallel>:<name>").
  */
 import {
     WORKFLOW_CATCH_ALL_ROUTE, WORKFLOW_ERROR_GLYPH, workflowGraphEdgeKey, workflowGraphModel, workflowGroupId, workflowJoinId,
@@ -38,7 +38,7 @@ function parallelVisitOf(execution, scope) {
  * the catch-all took); a branch's first visit came from its parallel visit; the run's first visit from none. `route` is
  * the route the step's visit took (its outcome, an error's failure route, or "@catchAll"), `words` it in plain words
  * ("changes required", "✕ script failed"), `error` whether it was an error. `edgeKey` is what the graph draws for that
- * route (workflowGraphModel's routeKeys: a line, a branch's line into its join bar, a badge or a chip), the lane's pill
+ * route (workflowGraphModel's routeKeys: a line, a branch's line into its join bar, an error handler or a chip), the lane's pill
  * for a branch's first visit, or null where it draws nothing. `definition`: the graph it is drawn from. Pure.
  */
 export function workflowTransitions(executions, definition) {

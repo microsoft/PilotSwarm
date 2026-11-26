@@ -15,9 +15,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
     workflowDefinition, workflowReplayFrames,
 } from "../src/workflow-view.js";
-import { workflowGraphEdgeKey, workflowGraphEdgeKeys, workflowGroupId, workflowJoinId } from "../src/workflow-graph-layout.js";
+import { layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphEdgeKeys, workflowGroupId, workflowJoinId } from "../src/workflow-graph-layout.js";
 import {
-    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorTransitions, workflowLitLevel, workflowLitTransitions, workflowTransitions,
+    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorTransitions, workflowLitLevel, workflowLitTransitions, workflowStepMarks, workflowTransitions,
 } from "../src/workflow-transitions.js";
 import { WorkflowGraph } from "../../react/src/workflow-graph.js";
 
@@ -138,8 +138,8 @@ test("named branches: a lane's first visit lights its lane's pill (no line fans 
     assert.deepEqual(transitions.slice(1).map(item => item.edgeKey), ["lane:views:quick", "lane:views:careful"]);
 });
 
-// The owner's issue-to-pr shape, small: a gate whose error ends the run as failed (✕ badge), a blocked end and a business
-// route into the failed end (chips), a review loop, and a root catchAll covering a step with no failure route.
+// The owner's issue-to-pr shape, small: a gate whose error ends the run as failed (an error handler), a blocked end and a
+// business route into the failed end (chips), a review loop, and a root catchAll covering a step with no failure route.
 const GATED = workflowDefinition({ revision: 1, initial: "fetch", catchAll: "failed", states: [
     { id: "fetch", type: "script", outcomes: ["ok", "not_open"], next: { ok: "review", not_open: "rejected", failure: "failed" } },
     { id: "review", type: "script", outcomes: ["approved", "changes_required"], next: { approved: "gate", changes_required: "gate" } },
@@ -149,7 +149,7 @@ const GATED = workflowDefinition({ revision: 1, initial: "fetch", catchAll: "fai
     { id: "failed", type: "terminal", outcome: "failed" },
 ] });
 
-test("a route drawn as a badge or a chip is keyed by it; each transition says its route in words and whether it was an error", () => {
+test("a route drawn as an error handler or a chip is keyed by it; each transition says its route in words and whether it was an error", () => {
     const run = [
         visit("nx-0", "fetch", 0, { status: "completed", outcome: "ok", resultKind: "business" }),
         visit("nx-1", "review", 10, { status: "completed", outcome: "changes_required", resultKind: "business" }),
@@ -166,8 +166,8 @@ test("a route drawn as a badge or a chip is keyed by it; each transition says it
         [key("review", "gate"), "changes_required", "changes required", false],
         [key("gate", "review"), "next", "next", false],
         [key("review", "gate"), "approved", "approved", false],
-        // R1: the gate's error into the failed end has no line; its key is the gate's ✕ badge.
-        ["badge:gate", "failure", "✕ script failed", true],
+        // R1: the gate's error into the failed end has no line; its key is the gate's error handler into that end.
+        ["handler:gate:failed", "failure", "✕ script failed", true],
     ]);
     // R2: a business route into an end drawn as a chip has the chip's key.
     const chipped = workflowTransitions([visit("nx-0", "fetch", 0, { status: "completed", outcome: "not_open", resultKind: "business" }),
@@ -177,10 +177,21 @@ test("a route drawn as a badge or a chip is keyed by it; each transition says it
         visit("nx-1", "review", 10, { status: "completed", outcome: "approved", resultKind: "business" }),
         visit("nx-2", "gate", 20, { status: "completed", outcome: "error", resultKind: "business" }), visit("nx-3", "failed", 30)], GATED);
     assert.equal(business[3].edgeKey, "chip:gate:failed");
-    // R1: a catch-all's arrival from a step it covers (review has no failure route) is that step's badge.
+    // R1: a catch-all's arrival from a step it covers (review has no failure route) is that step's catchAll handler.
     const caught = workflowTransitions([visit("nx-0", "review", 0, { status: "completed", outcome: "timed_out", resultKind: "runtime_error" }),
         visit("nx-1", "failed", 10, { catchAll: true })], GATED);
-    assert.deepEqual([caught[1].fromStateId, caught[1].edgeKey, caught[1].route, caught[1].error], ["review", "badge:review", "@catchAll", true]);
+    assert.deepEqual([caught[1].fromStateId, caught[1].edgeKey, caught[1].route, caught[1].words, caught[1].error],
+        ["review", "handler:review:failed", "@catchAll", "✕ limit", true]);
+    // R1: a visit limit's route is its step's handler too, in words "visit limit reached".
+    const LIMITED = workflowDefinition({ revision: 1, initial: "try", states: [
+        { id: "try", type: "script", maxVisits: 2, outcomes: ["again", "done", "exhausted"], next: { again: "try", done: "done", exhausted: "stuck" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "stuck", type: "terminal", outcome: "blocked" },
+    ] });
+    const limited = workflowTransitions([visit("nx-0", "try", 0, { status: "completed", outcome: "again", resultKind: "business" }),
+        visit("nx-1", "try", 10, { ordinal: 2, status: "completed", outcome: "exhausted", resultKind: "business" }), visit("nx-2", "stuck", 20)], LIMITED);
+    assert.deepEqual(limited.slice(1).map(item => [item.edgeKey, item.route, item.words]),
+        [[key("try", "try"), "again", "again"], ["handler:try:stuck", "exhausted", "visit limit reached"]]);
     // A route not known (the step's visit has no outcome): the pair decides.
     const unknown = workflowTransitions([visit("nx-0", "gate", 0), visit("nx-1", "failed", 10)], GATED);
     assert.equal(unknown[1].edgeKey, "chip:gate:failed");
@@ -195,13 +206,19 @@ test("the moment shown: what the run had taken by then, the transition shown, th
     ];
     const transitions = workflowTransitions(run, GATED);
     const live = workflowLitTransitions(transitions);
-    assert.deepEqual([...live.visited].sort(), [key("fetch", "review"), key("review", "gate"), "badge:gate"].sort());
-    assert.deepEqual([live.transition.edgeKey, live.transition.words], ["badge:gate", "✕ boom"]);
-    assert.deepEqual(live.edges.get("badge:gate"), { count: 1, age: 0 });
+    assert.deepEqual([...live.visited].sort(), [key("fetch", "review"), key("review", "gate"), "handler:gate:failed"].sort());
+    assert.deepEqual([live.transition.edgeKey, live.transition.words], ["handler:gate:failed", "✕ boom"]);
+    assert.deepEqual(live.edges.get("handler:gate:failed"), { count: 1, age: 0 });
     // At the second visit, only the first line had been taken.
     const back = workflowLitTransitions(transitions, 1);
     assert.deepEqual([...back.visited], [key("fetch", "review")]);
-    assert.equal(back.edges.has("badge:gate"), false);
+    assert.equal(back.edges.has("handler:gate:failed"), false);
+    // R1: the gate's quiet mark is lit by the handler it took; its chip (a business route) was not taken.
+    const layout = layoutWorkflowGraphTB(GATED);
+    const gate = workflowStepMarks(layout, "gate", live);
+    assert.deepEqual([gate.mark.key, gate.mark.litCount, gate.mark.litAge, gate.mark.visited, gate.mark.hover], ["mark:gate", 1, 0, true, false]);
+    assert.deepEqual(gate.chips.map(chip => [chip.key, chip.litCount, chip.visited, chip.ghost]), [["chip:gate:failed", 0, false, null]]);
+    assert.deepEqual([workflowStepMarks(layout, "gate", back).mark.litCount, workflowStepMarks(layout, "gate", null, "failed").mark.hover], [0, true]);
     assert.equal(workflowEndReached(transitions, ["done", "rejected", "failed"]), "failed");
     assert.equal(workflowEndReached(transitions, ["done", "rejected", "failed"], 2), null);
     assert.deepEqual(workflowErrorTransitions(transitions), [3]);
