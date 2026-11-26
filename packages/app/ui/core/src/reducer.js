@@ -3291,6 +3291,8 @@ function baseReducer(state, action) {
                 treeFactsStats: action.treeFactsStats || null,
                 // Session workspaces: getSessionWorkspace's view, or null when unknown.
                 workspace: action.workspace || null,
+                // Keep-warm ping summary ({ pings, failed, nanoAiu, reported, truncated }), or null when unavailable.
+                keepWarm: action.keepWarm || null,
             };
             return {
                 ...state,

@@ -103,6 +103,10 @@ Do not guess these answers when the user has not provided them. Offer the standa
   Chat Completions endpoint. Omit it by default; router names do not enable
   overflow dispatch. Put an approved policy on the model entry in its
   provider-type catalog, not in a prompt or environment flag.
+- Leave the Claude keep-warm heartbeat off in a scaffold. A deployer opts in
+  with `PILOTSWARM_CLAUDE_KEEPWARM=1` on the worker, and a Claude model entry
+  may set `keepWarm`; each ping is billed. See
+  `docs/developer/reference/configuration.md#keep-warm-cadence-keepwarm`.
 - Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
 - Prefer a checked-in `.env.example` plus a local gitignored `.env`.
 - Prefer a checked-in type-only `.model_providers.example.json` plus a local

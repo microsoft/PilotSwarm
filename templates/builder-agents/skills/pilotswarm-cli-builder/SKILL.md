@@ -91,6 +91,10 @@ Do not guess these answers when the user has not provided them. Offer the standa
   Chat Completions endpoint. Omit it by default; router names do not enable
   overflow dispatch. Put an approved policy on the model entry in its
   provider-type catalog, not in a prompt or environment flag.
+- Leave the Claude keep-warm heartbeat off in a scaffold. A deployer opts in
+  with `PILOTSWARM_CLAUDE_KEEPWARM=1` on the worker, and a Claude model entry
+  may set `keepWarm`; each ping is billed. See
+  `docs/developer/reference/configuration.md#keep-warm-cadence-keepwarm`.
 - For local-first scaffolds, offer GitHub Copilot as the first runtime provider
   type unless the user asks for another; do not hard-code a provider instance
   or credential into the catalog.

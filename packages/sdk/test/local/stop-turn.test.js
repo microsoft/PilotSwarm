@@ -145,9 +145,11 @@ describe("ManagedSession stop classification", () => {
 
 function createBareSessionManager() {
     // Bypass the full constructor: abortWarmSessionTurn only reads the warm
-    // map and (on escalation) calls invalidateWarmSession.
+    // map and the keep-warm heartbeats it drops on a Stop, and (on
+    // escalation) calls invalidateWarmSession.
     const manager = Object.create(SessionManager.prototype);
     manager.sessions = new Map();
+    manager.heartbeats = new Map();
     manager.invalidateWarmSessionCalls = [];
     manager.invalidateWarmSession = async (sessionId) => {
         manager.invalidateWarmSessionCalls.push(sessionId);

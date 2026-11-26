@@ -73,10 +73,15 @@ export interface ModelEntry {
      */
     wireApi?: "completions" | "responses";
     toolCatalog?: ToolCatalogCapability;
+    /** Keep-warm cadence for a Claude model; used only with PILOTSWARM_CLAUDE_KEEPWARM=1. */
+    keepWarm?: KeepWarmSetting;
 }
 
 /** Metadata for a Workflow Decision model; transport and credentials belong to the provider. */
 export type DecisionModelEntry = Pick<ModelEntry, "name" | "description">;
+
+/** Claude keep-warm cadence for one model: seconds between pings (60 to 290) and pings per idle gap (1 to keepWarmMaxPingsLimit). */
+export interface KeepWarmSetting { intervalSeconds: number; maxPings: number; }
 
 export interface ToolCatalogCapability {
     maxDeclarations: number;
@@ -253,6 +258,8 @@ export interface ModelDescriptor {
     /** The model's own request format — see ModelEntry.wireApi. */
     wireApi?: "completions" | "responses";
     toolCatalog?: ToolCatalogCapability;
+    /** Keep-warm cadence for a Claude model; used only with PILOTSWARM_CLAUDE_KEEPWARM=1. */
+    keepWarm?: KeepWarmSetting;
 }
 
 /** The Decision catalog exposes identity and description, not chat capabilities. */
@@ -307,6 +314,55 @@ export interface ResolvedProvider {
 // ─── Request format ──────────────────────────────────────────────
 
 const WIRE_APIS = new Set(["completions", "responses"]);
+
+/**
+ * The largest keepWarm `maxPings` a catalog may declare. It is only an absolute range check at catalog load:
+ * 49 is the break-even number of pings at the lowest cache read price known today (a read of 0.025 times the
+ * input price against a write of 1.25 times). No price is read and no price cap is applied.
+ */
+export function keepWarmMaxPingsLimit(): number {
+    return 49;
+}
+
+/** The break-even number of pings at the standard cache prices: floor((write - read) / read) with a read at 0.1 and a write at 1.25 times the input price. A model whose read is cheaper breaks even later. */
+export const KEEPWARM_BREAK_EVEN_PINGS = 11;
+
+/** Seconds of a full ping series at which it can outlast the client's default affinity hold, `dehydrateOnIdle ?? 1_800` (client.ts), which docs/developer/reference/configuration.md describes. */
+export const KEEPWARM_AFFINITY_HOLD_SECONDS = 1_800;
+
+// The registry is rebuilt on every catalog reload, so the warnings are kept for the process.
+const warnedKeepWarm = new Set<string>();
+
+function warnKeepWarm(qualified: string, setting: KeepWarmSetting): void {
+    const key = `${qualified}|${setting.intervalSeconds}|${setting.maxPings}`;
+    if (warnedKeepWarm.has(key)) return;
+    warnedKeepWarm.add(key);
+    if (setting.maxPings > KEEPWARM_BREAK_EVEN_PINGS) {
+        console.warn(`[model-providers] keepWarm on ${qualified}: maxPings ${setting.maxPings} is above ${KEEPWARM_BREAK_EVEN_PINGS}, `
+            + "the break-even number of pings at the standard cache prices, so a full series of pings may cost more than the cache misses it saves; "
+            + "see the keep-warm cadence section of docs/developer/reference/configuration.md. The setting is used as written.");
+    }
+    const seconds = setting.intervalSeconds * setting.maxPings;
+    if (seconds >= KEEPWARM_AFFINITY_HOLD_SECONDS) {
+        console.warn(`[model-providers] keepWarm on ${qualified}: ${setting.maxPings} pings every ${setting.intervalSeconds} s last ${seconds} s, `
+            + `which reaches the default affinity hold of ${KEEPWARM_AFFINITY_HOLD_SECONDS} s, so the last pings may be sent after the session's worker affinity was released `
+            + "and another worker may hold the session by then. The setting is used as written.");
+    }
+}
+
+export function normalizeKeepWarm(value: unknown, label: string): KeepWarmSetting | undefined {
+    if (value === undefined) return undefined;
+    const config = value as Record<string, unknown>;
+    const maxPingsLimit = keepWarmMaxPingsLimit();
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(config).some(key => key !== "intervalSeconds" && key !== "maxPings")
+        || !Number.isSafeInteger(config.intervalSeconds) || (config.intervalSeconds as number) < 60 || (config.intervalSeconds as number) > 290
+        || !Number.isSafeInteger(config.maxPings) || (config.maxPings as number) < 1
+        || (config.maxPings as number) > maxPingsLimit) {
+        throw new Error(`Invalid keepWarm on ${label}: use an integer intervalSeconds from 60 to 290 and an integer maxPings from 1 to ${maxPingsLimit}.`);
+    }
+    return { intervalSeconds: config.intervalSeconds as number, maxPings: config.maxPings as number };
+}
 
 export function normalizeToolCatalog(value: unknown, label = "model"): ToolCatalogCapability | undefined {
     if (value === undefined) return undefined;
@@ -554,6 +610,11 @@ export class ModelProviderRegistry {
                 const qualified = `${p.id}:${entry.name}`;
                 if (entry.wireApi !== undefined) validateModelWireApi(p, qualified, entry.wireApi);
                 const toolCatalog = normalizeToolCatalog(entry.toolCatalog, qualified);
+                // The Claude check comes first: a ping cap means nothing for a model that is not Claude.
+                if (entry.keepWarm !== undefined && !entry.name.startsWith("claude-")) {
+                    throw new Error(`Invalid keepWarm on ${qualified}: keepWarm applies only to Claude models.`);
+                }
+                const keepWarm = normalizeKeepWarm(entry.keepWarm, qualified);
                 if (toolCatalog && (!["openai", "azure"].includes(toSdkProviderType(p.type))
                     || ![undefined, "completions"].includes(effectiveWireApi(p, entry)))) {
                     throw new Error(`Invalid toolCatalog on ${qualified}: typed-dispatch requires an OpenAI-compatible Chat Completions endpoint.`);
@@ -573,7 +634,9 @@ export class ModelProviderRegistry {
                     ...(entry.vision ? { vision: entry.vision } : {}),
                     ...(entry.wireApi !== undefined ? { wireApi: entry.wireApi } : {}),
                     ...(toolCatalog ? { toolCatalog } : {}),
+                    ...(keepWarm ? { keepWarm } : {}),
                 };
+                if (keepWarm) warnKeepWarm(qualified, keepWarm);
                 this.descriptors.set(qualified, desc);
                 this.qualifiedToProvider.set(qualified, p);
                 this._allDescriptors.push(desc);

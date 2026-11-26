@@ -37,6 +37,34 @@ are forwarded by identity, including headers, unknown fields and `snippy` if an
 external caller supplied it. Native GitHub Copilot, Anthropic and Responses API
 clients receive no compatibility handler.
 
+A different request handler, `ClaudeKeepWarmHeartbeat`, exists only for the
+opt-in Claude keep-warm replay and is unrelated to the compatibility handler.
+It is attached only when `PILOTSWARM_CLAUDE_KEEPWARM` is exactly `1`, and only
+to the durable-session client of a Claude model on the GitHub Copilot client or
+on an Anthropic/WIF provider client. That client has its own pool slot,
+`claude-keepwarm\0`, so the handler never reaches another session's client. It
+is never attached to a client that needs the typed-dispatch shim (an OpenAI or
+Azure Chat Completions provider). SDK 1.0.34 hands the runtime's plain HTTP,
+streaming SSE and WebSocket model requests to a request handler, with a
+`transport` field on the request context. The heartbeat acts on HTTP only: it
+does not override `openWebSocket`, so a WebSocket connection takes the SDK's
+default pass-through forwarder and is never captured or replayed. Every request
+and response still passes through unchanged. With the variable unset, the
+keep-warm handler is never attached; a typed-dispatch client still gets the
+compatibility handler.
+
+Handler overhead, measured with the reference implementation's handler (the
+same pass-through path as this one, which has not been re-measured):
+`claude-sonnet-5.5`, about 74.55K prompt tokens, 8 counted turns per lane. In
+run 2 the median send to first output was 1,219.5 ms with the handler against
+1,344.5 ms without (difference -125.0 ms, 95% interval -250.0 to +107.0 ms),
+and the API call was -91.5 ms. CPU was -1.0% and +2.0% in the two runs. 9 of 9
+requests were captured and no WebSocket was opened. Limits: one session per
+lane, one-word replies, no long stream, and the ping path was not timed.
+
+The keep-warm heartbeat's behavior, caps, records and limits are described once,
+in [Keep-warm cadence](../reference/configuration.md#keep-warm-cadence-keepwarm).
+
 ### Runtime catalog and tool selection
 
 The raw runtime has a different default tool catalog from 1.0.83. It adds

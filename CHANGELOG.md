@@ -14,6 +14,29 @@
   double quote escaped, like the other Decision migrations. Its SQL is the same
   for every schema name without a double quote, so nothing runs again.
 
+### Claude keep-warm heartbeat (opt-in)
+
+With `PILOTSWARM_CLAUDE_KEEPWARM=1` (exactly `1`; off by default) a worker pings
+each idle Claude session 240 seconds after the start of its last request or
+ping, at most 7 times per idle gap, so that its prompt cache stays warm. A
+Claude model in the catalog can set both with `keepWarm` (`intervalSeconds` 60 to
+290, `maxPings` 1 to 49); the catalog load warns, and never clamps, when
+`maxPings` is above 11 (the break-even at the standard cache prices) or when the
+interval times the number of pings reaches the default affinity hold of 1,800
+seconds. Each ping is a `keep_warm` inference operation in the provider usage
+and counts toward the session's provider limits, after an admission check of the
+provider; it is not a turn. Each ping and each stop is a session event
+(`session.keepwarm_ping` and `session.keepwarm_stopped`), and the session stats
+pane shows Keep-warm Pings and Keep-warm Cost. The cost was measured under credit
+billing; on a legacy annual Copilot Pro or Pro+ plan still on premium requests,
+how a ping counts is not confirmed with GitHub. As with every inference operation
+on main, a ping is charged to the provider row pinned at its claim: a credential
+rotated in place while the ping is in flight is still charged to that provider,
+and a same-name provider recreated in that window gets no meter but may list the
+ping in provider-filtered usage reports. The cadence, what stops a replay and
+the limits are in
+[Keep-warm cadence](docs/developer/reference/configuration.md#keep-warm-cadence-keepwarm).
+
 ## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

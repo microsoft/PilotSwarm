@@ -1259,6 +1259,8 @@ export class PilotSwarmWorker {
         this._stopRequested = true;
         // Before the runtime drain: a turn the drain cancels from here on is cut, not saved (session-proxy runTurn).
         this.sessionManager.beginDrain();
+        // Pings never keep a stopping worker's prompt cache warm, nor its timers alive.
+        this.sessionManager.stopKeepWarmHeartbeats();
         this._stopProviderPolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
@@ -1355,6 +1357,8 @@ export class PilotSwarmWorker {
         this._stopRequested = true;
         // Before the runtime drain: a turn the drain cancels from here on is cut, not saved (session-proxy runTurn).
         this.sessionManager.beginDrain();
+        // The drain window never keeps a prompt cache warm: no ping goes out from here on, and a keep-warm client made later has a closed handler.
+        this.sessionManager.stopKeepWarmHeartbeats();
         this._stopProviderPolling();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;

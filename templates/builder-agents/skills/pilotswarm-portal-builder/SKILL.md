@@ -171,6 +171,10 @@ Logo notes:
   plane and shared UI; do not persist raw deltas or create a parallel chat
   stream. Custom clients should follow `docs/architecture/live-plane.md` and
   keep durable event replay authoritative.
+- Leave the Claude keep-warm heartbeat off in a scaffold. A deployer opts in
+  with `PILOTSWARM_CLAUDE_KEEPWARM=1` on the worker, and a Claude model entry
+  may set `keepWarm`; each ping is billed, and the stats pane shows the pings.
+  See `docs/developer/reference/configuration.md#keep-warm-cadence-keepwarm`.
 
 - Do more than write files: run a local portal build when practical.
 - Verify the portal can load branding from `plugin.json.portal`.

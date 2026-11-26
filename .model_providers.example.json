@@ -166,6 +166,10 @@
                     "contextWindowSizes": {
                         "default": 200000,
                         "long_context": 936000
+                    },
+                    "keepWarm": {
+                        "intervalSeconds": 240,
+                        "maxPings": 7
                     }
                 }
             ]

@@ -1,5 +1,6 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { canReadMotd } from "./motd.js";
+import { keepWarmStatsRows } from "./keepwarm-stats.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { CANVAS_SLOT_MAX, canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
@@ -9321,6 +9322,7 @@ function buildSessionStatsLines(state, session, maxWidth) {
     const hitRatioLabel = hitRatio == null
         ? "—"
         : `${(hitRatio * 100).toFixed(1)}%`;
+    const keepWarmRows = keepWarmStatsRows(entry.keepWarm);
     lines.push(...buildMessageCardLines({
         title: "Tokens",
         body: formatKeyValueTable([
@@ -9330,6 +9332,7 @@ function buildSessionStatsLines(state, session, maxWidth) {
             ["Cache Read",  formatCompactNumber(summary.tokensCacheRead)],
             ["Cache Write", formatCompactNumber(summary.tokensCacheWrite)],
             ["Hit Ratio",   hitRatioLabel],
+            ...keepWarmRows,
         ], { maxWidth: Math.max(12, w - 4) }),
         width: w,
         titleColor: "green",
