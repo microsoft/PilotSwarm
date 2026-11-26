@@ -67,10 +67,8 @@ export function workflowEdgeLabelText(outcome) {
     return text.length > LABEL_LIMIT ? `${text.slice(0, LABEL_LIMIT - 1)}…` : text;
 }
 
-/** The glyph an error route takes on a line or a chip (R3). */
+/** The glyph a real error that happened in a run takes in the replay's words ("✕ script failed"). */
 export const WORKFLOW_ERROR_GLYPH = "✕";
-/** The glyph a visit limit (`exhausted`, a state's maxVisits) takes on a line or a chip (R3). */
-export const WORKFLOW_LIMIT_GLYPH = "⟳";
 /** The outcome a state with maxVisits takes once its visits are used up. */
 const EXHAUSTED = "exhausted";
 /** The arrival route of a visit the root catchAll took (the runtime's CATCH_ALL_ROUTE). */
@@ -80,7 +78,7 @@ export const WORKFLOW_SPINE_WEIGHT = 8;
 /** An end chip's height, and the room between a step and its chips (R2). */
 export const WORKFLOW_GRAPH_CHIP_HEIGHT = 18;
 export const WORKFLOW_GRAPH_CHIP_GAP = 14;
-/** Business words on a line are cut after this many characters (the glyphs after them never are). */
+/** Business words on a line are cut after this many characters. */
 const WORDS_LIMIT = 32;
 
 /** An outcome id in plain words: "ready_for_review" -> "ready for review". */
@@ -88,7 +86,11 @@ export function workflowOutcomePlain(label) {
     return String(label ?? "").replace(/_/g, " ");
 }
 
-/** How a route of `node` is drawn (R3): "outcome" a business outcome, "limit" its visit limit, "error" a runtime-error route. */
+/**
+ * What a route of `node` is (R1, updated 2026-11-26 12:00 PST): "outcome" a declared business outcome; "limit" its visit
+ * limit (`exhausted`); "error" a runtime-error route (`failure`, error codes). Limit and error routes are error handlers:
+ * never drawn as lines.
+ */
 export function workflowRouteMark(node, label) {
     if (label === EXHAUSTED && node?.type !== "decision") return "limit";
     return workflowRouteKind(node, label) === "error" ? "error" : "outcome";
@@ -101,38 +103,33 @@ function businessOutcomes(node) {
     return listed.filter(label => workflowRouteMark(node, label) === "outcome");
 }
 
-/** Routes as words (R3): the business outcomes in plain words, then ⟳ for the visit limit and ✕ for errors. */
-function routeWords(node, labels, { limitWord = "" } = {}) {
-    const words = [];
-    let limit = false, error = false;
-    for (const label of labels) {
-        const mark = workflowRouteMark(node, label);
-        if (mark === "outcome") words.push(workflowOutcomePlain(label));
-        else if (mark === "limit") limit = true;
-        else error = true;
-    }
-    const text = words.join(" · ");
-    return [...(text ? [text.length > WORDS_LIMIT ? `${text.slice(0, WORDS_LIMIT - 1)}…` : text] : []),
-        ...(limit ? [`${WORKFLOW_LIMIT_GLYPH}${limitWord}`] : []), ...(error ? [WORKFLOW_ERROR_GLYPH] : [])].join(" · ");
+/** Business routes as plain words, joined and cut at 32 characters ("published · declined"). */
+function routeWords(labels) {
+    const text = labels.map(workflowOutcomePlain).join(" · ");
+    return text.length > WORDS_LIMIT ? `${text.slice(0, WORDS_LIMIT - 1)}…` : text;
 }
 
 /**
  * An edge's label as drawn (R3): none on a line that carries every business outcome of its step; else its business
- * outcomes in plain words, then ⟳ for a visit limit and ✕ for error routes ("not created · ⟳ · ✕"). The edge's title
- * still lists every route.
+ * outcomes in plain words ("published · declined"). A line carries business routes only; the title lists them.
  */
 function workflowEdgeLabelTextOf(edge, byId) {
     const node = byId.get(edge.step ?? edge.owner ?? edge.from);
     if (!node) return workflowEdgeLabelText(edge.outcome);
     const business = businessOutcomes(node);
     if (business.length && business.every(label => edge.outcomes.includes(label))) return "";
-    return routeWords(node, edge.outcomes);
+    return routeWords(edge.outcomes);
 }
 
-/** An end chip's words (R2): "not open → ⏹ rejected", "⟳ limit → ⏹ no_env", "✕ → not started", or "⏹ declined" for its own name. */
-function chipText(node, routes, end) {
+/** An end chip's words (R2): "not open → ⏹ rejected", or "⏹ declined" when its one route has the end's own name. */
+function chipText(routes, end) {
     if (routes.length === 1 && routes[0] === end) return `⏹ ${end}`;
-    return `${routeWords(node, routes, { limitWord: " limit" })} → ⏹ ${end}`;
+    return `${routeWords(routes)} → ⏹ ${end}`;
+}
+
+/** What an error handler catches, in words: "on error", "on limit" or "on error or limit". */
+function handlerWords(kinds) {
+    return kinds.has("error") && kinds.has("limit") ? "on error or limit" : kinds.has("limit") ? "on limit" : "on error";
 }
 
 /**
@@ -176,14 +173,17 @@ function successEndOf(ids, initial, byId) {
  * - `edges`: the lines, one per pair of drawn boxes (several routes to one target share it), each with `outcomes`; a
  *   parallel step drawn as a box (B1) is entered at its box (`group:<id>`) and left from its join bar (`owner`); a
  *   branch's line into its join bar (B2) is `join` with `step`, the step it leaves, and `parallel`.
- * - `badges` (R1): step -> its ✕ badge: `routes` (its error routes to an end with outcome failed), `end`, and
- *   `catchAll` when the root catchAll covers it (a root step without a failure route); `key` "badge:<step>".
- * - `chips` (R2): step -> its end chips, one per end: `end`, `routes`, `text`, `tone` ("red" for an error route or a
- *   failed end, else "amber"), `key` "chip:<step>:<end>".
+ * - `handlers` (R1, updated 2026-11-26 12:00 PST): step -> its error handlers, one per target: its error and limit
+ *   routes (`routes`, `kinds`), never drawn as lines; `words` ("on error", "on limit", "on error or limit"); `from`, the
+ *   box it leaves (a parallel step's join bar); `to`, the target's drawn box, or `end`, an end drawn only as a ghost;
+ *   `catchAll` when the root catchAll covers the step (a root step without a failure route); `key`
+ *   "handler:<step>:<target>". `marks`: step -> its quiet "has an error handler" mark with its `title`.
+ * - `chips` (R2): step -> its end chips, one per end its business routes reach: `end`, `routes`, `text`, `tone` ("red"
+ *   for a failed end, else "amber"), `key` "chip:<step>:<end>".
  * - `hidden`: the ends not drawn as boxes: the root's blocked, failed and canceled ends, and every end inside a branch
  *   box (its success end is its line into the join bar, the others chips).
  * - `ends` (R2): the root's ends, each once: `id`, `outcome`, `box` (drawn as a box), and `keys`, every way in.
- * - `routeKeys`: "<step>\u0000<route>" -> the key of what that route draws (a line, a badge, a chip); `laneKeys`:
+ * - `routeKeys`: "<step>\u0000<route>" -> the key of what that route draws (a line, a handler, a chip); `laneKeys`:
  *   lane first step -> "lane:<parallel>:<name>".
  * - `spine` (R4): the keys of the lines on the happy path, from the first step to the root's success end.
  */
@@ -219,8 +219,26 @@ export function workflowGraphModel(definition) {
     const boxOf = id => (parts.bodies.has(id) ? workflowGroupId(id) : id);
     const edges = [];
     const pairs = new Map();
-    const badges = new Map();
+    const handlers = new Map();
     const chips = new Map();
+    // R1: an error handler, one per step and target; its target is a drawn box (`to`), or an end drawn as a ghost (`end`).
+    const addHandler = (step, target, kind, label) => {
+        const list = handlers.get(step) ?? [];
+        let handler = list.find(item => item.target === target);
+        if (!handler) {
+            const node = byId.get(target);
+            const hiddenEnd = hidden.has(target);
+            const to = hiddenEnd ? (joinEnds.has(target) ? workflowJoinId(joinEnds.get(target)) : null) : boxOf(target);
+            handler = { step, from: parts.bodies.has(step) ? workflowJoinId(step) : step, target, to, end: to === null ? target : null,
+                outcome: node?.type === "terminal" ? node.outcome : null, routes: [], kinds: new Set(), catchAll: false,
+                key: `handler:${step}:${target}` };
+            list.push(handler);
+            handlers.set(step, list);
+        }
+        if (label !== null) handler.routes.push(label);
+        handler.kinds.add(kind);
+        return handler;
+    };
     const routeKeys = new Map();
     const routeKey = (step, label) => `${step}\u0000${label}`;
     const addLine = (from, to, label, extra) => {
@@ -246,14 +264,12 @@ export function workflowGraphModel(definition) {
             if (!end || (parts.memberOf.get(target) ?? null) !== scope) continue;
             const mark = workflowRouteMark(node, label);
             let key;
-            if (hidden.has(target) && joinEnds.has(target)) {
+            if (mark !== "outcome") {
+                // R1: an error or limit route is an error handler, never a line.
+                key = addHandler(node.id, target, mark, label).key;
+            } else if (hidden.has(target) && joinEnds.has(target)) {
                 const parallel = joinEnds.get(target);
                 key = addLine(node.id, workflowJoinId(parallel), label, { join: true, step: node.id, parallel });
-            } else if (hidden.has(target) && mark === "error" && end.outcome === "failed") {
-                const badge = badges.get(node.id) ?? { step: node.id, key: `badge:${node.id}`, routes: [], end: target, catchAll: false };
-                badge.routes.push(label);
-                badges.set(node.id, badge);
-                key = badge.key;
             } else if (hidden.has(target)) {
                 const list = chips.get(node.id) ?? [];
                 let chip = list.find(item => item.end === target);
@@ -279,40 +295,42 @@ export function workflowGraphModel(definition) {
     }
     for (const list of chips.values()) {
         for (const chip of list) {
-            const node = byId.get(chip.step);
-            chip.text = chipText(node, chip.routes, chip.end);
-            chip.tone = chip.outcome === "failed" || chip.routes.some(label => workflowRouteMark(node, label) === "error") ? "red" : "amber";
+            chip.text = chipText(chip.routes, chip.end);
+            chip.tone = chip.outcome === "failed" ? "red" : "amber";
         }
     }
-    // R1: a root step with no failure route is covered by the root catchAll (the catch-all state itself is not).
+    // R1: a root step with no failure route is covered by the root catchAll (the catch-all state itself is not): its
+    // errors go there, so it has an error handler too.
     if (catchAll !== null) {
         for (const id of rootIds) {
             const node = byId.get(id);
             if (node.type === "terminal" || id === catchAll || Object.hasOwn(node.next ?? {}, "failure")) continue;
-            const badge = badges.get(id) ?? { step: id, key: `badge:${id}`, routes: [], end: catchAll, catchAll: false };
-            badge.catchAll = true;
-            badges.set(id, badge);
-            routeKeys.set(routeKey(id, WORKFLOW_CATCH_ALL_ROUTE), badge.key);
+            const handler = addHandler(id, catchAll, "error", null);
+            handler.catchAll = true;
+            routeKeys.set(routeKey(id, WORKFLOW_CATCH_ALL_ROUTE), handler.key);
         }
     }
-    for (const badge of badges.values()) {
-        const end = byId.get(badge.end);
-        const scope = parts.memberOf.has(badge.step) ? "branch" : "run";
-        badge.title = end?.type === "terminal" ? `Any error here ends the ${scope}: ${badge.end}`
-            : `Any error here goes to ${badge.end}`;
-        if (badge.catchAll && badge.routes.length === 0 && end?.type === "terminal") badge.title += " (catchAll)";
+    // A step's mark says where its errors go ("On error: failed · On limit: no_env").
+    const marks = new Map();
+    for (const [step, list] of handlers) {
+        for (const handler of list) {
+            handler.words = handlerWords(handler.kinds);
+            handler.kinds = [...handler.kinds].sort();
+        }
+        marks.set(step, { step, key: `mark:${step}`, title: `Has an error handler: ${list.map(handler =>
+            `${handler.words} → ${handler.target}${handler.catchAll ? " (catchAll)" : ""}`).join("; ")}. Select the step to see where errors go.` });
     }
     const laneKeys = new Map();
     for (const [parallel, lanes] of lanesOf) for (const lane of lanes) laneKeys.set(lane.initial, `lane:${parallel}:${lane.name}`);
     const ends = rootIds.filter(id => byId.get(id).type === "terminal").map(id => {
         const keys = [...edges.filter(edge => edge.to === id).map(edge => workflowGraphEdgeKey(edge.from, edge.to)),
             ...[...chips.values()].flat().filter(chip => chip.end === id).map(chip => chip.key),
-            ...[...badges.values()].filter(badge => badge.end === id).map(badge => badge.key)];
+            ...[...handlers.values()].flat().filter(handler => handler.target === id).map(handler => handler.key)];
         return { id, outcome: byId.get(id).outcome, box: !hidden.has(id), keys };
     });
     const initial = byId.has(definition?.initial) ? definition.initial : states[0]?.id ?? null;
     const spine = initial === null ? new Set() : spineOf(edges, byId, parts, boxOf(initial), successEndOf(rootIds, initial, byId));
-    return { states, byId, parts, catchAll, hidden, joinEnds, lanes: lanesOf, edges, badges, chips, ends, routeKeys, laneKeys, spine };
+    return { states, byId, parts, catchAll, hidden, joinEnds, lanes: lanesOf, edges, handlers, marks, chips, ends, routeKeys, laneKeys, spine };
 }
 
 /**
@@ -684,9 +702,10 @@ export function layoutWorkflowGraphTB(definition) {
         // R4: the happy path's lines are kept short and straight.
         if (spine.has(workflowGraphEdgeKey(edge.from, edge.to))) { edge.spine = true; edge.weight = WORKFLOW_SPINE_WEIGHT; }
     }
-    const marks = { badges: model.badges, chips: model.chips, ends: model.ends, hidden, catchAll: model.catchAll, lanes: model.lanes };
-    if (!states.length) return finish(definition, { width: 300, height: 150, positions: new Map(), edges, groups: new Map(), joins: new Map(), ...marks });
     const reserve = new Map([...model.chips].map(([id, list]) => [id, chipRoom(list)]));
+    const marks = { handlers: model.handlers, marks: model.marks, chips: model.chips, ends: model.ends, hidden, catchAll: model.catchAll,
+        lanes: model.lanes, chipRoom: reserve };
+    if (!states.length) return finish(definition, { width: 300, height: 150, positions: new Map(), edges, groups: new Map(), joins: new Map(), ...marks });
     // The first step leads the order dagre breaks cycles in, so the loop's closing edge is the one that goes back to it.
     const initial = states.find(node => node.id === definition.initial);
     const order = initial ? [initial, ...states.filter(node => node !== initial)] : states;
@@ -850,6 +869,61 @@ export function workflowPlaceKey(layout, id) {
         if (Array.isArray(group.members) && group.members.includes(id)) return `${group.parallel}/${id}`;
     }
     return layout?.positions?.has?.(id) ? id : null;
+}
+
+/** How far a handler's arrow swings out to the right of the boxes it joins, and a ghost end's radius and spacing. */
+const HANDLER_SWING = 70;
+const GHOST_RADIUS = 11;
+const GHOST_SPACING = 28;
+
+/**
+ * R1 (updated 2026-11-26 12:00 PST): the dashed arrows of the error handlers shown now, in drawing coordinates: the
+ * selected step's (`selectedId`), every step's (`all`), those into the Ends row's hovered end (`hoverEnd`), and, in a
+ * replay, those whose transition is among the last four (`lit`, workflowLitTransitions). `boxes`: box id -> where it is
+ * drawn now ({ x, y, width, height }). Each arrow leaves its step's right side and swings out to the right, into its
+ * target's right side, or to a ghost of an end that has no box, placed beside the step past its chips. Each: { key,
+ * step, target, words, path, labelX, labelY, ghost ({ x, y, end, outcome }) or null, litCount, litAge, current, tag }.
+ * Pure.
+ */
+export function workflowHandlerArrows(layout, boxes, { selectedId = null, all = false, hoverEnd = null, lit = null } = {}) {
+    const out = [];
+    const shown = lit?.transition ?? null;
+    for (const [step, list] of layout?.handlers ?? []) {
+        const from = boxes?.get?.(list[0].from);
+        if (!from) continue;
+        const room = layout.chipRoom?.get?.(step) ?? 0;
+        const chipCount = layout.chips?.get?.(step)?.length ?? 0;
+        const ghosts = list.filter(handler => handler.end !== null);
+        const sx = from.x + from.width, sy = from.y + from.height / 2;
+        for (const handler of list) {
+            const on = lit?.edges?.get?.(handler.key) ?? null;
+            if (!(all || step === selectedId || on || (hoverEnd !== null && handler.target === hoverEnd))) continue;
+            let path, labelX, labelY, ghost = null;
+            if (handler.end !== null) {
+                const index = ghosts.indexOf(handler);
+                // Past the step's chips: beside the step, or under its chip column when it has one.
+                const gx = sx + room + 46 + GHOST_RADIUS;
+                const gy = (chipCount ? from.y + 8 + chipCount * 22 + GHOST_RADIUS : sy) + index * GHOST_SPACING;
+                const ex = gx - GHOST_RADIUS - 2;
+                path = `M${round(sx)},${round(sy)} C${round(sx + 30)},${round(sy)} ${round(ex - 30)},${round(gy)} ${round(ex)},${round(gy)}`;
+                labelX = (sx + ex) / 2 + 6;
+                labelY = (sy + gy) / 2 - 12;
+                ghost = { x: round(gx), y: round(gy), end: handler.end, outcome: handler.outcome };
+            } else {
+                const to = boxes.get(handler.to);
+                if (!to || handler.to === list[0].from) continue;
+                const tx = to.x + to.width, ty = to.y + to.height / 2;
+                const swing = Math.max(sx, tx) + HANDLER_SWING;
+                path = `M${round(sx)},${round(sy)} C${round(swing)},${round(sy)} ${round(swing)},${round(ty)} ${round(tx + 2)},${round(ty)}`;
+                labelX = swing - HANDLER_SWING / 4;
+                labelY = (sy + ty) / 2;
+            }
+            const current = Boolean(on && on.age === 0 && shown?.edgeKey === handler.key);
+            out.push({ key: handler.key, step, target: handler.target, words: handler.words, path, labelX: round(labelX), labelY: round(labelY), ghost,
+                litCount: on?.count ?? 0, litAge: on?.age ?? null, current, tag: current && typeof shown.words === "string" ? shown.words : null });
+        }
+    }
+    return out;
 }
 
 function finish(definition, layout) {

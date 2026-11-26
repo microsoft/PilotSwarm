@@ -1,6 +1,8 @@
 import React from "react";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
-import { layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphNodeHeight, WORKFLOW_GRAPH_LABEL_HEIGHT } from "../../core/src/workflow-graph-layout.js";
+import {
+    layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphNodeHeight, workflowHandlerArrows, WORKFLOW_GRAPH_LABEL_HEIGHT,
+} from "../../core/src/workflow-graph-layout.js";
 import { workflowEdgeShown, workflowLanePill, workflowStepMarks } from "../../core/src/workflow-transitions.js";
 import { workflowJoinShort } from "../../core/src/workflow-view.js";
 
@@ -46,33 +48,68 @@ const NODE_GLYPHS = {
  */
 export function WorkflowStepCard({ marks = null, ...props }) {
     const card = h(WorkflowStepCardFace, props);
-    const badge = marks?.badge ?? null;
+    const mark = marks?.mark ?? null;
     const chips = marks?.chips ?? [];
-    if (!badge && !chips.length) return card;
-    // R1, R2: the ✕ badge on its corner and the end chips beside it, outside the card so it keeps its own box.
-    return h("div", { className: "ps-workflow-step" }, card,
-        badge ? h("span", { className: "ps-workflow-badge", role: "img", "aria-label": badge.title, title: badge.title, ...markAttributes(badge) },
-            h("span", { className: "ps-workflow-badge-mark", "aria-hidden": "true" }, "✕"), badge.ghost ? h(WorkflowGhost, { ghost: badge.ghost }) : null) : null,
-        chips.length ? h(WorkflowChips, { chips, badge: Boolean(badge) }) : null);
+    if (!mark && !chips.length) return card;
+    // R1, R2: the quiet error-handler mark on its corner and the end chips beside it, outside the card so it keeps its box.
+    return h("div", { className: `ps-workflow-step${props.selected ? " is-selected" : ""}` }, card,
+        mark ? h(WorkflowHandlerMark, { mark }) : null,
+        chips.length ? h(WorkflowChips, { chips, mark: Boolean(mark) }) : null);
+}
+
+/** R1: a small grey shield on a step's corner: it has an error handler (select the step to see where its errors go). */
+function WorkflowHandlerMark({ mark, inline = false }) {
+    return h("span", { className: `ps-workflow-mark${inline ? " is-inline" : ""}`, role: "img", "aria-label": mark.title, title: mark.title,
+        ...markAttributes(mark) },
+    h("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true", focusable: "false" }, h("path", { d: "M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z" })));
 }
 
 /** A step's end chips (R2), beside it; each says its routes and its end, lit and with its ghost end while replay shows it. */
-function WorkflowChips({ chips, badge = false }) {
-    return h("span", { className: `ps-workflow-chips${badge ? " has-badge" : ""}` },
+function WorkflowChips({ chips, mark = false }) {
+    return h("span", { className: `ps-workflow-chips${mark ? " has-mark" : ""}` },
         chips.map(chip => h("span", { key: chip.key, className: `ps-workflow-chip is-${chip.tone}`, "data-end": chip.end, ...markAttributes(chip),
             title: `${chip.routes.map(route => route.replace(/_/g, " ")).join(", ")} → end ${chip.end} (${chip.outcome})` },
         h("span", { className: "ps-workflow-chip-text" }, chip.text), chip.ghost ? h(WorkflowGhost, { ghost: chip.ghost }) : null)));
 }
 
-/** A badge's or chip's state as attributes: lit (replay), not taken by the moment shown (R5), its end hovered in the Ends row. */
+/**
+ * R1: the error handlers' dashed, moving arrows (workflowHandlerArrows), drawn over the graph in its coordinates: each
+ * to its target's box or to a dashed ghost of an end, labelled "on error", "on limit" or "on error or limit". In a
+ * replay a taken handler is lit at its age; its ghost glows, with the transition's words, at the moment shown.
+ */
+export function WorkflowHandlerArrows({ arrows }) {
+    if (!Array.isArray(arrows) || !arrows.length) return null;
+    return h("svg", { className: "ps-workflow-handlers", width: 1, height: 1, "aria-hidden": "true", focusable: "false" },
+        h("defs", null, h("marker", { id: "ps-wf-handler-arrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto" },
+            h("path", { className: "ps-workflow-handler-arrowhead", d: "M0 0L10 5L0 10z" }))),
+        arrows.map(arrow => {
+            const width = Math.ceil(arrow.words.length * 6.2) + 12;
+            const tagWidth = arrow.tag ? Math.ceil(arrow.tag.length * 6.2) + 12 : 0;
+            return h("g", { key: arrow.key, className: "ps-workflow-handler", "data-handler": arrow.key, ...litAttributes(arrow.litCount, arrow.litAge),
+                ...(arrow.current ? { "data-current": "true" } : {}) },
+            h("path", { className: "ps-workflow-handler-path", d: arrow.path, fill: "none", markerEnd: "url(#ps-wf-handler-arrow)" }),
+            h("g", { className: "ps-workflow-handler-label", transform: `translate(${arrow.labelX},${arrow.labelY})` },
+                h("rect", { x: -width / 2, y: -9, width, height: 18, rx: 3 }),
+                h("text", { textAnchor: "middle", dominantBaseline: "central" }, arrow.words)),
+            arrow.ghost ? h("g", { className: `ps-workflow-handler-ghost is-${arrow.ghost.outcome ?? "end"}`, transform: `translate(${arrow.ghost.x},${arrow.ghost.y})` },
+                h("circle", { r: 11 }),
+                h("text", { x: 16, dominantBaseline: "central" }, arrow.ghost.end)) : null,
+            arrow.tag ? h("g", { className: "ps-workflow-handler-tag", transform: `translate(${arrow.labelX},${arrow.labelY + 20})` },
+                h("rect", { x: -tagWidth / 2, y: -9, width: tagWidth, height: 18, rx: 3 }),
+                h("text", { textAnchor: "middle", dominantBaseline: "central" }, arrow.tag)) : null);
+        }));
+}
+
+/** A mark's or chip's state as attributes: lit (replay), not taken by the moment shown (R5), its end hovered in the Ends row. */
 function markAttributes(item) {
     return { ...litAttributes(item.litCount, item.litAge), ...(item.visited === false ? { "data-visited": "false" } : {}),
         ...(item.hover ? { "data-hover": "true" } : {}) };
 }
 
 /**
- * Replay only: the temporary dashed line from a badge or chip to a ghost of its end, while its transition is among the
- * last four; the ghost glows when it is the moment shown, with the transition's words ("✕ script failed").
+ * Replay only: the temporary dashed line from a chip to a ghost of its end, while its transition is among the last four;
+ * the ghost glows when it is the moment shown, with the transition's words ("not open").
  */
 function WorkflowGhost({ ghost }) {
     return h("span", { className: `ps-workflow-ghost is-${ghost.tone}`, ...(ghost.current ? { "data-current": "true" } : {}), "aria-hidden": "true" },
@@ -215,9 +252,7 @@ export function WorkflowGroupBox({ group, node = null, selected = false, onSelec
         h("span", { className: "ps-workflow-group-icon", "aria-hidden": "true" }, h(Glyph)),
         h("span", { className: "ps-workflow-group-label" }, name),
         meta ? h("span", { className: "ps-workflow-group-counts" }, meta) : null,
-        marks?.badge ? h("span", { className: "ps-workflow-badge is-group", role: "img", "aria-label": marks.badge.title, title: marks.badge.title,
-            ...markAttributes(marks.badge) }, h("span", { className: "ps-workflow-badge-mark", "aria-hidden": "true" }, "✕"),
-        marks.badge.ghost ? h(WorkflowGhost, { ghost: marks.badge.ghost }) : null) : null),
+        marks?.mark ? h(WorkflowHandlerMark, { mark: marks.mark, inline: true }) : null),
     // B3: each lane's pill, with its branch's state at the moment shown.
     pills.map(pill => h("span", { key: pill.name, className: `ps-workflow-lane-pill${pill.tone ? ` is-${pill.tone}` : ""}`, title: pill.title,
         ...litAttributes(pill.litCount, pill.litAge),
@@ -287,9 +322,12 @@ export function workflowGroupProps(layout, group, byId, { selected = null, lit =
 }
 
 /** The plain picture: the layout at its own size, scrolled when it is larger than the graph's area. */
-function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hoverEnd = null }) {
+function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hoverEnd = null, allHandlers = false }) {
     const markerId = `wf-arrow-${React.useId().replace(/:/g, "")}`;
     const byId = new Map(nodes.map(node => [node.id, node]));
+    const boxes = new Map([...layout.positions, ...[...(layout.joins?.values() ?? [])].map(join => [join.id, join]),
+        ...[...(layout.groups?.values() ?? [])].map(group => [group.id, group])]);
+    const arrows = workflowHandlerArrows(layout, boxes, { selectedId: selected?.id ?? null, all: allHandlers, hoverEnd, lit });
     const slot = (box, className, child, key) => h("div", { key, className, style: { left: box.x, top: box.y, width: box.width, height: box.height } }, child);
     return h("div", { className: "ps-workflow-graph-static" },
         h("div", { className: "ps-workflow-graph-canvas", style: { width: layout.width, height: layout.height } },
@@ -311,7 +349,8 @@ function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hove
             }),
             [...(layout.joins?.values() ?? [])].map(join => slot(join, "ps-workflow-join-slot",
                 h(WorkflowJoinBar, { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selected?.id, onSelect: select,
-                    marks: { chips: workflowStepMarks(layout, join.parallel, lit, hoverEnd).chips } }), join.id))));
+                    marks: { chips: workflowStepMarks(layout, join.parallel, lit, hoverEnd).chips } }), join.id)),
+            h(WorkflowHandlerArrows, { arrows })));
 }
 
 // React Flow, loaded once on first use and kept; a failed load is tried again by the next graph.
@@ -349,24 +388,31 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
         loadFlow().then(module => { if (live) setFlow(() => module.WorkflowFlow); }, () => {});
         return () => { live = false; };
     }, [Flow]);
-    // R2: the end hovered (or focused) in the Ends row; every way into it lights.
+    // R2: the end hovered (or focused) in the Ends row; every way into it lights. R1: Show all handlers.
     const [hoverEnd, setHoverEnd] = React.useState(null);
+    const [allHandlers, setAllHandlers] = React.useState(false);
+    const hasHandlers = (layout.handlers?.size ?? 0) > 0;
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
         definition.notes ? h("details", { className: "ps-workflow-definition-notes" },
             h("summary", null, "Definition notes"), h("div", { className: "ps-workflow-notes" }, definition.notes)) : null,
-        h(WorkflowEndsRow, { ends: layout.ends, reached: lit?.endReached ?? null, run: Boolean(lit), hoverEnd, onHover: setHoverEnd, select }),
+        h(WorkflowEndsRow, { ends: layout.ends, reached: lit?.endReached ?? null, run: Boolean(lit), hoverEnd, onHover: setHoverEnd, select,
+            handlers: hasHandlers ? { all: allHandlers, onToggle: () => setAllHandlers(value => !value) } : null }),
         Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode, lit,
-            phone, hoverEnd })
-            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd }));
+            phone, hoverEnd, allHandlers })
+            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd, allHandlers }));
 }
 
 /**
- * R2: the run's ends, each once, with how many ways lead in (lines, chips and ✕ badges). Hover or focus lights every way
- * in; a click inspects the end. In a run's view the end it reached (as of the moment shown) is lit, the others dimmed.
+ * R2: the run's ends, each once, with how many ways lead in (lines, chips and error handlers). Hover or focus lights every
+ * way in; a click inspects the end. In a run's view the end it reached (as of the moment shown) is lit, the others
+ * dimmed. R1: `handlers`, the Show all handlers toggle ({ all, onToggle }), when the graph has any.
  */
-export function WorkflowEndsRow({ ends, reached = null, run = false, hoverEnd = null, onHover = () => {}, select = () => {} }) {
+export function WorkflowEndsRow({ ends, reached = null, run = false, hoverEnd = null, onHover = () => {}, select = () => {}, handlers = null }) {
     if (!Array.isArray(ends) || !ends.length) return null;
     return h("div", { className: "ps-workflow-ends", role: "group", "aria-label": "Ends" },
+        handlers ? h("button", { type: "button", className: `ps-workflow-end is-toggle${handlers.all ? " is-on" : ""}`, "aria-pressed": handlers.all,
+            "data-action": "show-handlers", title: "Show every error handler's dashed arrow at once. Without it, select a step to see where its errors go.",
+            onClick: handlers.onToggle }, "Show all handlers") : null,
         h("span", { className: "ps-workflow-ends-label" }, "Ends"),
         ends.map(end => {
             const ways = end.keys.length;

@@ -1,10 +1,10 @@
 import React from "react";
 import {
-    Background, BackgroundVariant, Handle, MarkerType, Panel, Position, ReactFlow, getBezierPath, getViewportForBounds, useReactFlow, useStore,
+    Background, BackgroundVariant, Handle, MarkerType, Panel, Position, ReactFlow, ViewportPortal, getBezierPath, getViewportForBounds, useReactFlow, useStore,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
-import { WorkflowEdgeShape, WorkflowGroupBox, WorkflowJoinBar, WorkflowStepCard, workflowGroupProps } from "./workflow-graph.js";
-import { workflowGraphPlaces, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
+import { WorkflowEdgeShape, WorkflowGroupBox, WorkflowHandlerArrows, WorkflowJoinBar, WorkflowStepCard, workflowGroupProps } from "./workflow-graph.js";
+import { workflowGraphPlaces, workflowHandlerArrows, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
 import { workflowEdgeShown, workflowStepMarks } from "../../core/src/workflow-transitions.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 
@@ -264,7 +264,7 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
  * its controls (UXP-TL-02).
  */
 export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null, mode = "normal",
-    lit = null, phone = false, hoverEnd = null }) {
+    lit = null, phone = false, hoverEnd = null, allHandlers = false }) {
     const [hand, setHand] = React.useState(true);
     const hostRef = React.useRef(null);
     const [start] = React.useState(() => workflowViewportOf(viewport));
@@ -426,6 +426,9 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         latest.current.onPlaces?.(null);
     }, []);
     const bounds = React.useMemo(() => workflowGraphBounds(layout, moved), [layout, moved]);
+    // R1: the error handlers' dashed arrows, between the boxes where they are drawn now (a moved box takes its arrows).
+    const arrows = React.useMemo(() => workflowHandlerArrows(layout, shown, { selectedId, all: allHandlers, hoverEnd, lit }),
+        [layout, shown, selectedId, allHandlers, hoverEnd, lit]);
     return h(ReactFlow, {
         ref: hostRef,
         nodes: flowNodes, edges: flowEdges, nodeTypes: NODE_TYPES, edgeTypes: EDGE_TYPES,
@@ -448,6 +451,7 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         className: `ps-workflow-flow${hand ? " is-hand" : " is-still"}`,
     },
     h(Background, { variant: BackgroundVariant.Dots, gap: 18, size: 1 }),
+    arrows.length ? h(ViewportPortal, null, h(WorkflowHandlerArrows, { arrows })) : null,
     h(GraphView, { bounds, area, fitted, touched, modeChanged, hand, onHand: setHand, onReset: moved.size ? reset : null, refit, onInteract, phone,
         host: hostRef }));
 }

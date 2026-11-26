@@ -12,7 +12,7 @@
  * ghost of the end while it is lit. A branch's first visit has its lane's key ("lane:<parallel>:<name>").
  */
 import {
-    WORKFLOW_CATCH_ALL_ROUTE, WORKFLOW_ERROR_GLYPH, WORKFLOW_LIMIT_GLYPH, workflowGraphEdgeKey, workflowGraphModel, workflowGroupId, workflowJoinId,
+    WORKFLOW_CATCH_ALL_ROUTE, WORKFLOW_ERROR_GLYPH, workflowGraphEdgeKey, workflowGraphModel, workflowGroupId, workflowJoinId,
     workflowOutcomePlain, workflowRouteMark,
 } from "./workflow-graph-layout.js";
 import { workflowReplayFrames, workflowVisitScope } from "./workflow-view.js";
@@ -59,8 +59,8 @@ export function workflowTransitions(executions, definition) {
         }
         const chip = (model.chips.get(from) ?? []).find(item => item.end === to);
         if (chip) return chip.key;
-        const badge = model.badges.get(from);
-        return badge && badge.end === to ? badge.key : null;
+        const handler = (model.handlers.get(from) ?? []).find(item => item.target === to);
+        return handler ? handler.key : null;
     };
     const lastInScope = new Map();
     return workflowReplayFrames(list).map(frame => {
@@ -109,12 +109,12 @@ function errorTag(visit) {
     return workflowErrorRouteWords(outcome === "failure" ? "failure" : outcome);
 }
 
-/** A transition's outcome in words (replay): "changes required", "⟳ limit", "✕ script failed". */
+/** A transition's outcome in words (replay): "changes required", "visit limit reached", "✕ script failed". */
 function transitionWords(node, route, from) {
     if (route === null) return null;
     if (route === WORKFLOW_CATCH_ALL_ROUTE) return errorTag(from);
     const mark = workflowRouteMark(node, route);
-    if (mark === "limit") return `${WORKFLOW_LIMIT_GLYPH} limit`;
+    if (mark === "limit") return "visit limit reached";
     if (mark === "error" || from?.resultKind === "runtime_error") return errorTag(from);
     return workflowOutcomePlain(route);
 }
@@ -171,10 +171,11 @@ function litOf(lit, key) {
 }
 
 /**
- * A step's ✕ badge and end chips as drawn now (R1, R2, replay): each with how it is lit (`litCount`, `litAge`), whether
- * the run took it by the moment shown (`visited`, null outside a run), whether the Ends row's hovered end is its end
- * (`hover`), and, while it is among the last four transitions, its `ghost`: the end it leads to, and the transition's
- * words and `current` when it is the transition shown. `layout` from layoutWorkflowGraphTB, `lit` from
+ * A step's quiet error-handler mark (R1) and its end chips (R2) as drawn now: the mark lit while one of its handlers'
+ * transitions is among the last four (replay) or one of them leads into the Ends row's hovered end; each chip with how
+ * it is lit (`litCount`, `litAge`), whether the run took it by the moment shown (`visited`, null outside a run), whether
+ * its end is hovered (`hover`), and, while it is among the last four transitions, its `ghost`: the end, and the
+ * transition's words and `current` when it is the transition shown. `layout` from layoutWorkflowGraphTB, `lit` from
  * workflowLitTransitions. Pure.
  */
 export function workflowStepMarks(layout, stepId, lit = null, hoverEnd = null) {
@@ -183,16 +184,19 @@ export function workflowStepMarks(layout, stepId, lit = null, hoverEnd = null) {
     const of = item => {
         const on = litOf(lit, item.key);
         const current = Boolean(on && shown?.edgeKey === item.key && on.age === 0);
-        const end = current && shown?.toStateId ? shown.toStateId : item.end;
-        const outcome = layout?.ends?.find?.(each => each.id === end)?.outcome ?? item.outcome ?? null;
         return { ...item, litCount: on?.count ?? 0, litAge: on?.age ?? null, visited: run ? lit.visited.has(item.key) : null,
             hover: hoverEnd !== null && item.end === hoverEnd,
-            ghost: on ? { end, tone: outcome === "failed" || item.tone === "red" ? "red" : "amber",
-                words: current ? shown.words ?? null : null, current } : null };
+            ghost: on ? { end: item.end, tone: item.tone, words: current ? shown.words ?? null : null, current } : null };
     };
-    const badge = layout?.badges?.get?.(stepId) ?? null;
+    const mark = layout?.marks?.get?.(stepId) ?? null;
+    const handlers = layout?.handlers?.get?.(stepId) ?? [];
+    const on = handlers.map(handler => litOf(lit, handler.key)).filter(Boolean).sort((a, b) => a.age - b.age)[0] ?? null;
     const chips = layout?.chips?.get?.(stepId) ?? [];
-    return { badge: badge ? of({ ...badge, tone: "red" }) : null, chips: chips.map(of) };
+    return {
+        mark: mark ? { ...mark, litCount: on?.count ?? 0, litAge: on?.age ?? null, visited: run ? handlers.some(handler => lit.visited.has(handler.key)) || null : null,
+            hover: hoverEnd !== null && handlers.some(handler => handler.target === hoverEnd) } : null,
+        chips: chips.map(of),
+    };
 }
 
 /**

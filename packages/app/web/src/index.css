@@ -5637,27 +5637,54 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-join.is-cancelled .ps-workflow-join-bar { background: var(--ps-warning); }
 .ps-workflow-join.is-selected .ps-workflow-join-bar, .ps-workflow-join:focus-visible .ps-workflow-join-bar { box-shadow: 0 0 0 2px var(--ps-accent); }
 
-/* Owner 2026-11-26 (the simpler graph): R1 ✕ badges, R2 end chips and the Ends row, R5 fading of what the run had not
-   taken by the moment shown, the replay's temporary ghost ends and outcome tags, B1 box titles and B3 lane pills. */
+/* Owner 2026-11-26 (the simpler graph): R1 the quiet error-handler mark and its dashed arrows, R2 end chips and the Ends
+   row, R5 fading of what the run had not taken by the moment shown, the replay's temporary ghost ends and outcome tags,
+   B1 box titles and B3 lane pills. Red is kept for failures that happened. */
 .ps-workflow-step { position: relative; width: 100%; height: 100%; }
-.ps-workflow-badge {
+.ps-workflow-mark {
   position: absolute;
-  top: -8px;
-  right: -8px;
+  top: -9px;
+  right: -9px;
   z-index: 2;
   display: inline-grid;
   place-items: center;
-  width: 17px;
-  height: 17px;
+  box-sizing: border-box;
+  width: 19px;
+  height: 19px;
+  border: 1.3px solid var(--ps-muted);
   border-radius: 50%;
-  background: var(--ps-wf-danger-text, var(--ps-danger));
-  color: #fff;
-  font: 700 10px/1 system-ui, sans-serif;
-  box-shadow: 0 0 0 2px var(--ps-surface);
+  background: var(--ps-surface);
+  color: var(--ps-muted);
   pointer-events: auto;
   cursor: help;
 }
-.ps-workflow-badge.is-group { position: relative; top: auto; right: auto; flex: none; margin-left: 6px; }
+.ps-workflow-mark svg { width: 11px; height: 11px; }
+.ps-workflow-mark.is-inline { position: relative; top: auto; right: auto; flex: none; margin-left: 6px; }
+.ps-workflow-step.is-selected .ps-workflow-mark { border-color: var(--ps-accent); color: var(--ps-accent); }
+.ps-workflow-mark[data-lit] { border-color: var(--ps-wf-lit, var(--ps-warning)); color: var(--ps-wf-lit, var(--ps-warning)); }
+.ps-workflow-mark[data-hover="true"] { border-color: var(--ps-accent); color: var(--ps-accent); }
+.ps-workflow-handlers { position: absolute; left: 0; top: 0; z-index: 6; overflow: visible; pointer-events: none; }
+.ps-workflow-handler-path { stroke: var(--ps-accent); stroke-width: 2; stroke-dasharray: 6 5; animation: ps-wf-handler-march 0.9s linear infinite; }
+.ps-workflow-handler-arrowhead { fill: var(--ps-accent); }
+.ps-workflow-handler-label rect { fill: var(--ps-surface); stroke: var(--ps-accent); stroke-width: 1; stroke-dasharray: 3 2; }
+.ps-workflow-handler-label text, .ps-workflow-handler-tag text { fill: var(--ps-foreground); font-size: 10.5px; }
+.ps-workflow-handler-ghost circle { fill: var(--ps-surface); stroke: var(--ps-warning); stroke-width: 2; stroke-dasharray: 3 3; }
+.ps-workflow-handler-ghost text { fill: var(--ps-foreground); font-size: 11px; }
+.ps-workflow-handler-ghost.is-failed circle { stroke: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-handler-ghost.is-succeeded circle { stroke: var(--ps-success); }
+.ps-workflow-handler[data-lit] .ps-workflow-handler-path { stroke: var(--ps-wf-lit, var(--ps-warning)); }
+.ps-workflow-handler[data-lit] .ps-workflow-handler-label rect { stroke: var(--ps-wf-lit, var(--ps-warning)); }
+.ps-workflow-handler[data-lit-age="1"] { opacity: 0.8; }
+.ps-workflow-handler[data-lit-age="2"] { opacity: 0.6; }
+.ps-workflow-handler[data-lit-age="3"] { opacity: 0.45; }
+.ps-workflow-handler[data-current="true"] .ps-workflow-handler-ghost circle { filter: drop-shadow(0 0 5px var(--ps-wf-lit, var(--ps-warning))); }
+.ps-workflow-handler[data-current="true"] .ps-workflow-handler-ghost.is-failed circle {
+  fill: color-mix(in srgb, var(--ps-danger) 30%, var(--ps-surface));
+  filter: drop-shadow(0 0 6px var(--ps-wf-danger-text, var(--ps-danger)));
+}
+.ps-workflow-handler-tag rect { fill: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 14%, var(--ps-surface)); stroke: var(--ps-wf-lit, var(--ps-warning)); stroke-dasharray: 3 2; }
+@keyframes ps-wf-handler-march { to { stroke-dashoffset: -22; } }
+@media (prefers-reduced-motion: reduce) { .ps-workflow-handler-path { animation: none; } }
 .ps-workflow-chips {
   position: absolute;
   left: calc(100% + 14px);
@@ -5669,7 +5696,7 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   gap: 4px;
   pointer-events: auto;
 }
-.ps-workflow-chips.has-badge { top: 18px; }
+.ps-workflow-chips.has-mark { top: 18px; }
 .ps-workflow-chip {
   position: relative;
   display: inline-flex;
@@ -5695,9 +5722,9 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 }
 .ps-workflow-chip.is-red { border-color: var(--ps-wf-danger-text, var(--ps-danger)); background: color-mix(in srgb, var(--ps-danger) 12%, var(--ps-surface)); }
 .ps-workflow-chip.is-red::before { border-top-color: color-mix(in srgb, var(--ps-wf-danger-text, var(--ps-danger)) 75%, transparent); }
-.ps-workflow-chip[data-visited="false"], .ps-workflow-badge[data-visited="false"] { opacity: 0.5; }
-.ps-workflow-chip[data-lit], .ps-workflow-badge[data-lit] { opacity: 1; box-shadow: 0 0 0 2px var(--ps-wf-lit, var(--ps-warning)); }
-.ps-workflow-chip[data-hover="true"], .ps-workflow-badge[data-hover="true"] { opacity: 1; box-shadow: 0 0 0 2px var(--ps-accent); }
+.ps-workflow-chip[data-visited="false"] { opacity: 0.5; }
+.ps-workflow-chip[data-lit] { opacity: 1; box-shadow: 0 0 0 2px var(--ps-wf-lit, var(--ps-warning)); }
+.ps-workflow-chip[data-hover="true"] { opacity: 1; box-shadow: 0 0 0 2px var(--ps-accent); }
 .ps-workflow-ghost {
   position: absolute;
   left: 100%;
@@ -5812,6 +5839,8 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-end.is-reached { font-weight: 600; background: color-mix(in srgb, currentColor 10%, transparent); box-shadow: 0 0 0 1.5px var(--ps-wf-lit, var(--ps-warning)); }
 .ps-workflow-end.is-failed.is-reached { background: color-mix(in srgb, var(--ps-danger) 35%, transparent); }
 .ps-workflow-end.is-hover, .ps-workflow-end:focus-visible { opacity: 1; box-shadow: 0 0 0 2px var(--ps-accent); outline: none; }
+.ps-workflow-end.is-toggle { margin-right: 6px; border-style: dashed; color: var(--ps-muted); }
+.ps-workflow-end.is-toggle.is-on { border-style: solid; border-color: var(--ps-accent); color: var(--ps-foreground); background: color-mix(in srgb, var(--ps-accent) 14%, transparent); }
 .ps-wf-replay-track { position: relative; flex: 1 1 140px; min-width: 100px; display: flex; align-items: center; }
 .ps-wf-replay-track .ps-wf-replay-range { flex: 1 1 auto; min-width: 0; }
 .ps-wf-replay-error {
