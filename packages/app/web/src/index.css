@@ -5529,7 +5529,11 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-edge-path { fill: none; stroke: var(--ps-wf-edge, var(--ps-muted)); stroke-width: 1.5; }
 .ps-workflow-edge-label rect { fill: var(--ps-surface); stroke: color-mix(in srgb, var(--ps-border) 70%, transparent); stroke-width: 1; }
 .ps-workflow-edge-label text { fill: var(--ps-wf-edge-text, var(--ps-muted)); font-size: 10px; }
-.ps-workflow-edge[data-kind="error"] .ps-workflow-edge-label text { fill: var(--ps-wf-danger-text, var(--ps-danger)); }
+/* R1 (owner 2026-11-26 12:05 PST): an error route between steps is a grey dashed line labelled with what it catches, like a
+   Step Functions catcher; never red in a definition. */
+.ps-workflow-edge[data-kind="error"] .ps-workflow-edge-path { stroke: var(--ps-muted); stroke-width: 1.4; }
+.ps-workflow-edge[data-kind="error"] .ps-workflow-edge-label rect { stroke: var(--ps-border); stroke-dasharray: 3 2; }
+.ps-workflow-edge[data-kind="error"] .ps-workflow-edge-label text { fill: var(--ps-muted); }
 /* Owner 2026-11-09 (the timeline; "the current node should be highlight more and the history trail gets fainter"): the
    last four transitions up to the visit shown are lit in the theme's lit colour (themeWorkflowColors "lit", 3:1 on the
    canvas). Thickness says how often each was taken among the four (data-lit 1: once, 2: twice or more); brightness how long
@@ -5641,39 +5645,41 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
    row, R5 fading of what the run had not taken by the moment shown, the replay's temporary ghost ends and outcome tags,
    B1 box titles and B3 lane pills. Red is kept for failures that happened. */
 .ps-workflow-step { position: relative; width: 100%; height: 100%; }
+/* R1 (12:05 PST): an error route into an end is a BPMN error boundary event: a neutral double circle with a lightning
+   bolt on the step's bottom edge (its `right` is set inline, 22 px per event from the corner). */
 .ps-workflow-mark {
   position: absolute;
-  top: -9px;
-  right: -9px;
+  bottom: -9px;
   z-index: 2;
-  display: inline-grid;
-  place-items: center;
-  box-sizing: border-box;
-  width: 19px;
-  height: 19px;
-  border: 1.3px solid var(--ps-muted);
-  border-radius: 50%;
-  background: var(--ps-surface);
+  display: block;
+  width: 18px;
+  height: 18px;
   color: var(--ps-muted);
   pointer-events: auto;
   cursor: help;
 }
-.ps-workflow-mark svg { width: 11px; height: 11px; }
-.ps-workflow-mark.is-inline { position: relative; top: auto; right: auto; flex: none; margin-left: 6px; }
-.ps-workflow-step.is-selected .ps-workflow-mark { border-color: var(--ps-accent); color: var(--ps-accent); }
-.ps-workflow-mark[data-lit] { border-color: var(--ps-wf-lit, var(--ps-warning)); color: var(--ps-wf-lit, var(--ps-warning)); }
-.ps-workflow-mark[data-hover="true"] { border-color: var(--ps-accent); color: var(--ps-accent); }
+.ps-workflow-mark svg { display: block; width: 18px; height: 18px; overflow: visible; }
+.ps-workflow-mark-ring { fill: var(--ps-surface); stroke: currentColor; stroke-width: 1.3; }
+.ps-workflow-mark-ring + .ps-workflow-mark-ring { fill: none; }
+.ps-workflow-mark-bolt { fill: currentColor; }
+.ps-workflow-step.is-selected .ps-workflow-mark { color: var(--ps-accent); }
+.ps-workflow-mark[data-lit] { color: var(--ps-wf-lit, var(--ps-warning)); }
+.ps-workflow-mark[data-hover="true"] { color: var(--ps-accent); }
+.ps-workflow-mark[data-visited="false"] { opacity: 0.5; }
 .ps-workflow-handlers { position: absolute; left: 0; top: 0; z-index: 6; overflow: visible; pointer-events: none; }
+.ps-workflow-handler { animation: ps-wf-handler-in 0.25s ease-out; }
 .ps-workflow-handler-path { stroke: var(--ps-accent); stroke-width: 2; stroke-dasharray: 6 5; animation: ps-wf-handler-march 0.9s linear infinite; }
 .ps-workflow-handler-arrowhead { fill: var(--ps-accent); }
 .ps-workflow-handler-label rect { fill: var(--ps-surface); stroke: var(--ps-accent); stroke-width: 1; stroke-dasharray: 3 2; }
 .ps-workflow-handler-label text, .ps-workflow-handler-tag text { fill: var(--ps-foreground); font-size: 10.5px; }
 .ps-workflow-handler-ghost circle { fill: var(--ps-surface); stroke: var(--ps-warning); stroke-width: 2; stroke-dasharray: 3 3; }
 .ps-workflow-handler-ghost text { fill: var(--ps-foreground); font-size: 11px; }
-/* A failed end's ghost is neutral on select; red when a replay shows the run going there. */
-.ps-workflow-handler-ghost.is-failed circle { stroke: var(--ps-muted); }
-.ps-workflow-handler[data-lit] .ps-workflow-handler-ghost.is-failed circle { stroke: var(--ps-wf-danger-text, var(--ps-danger)); }
+/* A ghost end is drawn in its end's colour (owner 12:05 PST). */
+.ps-workflow-handler-ghost.is-failed circle { stroke: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-handler-ghost.is-failed text { fill: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-workflow-handler-ghost.is-blocked text, .ps-workflow-handler-ghost.is-cancelled text { fill: var(--ps-warning); }
 .ps-workflow-handler-ghost.is-succeeded circle { stroke: var(--ps-success); }
+.ps-workflow-handler-ghost.is-succeeded text { fill: var(--ps-success); }
 .ps-workflow-handler[data-lit] .ps-workflow-handler-path { stroke: var(--ps-wf-lit, var(--ps-warning)); }
 .ps-workflow-handler[data-lit] .ps-workflow-handler-label rect { stroke: var(--ps-wf-lit, var(--ps-warning)); }
 .ps-workflow-handler[data-lit-age="1"] { opacity: 0.8; }
@@ -5686,7 +5692,8 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 }
 .ps-workflow-handler-tag rect { fill: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 14%, var(--ps-surface)); stroke: var(--ps-wf-lit, var(--ps-warning)); stroke-dasharray: 3 2; }
 @keyframes ps-wf-handler-march { to { stroke-dashoffset: -22; } }
-@media (prefers-reduced-motion: reduce) { .ps-workflow-handler-path { animation: none; } }
+@keyframes ps-wf-handler-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .ps-workflow-handler, .ps-workflow-handler-path { animation: none; } }
 .ps-workflow-chips {
   position: absolute;
   left: calc(100% + 14px);
@@ -5698,7 +5705,6 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   gap: 4px;
   pointer-events: auto;
 }
-.ps-workflow-chips.has-mark { top: 18px; }
 .ps-workflow-chip {
   position: relative;
   display: inline-flex;

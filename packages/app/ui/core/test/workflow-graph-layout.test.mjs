@@ -5,8 +5,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    layoutWorkflowGraphTB, workflowEdgeCurve, workflowEdgeLabelText, workflowGraphBodies, workflowGraphPlaces, workflowHandlerArrows, workflowPlaceKey,
-    WORKFLOW_GRAPH_GROUP_HEADER, WORKFLOW_GRAPH_NODE_WIDTH, WORKFLOW_GRAPH_NODE_HEIGHT,
+    layoutWorkflowGraphTB, workflowBoundaryEventAt, workflowEdgeCurve, workflowEdgeLabelText, workflowGraphBodies, workflowGraphEdgeKey, workflowGraphErrorEdgeKey,
+    workflowGraphPlaces, workflowHandlerArrows, workflowPlaceKey, WORKFLOW_BOUNDARY_EVENT_INSET, WORKFLOW_GRAPH_GROUP_HEADER, WORKFLOW_GRAPH_NODE_WIDTH,
+    WORKFLOW_GRAPH_NODE_HEIGHT,
 } from "../src/workflow-graph-layout.js";
 import {
     workflowDefinition as checkedDefinition, workflowDefinition,
@@ -19,8 +20,12 @@ const described = list => list.map(node => (node && typeof node === "object" && 
 const definitionOf = data => checkedDefinition(data && Array.isArray(data.states) ? { ...data, states: described(data.states) } : data);
 
 const edgeOf = (layout, from, to) => layout.edges.find(edge => edge.from === from && edge.to === to);
+/** The business line and the dashed line of error routes between two boxes, by their keys. */
+const lineOf = (layout, from, to) => layout.edges.find(edge => edge.key === workflowGraphEdgeKey(from, to));
+const errorLineOf = (layout, from, to) => layout.edges.find(edge => edge.key === workflowGraphErrorEdgeKey(from, to));
 const top = (layout, id) => layout.positions.get(id).y;
 const name = edge => `${edge.from}->${edge.to}`;
+const r = value => Math.round(value * 10) / 10;
 
 /** Points along every drawn piece of an edge's curve. */
 function samples(edge, steps = 16) {
@@ -148,21 +153,24 @@ test("forward edges go downward, nothing is drawn out of a terminal, and blocked
     assertInside(layout);
 });
 
-test("version 2: error routes into the failed end are error handlers (a quiet mark, no line, no chip), labels only where a line does not carry every outcome", () => {
+test("version 2: error routes into the failed end are error handlers (a boundary event on the step, no line, no chip), labels only where a line does not carry every outcome", () => {
     const layout = layoutWorkflowGraphTB(definitionOf(startedData));
     assert.deepEqual([...layout.positions.keys()].sort(), ["await_ack", "done", "notify", "pause", "poll"]);
     assert.equal(layout.edges.length, 5);
     // R1: poll's failure and timed_out and notify's delivery_failed are error handlers into the failed end, one per step
-    // and target: no line, no badge, no chip; the failed end has no box (its handlers' arrows end at a ghost of it).
+    // and end: no line, no badge, no chip; the failed end has no box (its handlers' arrows end at a ghost of it).
     assert.equal(edgeOf(layout, "poll", "failed"), undefined);
-    assert.ok(layout.edges.every(edge => edge.kind === "outcome"), "every line carries business routes only");
-    assert.deepEqual(layout.handlers.get("poll"), [{ key: "handler:poll:failed", step: "poll", from: "poll", target: "failed", to: null, end: "failed",
-        outcome: "failed", routes: ["failure", "timed_out"], kinds: ["error"], words: "on error", catchAll: false }]);
-    assert.deepEqual(layout.handlers.get("notify").map(handler => [handler.key, handler.routes, handler.kinds, handler.words, handler.to, handler.end]),
-        [["handler:notify:failed", ["delivery_failed"], ["error"], "on error", null, "failed"]]);
-    assert.deepEqual([...layout.marks.values()], [
-        { step: "poll", key: "mark:poll", title: "Has an error handler: on error → failed. Select the step to see where errors go." },
-        { step: "notify", key: "mark:notify", title: "Has an error handler: on error → failed. Select the step to see where errors go." }]);
+    assert.ok(layout.edges.every(edge => edge.kind === "outcome" && !edge.error), "every line carries business routes only");
+    assert.ok(layout.edges.every(edge => edge.key === workflowGraphEdgeKey(edge.from, edge.to)), "every line has its key");
+    assert.deepEqual(layout.handlers.get("poll"), [{ key: "handler:poll:failed", step: "poll", from: "poll", end: "failed", outcome: "failed",
+        routes: ["failure", "timed_out"], kinds: ["error"], words: "on error", catchAll: false, index: 0 }]);
+    assert.deepEqual(layout.handlers.get("notify").map(handler => [handler.key, handler.routes, handler.kinds, handler.words, handler.end, handler.index]),
+        [["handler:notify:failed", ["delivery_failed"], ["error"], "on error", "failed", 0]]);
+    // Each handler is a boundary event on its step, keyed as its handler: what it catches and the end it leads to.
+    const title = "Error handler: on error → end failed. Select the step to see where its errors go.";
+    assert.deepEqual([...layout.marks], [
+        ["poll", [{ step: "poll", key: "handler:poll:failed", end: "failed", words: "on error", index: 0, title }]],
+        ["notify", [{ step: "notify", key: "handler:notify:failed", end: "failed", words: "on error", index: 0, title }]]]);
     assert.equal(layout.badges, undefined, "no ✕ badge any more");
     assert.equal(layout.chips.size, 0, "an error route is never a chip");
     assert.deepEqual(layout.ends.map(end => [end.id, end.box, end.keys]), [
@@ -199,33 +207,46 @@ const issueToPr = workflowDefinition({ revision: 3, initial: "fetch_issue", stat
     }),
 ] });
 
-test("issue-to-pr: 10 boxes, 13 lines of business routes, 9 labels in plain words, every error and limit route a handler; the happy path is one straight column", () => {
+test("issue-to-pr: 10 boxes, 13 business lines and 4 dashed error lines (9 business labels, 4 error labels); error routes into ends are handlers, error routes between steps are dashed lines; the happy path is one straight column", () => {
     const layout = layoutWorkflowGraphTB(issueToPr);
     assert.equal(layout.positions.size, 10);
-    assert.equal(layout.edges.length, 13);
-    // R3: a line's label is its business outcomes in plain words, never a ✕ or ⟳ glyph.
-    assert.deepEqual(layout.edges.filter(edge => edge.labelText).map(edge => edge.labelText).sort(),
+    assert.equal(layout.edges.length, 17);
+    const business = layout.edges.filter(edge => !edge.error);
+    const errors = layout.edges.filter(edge => edge.error);
+    assert.deepEqual([business.length, errors.length], [13, 4]);
+    // Every line has its key: a business line its pair's (workflowGraphEdgeKey), a line of error routes its own.
+    assert.ok(business.every(edge => edge.key === workflowGraphEdgeKey(edge.from, edge.to)));
+    assert.ok(errors.every(edge => edge.key === workflowGraphErrorEdgeKey(edge.from, edge.to)));
+    // R3: a business line's label is its business outcomes in plain words, never a ✕ or ⟳ glyph.
+    assert.deepEqual(business.filter(edge => edge.labelText).map(edge => edge.labelText).sort(),
         ["acquired", "busy", "create", "created", "not created", "ok", "published · declined", "ready for review", "verified"].sort());
-    assert.deepEqual([edgeOf(layout, "create_env", "wait_for_env").outcomes, edgeOf(layout, "implement", "finish").outcomes],
+    assert.deepEqual([lineOf(layout, "create_env", "wait_for_env").outcomes, lineOf(layout, "implement", "finish").outcomes],
         [["not_created"], ["published", "declined"]]);
-    assert.ok(layout.edges.every(edge => edge.kind === "outcome" && !/[✕⟳]/.test(edge.labelText)), "lines carry business routes only");
+    assert.ok(business.every(edge => edge.kind === "outcome" && !/[✕⟳]/.test(edge.labelText)), "business lines carry business routes only");
+    // R1 (12:05 PST): the error and limit routes between two steps are a grey dashed line of their own, labelled with what they catch.
+    assert.deepEqual(errors.map(edge => [name(edge), edge.kind, edge.outcomes, edge.kinds, edge.words, edge.labelText]), [
+        ["create_env->wait_for_env", "error", ["exhausted", "failure"], ["error", "limit"], "on error · limit", "on error · limit"],
+        ["implement->finish", "error", ["exhausted", "failure"], ["error", "limit"], "on error · limit", "on error · limit"],
+        ["review->gate", "error", ["failure"], ["error"], "on error", "on error"],
+        ["renew->implement", "error", ["failure"], ["error"], "on error", "on error"]]);
+    assert.ok(errors.every(edge => !edge.catchAll && !/[✕⟳]/.test(edge.labelText)), "no glyph on an error line either");
     assert.equal(layout.edges.filter(edge => edge.to === "failed").length, 0);
-    // R1: every error and limit route is an error handler, one per step and target, whatever the target (a step or an end).
-    assert.deepEqual([...layout.handlers].map(([step, list]) => [step, list.map(handler => [handler.key, handler.to, handler.end, handler.routes, handler.words])]), [
-        ["fetch_issue", [["handler:fetch_issue:failed", null, "failed", ["failure"], "on error"]]],
-        ["acquire_env", [["handler:acquire_env:no_env", null, "no_env", ["exhausted"], "on limit"],
-            ["handler:acquire_env:failed", null, "failed", ["failure"], "on error"]]],
-        ["create_env", [["handler:create_env:wait_for_env", "wait_for_env", null, ["exhausted", "failure"], "on error or limit"]]],
-        ["wait_for_env", [["handler:wait_for_env:failed", null, "failed", ["failure"], "on error"]]],
-        ["implement", [["handler:implement:finish", "finish", null, ["exhausted", "failure"], "on error or limit"]]],
-        ["review", [["handler:review:gate", "gate", null, ["failure"], "on error"]]],
-        ["gate", [["handler:gate:failed", null, "failed", ["failure"], "on error"]]],
-        ["renew", [["handler:renew:implement", "implement", null, ["failure"], "on error"]]],
-        ["finish", [["handler:finish:failed", null, "failed", ["failure"], "on error"]]]]);
-    assert.deepEqual(layout.handlers.get("implement")[0].kinds, ["error", "limit"]);
-    assert.deepEqual([layout.handlers.get("acquire_env")[0].kinds, layout.handlers.get("acquire_env")[0].outcome], [["limit"], "blocked"]);
-    assert.equal(layout.marks.get("acquire_env").title,
-        "Has an error handler: on limit → no_env; on error → failed. Select the step to see where errors go.");
+    // R1: the error and limit routes into an end are an error handler, one per step and end, numbered on its step: errors
+    // before the visit limit, whatever order the routes are listed in.
+    assert.deepEqual([...layout.handlers].map(([step, list]) => [step, list.map(handler => [handler.key, handler.from, handler.end, handler.outcome,
+        handler.routes, handler.kinds, handler.words, handler.index])]), [
+        ["fetch_issue", [["handler:fetch_issue:failed", "fetch_issue", "failed", "failed", ["failure"], ["error"], "on error", 0]]],
+        ["acquire_env", [["handler:acquire_env:failed", "acquire_env", "failed", "failed", ["failure"], ["error"], "on error", 0],
+            ["handler:acquire_env:no_env", "acquire_env", "no_env", "blocked", ["exhausted"], ["limit"], "on limit", 1]]],
+        ["wait_for_env", [["handler:wait_for_env:failed", "wait_for_env", "failed", "failed", ["failure"], ["error"], "on error", 0]]],
+        ["gate", [["handler:gate:failed", "gate", "failed", "failed", ["failure"], ["error"], "on error", 0]]],
+        ["finish", [["handler:finish:failed", "finish", "failed", "failed", ["failure"], ["error"], "on error", 0]]]]);
+    assert.ok([...layout.handlers.values()].flat().every(handler => !handler.catchAll && !("to" in handler) && !("target" in handler)));
+    for (const step of ["create_env", "implement", "review", "renew"]) assert.equal(layout.handlers.has(step), false, `${step}'s errors are a line, not a handler`);
+    // Each handler is one boundary event on its step.
+    assert.deepEqual(layout.marks.get("acquire_env").map(mark => [mark.key, mark.end, mark.words, mark.index, mark.title]), [
+        ["handler:acquire_env:failed", "failed", "on error", 0, "Error handler: on error → end failed. Select the step to see where its errors go."],
+        ["handler:acquire_env:no_env", "no_env", "on limit", 1, "Error handler: on limit → end no_env. Select the step to see where its errors go."]]);
     assert.deepEqual([...layout.marks.keys()], [...layout.handlers.keys()]);
     // R2: chips come from business routes only: acquire_env's visit limit into no_env is its handler, not a chip.
     assert.deepEqual([...layout.chips].map(([step, list]) => [step, list.map(chip => [chip.text, chip.tone])]), [
@@ -236,11 +257,13 @@ test("issue-to-pr: 10 boxes, 13 lines of business routes, 9 labels in plain word
         ["rejected", ["chip:fetch_issue:rejected"]], ["no_env", ["handler:acquire_env:no_env"]],
         ["failed", ["chip:finish:failed", "handler:fetch_issue:failed", "handler:acquire_env:failed", "handler:wait_for_env:failed",
             "handler:gate:failed", "handler:finish:failed"]]]);
-    // R4: the happy path's lines are weighted, and its downward lines stand straight under each other.
+    // R4: the happy path's lines are weighted, and its downward lines stand straight under each other. It never takes a
+    // line of error routes: those are drawn beside their business line, or laid out lightly after the business lines.
     const spine = layout.edges.filter(edge => edge.spine).map(name);
     assert.deepEqual(spine.sort(), ["acquire_env->implement", "fetch_issue->acquire_env", "finish->done", "gate->renew", "implement->finish",
         "implement->review", "renew->implement", "review->gate"].sort());
-    assert.ok(layout.edges.filter(edge => edge.spine).every(edge => edge.weight === 8));
+    assert.ok(layout.edges.filter(edge => edge.spine).every(edge => edge.weight === 8 && !edge.error));
+    assert.ok(errors.every(edge => !edge.spine && edge.weight === undefined));
     const centre = id => layout.positions.get(id).x + layout.positions.get(id).width / 2;
     for (const [from, to] of [["fetch_issue", "acquire_env"], ["acquire_env", "implement"], ["implement", "review"], ["review", "gate"], ["gate", "renew"]]) {
         assert.equal(centre(from), centre(to), `${from} stands over ${to}`);
@@ -270,30 +293,92 @@ test("the happy path follows each step's declared outcomes, also from a stored g
     }
 });
 
-test("error handlers' dashed arrows: the selected step's, every one, those into the hovered end or a replay's; into a target's box or a ghost end", () => {
+test("an error route to another step is a dashed line of its own beside the business line between the same two steps, drawn as that line moved 14 px aside", () => {
+    const layout = layoutWorkflowGraphTB(issueToPr);
+    assert.equal(workflowGraphErrorEdgeKey("review", "gate"), JSON.stringify(["review", "gate", "error"]));
+    // review -> gate: approved and changes_required share the business line (no label: every business outcome of review);
+    // its failure is the dashed line beside it, a line of its own with its own key.
+    const review = lineOf(layout, "review", "gate"), reviewError = errorLineOf(layout, "review", "gate");
+    assert.notEqual(review.key, reviewError.key);
+    assert.deepEqual([review.error, review.kind, review.outcomes, review.labelText, review.spine], [undefined, "outcome", ["approved", "changes_required"], "", true]);
+    assert.deepEqual([reviewError.from, reviewError.to, reviewError.error, reviewError.kind, reviewError.outcome, reviewError.outcomes, reviewError.kinds,
+        reviewError.words, reviewError.labelText], ["review", "gate", true, "error", "failure", ["failure"], ["error"], "on error", "on error"]);
+    // A line straight down: its twin moved 14 px to the right; its label right of both lines, level with the twin's.
+    assert.deepEqual(reviewError.points, review.points.map(([x, y]) => [r(x + 14), y]));
+    assert.equal(reviewError.labelY, review.labelY);
+    assert.ok(reviewError.labelX - reviewError.labelWidth / 2 > review.labelX + 14, "its label stands right of both lines");
+    assert.equal(reviewError.back, review.back);
+    // Any twin: it starts and ends on the edges of its two boxes (never inside them), its inner points 14 px from the
+    // twin's, and it goes the same way.
+    const onEdge = ([x, y], box) => x >= box.x - 0.1 && x <= box.x + box.width + 0.1 && y >= box.y - 0.1 && y <= box.y + box.height + 0.1
+        && [x - box.x, box.x + box.width - x, y - box.y, box.y + box.height - y].some(gap => Math.abs(gap) < 0.1);
+    for (const [from, to] of [["review", "gate"], ["implement", "finish"], ["renew", "implement"], ["create_env", "wait_for_env"]]) {
+        const twin = lineOf(layout, from, to), line = errorLineOf(layout, from, to);
+        assert.equal(line.points.length, twin.points.length, `${from}->${to}`);
+        assert.ok(onEdge(line.points[0], layout.positions.get(from)) && onEdge(line.points.at(-1), layout.positions.get(to)), `${from}->${to} ${JSON.stringify(line.points)}`);
+        line.points.slice(1, -1).forEach(([x, y], index) => {
+            const [tx, ty] = twin.points[index + 1];
+            assert.ok(Math.abs(Math.hypot(x - tx, y - ty) - 14) < 0.2, `${from}->${to} inner point ${index}`);
+        });
+        assert.equal(line.back, twin.back);
+        assert.match(line.path, /^M[\d.]+,[\d.]+( [LC][\d., ]+)+$/, `${from}->${to}`);
+    }
+    // A line that runs mostly across: its label just past the twin's label.
+    const implement = lineOf(layout, "implement", "finish"), implementError = errorLineOf(layout, "implement", "finish");
+    assert.ok(Math.abs(implementError.labelX - (implement.labelX + implement.labelWidth / 2 + 6 + implementError.labelWidth / 2)) < 0.06);
+    assert.equal(implementError.labelY, implement.labelY);
+    // The line that closes the loop (renew -> implement goes back up) is moved aside too, still going back.
+    assert.deepEqual([lineOf(layout, "renew", "implement").back, errorLineOf(layout, "renew", "implement").back], [true, true]);
+    assertInside(layout);
+});
+
+test("a step's boundary events: one per error handler, on its bottom edge 22 px apart from its right corner; each handler's arrow leaves its own", () => {
+    const box = { x: 100, y: 40, width: 202, height: 66 };
+    assert.equal(WORKFLOW_BOUNDARY_EVENT_INSET, 22);
+    assert.deepEqual([0, 1, 2].map(index => workflowBoundaryEventAt(box, index)), [[280, 106], [258, 106], [236, 106]]);
+    const layout = layoutWorkflowGraphTB(issueToPr);
+    // acquire_env has two handlers: its errors first (#0, nearest the corner), then its visit limit (#1).
+    assert.deepEqual(layout.handlers.get("acquire_env").map(handler => [handler.end, handler.index]), [["failed", 0], ["no_env", 1]]);
+    assert.deepEqual(layout.marks.get("acquire_env").map(mark => [mark.key, mark.index]), [["handler:acquire_env:failed", 0], ["handler:acquire_env:no_env", 1]]);
+    const step = layout.positions.get("acquire_env");
+    const starts = [0, 1].map(index => workflowBoundaryEventAt(step, index));
+    assert.deepEqual(starts, [[step.x + step.width - 22, step.y + step.height], [step.x + step.width - 44, step.y + step.height]]);
+    const arrows = workflowHandlerArrows(layout, new Map(layout.positions), { selectedId: "acquire_env" });
+    assert.deepEqual(arrows.map(arrow => arrow.path.split(" ")[0]), starts.map(([x, y]) => `M${r(x)},${r(y)}`));
+    // The order is the same from a stored graph, which lists its routes by name.
+    const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    const stored = layoutWorkflowGraphTB(workflowDefinition({ ...issueToPr, states: issueToPr.states.map(state => (state.next
+        ? { ...state, next: Object.fromEntries(Object.entries(state.next).sort(([a], [b]) => byName(a, b))) } : state)) }));
+    assert.deepEqual(stored.handlers.get("acquire_env").map(handler => [handler.end, handler.index]), [["failed", 0], ["no_env", 1]]);
+});
+
+test("error handlers' dashed arrows: the selected step's, every one, those into the hovered end or a replay's; each from its boundary event to a ghost of its end", () => {
     const layout = layoutWorkflowGraphTB(issueToPr);
     const boxes = new Map(layout.positions);
-    const r = value => Math.round(value * 10) / 10;
     assert.deepEqual(workflowHandlerArrows(layout, boxes), [], "none until a step is selected");
-    // A handler into an end with no box: from the step's right side to a ghost of the end beside it, one under the other.
+    // From the step's boundary events to ghosts of the ends beside it, one under the other, the words above each ghost.
     const acquire = workflowHandlerArrows(layout, boxes, { selectedId: "acquire_env" });
-    assert.deepEqual(acquire.map(arrow => [arrow.key, arrow.step, arrow.target, arrow.words, arrow.ghost?.end, arrow.ghost?.outcome]), [
-        ["handler:acquire_env:no_env", "acquire_env", "no_env", "on limit", "no_env", "blocked"],
-        ["handler:acquire_env:failed", "acquire_env", "failed", "on error", "failed", "failed"]]);
+    assert.deepEqual(acquire.map(arrow => [arrow.key, arrow.step, arrow.end, arrow.words, arrow.ghost.end, arrow.ghost.outcome]), [
+        ["handler:acquire_env:failed", "acquire_env", "failed", "on error", "failed", "failed"],
+        ["handler:acquire_env:no_env", "acquire_env", "no_env", "on limit", "no_env", "blocked"]]);
+    assert.ok(acquire.every(arrow => !("target" in arrow)), "an arrow always ends at a ghost of its end");
     const step = layout.positions.get("acquire_env");
-    for (const arrow of acquire) {
-        assert.ok(arrow.path.startsWith(`M${r(step.x + step.width)},${r(step.y + step.height / 2)} C`), arrow.path);
-        assert.ok(arrow.ghost.x > step.x + step.width, "the ghost end is beside the step, to its right");
+    acquire.forEach((arrow, index) => {
+        const [x, y] = workflowBoundaryEventAt(step, index);
+        assert.ok(arrow.path.startsWith(`M${r(x)},${r(y)} C`), arrow.path);
+        assert.deepEqual([arrow.ghost.x, arrow.ghost.y], [r(step.x + step.width + 60 + 11), r(step.y + step.height + 20 + index * 30)]);
+        assert.ok(arrow.path.endsWith(` ${r(arrow.ghost.x - 13)},${r(arrow.ghost.y)}`), arrow.path);
+        assert.deepEqual([arrow.labelX, arrow.labelY], [r(arrow.ghost.x - 34), r(arrow.ghost.y - 20)]);
         assert.deepEqual([arrow.litCount, arrow.litAge, arrow.current, arrow.tag], [0, null, false, null]);
-    }
-    assert.ok(acquire[0].ghost.x === acquire[1].ghost.x && acquire[1].ghost.y > acquire[0].ghost.y, "two ghosts stand one under the other");
-    // A handler into a step: no ghost; the arrow swings out to the right and into the target's right side.
-    const [implement] = workflowHandlerArrows(layout, boxes, { selectedId: "implement" });
-    const finish = layout.positions.get("finish");
-    assert.deepEqual([implement.key, implement.target, implement.words, implement.ghost], ["handler:implement:finish", "finish", "on error or limit", null]);
-    assert.ok(implement.path.endsWith(` ${r(finish.x + finish.width + 2)},${r(finish.y + finish.height / 2)}`), implement.path);
+    });
+    // A step with end chips: its ghost stands past the chips' room.
+    const [finish] = workflowHandlerArrows(layout, boxes, { selectedId: "finish" });
+    const finishBox = layout.positions.get("finish");
+    assert.equal(finish.ghost.x, r(finishBox.x + finishBox.width + layout.chipRoom.get("finish") + 71));
+    // A step whose errors go to another step has no handler: its dashed line is always drawn, and selecting it adds no arrow.
+    assert.deepEqual(workflowHandlerArrows(layout, boxes, { selectedId: "implement" }), []);
     // Show all handlers: every one; an end hovered in the Ends row: those into it.
-    assert.equal(workflowHandlerArrows(layout, boxes, { all: true }).length, 10);
+    assert.equal(workflowHandlerArrows(layout, boxes, { all: true }).length, 6);
     assert.deepEqual(workflowHandlerArrows(layout, boxes, { hoverEnd: "failed" }).map(arrow => arrow.key),
         ["handler:fetch_issue:failed", "handler:acquire_env:failed", "handler:wait_for_env:failed", "handler:gate:failed", "handler:finish:failed"]);
     // A replay lights the handler a transition took; the one shown now carries the transition's words.
@@ -302,7 +387,7 @@ test("error handlers' dashed arrows: the selected step's, every one, those into 
         [["handler:gate:failed", 1, 0, true, "✕ script failed"]]);
 });
 
-test("the root catchAll: every root step without a failure route has an error handler to it (its mark says catchAll), and the catch-all's end counts its ways in", () => {
+test("the root catchAll: a root step without a failure route has an error handler to it when it is an end (its boundary event says catchAll) and a dashed error line to it when it is a step; the catch-all's end counts its ways in", () => {
     const layout = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "a", catchAll: "failed", states: [
         { id: "a", type: "script", outcomes: ["ok"], next: { ok: "b" } },
         { id: "b", type: "script", outcomes: ["ok"], next: { ok: "done", failure: "cleanup" } },
@@ -311,19 +396,26 @@ test("the root catchAll: every root step without a failure route has an error ha
         { id: "failed", type: "terminal", outcome: "failed" },
     ] }));
     assert.equal(layout.catchAll, "failed");
-    assert.deepEqual([...layout.handlers.values()].flat().map(handler => [handler.key, handler.to, handler.end, handler.routes, handler.words, handler.catchAll]), [
-        ["handler:b:cleanup", "cleanup", null, ["failure"], "on error", false],
-        ["handler:a:failed", null, "failed", [], "on error", true],
-        ["handler:cleanup:failed", null, "failed", [], "on error", true]]);
-    // A step with a failure route is not covered: its own handler (b's failure, into cleanup) takes its errors.
-    assert.equal(layout.handlers.get("b").some(handler => handler.catchAll || handler.target === "failed"), false);
-    assert.deepEqual([...layout.marks].map(([id, mark]) => [id, mark.key, mark.title]), [
-        ["b", "mark:b", "Has an error handler: on error → cleanup. Select the step to see where errors go."],
-        ["a", "mark:a", "Has an error handler: on error → failed (catchAll). Select the step to see where errors go."],
-        ["cleanup", "mark:cleanup", "Has an error handler: on error → failed (catchAll). Select the step to see where errors go."]]);
+    assert.deepEqual([...layout.handlers.values()].flat().map(handler => [handler.key, handler.end, handler.routes, handler.words, handler.catchAll, handler.index]), [
+        ["handler:a:failed", "failed", [], "on error", true, 0],
+        ["handler:cleanup:failed", "failed", [], "on error", true, 0]]);
+    // A step with a failure route is not covered: its own route takes its errors, here into the step cleanup, a dashed
+    // line, not a handler. With no business line beside it, dagre lays it out, lightly: the happy path stays one column.
+    assert.equal(layout.handlers.has("b"), false);
+    const caught = errorLineOf(layout, "b", "cleanup");
+    assert.deepEqual([caught.kind, caught.outcomes, caught.kinds, caught.words, caught.labelText, caught.catchAll],
+        ["error", ["failure"], ["error"], "on error", "on error", undefined]);
+    assert.equal(lineOf(layout, "b", "cleanup"), undefined, "no business line between b and cleanup");
+    assert.ok(caught.points.length >= 2 && caught.labelWidth > 0 && !caught.spine);
+    const centre = id => layout.positions.get(id).x + layout.positions.get(id).width / 2;
+    assert.deepEqual([centre("b"), centre("done")], [centre("a"), centre("a")]);
+    assert.deepEqual([...layout.marks].map(([id, list]) => [id, list.map(mark => [mark.key, mark.title])]), [
+        ["a", [["handler:a:failed", "Error handler: on error → end failed (catchAll). Select the step to see where its errors go."]]],
+        ["cleanup", [["handler:cleanup:failed", "Error handler: on error → end failed (catchAll). Select the step to see where its errors go."]]]]);
     assert.deepEqual(layout.chips.get("cleanup").map(chip => chip.text), ["ok → ⏹ failed"]);
     assert.deepEqual(layout.ends.find(end => end.id === "failed").keys.sort(), ["chip:cleanup:failed", "handler:a:failed", "handler:cleanup:failed"]);
-    // A catch-all that is a step: it does not cover itself, and a covered step's own handler to it takes the catchAll too.
+    // A catch-all that is a step: no handler; a covered step's errors are a dashed line to it (route "@catchAll", catchAll),
+    // shared with the step's own error routes to it; it covers neither itself nor a step with a failure route.
     const covered = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "a", catchAll: "cleanup", states: [
         { id: "a", type: "script", outcomes: ["ok"], next: { ok: "b", timed_out: "cleanup" } },
         { id: "b", type: "script", outcomes: ["ok"], next: { ok: "done", failure: "cleanup" } },
@@ -331,10 +423,22 @@ test("the root catchAll: every root step without a failure route has an error ha
         { id: "done", type: "terminal", outcome: "succeeded" },
         { id: "failed", type: "terminal", outcome: "failed" },
     ] }));
-    assert.deepEqual([...covered.handlers].map(([id, list]) => [id, list.map(handler => [handler.key, handler.to, handler.routes, handler.catchAll])]), [
-        ["a", [["handler:a:cleanup", "cleanup", ["timed_out"], true]]], ["b", [["handler:b:cleanup", "cleanup", ["failure"], false]]]]);
-    assert.equal(covered.handlers.has("cleanup"), false, "the catch-all state is not covered by itself");
-    assert.equal(covered.marks.get("a").title, "Has an error handler: on error → cleanup (catchAll). Select the step to see where errors go.");
+    assert.deepEqual([covered.handlers.size, covered.marks.size], [0, 0]);
+    assert.deepEqual(covered.edges.filter(edge => edge.error).map(edge => [edge.key, edge.outcomes, edge.words, edge.catchAll ?? false]), [
+        [workflowGraphErrorEdgeKey("a", "cleanup"), ["timed_out", "@catchAll"], "on error", true],
+        [workflowGraphErrorEdgeKey("b", "cleanup"), ["failure"], "on error", false]]);
+    assert.equal(covered.edges.some(edge => edge.from === "cleanup" && edge.error), false, "the catch-all state is not covered by itself");
+    // A covered step with no error route of its own: its dashed line is the catchAll's alone.
+    const only = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "a", catchAll: "cleanup", states: [
+        { id: "a", type: "script", outcomes: ["ok"], next: { ok: "done" } },
+        { id: "cleanup", type: "script", outcomes: ["ok"], next: { ok: "failed" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "failed", type: "terminal", outcome: "failed" },
+    ] }));
+    const line = errorLineOf(only, "a", "cleanup");
+    assert.deepEqual([line.from, line.to, line.kind, line.outcome, line.outcomes, line.kinds, line.words, line.labelText, line.catchAll],
+        ["a", "cleanup", "error", "@catchAll", ["@catchAll"], ["error"], "on error", "on error", true]);
+    assert.deepEqual([only.handlers.size, only.marks.size, only.edges.filter(edge => edge.error).length], [0, 0, 1]);
     // Without a catchAll, nothing is covered.
     const plain = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "a", states: [
         { id: "a", type: "script", outcomes: ["ok"], next: { ok: "done" } }, { id: "done", type: "terminal", outcome: "succeeded" }] }));
@@ -397,8 +501,8 @@ test("a parallel step is its branch box's title, its branch's success end is its
     assert.deepEqual(layout.chips.get("fan").map(chip => [chip.text, chip.tone]), [["blocked → ⏹ failed", "red"]]);
     assert.ok(join.x >= 0 && layout.width - (join.x + join.width) >= 100, "the bar's chips have room beside it");
     // R1: review's time limit (timed_out, a runtime-error route) is an error handler to a ghost of the failed end: no line, no chip.
-    assert.deepEqual(layout.handlers.get("review"), [{ key: "handler:review:failed", step: "review", from: "review", target: "failed", to: null,
-        end: "failed", outcome: "failed", routes: ["timed_out"], kinds: ["error"], words: "on error", catchAll: false }]);
+    assert.deepEqual(layout.handlers.get("review"), [{ key: "handler:review:failed", step: "review", from: "review", end: "failed", outcome: "failed",
+        routes: ["timed_out"], kinds: ["error"], words: "on error", catchAll: false, index: 0 }]);
     assert.deepEqual([...layout.marks.keys()], ["review"]);
     assert.deepEqual(layout.ends.find(end => end.id === "failed").keys, ["chip:fan:failed", "handler:review:failed"]);
     assert.equal(layout.edges.length, 3);
@@ -412,28 +516,37 @@ test("a parallel step's error handler leaves its join bar; a handler into a bran
     const base = fanned();
     const layout = layoutWorkflowGraphTB({ ...base, states: base.states.map(node => (node.id === "fan" ? { ...node, next: { ...node.next, failure: "failed" } }
         : node.id === "work" ? { ...node, next: { ok: "branch_done", failure: "branch_done" } } : node)) });
-    assert.deepEqual(layout.handlers.get("fan").map(handler => [handler.key, handler.from, handler.to, handler.end, handler.outcome, handler.routes]),
-        [["handler:fan:failed", "join:fan", null, "failed", "failed", ["failure"]]]);
-    assert.deepEqual(layout.handlers.get("work").map(handler => [handler.key, handler.from, handler.to, handler.end, handler.outcome, handler.words]),
-        [["handler:work:branch_done", "work", null, "branch_done", "succeeded", "on error"]]);
+    assert.deepEqual(layout.handlers.get("fan").map(handler => [handler.key, handler.from, handler.end, handler.outcome, handler.routes, handler.index]),
+        [["handler:fan:failed", "join:fan", "failed", "failed", ["failure"], 0]]);
+    assert.deepEqual(layout.handlers.get("work").map(handler => [handler.key, handler.from, handler.end, handler.outcome, handler.words, handler.index]),
+        [["handler:work:branch_done", "work", "branch_done", "succeeded", "on error", 0]]);
+    assert.deepEqual([...layout.marks].map(([step, list]) => [step, list.map(mark => mark.key)]),
+        [["review", ["handler:review:failed"]], ["fan", ["handler:fan:failed"]], ["work", ["handler:work:branch_done"]]]);
     // Its business routes are unchanged: work's line into the bar, blocked a chip beside the bar.
     assert.deepEqual(edgeOf(layout, "work", "join:fan").outcomes, ["ok"]);
     assert.deepEqual(layout.chips.get("fan").map(chip => chip.text), ["blocked → ⏹ failed"]);
     const join = layout.joins.get("fan");
     const boxes = new Map([...layout.positions, [join.id, join]]);
-    const r = value => Math.round(value * 10) / 10;
+    // The parallel step's boundary event is on its join bar's bottom edge; its ghost stands past the bar's chips, under the bar.
     const [fan] = workflowHandlerArrows(layout, boxes, { selectedId: "fan" });
-    assert.ok(fan.path.startsWith(`M${r(join.x + join.width)},${r(join.y + join.height / 2)} C`), fan.path);
-    assert.deepEqual([fan.ghost.end, fan.ghost.outcome], ["failed", "failed"]);
-    assert.ok(fan.ghost.y > join.y + join.height / 2, "the ghost stands under the bar's chips");
+    const [eventX, eventY] = workflowBoundaryEventAt(join, 0);
+    assert.deepEqual([eventX, eventY], [join.x + join.width - 22, join.y + join.height]);
+    assert.ok(fan.path.startsWith(`M${r(eventX)},${r(eventY)} C`), fan.path);
+    assert.deepEqual([fan.end, fan.ghost.end, fan.ghost.outcome], ["failed", "failed", "failed"]);
+    assert.equal(fan.ghost.x, r(join.x + join.width + layout.chipRoom.get("fan") + 71), "the ghost stands past the bar's chips");
+    assert.ok(fan.ghost.y >= join.y + join.height + 20, "the ghost stands under the bar");
     const [work] = workflowHandlerArrows(layout, boxes, { selectedId: "work" });
-    assert.deepEqual([work.target, work.ghost.end, work.ghost.outcome], ["branch_done", "branch_done", "succeeded"]);
+    assert.deepEqual([work.end, work.ghost.end, work.ghost.outcome], ["branch_done", "branch_done", "succeeded"]);
+    const workBox = layout.positions.get("work");
+    assert.ok(work.path.startsWith(`M${r(workBox.x + workBox.width - 22)},${r(workBox.y + workBox.height)} C`), work.path);
     // An end with a box of its own (the root's success end) is a ghost too: a handler's arrow always ends at a ghost of its end.
     const intoDone = layoutWorkflowGraphTB({ ...base, states: base.states.map(node => (node.id === "review" ? { ...node, next: { ...node.next, timed_out: "done" } } : node)) });
-    assert.deepEqual(intoDone.handlers.get("review").map(handler => [handler.to, handler.end]), [[null, "done"]]);
+    assert.deepEqual(intoDone.handlers.get("review").map(handler => [handler.end, handler.outcome, handler.words]), [["done", "succeeded", "on error"]]);
+    assert.deepEqual(intoDone.ends.find(end => end.id === "done").keys, [JSON.stringify(["join:fan", "done"]), "handler:review:done"]);
+    assert.equal(intoDone.edges.some(edge => edge.from === "review" && edge.to === "done"), false, "no line into the end");
 });
 
-test("a step that handles its own errors has a dashed loop beside it; a body of ends only is an empty box", () => {
+test("a step that handles its own errors has a dashed error loop beside it (a line, not a handler); a body of ends only is an empty box", () => {
     const layout = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "retry", states: [
         { id: "retry", type: "script", outcomes: ["ok"], next: { ok: "fan", failure: "retry" } },
         { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
@@ -441,11 +554,16 @@ test("a step that handles its own errors has a dashed loop beside it; a body of 
         { id: "item_done", type: "terminal", outcome: "succeeded", parallel: "fan" },
         { id: "done", type: "terminal", outcome: "succeeded" },
     ] }));
-    assert.deepEqual(layout.handlers.get("retry").map(handler => [handler.from, handler.to, handler.end]), [["retry", "retry", null]]);
-    const [loop] = workflowHandlerArrows(layout, new Map(layout.positions), { selectedId: "retry" });
+    // R1: an error route back to its own step is a line of error routes, not a handler: a dashed loop out of the step's right side.
+    assert.deepEqual([layout.handlers.has("retry"), layout.marks.has("retry")], [false, false]);
+    const loop = errorLineOf(layout, "retry", "retry");
+    assert.deepEqual([loop.key, loop.kind, loop.outcomes, loop.words, loop.labelText, loop.back],
+        [JSON.stringify(["retry", "retry", "error"]), "error", ["failure"], "on error", "on error", true]);
+    assert.equal(lineOf(layout, "retry", "retry"), undefined, "no business loop");
     const box = layout.positions.get("retry");
-    assert.equal(loop.key, "handler:retry:retry");
     assert.ok(loop.labelX > box.x + box.width, "the loop and its words are beside the step");
+    assert.ok(loop.points.every(([x]) => x >= box.x + box.width - 0.05), "the loop leaves and enters the step's right side");
+    assert.deepEqual(workflowHandlerArrows(layout, new Map(layout.positions), { selectedId: "retry" }), [], "no handler arrow");
     const group = layout.groups.get("fan");
     assert.deepEqual([...layout.positions.keys()].sort(), ["done", "retry"]);
     assert.ok(group.width > 0 && group.height > 0 && layout.joins.get("fan").y >= group.y + group.height);

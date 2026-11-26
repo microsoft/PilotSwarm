@@ -373,10 +373,12 @@ export function annotateWorkflowEdges(definition, layout) {
         // A branch's line into its join bar (B2) is its step's routes.
         const owner = byId.get(edge.step ?? edge.owner ?? edge.from);
         const kinds = new Set(edge.outcomes.map(label => workflowRouteKind(owner, label)));
-        edge.kind = edge.join ? "join" : kinds.size > 1 ? "mixed" : [...kinds][0];
+        // R1 (12:05 PST): a line of error routes between steps (the graph model's `error`, its visit limit too) is an error line.
+        edge.kind = edge.error ? "error" : edge.join ? "join" : kinds.size > 1 ? "mixed" : [...kinds][0];
         // Review 18:45Z: an edge's title and screen-reader words name its error routes in the Next words ("✕ limit"),
         // never by their raw outcome ids.
-        edge.outcomeWords = edge.outcomes.map(label => (workflowRouteKind(owner, label) === "error" ? workflowErrorRouteWords(label) : label));
+        edge.outcomeWords = edge.outcomes.map(label => (label === "@catchAll" ? "any error (catchAll)"
+            : edge.error || workflowRouteKind(owner, label) === "error" ? workflowErrorRouteWords(label) : label));
         const notes = edge.outcomes.filter(label => typeof owner?.routeNotes?.[label] === "string")
             .map(label => `${label}: ${owner.routeNotes[label]}`);
         if (notes.length) edge.notes = notes.join("\n");

@@ -20,10 +20,10 @@ import {
     workflowVisitEnding,
 } from "../src/workflow-view.js";
 import {
-    layoutWorkflowGraphTB, workflowHandlerArrows, WORKFLOW_GRAPH_JOIN_HEIGHT, WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT,
+    layoutWorkflowGraphTB, workflowBoundaryEventAt, workflowHandlerArrows, WORKFLOW_GRAPH_JOIN_HEIGHT, WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT,
 } from "../src/workflow-graph-layout.js";
 import { WorkflowNodeContent } from "../../react/src/workflow-panels.js";
-import { WorkflowJoinBar } from "../../react/src/workflow-graph.js";
+import { WorkflowGroupBox, WorkflowJoinBar, workflowGroupProps } from "../../react/src/workflow-graph.js";
 import { readModel, row, done } from "./workflow-fixtures.mjs";
 
 // Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
@@ -297,11 +297,12 @@ test("the graph: timed_out, a runtime-error route of the parallel step to a bloc
     assert.deepEqual(layout.chips.get("fan").map(chip => [chip.key, chip.end, chip.routes, chip.text, chip.tone]), [
         ["chip:fan:review_blocked", "review_blocked", ["blocked"], "blocked → ⏹ review_blocked", "amber"],
     ]);
-    // R1: timed_out is an error handler, not a chip: it leaves the join bar for a ghost of the late end; the step's mark says so.
-    assert.deepEqual(layout.handlers.get("fan"), [{ key: "handler:fan:late", step: "fan", from: "join:fan", target: "late", to: null, end: "late",
-        outcome: "blocked", routes: ["timed_out"], kinds: ["error"], words: "on error", catchAll: false }]);
-    assert.deepEqual(layout.marks.get("fan"), { step: "fan", key: "mark:fan",
-        title: "Has an error handler: on error → late. Select the step to see where errors go." });
+    // R1: timed_out is an error handler, not a chip: it leaves the join bar for a ghost of the late end; its boundary event
+    // on the bar says so.
+    assert.deepEqual(layout.handlers.get("fan"), [{ key: "handler:fan:late", step: "fan", from: "join:fan", end: "late", outcome: "blocked",
+        routes: ["timed_out"], kinds: ["error"], words: "on error", catchAll: false, index: 0 }]);
+    assert.deepEqual(layout.marks.get("fan"), [{ step: "fan", key: "handler:fan:late", end: "late", words: "on error", index: 0,
+        title: "Error handler: on error → end late. Select the step to see where its errors go." }]);
     assert.deepEqual(layout.ends.map(end => [end.id, end.outcome, end.box, end.keys]), [
         ["review_blocked", "blocked", false, ["chip:fan:review_blocked"]],
         ["late", "blocked", false, ["handler:fan:late"]],
@@ -310,8 +311,17 @@ test("the graph: timed_out, a runtime-error route of the parallel step to a bloc
     const bar = layout.joins.get("fan");
     const [arrow] = workflowHandlerArrows(layout, new Map([[bar.id, bar]]), { selectedId: "fan" });
     const r = value => Math.round(value * 10) / 10;
-    assert.deepEqual([arrow.key, arrow.words, arrow.ghost.end, arrow.ghost.outcome], ["handler:fan:late", "on error", "late", "blocked"]);
-    assert.ok(arrow.path.startsWith(`M${r(bar.x + bar.width)},${r(bar.y + bar.height / 2)} C`), arrow.path);
+    assert.deepEqual([arrow.key, arrow.end, arrow.words, arrow.ghost.end, arrow.ghost.outcome], ["handler:fan:late", "late", "on error", "late", "blocked"]);
+    const [eventX, eventY] = workflowBoundaryEventAt(bar, 0);
+    assert.deepEqual([eventX, eventY], [bar.x + bar.width - 22, bar.y + bar.height]);
+    assert.ok(arrow.path.startsWith(`M${r(eventX)},${r(eventY)} C`), arrow.path);
+    // The bar draws the boundary event (WorkflowJoinBar with the parallel step's marks); the box's title has no mark of its own.
+    const drawn = renderToStaticMarkup(React.createElement(WorkflowJoinBar, { join: bar, node: null, onSelect() {}, marks: { marks: layout.marks.get("fan"), chips: [] } }));
+    assert.match(drawn, /^<div class="ps-workflow-step is-join"><div class="ps-workflow-join is-idle" data-join="fan"[\s\S]*<\/div><span class="ps-workflow-mark" role="img" aria-label="Error handler: on error → end late\. Select the step to see where its errors go\."[^>]*data-end="late" style="right:13px">/);
+    assert.equal((drawn.match(/class="ps-workflow-mark"/g) ?? []).length, 1);
+    const groupProps = workflowGroupProps(layout, layout.groups.get("fan"), new Map());
+    assert.equal(Object.hasOwn(groupProps, "marks"), false);
+    assert.ok(!renderToStaticMarkup(React.createElement(WorkflowGroupBox, groupProps)).includes("ps-workflow-mark"));
     // B1: the parallel step is its box; its routes to boxes still leave from its join bar, none from the step.
     assert.equal(layout.positions.has("fan"), false);
     assert.equal(layout.edges.some(edge => edge.from === "fan"), false);

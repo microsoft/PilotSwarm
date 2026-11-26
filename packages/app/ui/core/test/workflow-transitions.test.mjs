@@ -15,12 +15,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
     workflowDefinition, workflowExecutionOfRow, workflowReplayFrames,
 } from "../src/workflow-view.js";
-import { layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphEdgeKeys, workflowGroupId, workflowJoinId } from "../src/workflow-graph-layout.js";
 import {
-    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorTransitions, workflowJoinShown, workflowLanePill, workflowLitLevel, workflowLitTransitions,
-    workflowStepMarks, workflowTransitions,
+    layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphEdgeKeys, workflowGraphErrorEdgeKey, workflowGroupId, workflowJoinId,
+} from "../src/workflow-graph-layout.js";
+import {
+    WORKFLOW_LIT_TRANSITIONS, workflowEdgeShown, workflowEndReached, workflowErrorTransitions, workflowJoinShown, workflowLanePill, workflowLitLevel,
+    workflowLitTransitions, workflowStepMarks, workflowTransitions,
 } from "../src/workflow-transitions.js";
-import { WorkflowGraph } from "../../react/src/workflow-graph.js";
+import { WorkflowGraph, WorkflowStepCard } from "../../react/src/workflow-graph.js";
 
 const at = seconds => new Date(Date.UTC(2026, 10, 9, 3, 0, seconds)).toISOString();
 const visit = (id, stateId, seconds, extra = {}) => ({ id, stateId, enteredAt: at(seconds), ordinal: extra.ordinal ?? 1, ...extra });
@@ -254,16 +256,93 @@ test("the moment shown: what the run had taken by then, the transition shown, th
     const back = workflowLitTransitions(transitions, 1);
     assert.deepEqual([...back.visited], [key("fetch", "review")]);
     assert.equal(back.edges.has("handler:gate:failed"), false);
-    // R1: the gate's quiet mark is lit by the handler it took; its chip (a business route) was not taken.
+    // R1: the gate's boundary event (keyed as its handler) is lit by the handler it took; its chip (a business route) was not taken.
     const layout = layoutWorkflowGraphTB(GATED);
     const gate = workflowStepMarks(layout, "gate", live);
-    assert.deepEqual([gate.mark.key, gate.mark.litCount, gate.mark.litAge, gate.mark.visited, gate.mark.hover], ["mark:gate", 1, 0, true, false]);
+    assert.equal(gate.mark, undefined, "a list of boundary events, one per handler");
+    assert.deepEqual(gate.marks.map(mark => [mark.key, mark.end, mark.words, mark.index, mark.litCount, mark.litAge, mark.visited, mark.hover]),
+        [["handler:gate:failed", "failed", "on error", 0, 1, 0, true, false]]);
     assert.deepEqual(gate.chips.map(chip => [chip.key, chip.litCount, chip.visited, chip.ghost]), [["chip:gate:failed", 0, false, null]]);
-    assert.deepEqual([workflowStepMarks(layout, "gate", back).mark.litCount, workflowStepMarks(layout, "gate", null, "failed").mark.hover], [0, true]);
+    // Before the gate's error: not lit, not taken yet; outside a run: not visited either way, lit by the Ends row's hovered end.
+    assert.deepEqual(workflowStepMarks(layout, "gate", back).marks.map(mark => [mark.litCount, mark.litAge, mark.visited]), [[0, null, false]]);
+    assert.deepEqual(workflowStepMarks(layout, "gate", null, "failed").marks.map(mark => [mark.litCount, mark.visited, mark.hover]), [[0, null, true]]);
+    // Another step's boundary event, its handler not taken; a step without handlers or chips has none.
+    assert.deepEqual(workflowStepMarks(layout, "fetch", live).marks.map(mark => [mark.key, mark.litCount, mark.visited]), [["handler:fetch:failed", 0, false]]);
+    assert.deepEqual(workflowStepMarks(layout, "done", live), { marks: [], chips: [] });
     assert.equal(workflowEndReached(transitions, ["done", "rejected", "failed"]), "failed");
     assert.equal(workflowEndReached(transitions, ["done", "rejected", "failed"], 2), null);
     assert.deepEqual(workflowErrorTransitions(transitions), [3]);
     assert.deepEqual(workflowErrorTransitions(null), []);
+});
+
+test("an error route between two steps lights its own dashed line: by its key when the route is known, the error line first when it is not", () => {
+    // R1 (12:05 PST): the review's failure goes on to the gate: a dashed line beside the business line to the gate.
+    const REVIEWED = workflowDefinition({ revision: 1, initial: "review", states: [
+        { id: "review", type: "script", outcomes: ["approved", "changes_required"], next: { approved: "gate", changes_required: "gate", failure: "gate" } },
+        { id: "gate", type: "script", outcomes: ["next"], next: { next: "done", failure: "failed" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "failed", type: "terminal", outcome: "failed" },
+    ] });
+    const errorKey = workflowGraphErrorEdgeKey("review", "gate");
+    assert.equal(errorKey, JSON.stringify(["review", "gate", "error"]));
+    const keys = workflowGraphEdgeKeys(REVIEWED);
+    assert.ok(keys.has(errorKey) && keys.has(key("review", "gate")), [...keys].join(" "));
+    // The review crashed: the runtime took its failure route to the gate, the error line's transition.
+    const crashed = workflowTransitions([visit("nx-0", "review", 0, { status: "failed", outcome: "execution_failed", resultKind: "runtime_error",
+        errorWords: "the script stopped with an error: boom" }), visit("nx-1", "gate", 10)], REVIEWED);
+    assert.deepEqual([crashed[1].edgeKey, crashed[1].route, crashed[1].words, crashed[1].error], [errorKey, "failure", "✕ script failed", true]);
+    // Lit in a replay like any line: the error line, not its business twin.
+    const layout = layoutWorkflowGraphTB(REVIEWED);
+    const lit = workflowLitTransitions(crashed);
+    const shown = edgeKey => workflowEdgeShown(layout.edges.find(edge => edge.key === edgeKey), lit);
+    assert.deepEqual([shown(errorKey).litCount, shown(errorKey).litAge, shown(errorKey).visited, shown(errorKey).tag], [1, 0, true, null]);
+    assert.deepEqual([shown(key("review", "gate")).litCount, shown(key("review", "gate")).visited], [0, false]);
+    // An approval goes by the business line.
+    const approved = workflowTransitions([visit("nx-0", "review", 0, { status: "completed", outcome: "approved", resultKind: "business" }),
+        visit("nx-1", "gate", 10)], REVIEWED);
+    assert.deepEqual([approved[1].edgeKey, approved[1].error], [key("review", "gate"), false]);
+    // The route not known (no outcome recorded): an error takes the error line, anything else the business line.
+    const unknown = extra => workflowTransitions([visit("nx-0", "review", 0, extra), visit("nx-1", "gate", 10)], REVIEWED)[1];
+    assert.deepEqual([unknown({ resultKind: "runtime_error" }).edgeKey, unknown({ resultKind: "runtime_error" }).error], [errorKey, true]);
+    assert.deepEqual([unknown({}).edgeKey, unknown({}).error], [key("review", "gate"), false]);
+    // A root catchAll that is a step: a covered step's error arrives there by its dashed "@catchAll" line.
+    const CAUGHT = workflowDefinition({ revision: 1, initial: "work", catchAll: "cleanup", states: [
+        { id: "work", type: "script", outcomes: ["ok"], next: { ok: "done" } },
+        { id: "cleanup", type: "script", outcomes: ["ok"], next: { ok: "failed" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "failed", type: "terminal", outcome: "failed" },
+    ] });
+    const [, caught] = workflowTransitions([visit("nx-0", "work", 0, { status: "failed", outcome: "timed_out", resultKind: "runtime_error" }),
+        visit("nx-1", "cleanup", 10, { catchAll: true })], CAUGHT);
+    assert.deepEqual([caught.fromStateId, caught.edgeKey, caught.route, caught.words, caught.error],
+        ["work", workflowGraphErrorEdgeKey("work", "cleanup"), "@catchAll", "✕ limit", true]);
+});
+
+test("a step card draws one boundary event per error handler on its bottom edge, titled with what it catches and its end, lit by its handler", () => {
+    const LIMITED = workflowDefinition({ revision: 1, initial: "acquire", states: [
+        { id: "acquire", type: "script", maxVisits: 3, outcomes: ["acquired", "exhausted"], next: { acquired: "done", exhausted: "no_env", failure: "failed" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "no_env", type: "terminal", outcome: "blocked" },
+        { id: "failed", type: "terminal", outcome: "failed" },
+    ] });
+    const layout = layoutWorkflowGraphTB(LIMITED);
+    const lit = { edges: new Map([["handler:acquire:failed", { count: 1, age: 0 }]]), visited: new Set(["handler:acquire:failed"]), transition: null };
+    const node = { id: "acquire", type: "script", kind: "script", state: "failed", phase: "error", label: "Script", stateLabel: "Failed" };
+    const html = renderToStaticMarkup(React.createElement(WorkflowStepCard, { node, onSelect() {}, marks: workflowStepMarks(layout, "acquire", lit) }));
+    assert.match(html, /^<div class="ps-workflow-step"><div class="ps-workflow-node [^"]*"[^>]*data-node-id="acquire"/);
+    // Errors first, nearest the corner (13 px: 22 px in, less half the event's width), then the visit limit 22 px further left.
+    const marks = html.match(/<span class="ps-workflow-mark"[^>]*>/g) ?? [];
+    assert.deepEqual(marks, [
+        '<span class="ps-workflow-mark" role="img" aria-label="Error handler: on error → end failed. Select the step to see where its errors go." '
+            + 'title="Error handler: on error → end failed. Select the step to see where its errors go." data-end="failed" style="right:13px" data-lit="1" data-lit-age="0">',
+        '<span class="ps-workflow-mark" role="img" aria-label="Error handler: on limit → end no_env. Select the step to see where its errors go." '
+            + 'title="Error handler: on limit → end no_env. Select the step to see where its errors go." data-end="no_env" style="right:35px" data-visited="false">']);
+    // Each a double circle with a lightning bolt.
+    assert.deepEqual([(html.match(/class="ps-workflow-mark-ring"/g) ?? []).length, (html.match(/class="ps-workflow-mark-bolt"/g) ?? []).length], [4, 2]);
+    // A step without handlers or chips is its card alone.
+    const plain = renderToStaticMarkup(React.createElement(WorkflowStepCard, { node: { ...node, id: "done", type: "terminal", kind: "terminal" }, onSelect() {},
+        marks: workflowStepMarks(layout, "done", lit) }));
+    assert.ok(plain.startsWith('<div class="ps-workflow-node ') && !plain.includes("ps-workflow-mark"), plain);
 });
 
 test("both renderers draw the lit parts: data-lit, data-lit-age and the current step (the plain picture here)", () => {

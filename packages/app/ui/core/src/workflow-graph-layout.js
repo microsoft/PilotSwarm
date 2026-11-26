@@ -87,9 +87,9 @@ export function workflowOutcomePlain(label) {
 }
 
 /**
- * What a route of `node` is (R1, updated 2026-11-26 12:00 PST): "outcome" a declared business outcome; "limit" its visit
- * limit (`exhausted` on a step with maxVisits, of any type); "error" a runtime-error route (`failure`, error codes). Limit
- * and error routes are error handlers: never drawn as lines.
+ * What a route of `node` is (R1, updated 2026-11-26 12:05 PST): "outcome" a declared business outcome; "limit" its visit
+ * limit (`exhausted` on a step with maxVisits, of any type); "error" a runtime-error route (`failure`, error codes). A
+ * limit or error route into an end is an error handler (a boundary event); one to another step is a grey dashed line.
  */
 export function workflowRouteMark(node, label) {
     if (label === EXHAUSTED && Number.isSafeInteger(node?.maxVisits)) return "limit";
@@ -111,9 +111,10 @@ function routeWords(labels) {
 
 /**
  * An edge's label as drawn (R3): none on a line that carries every business outcome of its step; else its business
- * outcomes in plain words ("published · declined"). A line carries business routes only; the title lists them.
+ * outcomes in plain words ("published · declined"); a line of error routes says what it catches ("on error · limit").
  */
 function workflowEdgeLabelTextOf(edge, byId) {
+    if (edge.error) return edge.words;
     const node = byId.get(edge.step ?? edge.owner ?? edge.from);
     if (!node) return workflowEdgeLabelText(edge.outcome);
     const business = businessOutcomes(node);
@@ -127,9 +128,9 @@ function chipText(routes, end) {
     return `${routeWords(routes)} → ⏹ ${end}`;
 }
 
-/** What an error handler catches, in words: "on error", "on limit" or "on error or limit". */
+/** What an error route catches, in words: "on error", "on limit" or "on error · limit". */
 function handlerWords(kinds) {
-    return kinds.has("error") && kinds.has("limit") ? "on error or limit" : kinds.has("limit") ? "on limit" : "on error";
+    return kinds.has("error") && kinds.has("limit") ? "on error · limit" : kinds.has("limit") ? "on limit" : "on error";
 }
 
 /**
@@ -172,14 +173,17 @@ function successEndOf(ids, initial, byId) {
  * What the graph draws, before any geometry (owner 2026-11-26, the simpler graph): drawing only, a Workflow means the
  * same. Pure and deterministic.
  *
- * - `edges`: the lines, one per pair of drawn boxes (several routes to one target share it), each with `outcomes`; a
- *   parallel step drawn as a box (B1) is entered at its box (`group:<id>`) and left from its join bar (`owner`); a
- *   branch's line into its join bar (B2) is `join` with `step`, the step it leaves, and `parallel`.
- * - `handlers` (R1, updated 2026-11-26 12:00 PST): step -> its error handlers, one per target: its error and limit
- *   routes (`routes`, `kinds`), never drawn as lines; `words` ("on error", "on limit", "on error or limit"); `from`, the
- *   box it leaves (a parallel step's join bar); `to`, the target step's drawn box, or `end`, an end (drawn as its ghost);
- *   `catchAll` when the root catchAll covers the step (a root step without a failure route); `key`
- *   "handler:<step>:<target>". `marks`: step -> its quiet "has an error handler" mark with its `title`.
+ * - `edges`: the lines, each with `key` and `outcomes`: one per pair of drawn boxes for business routes (several routes to
+ *   one target share it), and one more per pair for error routes between steps (R1, 2026-11-26 12:05 PST: `error`, drawn
+ *   grey and dashed like a Step Functions catcher, labelled with what it catches, `words`; its `kinds`; `catchAll` when
+ *   the root catchAll draws it; key workflowGraphErrorEdgeKey). A parallel step drawn as a box (B1) is entered at its box
+ *   (`group:<id>`) and left from its join bar (`owner`); a branch's line into its join bar (B2) is `join` with `step`, the
+ *   step it leaves, and `parallel`.
+ * - `handlers` (R1, 12:05 PST): step -> its error routes into an end, one per end, never drawn as lines: `end`, its
+ *   `routes` and `kinds`, `words` ("on error", "on limit", "on error · limit"), `from`, the box it leaves (a parallel
+ *   step's join bar), `index` (its place among the step's), `catchAll` when the root catchAll covers the step (a root step
+ *   without a failure route), `key` "handler:<step>:<end>". `marks`: step -> its boundary events, one per handler: `key`,
+ *   `end`, `words`, `index` and `title`.
  * - `chips` (R2): step -> its end chips, one per end its business routes reach: `end`, `routes`, `text`, `tone` ("red"
  *   for a failed end, else "amber"), `key` "chip:<step>:<end>".
  * - `hidden`: the ends not drawn as boxes: the root's blocked, failed and canceled ends, and every end inside a branch
@@ -223,17 +227,15 @@ export function workflowGraphModel(definition) {
     const pairs = new Map();
     const handlers = new Map();
     const chips = new Map();
-    // R1: an error handler, one per step and target; its target is a step's drawn box (`to`), or an end drawn as a ghost (`end`).
-    const addHandler = (step, target, kind, label) => {
+    const fromOf = step => (parts.bodies.has(step) ? workflowJoinId(step) : step);
+    // R1 (12:05 PST): an error route into an end is a handler, one per step and end: a boundary event on the step and,
+    // when selected, a dashed arrow to a ghost of the end.
+    const addHandler = (step, end, kind, label) => {
         const list = handlers.get(step) ?? [];
-        let handler = list.find(item => item.target === target);
+        let handler = list.find(item => item.end === end);
         if (!handler) {
-            const node = byId.get(target);
-            // A handler into an end is drawn to a ghost of that end, whether or not the end has a box of its own.
-            const to = node?.type === "terminal" ? null : boxOf(target);
-            handler = { step, from: parts.bodies.has(step) ? workflowJoinId(step) : step, target, to, end: to === null ? target : null,
-                outcome: node?.type === "terminal" ? node.outcome : null, routes: [], kinds: new Set(), catchAll: false,
-                key: `handler:${step}:${target}` };
+            handler = { step, from: fromOf(step), end, outcome: byId.get(end).outcome, routes: [], kinds: new Set(), catchAll: false,
+                index: list.length, key: `handler:${step}:${end}` };
             list.push(handler);
             handlers.set(step, list);
         }
@@ -243,18 +245,20 @@ export function workflowGraphModel(definition) {
     };
     const routeKeys = new Map();
     const routeKey = (step, label) => `${step}\u0000${label}`;
-    const addLine = (from, to, label, extra) => {
-        const pair = workflowGraphEdgeKey(from, to);
-        if (pairs.has(pair)) {
-            const edge = pairs.get(pair);
+    // A line: business routes share one per pair of boxes; error routes between steps (`kind`) another, drawn dashed.
+    const addLine = (from, to, label, extra, kind = null) => {
+        const key = kind === null ? workflowGraphEdgeKey(from, to) : workflowGraphErrorEdgeKey(from, to);
+        if (pairs.has(key)) {
+            const edge = pairs.get(key);
             edge.outcomes.push(label);
             edge.outcome = edge.outcomes.join(" / ");
-            return pair;
+            if (kind !== null) edge.kinds.add(kind);
+            return key;
         }
-        const edge = { from, to, outcome: label, outcomes: [label], ...extra };
-        pairs.set(pair, edge);
+        const edge = { key, from, to, outcome: label, outcomes: [label], ...extra, ...(kind !== null ? { error: true, kinds: new Set([kind]) } : {}) };
+        pairs.set(key, edge);
         edges.push(edge);
-        return pair;
+        return key;
     };
     for (const node of states) {
         if (node.type === "terminal") continue;
@@ -266,9 +270,12 @@ export function workflowGraphModel(definition) {
             if (!end || (parts.memberOf.get(target) ?? null) !== scope) continue;
             const mark = workflowRouteMark(node, label);
             let key;
-            if (mark !== "outcome") {
-                // R1: an error or limit route is an error handler, never a line.
+            if (mark !== "outcome" && end.type === "terminal") {
+                // R1: an error or limit route into an end is a handler, never a line.
                 key = addHandler(node.id, target, mark, label).key;
+            } else if (mark !== "outcome") {
+                // R1 (12:05 PST): an error or limit route to another step is a line of its own, grey and dashed.
+                key = addLine(from, boxOf(target), label, boxed ? { owner: node.id } : {}, mark);
             } else if (hidden.has(target) && joinEnds.has(target)) {
                 const parallel = joinEnds.get(target);
                 key = addLine(node.id, workflowJoinId(parallel), label, { join: true, step: node.id, parallel });
@@ -290,7 +297,7 @@ export function workflowGraphModel(definition) {
         // A parallel step whose body has no box (none of its steps in the graph) still shows where each branch starts.
         const start = node.type === "parallel" && !boxed && typeof node.body?.initial === "string" && byId.has(node.body.initial) ? node.body.initial : null;
         if (start && !pairs.has(workflowGraphEdgeKey(node.id, start))) {
-            const edge = { from: node.id, to: start, outcome: "each branch", outcomes: [], branch: true };
+            const edge = { key: workflowGraphEdgeKey(node.id, start), from: node.id, to: start, outcome: "each branch", outcomes: [], branch: true };
             pairs.set(workflowGraphEdgeKey(node.id, start), edge);
             edges.push(edge);
         }
@@ -302,32 +309,48 @@ export function workflowGraphModel(definition) {
         }
     }
     // R1: a root step with no failure route is covered by the root catchAll (the catch-all state itself is not): its
-    // errors go there, so it has an error handler too.
+    // errors go there, a handler when the catch-all is an end, else a dashed line to the catch-all step.
     if (catchAll !== null) {
         for (const id of rootIds) {
             const node = byId.get(id);
             if (node.type === "terminal" || id === catchAll || Object.hasOwn(node.next ?? {}, "failure")) continue;
-            const handler = addHandler(id, catchAll, "error", null);
-            handler.catchAll = true;
-            routeKeys.set(routeKey(id, WORKFLOW_CATCH_ALL_ROUTE), handler.key);
+            let key;
+            if (byId.get(catchAll).type === "terminal") {
+                const handler = addHandler(id, catchAll, "error", null);
+                handler.catchAll = true;
+                key = handler.key;
+            } else {
+                key = addLine(fromOf(id), boxOf(catchAll), WORKFLOW_CATCH_ALL_ROUTE, parts.bodies.has(id) ? { owner: id } : {}, "error");
+                pairs.get(key).catchAll = true;
+            }
+            routeKeys.set(routeKey(id, WORKFLOW_CATCH_ALL_ROUTE), key);
         }
     }
-    // A step's mark says where its errors go ("On error: failed · On limit: no_env").
+    for (const edge of edges) {
+        if (!edge.error) continue;
+        edge.words = handlerWords(edge.kinds);
+        edge.kinds = [...edge.kinds].sort();
+    }
+    // Each handler's boundary event says what it catches and the end it leads to.
     const marks = new Map();
     for (const [step, list] of handlers) {
-        for (const handler of list) {
+        // The same order however the graph lists its routes (a stored graph sorts them by name): errors before the visit
+        // limit, then by end; the first stands nearest the step's right corner.
+        list.sort((a, b) => Number(!a.kinds.has("error")) - Number(!b.kinds.has("error")) || (a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+        list.forEach((handler, index) => {
+            handler.index = index;
             handler.words = handlerWords(handler.kinds);
             handler.kinds = [...handler.kinds].sort();
-        }
-        marks.set(step, { step, key: `mark:${step}`, title: `Has an error handler: ${list.map(handler =>
-            `${handler.words} → ${handler.target}${handler.catchAll ? " (catchAll)" : ""}`).join("; ")}. Select the step to see where errors go.` });
+        });
+        marks.set(step, list.map(handler => ({ step, key: handler.key, end: handler.end, words: handler.words, index: handler.index,
+            title: `Error handler: ${handler.words} → end ${handler.end}${handler.catchAll ? " (catchAll)" : ""}. Select the step to see where its errors go.` })));
     }
     const laneKeys = new Map();
     for (const [parallel, lanes] of lanesOf) for (const lane of lanes) laneKeys.set(lane.initial, `lane:${parallel}:${lane.name}`);
     const ends = rootIds.filter(id => byId.get(id).type === "terminal").map(id => {
-        const keys = [...edges.filter(edge => edge.to === id).map(edge => workflowGraphEdgeKey(edge.from, edge.to)),
+        const keys = [...edges.filter(edge => edge.to === id).map(edge => edge.key),
             ...[...chips.values()].flat().filter(chip => chip.end === id).map(chip => chip.key),
-            ...[...handlers.values()].flat().filter(handler => handler.target === id).map(handler => handler.key)];
+            ...[...handlers.values()].flat().filter(handler => handler.end === id).map(handler => handler.key)];
         return { id, outcome: byId.get(id).outcome, box: !hidden.has(id), keys };
     });
     const initial = byId.has(definition?.initial) ? definition.initial : states[0]?.id ?? null;
@@ -341,7 +364,7 @@ export function workflowGraphModel(definition) {
  * box leads to its join bar. Pure.
  */
 function spineOf(edges, byId, parts, start, success) {
-    const outer = edges.filter(edge => !edge.join && !parts.memberOf.has(edge.from) && !parts.memberOf.has(edge.to));
+    const outer = edges.filter(edge => !edge.error && !edge.join && !parts.memberOf.has(edge.from) && !parts.memberOf.has(edge.to));
     const order = edge => {
         const node = byId.get(edge.owner ?? edge.from);
         // The step's declared outcomes give the order (a stored graph's `next` keys come back sorted by name).
@@ -362,7 +385,7 @@ function spineOf(edges, byId, parts, start, success) {
     for (let at = start; ;) {
         const edge = next(at).find(item => order(item)[0] === 0);
         if (!edge) break;
-        spine.add(workflowGraphEdgeKey(edge.from, edge.to));
+        spine.add(edge.key);
         if (seen.has(edge.to)) break;
         seen.add(edge.to);
         at = edge.to;
@@ -381,7 +404,7 @@ function spineOf(edges, byId, parts, start, success) {
             }
             return false;
         };
-        if (walk(start)) for (const edge of path) spine.add(workflowGraphEdgeKey(edge.from, edge.to));
+        if (walk(start)) for (const edge of path) spine.add(edge.key);
     }
     return spine;
 }
@@ -432,7 +455,12 @@ export function workflowGraphEdgeKey(from, to) {
 
 /** The keys of every line the graph draws (workflowGraphEdgeKey), a branch's lines into its join bar included (B2). Pure. */
 export function workflowGraphEdgeKeys(definition) {
-    return new Set(workflowGraphModel(definition).edges.map(edge => workflowGraphEdgeKey(edge.from, edge.to)));
+    return new Set(workflowGraphModel(definition).edges.map(edge => edge.key));
+}
+
+/** The key of the dashed line of error routes between two boxes (R1, 12:05 PST); its business line keeps workflowGraphEdgeKey. Pure. */
+export function workflowGraphErrorEdgeKey(from, to) {
+    return JSON.stringify([from, to, "error"]);
 }
 
 /**
@@ -481,14 +509,16 @@ export function workflowEdgeCurve(points) {
 
 /**
  * Dagre's layout of `boxes` ([key, { width, height }]) and `links` ({ v, w, width, height }: a label's size; `weight`, how
- * hard dagre keeps it short, default 1), in the order given.
+ * hard dagre keeps it short, default 1; `name`, set on the line of error routes beside a business line), in the order given.
  */
 function runDagre(boxes, links, margin, align = undefined) {
-    const graph = new Graph({ directed: true, multigraph: false, compound: false });
+    const graph = new Graph({ directed: true, multigraph: true, compound: false });
     graph.setGraph({ ...SPACING, marginx: margin, marginy: margin, ...(align ? { align } : {}) });
     graph.setDefaultEdgeLabel(() => ({}));
     for (const [key, size] of boxes) graph.setNode(key, { width: size.width, height: size.height });
-    for (const link of links) graph.setEdge(link.v, link.w, { width: link.width, height: link.height, labelpos: "c", minlen: 1, weight: link.weight ?? 1 });
+    for (const link of links) {
+        graph.setEdge(link.v, link.w, { width: link.width, height: link.height, labelpos: "c", minlen: 1, weight: link.weight ?? 1 }, link.name);
+    }
     dagreLayout(graph);
     return graph;
 }
@@ -511,6 +541,62 @@ function flowOrder(states, byId, initial) {
         }
     }
     return [...out, ...states.filter(node => !seen.has(node.id))];
+}
+
+/** How hard dagre keeps a line of error routes short and ordered (business lines: 1, the happy path WORKFLOW_SPINE_WEIGHT). */
+const ERROR_LINE_WEIGHT = 0.1;
+/** How far a line of error routes stands beside the business line between the same two boxes. */
+const TWIN_GAP = 14;
+
+/**
+ * The lines of error routes that run beside a business line between the same two boxes (their twin): error line -> its
+ * twin. They are drawn as their twin moved aside (shapeTwin), never laid out on their own, so the business layout stays
+ * as it was. Pure.
+ */
+function twinsOf(edges) {
+    const business = new Map(edges.filter(edge => !edge.error).map(edge => [workflowGraphEdgeKey(edge.from, edge.to), edge]));
+    return new Map(edges.filter(edge => edge.error && business.has(workflowGraphEdgeKey(edge.from, edge.to)))
+        .map(edge => [edge, business.get(workflowGraphEdgeKey(edge.from, edge.to))]));
+}
+
+/**
+ * A line of error routes drawn beside its twin (twinsOf), between its boxes `from` and `to`: the twin's inner points
+ * moved TWIN_GAP to one side (the right of the line, or away from the boxes for a line round their side), its two ends
+ * slid along the box edges they sit on, so it still starts and ends on the boxes; a step's own loop drawn wider. Its label
+ * stands just past the twin's label, or beside its own line.
+ */
+function shapeTwin(edge, twin, from, to) {
+    const points = twin.points;
+    let nx = 1, ny = 0;
+    if (twin.from === twin.to) {
+        edge.points = points.map(([x, y], index) => (index === 0 || index === points.length - 1 ? [x, y] : [x + 2 * TWIN_GAP, y]));
+    } else {
+        const [x0, y0] = points[0], [x1, y1] = points.at(-1);
+        const length = Math.hypot(x1 - x0, y1 - y0) || 1;
+        nx = -(y1 - y0) / length;
+        ny = (x1 - x0) / length;
+        if (nx < 0 || (nx === 0 && ny < 0)) { nx = -nx; ny = -ny; }
+        // A line round the boxes' left side moves further left, never in over them.
+        const inner = points.slice(1, -1);
+        if (inner.length && inner.reduce((sum, [x]) => sum + x, 0) / inner.length < from.x + from.width / 2 - 1 && nx > 0) { nx = -nx; ny = -ny; }
+        const onLevelEdge = (y, box) => Math.abs(y - box.y) < 1 || Math.abs(y - box.y - box.height) < 1;
+        const slide = ([x, y], box) => (onLevelEdge(y, box) ? [x + (nx < 0 ? -TWIN_GAP : TWIN_GAP), y] : [x, y + (ny < 0 ? -TWIN_GAP : TWIN_GAP)]);
+        edge.points = points.map((point, index) => (index === 0 ? slide(point, from) : index === points.length - 1 ? slide(point, to)
+            : [point[0] + nx * TWIN_GAP, point[1] + ny * TWIN_GAP]));
+    }
+    edge.back = twin.back;
+    if (twin.labelWidth) {
+        edge.labelX = twin.labelX + twin.labelWidth / 2 + 6 + edge.labelWidth / 2;
+        edge.labelY = twin.labelY;
+    } else {
+        edge.labelX = twin.labelX + nx * TWIN_GAP + Math.sign(nx || 1) * (6 + edge.labelWidth / 2);
+        edge.labelY = twin.labelY + ny * TWIN_GAP;
+    }
+}
+
+/** A line's name in dagre's graph: the line of error routes has one, so it can stand beside the business line. */
+function linkName(edge) {
+    return edge.error ? "error" : undefined;
 }
 
 /** Dagre's alignments, tried in this order: its balanced default first. */
@@ -642,16 +728,18 @@ function layoutBody(parallel, members, byId, edges, lanes, reserve) {
 function layoutSteps(order, byId, edges, lane, reserve) {
     const keyOf = new Map(order.map((id, index) => [id, `b${index}`]));
     const exits = edges.filter(edge => edge.join);
-    const inner = edges.filter(edge => !edge.join && keyOf.has(edge.from) && keyOf.has(edge.to));
+    const twins = twinsOf(edges.filter(edge => !edge.join && keyOf.has(edge.from) && keyOf.has(edge.to)));
+    const inner = edges.filter(edge => !edge.join && keyOf.has(edge.from) && keyOf.has(edge.to) && !twins.has(edge));
     const boxes = [...(lane ? [["s", { width: 1, height: 1 }]] : []), ...order.map(id => [keyOf.get(id), laidSize(byId.get(id), reserve)])];
     if (exits.length) boxes.push(["x", { width: 1, height: 1 }]);
     const links = lane ? [{ v: "s", w: keyOf.get(lane.initial), width: WORKFLOW_GRAPH_LANE_PILL_WIDTH, height: WORKFLOW_GRAPH_LABEL_HEIGHT }] : [];
     links.push(...inner.map(edge => ({ v: keyOf.get(edge.from), w: keyOf.get(edge.to), width: edge.labelWidth,
-        height: edge.labelWidth ? WORKFLOW_GRAPH_LABEL_HEIGHT : 0 })));
+        height: edge.labelWidth ? WORKFLOW_GRAPH_LABEL_HEIGHT : 0, name: linkName(edge) })));
     for (const edge of exits) links.push({ v: keyOf.get(edge.from), w: "x", width: edge.labelWidth, height: edge.labelWidth ? WORKFLOW_GRAPH_LABEL_HEIGHT : 0 });
     const graph = runDagre(boxes, links, 0);
     const positions = new Map(order.map(id => [id, cardAt(graph.node(keyOf.get(id)), byId.get(id))]));
-    for (const edge of inner) shapeEdge(edge, graph.edge(keyOf.get(edge.from), keyOf.get(edge.to)), positions.get(edge.from), positions.get(edge.to));
+    for (const edge of inner) shapeEdge(edge, graph.edge(keyOf.get(edge.from), keyOf.get(edge.to), linkName(edge)), positions.get(edge.from), positions.get(edge.to));
+    for (const [edge, twin] of twins) shapeTwin(edge, twin, positions.get(edge.from), positions.get(edge.to));
     const sinkNode = exits.length ? graph.node("x") : null;
     const sink = sinkNode ? [sinkNode.x, sinkNode.y + 0.5] : null;
     for (const edge of exits) shapeEdge(edge, graph.edge(keyOf.get(edge.from), "x"), positions.get(edge.from), { x: sink[0], y: sink[1], width: 0, height: 0 });
@@ -661,7 +749,7 @@ function layoutSteps(order, byId, edges, lane, reserve) {
         const start = graph.node("s");
         pill = { x: Number.isFinite(laid?.x) ? laid.x : start.x, y: Number.isFinite(laid?.y) ? laid.y : start.y };
     }
-    const shaped = [...inner, ...exits];
+    const shaped = [...inner, ...twins.keys(), ...exits];
     const extent = extentOf([...[...positions].map(([id, box]) => withRoom(box, reserve.get(id) ?? 0)),
         ...(sink ? [{ x: sink[0], y: sink[1], width: 0, height: 0 }] : []),
         ...(pill ? [{ x: pill.x - WORKFLOW_GRAPH_LANE_PILL_WIDTH / 2, y: pill.y - WORKFLOW_GRAPH_LABEL_HEIGHT / 2,
@@ -725,7 +813,7 @@ export function layoutWorkflowGraphTB(definition) {
         edge.labelText ??= workflowEdgeLabelTextOf(edge, byId);
         edge.labelWidth = edge.labelText ? labelWidth(edge.labelText) : 0;
         // R4: the happy path's lines are kept short and straight.
-        if (spine.has(workflowGraphEdgeKey(edge.from, edge.to))) { edge.spine = true; edge.weight = WORKFLOW_SPINE_WEIGHT; }
+        if (spine.has(edge.key)) { edge.spine = true; edge.weight = WORKFLOW_SPINE_WEIGHT; }
     }
     const reserve = new Map([...model.chips].map(([id, list]) => [id, chipRoom(list)]));
     const marks = { handlers: model.handlers, marks: model.marks, chips: model.chips, ends: model.ends, hidden, catchAll: model.catchAll,
@@ -766,8 +854,13 @@ export function layoutWorkflowGraphTB(definition) {
         sizes.set(workflowJoinId(id), { width: WORKFLOW_GRAPH_JOIN_WIDTH + 2 * (reserve.get(id) ?? 0),
             height: byId.get(id).timeoutSeconds !== undefined ? WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT : WORKFLOW_GRAPH_JOIN_HEIGHT });
     });
-    const links = mainEdges.map(edge => ({ v: keyOf.get(edge.from), w: keyOf.get(edge.to), width: edge.labelWidth,
-        height: edge.labelWidth ? WORKFLOW_GRAPH_LABEL_HEIGHT : 0, weight: edge.weight ?? 1 }));
+    // A line of error routes beside a business line is drawn as that line moved aside (twinsOf); the others are laid out
+    // after the business lines, light, so they get room and a route but do not pull the business flow out of its column.
+    const twins = twinsOf(mainEdges);
+    const laidEdges = mainEdges.filter(edge => !twins.has(edge));
+    const links = [...laidEdges.filter(edge => !edge.error), ...laidEdges.filter(edge => edge.error)].map(edge => ({ v: keyOf.get(edge.from),
+        w: keyOf.get(edge.to), width: edge.labelWidth, height: edge.labelWidth ? WORKFLOW_GRAPH_LABEL_HEIGHT : 0,
+        weight: edge.error ? ERROR_LINE_WEIGHT : edge.weight ?? 1, name: linkName(edge) }));
     // Each join bar sits under its branch box, straight under it.
     for (const id of bodies.keys()) {
         links.push({ v: keyOf.get(workflowGroupId(id)), w: keyOf.get(workflowJoinId(id)), width: 0, height: 0, weight: WORKFLOW_SPINE_WEIGHT });
@@ -810,7 +903,8 @@ export function layoutWorkflowGraphTB(definition) {
         if (box) positions.set(node.id, { x: box.x + body.dx, y: box.y + body.dy, width: box.width, height: box.height });
     }
     for (const [id, box] of positions) boxes.set(id, box);
-    for (const edge of mainEdges) shapeEdge(edge, graph.edge(keyOf.get(edge.from), keyOf.get(edge.to)), boxes.get(edge.from), boxes.get(edge.to));
+    for (const edge of laidEdges) shapeEdge(edge, graph.edge(keyOf.get(edge.from), keyOf.get(edge.to), linkName(edge)), boxes.get(edge.from), boxes.get(edge.to));
+    for (const [edge, twin] of twins) shapeTwin(edge, twin, boxes.get(edge.from), boxes.get(edge.to));
     // B2: a branch's lines into its join bar come down to the box's bottom edge, where they meet, then into the bar.
     for (const [id, body] of bodies) {
         for (const edge of bodyEdges.get(id)) moveEdge(edge, body.dx, body.dy);
@@ -898,19 +992,20 @@ export function workflowPlaceKey(layout, id) {
     return layout?.positions?.has?.(id) ? id : null;
 }
 
-/** How far a handler's arrow swings out to the right of the boxes it joins, and a ghost end's radius and spacing. */
-const HANDLER_SWING = 70;
+/** A boundary event's step from the box's right corner, and from the one before it (owner 12:05 PST: 22 px). */
+export const WORKFLOW_BOUNDARY_EVENT_INSET = 22;
 const GHOST_RADIUS = 11;
-const GHOST_SPACING = 28;
+const GHOST_SPACING = 30;
+const GHOST_REACH = 60;
+const GHOST_DROP = 20;
 
 /**
- * R1 (updated 2026-11-26 12:00 PST): the dashed arrows of the error handlers shown now, in drawing coordinates: the
+ * R1 (2026-11-26 12:05 PST): the dashed arrows of the error routes into ends shown now, in drawing coordinates: the
  * selected step's (`selectedId`), every step's (`all`), those into the Ends row's hovered end (`hoverEnd`), and, in a
  * replay, those whose transition is among the last four (`lit`, workflowLitTransitions). `boxes`: box id -> where it is
- * drawn now ({ x, y, width, height }). Each arrow leaves its step's right side and swings out to the right, into its
- * target's right side, or to a ghost of an end that has no box, placed beside the step past its chips. Each: { key,
- * step, target, words, path, labelX, labelY, ghost ({ x, y, end, outcome }) or null, litCount, litAge, current, tag }.
- * Pure.
+ * drawn now ({ x, y, width, height }). Each arrow leaves its boundary event (workflowBoundaryEventAt) and goes to a
+ * dashed ghost of its end, beside the step past its chips. Each: { key, step, end, words, path, labelX, labelY, ghost
+ * ({ x, y, end, outcome }), litCount, litAge, current, tag }. Pure.
  */
 export function workflowHandlerArrows(layout, boxes, { selectedId = null, all = false, hoverEnd = null, lit = null } = {}) {
     const out = [];
@@ -920,44 +1015,34 @@ export function workflowHandlerArrows(layout, boxes, { selectedId = null, all = 
         if (!from) continue;
         const room = layout.chipRoom?.get?.(step) ?? 0;
         const chipCount = layout.chips?.get?.(step)?.length ?? 0;
-        const ghosts = list.filter(handler => handler.end !== null);
-        const sx = from.x + from.width, sy = from.y + from.height / 2;
+        const right = from.x + from.width, bottom = from.y + from.height;
+        // The ghosts stand past the step's chips, below its bottom edge, one under the other.
+        const top = Math.max(bottom + GHOST_DROP, chipCount ? from.y + 8 + chipCount * 22 + GHOST_RADIUS : -Infinity);
         for (const handler of list) {
             const on = lit?.edges?.get?.(handler.key) ?? null;
-            if (!(all || step === selectedId || on || (hoverEnd !== null && handler.target === hoverEnd))) continue;
-            let path, labelX, labelY, ghost = null;
-            if (handler.end !== null) {
-                const index = ghosts.indexOf(handler);
-                // Past the step's chips: beside the step, or under its chip column when it has one.
-                const gx = sx + room + 46 + GHOST_RADIUS;
-                const gy = (chipCount ? from.y + 8 + chipCount * 22 + GHOST_RADIUS : sy) + index * GHOST_SPACING;
-                const ex = gx - GHOST_RADIUS - 2;
-                path = `M${round(sx)},${round(sy)} C${round(sx + 30)},${round(sy)} ${round(ex - 30)},${round(gy)} ${round(ex)},${round(gy)}`;
-                labelX = (sx + ex) / 2 + 6;
-                labelY = (sy + gy) / 2 - 12;
-                ghost = { x: round(gx), y: round(gy), end: handler.end, outcome: handler.outcome };
-            } else if (handler.to === list[0].from) {
-                // A step that handles its own errors (it is tried again): a dashed loop off its right side and back in.
-                const top = from.y + from.height * 0.3, bottom = from.y + from.height * 0.7;
-                const out = sx + room + HANDLER_SWING;
-                path = `M${round(sx)},${round(top)} C${round(out)},${round(top - 18)} ${round(out)},${round(bottom + 18)} ${round(sx + 2)},${round(bottom)}`;
-                labelX = sx + room + HANDLER_SWING * 0.75;
-                labelY = sy;
-            } else {
-                const to = boxes.get(handler.to);
-                if (!to) continue;
-                const tx = to.x + to.width, ty = to.y + to.height / 2;
-                const swing = Math.max(sx, tx) + HANDLER_SWING;
-                path = `M${round(sx)},${round(sy)} C${round(swing)},${round(sy)} ${round(swing)},${round(ty)} ${round(tx + 2)},${round(ty)}`;
-                labelX = swing - HANDLER_SWING / 4;
-                labelY = (sy + ty) / 2;
-            }
+            if (!(all || step === selectedId || on || (hoverEnd !== null && handler.end === hoverEnd))) continue;
+            const [ox, oy] = workflowBoundaryEventAt(from, handler.index);
+            const gx = right + room + GHOST_REACH + GHOST_RADIUS;
+            const gy = top + handler.index * GHOST_SPACING;
+            // As the mock draws it: down out of the boundary event, then across into the ghost's left side.
+            const dx = gx - ox, dy = gy - oy;
+            const path = `M${round(ox)},${round(oy)} C${round(ox + dx * 0.15)},${round(oy + Math.max(24, dy * 0.6))} ${round(gx - 36)},${round(gy)}`
+                + ` ${round(gx - GHOST_RADIUS - 2)},${round(gy)}`;
             const current = Boolean(on && on.age === 0 && shown?.edgeKey === handler.key);
-            out.push({ key: handler.key, step, target: handler.target, words: handler.words, path, labelX: round(labelX), labelY: round(labelY), ghost,
+            out.push({ key: handler.key, step, end: handler.end, words: handler.words, path, labelX: round(gx - 34), labelY: round(gy - 20),
+                ghost: { x: round(gx), y: round(gy), end: handler.end, outcome: handler.outcome },
                 litCount: on?.count ?? 0, litAge: on?.age ?? null, current, tag: current && typeof shown.words === "string" ? shown.words : null });
         }
     }
     return out;
+}
+
+/**
+ * Where a box's `index`th boundary event (R1, 12:05 PST: an error route into an end) sits: on its bottom edge, its
+ * centre 22 px in from the right corner and each next one 22 px further left. Pure.
+ */
+export function workflowBoundaryEventAt(box, index) {
+    return [box.x + box.width - WORKFLOW_BOUNDARY_EVENT_INSET * (index + 1), box.y + box.height];
 }
 
 function finish(definition, layout) {

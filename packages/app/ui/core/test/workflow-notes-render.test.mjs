@@ -100,14 +100,16 @@ for (const width of [1440, 390]) {
         const layout = layoutWorkflowGraphTB(nested);
         assert.equal(layout.positions.get("item").height, 100);
         // B1, R2: the parallel step is its box's title; the end inside its box and the root's end that is not a success
-        // (it has no outcome) are no boxes. R1: with no outcomes listed, "ok" and "joined" read as error routes: error
-        // handlers to ghosts of those ends (the parallel step's from its join bar), never lines or chips.
+        // (it has no outcome) are no boxes. R1: with no outcomes listed, "ok" and "joined" read as error routes into ends:
+        // error handlers to ghosts of those ends (the parallel step's from its join bar), never lines or chips.
         assert.deepEqual([...layout.positions.keys()], ["item"]);
         assert.deepEqual([...layout.hidden].sort(), ["done", "end"]);
         assert.deepEqual([layout.edges.length, layout.chips.size], [0, 0]);
-        assert.deepEqual([...layout.handlers].map(([id, list]) => [id, list.map(handler => [handler.key, handler.from, handler.to, handler.end, handler.words])]), [
-            ["parallel", [["handler:parallel:done", "join:parallel", null, "done", "on error"]]],
-            ["item", [["handler:item:end", "item", null, "end", "on error"]]]]);
+        assert.deepEqual([...layout.handlers].map(([id, list]) => [id, list.map(handler => [handler.key, handler.from, handler.end, handler.words, handler.index])]), [
+            ["parallel", [["handler:parallel:done", "join:parallel", "done", "on error", 0]]],
+            ["item", [["handler:item:end", "item", "end", "on error", 0]]]]);
+        assert.deepEqual([...layout.marks].map(([id, list]) => [id, list.map(mark => mark.key)]),
+            [["parallel", ["handler:parallel:done"]], ["item", ["handler:item:end"]]]);
         const group = layout.groups.get("parallel"), item = layout.positions.get("item");
         assert.ok(item.y >= group.y + WORKFLOW_GRAPH_GROUP_HEADER && item.y + item.height <= group.y + group.height, "the box has room for the taller card");
         // An end drawn as a box (a root success end) reserves room for its label too; one without a label does not.

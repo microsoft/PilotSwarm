@@ -26,9 +26,10 @@ function mount({ view = {}, events = [] } = {}) {
 const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, icon: null }));
 const node = controller => renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller }));
 
-// R1: a step with an error handler carries one quiet mark (a grey shield) on its corner, saying where its errors go.
-const MARK_TITLE = "Has an error handler: on error → failed. Select the step to see where errors go.";
-const MARK = new RegExp(`<span class="ps-workflow-mark" role="img" aria-label="${MARK_TITLE.replace(/\./g, "\\.")}" title="${MARK_TITLE.replace(/\./g, "\\.")}"><svg [^>]*aria-hidden="true" focusable="false"><path d="M12 3l7 3v5c0 4\\.5-3 8-7 10-4-2-7-5\\.5-7-10V6z"></path></svg></span>`, "g");
+// R1 (12:05 PST): each error handler of a step is a boundary event on its bottom edge (a neutral double circle with a
+// lightning bolt), 22 px in from its right corner, saying what it catches and the end it leads to.
+const MARK_TITLE = "Error handler: on error → end failed. Select the step to see where its errors go.";
+const MARK = new RegExp(`<span class="ps-workflow-mark" role="img" aria-label="${MARK_TITLE.replace(/\./g, "\\.")}" title="${MARK_TITLE.replace(/\./g, "\\.")}" data-end="failed" style="right:13px"><svg viewBox="0 0 18 18" aria-hidden="true" focusable="false"><circle class="ps-workflow-mark-ring" cx="9" cy="9" r="8\\.5"></circle><circle class="ps-workflow-mark-ring" cx="9" cy="9" r="6\\.3"></circle><path class="ps-workflow-mark-bolt" d="[^"]+"></path></svg></span>`, "g");
 const marked = (html, id) => new RegExp(`<div class="ps-workflow-step(?: is-selected)?"><div class="ps-workflow-node [^"]*"[^>]*data-node-id="${id}"[^>]*>[\\s\\S]*?</div><span class="ps-workflow-mark"`).test(html);
 
 test("a graph shows typed state labels, runtime-error routes and run status from the read model", () => {
@@ -38,12 +39,12 @@ test("a graph shows typed state labels, runtime-error routes and run status from
     assert.ok(html.includes("Send · Alert@1"));
     assert.ok(html.includes("Receive · Ack@1"));
     assert.ok(html.includes("Done · changed"));
-    // R1: the runtime-error routes into the failed end are error handlers: a quiet mark on poll and notify, no line and no
-    // ✕ badge; the failed end is no box but is listed in the Ends row with its two ways in (the two handlers).
+    // R1: the runtime-error routes into the failed end are error handlers: a boundary event on poll and on notify, no line
+    // and no ✕ badge; the failed end is no box but is listed in the Ends row with its two ways in (the two handlers).
     assert.equal([...html.matchAll(MARK)].length, 2, html);
     assert.ok(marked(html, "poll") && marked(html, "notify"), html);
     assert.ok(!html.includes("ps-workflow-badge"), "no ✕ badge any more");
-    assert.ok(!html.includes("data-kind=\"error\"") && !html.includes("stroke-dasharray=\"5 4\""), "no error line is drawn");
+    assert.ok(!html.includes("data-kind=\"error\"") && !html.includes("stroke-dasharray=\"5 4\""), "no error line is drawn: every error route here leads into an end");
     assert.ok(!html.includes("data-node-id=\"failed\""), "the failed end has no box");
     // The pending wait is selected and has no handler: no dashed arrow is drawn until a step with one is selected.
     assert.ok(!html.includes("ps-workflow-handlers"), "no handler arrow");

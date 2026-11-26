@@ -7,12 +7,13 @@
  * workflowLitTransitions: the last four of them up to the visit shown, by edge and by step, each with how often it was
  * taken among the four and how long ago (0 the newest).
  *
- * Owner 2026-11-26 (the simpler graph): an error handler or an end chip has no line; a transition through it has the
- * handler's or chip's key ("handler:<step>:<target>", "chip:<step>:<end>"), so the viewer draws its dashed arrow to the
- * target (or a ghost of the end) while it is lit. A branch's first visit has its lane's key ("lane:<parallel>:<name>").
+ * Owner 2026-11-26 (the simpler graph): an error route into an end (a handler) or an end chip has no line; a transition
+ * through it has the handler's or chip's key ("handler:<step>:<end>", "chip:<step>:<end>"), so the viewer draws its dashed
+ * arrow to a ghost of the end while it is lit. An error route between steps is a dashed line of its own (its key
+ * workflowGraphErrorEdgeKey). A branch's first visit has its lane's key ("lane:<parallel>:<name>").
  */
 import {
-    WORKFLOW_CATCH_ALL_ROUTE, WORKFLOW_ERROR_GLYPH, workflowGraphEdgeKey, workflowGraphModel, workflowGroupId, workflowJoinId,
+    WORKFLOW_CATCH_ALL_ROUTE, WORKFLOW_ERROR_GLYPH, workflowGraphEdgeKey, workflowGraphErrorEdgeKey, workflowGraphModel, workflowGroupId, workflowJoinId,
     workflowOutcomePlain, workflowRouteMark,
 } from "./workflow-graph-layout.js";
 import { workflowReplayFrames, workflowVisitScope } from "./workflow-view.js";
@@ -45,22 +46,21 @@ export function workflowTransitions(executions, definition) {
     const list = (Array.isArray(executions) ? executions : []).filter(item => isRecord(item) && typeof item.id === "string");
     const byId = new Map(list.map(item => [item.id, item]));
     const model = workflowGraphModel(definition);
-    const keys = new Set(model.edges.map(edge => workflowGraphEdgeKey(edge.from, edge.to)));
+    const keys = new Set(model.edges.map(edge => edge.key));
     const { bodies } = model.parts;
-    // The line between two steps when the route taken is not known (its step's visit is not loaded).
-    const lineOf = (from, to) => {
+    // The line between two steps when the route taken is not known (its step's visit is not loaded): its business line,
+    // else its line of error routes, a chip or a handler into that end; an error visit tries the error routes first.
+    const lineOf = (from, to, error) => {
         const body = bodies.get(from);
         const target = bodies.has(to) ? workflowGroupId(to) : to;
-        const candidates = body ? [[workflowJoinId(from), target], [from, target]] : [[from, target]];
-        if (model.joinEnds.has(to)) candidates.unshift([from, workflowJoinId(model.joinEnds.get(to))]);
-        for (const [a, b] of candidates) {
-            const key = workflowGraphEdgeKey(a, b);
-            if (keys.has(key)) return key;
-        }
-        const chip = (model.chips.get(from) ?? []).find(item => item.end === to);
-        if (chip) return chip.key;
-        const handler = (model.handlers.get(from) ?? []).find(item => item.target === to);
-        return handler ? handler.key : null;
+        const pairs = body ? [[workflowJoinId(from), target], [from, target]] : [[from, target]];
+        if (model.joinEnds.has(to)) pairs.unshift([from, workflowJoinId(model.joinEnds.get(to))]);
+        const business = pairs.map(([a, b]) => workflowGraphEdgeKey(a, b)).filter(key => keys.has(key));
+        const errorLines = pairs.map(([a, b]) => workflowGraphErrorEdgeKey(a, b)).filter(key => keys.has(key));
+        const chip = (model.chips.get(from) ?? []).find(item => item.end === to)?.key ?? null;
+        const handler = (model.handlers.get(from) ?? []).find(item => item.end === to)?.key ?? null;
+        const order = error ? [...errorLines, handler, ...business, chip] : [...business, chip, ...errorLines, handler];
+        return order.find(key => key !== null) ?? null;
     };
     const lastInScope = new Map();
     return workflowReplayFrames(list).map(frame => {
@@ -88,7 +88,7 @@ export function workflowTransitions(executions, definition) {
         const route = execution.catchAll === true ? WORKFLOW_CATCH_ALL_ROUTE : routeTaken(node, from);
         const error = route === WORKFLOW_CATCH_ALL_ROUTE || from?.resultKind === "runtime_error";
         const edgeKey = route !== null && model.routeKeys.has(`${fromStateId}\u0000${route}`)
-            ? model.routeKeys.get(`${fromStateId}\u0000${route}`) : lineOf(fromStateId, frame.stateId);
+            ? model.routeKeys.get(`${fromStateId}\u0000${route}`) : lineOf(fromStateId, frame.stateId, error);
         return { ...base, edgeKey, route, words: transitionWords(node, route, from), error };
     });
 }
@@ -173,12 +173,11 @@ function litOf(lit, key) {
 }
 
 /**
- * A step's quiet error-handler mark (R1) and its end chips (R2) as drawn now: the mark lit while one of its handlers'
- * transitions is among the last four (replay) or one of them leads into the Ends row's hovered end; each chip with how
- * it is lit (`litCount`, `litAge`), whether the run took it by the moment shown (`visited`, null outside a run), whether
- * its end is hovered (`hover`), and, while it is among the last four transitions, its `ghost`: the end, and the
- * transition's words and `current` when it is the transition shown. `layout` from layoutWorkflowGraphTB, `lit` from
- * workflowLitTransitions. Pure.
+ * A step's boundary events (R1, 12:05 PST: one per error route into an end) and its end chips (R2) as drawn now, each
+ * with how it is lit (`litCount`, `litAge`: its transition among the last four), whether the run took it by the moment
+ * shown (`visited`, null outside a run) and whether its end is hovered in the Ends row (`hover`); each chip, while it is
+ * among the last four transitions, also its `ghost`: the end, and the transition's words and `current` when it is the
+ * transition shown. `layout` from layoutWorkflowGraphTB, `lit` from workflowLitTransitions. Pure.
  */
 export function workflowStepMarks(layout, stepId, lit = null, hoverEnd = null) {
     const run = lit?.visited instanceof Set;
@@ -190,13 +189,15 @@ export function workflowStepMarks(layout, stepId, lit = null, hoverEnd = null) {
             hover: hoverEnd !== null && item.end === hoverEnd,
             ghost: on ? { end: item.end, tone: item.tone, words: current ? shown.words ?? null : null, current } : null };
     };
-    const mark = layout?.marks?.get?.(stepId) ?? null;
-    const handlers = layout?.handlers?.get?.(stepId) ?? [];
-    const on = handlers.map(handler => litOf(lit, handler.key)).filter(Boolean).sort((a, b) => a.age - b.age)[0] ?? null;
+    const marks = layout?.marks?.get?.(stepId) ?? [];
     const chips = layout?.chips?.get?.(stepId) ?? [];
     return {
-        mark: mark ? { ...mark, litCount: on?.count ?? 0, litAge: on?.age ?? null, visited: run ? handlers.some(handler => lit.visited.has(handler.key)) || null : null,
-            hover: hoverEnd !== null && handlers.some(handler => handler.target === hoverEnd) } : null,
+        // R1 (12:05 PST): each boundary event lit while its handler's transition is among the last four.
+        marks: marks.map(mark => {
+            const on = litOf(lit, mark.key);
+            return { ...mark, litCount: on?.count ?? 0, litAge: on?.age ?? null, visited: run ? lit.visited.has(mark.key) : null,
+                hover: hoverEnd !== null && mark.end === hoverEnd };
+        }),
         chips: chips.map(of),
     };
 }
@@ -207,7 +208,7 @@ export function workflowStepMarks(layout, stepId, lit = null, hoverEnd = null) {
  * own. Pure.
  */
 export function workflowEdgeShown(edge, lit = null, hoverEnd = null) {
-    const key = JSON.stringify([edge.from, edge.to]);
+    const key = edge.key ?? workflowGraphEdgeKey(edge.from, edge.to);
     const on = litOf(lit, key);
     const shown = lit?.transition ?? null;
     return { litCount: on?.count ?? 0, litAge: on?.age ?? null, visited: lit?.visited instanceof Set ? lit.visited.has(key) : null,
@@ -222,7 +223,7 @@ export function workflowEdgeShown(edge, lit = null, hoverEnd = null) {
  */
 export function workflowJoinShown(layout, parallelId, lit = null) {
     const bar = workflowJoinId(parallelId);
-    const keys = [...(layout?.edges ?? []).filter(edge => edge.from === bar).map(edge => workflowGraphEdgeKey(edge.from, edge.to)),
+    const keys = [...(layout?.edges ?? []).filter(edge => edge.from === bar).map(edge => edge.key ?? workflowGraphEdgeKey(edge.from, edge.to)),
         ...(layout?.handlers?.get?.(parallelId) ?? []).map(handler => handler.key), ...(layout?.chips?.get?.(parallelId) ?? []).map(chip => chip.key)];
     let litCount = 0;
     let litAge = null;
