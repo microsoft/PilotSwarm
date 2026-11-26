@@ -1,4 +1,6 @@
 import { WORKFLOW_CONTROLLER_REGISTRY } from "./controller-registry.js";
+// Each frozen effect module keeps its own copy of the error redaction and clipping (about 110 lines) on purpose: a
+// shared helper could change in a later release and alter the error text an old history replays. Do not merge them.
 import {
     WORKFLOW_EFFECT_1_0_0_NAME, WORKFLOW_EFFECT_1_0_0_VERSION, workflowEffect_1_0_0,
 } from "./effect_1_0_0/index.js";
