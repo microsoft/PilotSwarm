@@ -99,6 +99,23 @@ const until = async (probe, what, timeoutMs = 60_000) => {
     }
 };
 
+/**
+ * Until the session's orchestration has no activity in flight: every activity
+ * it scheduled has its result (or a cancel, for a select loser) in history, so
+ * it waits only on its timers.
+ */
+const ENDS_ACTIVITY = new Set(["ActivityCompleted", "ActivityFailed", "ActivityCancelRequested"]);
+const parked = async (client, sessionId) => {
+    const duroxide = client._getDuroxideClient();
+    const instanceId = `session-${sessionId}`;
+    await until(async () => {
+        const { currentExecutionId } = await duroxide.getInstanceInfo(instanceId);
+        const history = await duroxide.readExecutionHistory(instanceId, currentExecutionId);
+        const ended = new Set(history.filter((e) => ENDS_ACTIVITY.has(e.kind)).map((e) => e.sourceEventId));
+        return history.filter((e) => e.kind === "ActivityScheduled").every((e) => ended.has(e.eventId));
+    }, "the orchestration to wait on its timers");
+};
+
 /** Each turn runs the bash command after "run:" in its prompt, then answers with the output. */
 const runFromPrompt = (_body, position) => {
     if (position.step === 0) {
@@ -388,6 +405,11 @@ describe("workspace moves between workers", () => {
                     await catalog.close?.();
                 }
                 assertEqual(c.provider.callsFor("ensureAttached", { sessionId }).filter((r) => r.req.workerNodeId === "f4-a").length, 2);
+                // Stop A only once the release turn has ended. A stop that cuts
+                // off a fetch can leave the orchestration locked until that lock
+                // expires (60 s, microsoft/duroxide#83); this test measures the
+                // release, not that shutdown race.
+                await parked(c.client, sessionId);
                 await workerA.stop();
 
                 // The released session takes a new key, which B can take at once.
