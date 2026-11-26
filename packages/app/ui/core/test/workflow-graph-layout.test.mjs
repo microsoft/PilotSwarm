@@ -332,6 +332,27 @@ test("an error route to another step is a dashed line of its own beside the busi
     assertInside(layout);
 });
 
+test("every line starts and ends on its steps' cards, also beside a step's end chips (dagre lays it out with their room)", () => {
+    // issue-batch's collect step: its chip (nothing -> no_prs) widens its laid box; dry run leaves it for a second success end.
+    const T = (id, outcome) => ({ id, type: "terminal", outcome });
+    const layout = layoutWorkflowGraphTB(workflowDefinition({ revision: 1, initial: "fetch", states: [
+        { id: "fetch", type: "script", outcomes: ["ok"], next: { ok: "collect" } },
+        { id: "collect", type: "script", outcomes: ["merge", "nothing", "dry_run"], next: { merge: "merge", nothing: "no_prs", dry_run: "trial_done", failure: "failed" } },
+        { id: "merge", type: "script", outcomes: ["merged", "blocked"], next: { merged: "report", blocked: "report" } },
+        { id: "report", type: "script", outcomes: ["done", "incomplete"], next: { done: "done", incomplete: "incomplete" } },
+        T("done", "succeeded"), T("trial_done", "succeeded"), T("no_prs", "blocked"), T("incomplete", "blocked"), T("failed", "failed")] }));
+    assert.deepEqual(layout.chips.get("collect").map(chip => chip.text), ["nothing → ⏹ no_prs"]);
+    const onEdge = ([x, y], box) => x >= box.x - 0.6 && x <= box.x + box.width + 0.6 && y >= box.y - 0.6 && y <= box.y + box.height + 0.6
+        && [x - box.x, box.x + box.width - x, y - box.y, box.y + box.height - y].some(gap => Math.abs(gap) < 0.6);
+    for (const check of [layout, layoutWorkflowGraphTB(issueToPr)]) {
+        for (const edge of check.edges.filter(item => item.from !== item.to)) {
+            assert.ok(onEdge(edge.points[0], check.positions.get(edge.from)), `${name(edge)} starts on ${edge.from}: ${JSON.stringify(edge.points[0])}`);
+            assert.ok(onEdge(edge.points.at(-1), check.positions.get(edge.to)), `${name(edge)} ends on ${edge.to}: ${JSON.stringify(edge.points.at(-1))}`);
+        }
+    }
+    assertInside(layout);
+});
+
 test("a step's boundary events: one per error handler, on its bottom edge 22 px apart from its right corner; each handler's arrow leaves its own", () => {
     const box = { x: 100, y: 40, width: 202, height: 66 };
     assert.equal(WORKFLOW_BOUNDARY_EVENT_INSET, 22);

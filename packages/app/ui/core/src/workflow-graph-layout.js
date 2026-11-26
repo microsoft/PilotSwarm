@@ -642,6 +642,24 @@ function shapeEdge(edge, laid, from, to) {
     edge.labelX = Number.isFinite(laid?.x) ? laid.x : mid[0];
     edge.labelY = Number.isFinite(laid?.y) ? laid.y : mid[1];
     edge.back = to.y <= from.y;
+    // Dagre lays a step out with its chips' room beside it (R2): a line can meet that room instead of the card. One that
+    // meets it from the side is carried on, level, to the card; one that leaves or enters its top or bottom beside the card
+    // is moved onto the card's edge. So a line never stops short of its step.
+    if (edge.from !== edge.to) {
+        const onto = (point, box) => {
+            if (!box?.width || (point[0] >= box.x - 0.5 && point[0] <= box.x + box.width + 0.5)) return null;
+            const side = point[0] < box.x ? box.x : box.x + box.width;
+            if (point[1] > box.y + 0.5 && point[1] < box.y + box.height - 0.5) return { extra: [side, point[1]] };
+            const inset = Math.min(12, box.width / 2);
+            return { moved: [Math.min(Math.max(point[0], box.x + inset), box.x + box.width - inset), point[1]] };
+        };
+        const end = onto(edge.points.at(-1), to);
+        if (end?.extra) edge.points.push(end.extra);
+        if (end?.moved) edge.points[edge.points.length - 1] = end.moved;
+        const start = onto(edge.points[0], from);
+        if (start?.extra) edge.points.unshift(start.extra);
+        if (start?.moved) edge.points[0] = start.moved;
+    }
     if (edge.from === edge.to) {
         // A step that loops on itself: dagre keeps room for the label to the right of the step, but its own points
         // zigzag back across the step. Draw the loop out of the step's right side, around its label and back in.
