@@ -94,6 +94,13 @@ export function sweeperKeptDetail(targetSessionId: string, kept: SweeperKeptSess
                 : `its cleanup would delete session ${kept.sessionId} of ${workflow}`;
     return `${relation}, which is kept while its ancestor ${kept.ancestorSessionId} is active (state ${kept.ancestorState})`;
 }
+/**
+ * Issue 412: a Workflow session that is not a definition test bench, from a session row (session_kind, service_kind). The
+ * rule that keeps sessions can only hold where one is in, or above, the sessions a delete removes.
+ */
+function sweeperLiveWorkflowRow(row: Row): boolean {
+    return row.session_kind === "workflow" && row.service_kind !== WORKFLOW_TEST_BENCH_KIND;
+}
 /** The Sweeper's NOWAIT lock found a session another transaction holds (sweeperSoftDelete). */
 class SweeperBusy extends Error {
     constructor() { super("a session the Sweeper would delete is held by another transaction"); }
@@ -3802,8 +3809,10 @@ export class WorkflowStore {
      * - has a session the delete would change that another transaction holds (each one is locked NOWAIT, in session id
      *   order, before anything is changed, so the Sweeper never waits holding a lock): Busy;
      * - would soft-delete a kept session (issue 412: a finished Workflow session, or a session under one, whose Workflow
-     *   has an active ancestor; sweeperKeptAmong), checked under the locks on exactly the sessions it would delete:
-     *   WorkflowKept.
+     *   has an active ancestor; sweeperKeptAmong), checked under the locks on exactly the sessions it would delete and,
+     *   when a Workflow that is not a test bench is among them or above the target, FOR SHARE locks on every session above
+     *   the target (NOWAIT: Busy), so no session above can become active, and no Workflow above can end, before the delete
+     *   commits: WorkflowKept.
      * The sessions locked first: with `cascade`, all its descendants (a parent's lifecycle owns its children's: an active
      * run under it ends with it); without, the Workflow sessions the owner-session trigger deletes with it. They are read
      * again under those locks, and a set that grew refuses (Changed: review DR-02; creation locks its parent first, so no
@@ -3817,7 +3826,7 @@ export class WorkflowStore {
         try {
             return await this.transaction(async client => {
                 const { rows } = await client.query(
-                    `SELECT session_kind, is_system, deleted_at, xmin::text AS version, orchestration_id, state
+                    `SELECT session_kind, service_kind, is_system, deleted_at, xmin::text AS version, orchestration_id, state
                        FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [input.sessionId]);
                 const row = rows[0];
                 if (!row || row.deleted_at !== null) return { refused: { status: "Changed" as const, detail: "it was deleted since it was read" } };
@@ -3842,12 +3851,15 @@ export class WorkflowStore {
                 const enumerate = (): Promise<string[]> => this.sweeperDeleteSet(client, input.sessionId, input.cascade);
                 const ids = await enumerate();
                 let locked: string[] = [];
+                let lockedWorkflow = false;
                 if (ids.length > 0) {
                     try {
                         const { rows: held } = await client.query(
-                            `SELECT session_id FROM ${this.t.sessions} WHERE session_id = ANY($1::text[]) AND is_system = FALSE AND deleted_at IS NULL
+                            `SELECT session_id, session_kind, service_kind FROM ${this.t.sessions}
+                              WHERE session_id = ANY($1::text[]) AND is_system = FALSE AND deleted_at IS NULL
                               ORDER BY session_id FOR NO KEY UPDATE NOWAIT`, [ids]);
                         locked = held.map(item => str(item, "session_id"));
+                        lockedWorkflow = held.some(sweeperLiveWorkflowRow);
                     } catch (error: any) {
                         if (error?.code === "55P03") throw new SweeperBusy();
                         throw error;
@@ -3862,6 +3874,24 @@ export class WorkflowStore {
                 const added = again.filter(id => !known.has(id));
                 if (added.length > 0) {
                     return { refused: { status: "Changed" as const, detail: `its subtree changed while it was read (${added.length} session(s) were created under it)` } };
+                }
+                // Issue 412 (review R1-1): whether a session in the set is kept also depends on the sessions above the target,
+                // which the set does not lock. An ended one can become active again (a root whose orchestration was pruned
+                // accepts a new first message and is set running, client.ts), and a Workflow above it can end its run. When a
+                // live Workflow is in the set or above it, every session above the target is held FOR SHARE until the delete
+                // commits (NOWAIT, as above: Busy). Each such change takes that row's lock (a state update; a run writer holds
+                // its Workflow's row first), so it committed before the check below, which reads it, or waits until the
+                // delete has committed. A cleanup with no Workflow in it locks nothing more, as before.
+                const ancestors = await this.sweeperAncestors(client, input.sessionId);
+                if (sweeperLiveWorkflowRow(row) || lockedWorkflow || ancestors.some(sweeperLiveWorkflowRow)) {
+                    try {
+                        await client.query(
+                            `SELECT session_id FROM ${this.t.sessions} WHERE session_id = ANY($1::text[])
+                              ORDER BY session_id FOR SHARE NOWAIT`, [ancestors.map(item => str(item, "session_id"))]);
+                    } catch (error: any) {
+                        if (error?.code === "55P03") throw new SweeperBusy();
+                        throw error;
+                    }
                 }
                 const kept = await this.sweeperKeptAmong(client, [input.sessionId, ...locked]);
                 if (kept) return { refused: { status: "WorkflowKept" as const, detail: sweeperKeptDetail(input.sessionId, kept), kept } };
@@ -3901,6 +3931,19 @@ export class WorkflowStore {
                               WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL
                          ))`, [sessionId]);
         return rows.map(item => str(item, "session_id"));
+    }
+
+    /** Issue 412: the sessions above `sessionId` (its parent, its parent's parent, and so on), with their kinds. */
+    private async sweeperAncestors(client: Pick<PoolClient, "query">, sessionId: string): Promise<Row[]> {
+        const { rows } = await client.query(
+            `WITH RECURSIVE up AS (
+                 SELECT parent_session_id AS session_id FROM ${this.t.sessions} WHERE session_id = $1
+                 UNION
+                 SELECT p.parent_session_id FROM ${this.t.sessions} AS p JOIN up ON p.session_id = up.session_id
+             )
+             SELECT s.session_id, s.session_kind, s.service_kind FROM ${this.t.sessions} AS s
+              WHERE s.session_id IN (SELECT session_id FROM up WHERE session_id IS NOT NULL)`, [sessionId]);
+        return rows;
     }
 
     /**
@@ -3946,6 +3989,66 @@ export class WorkflowStore {
      */
     async sweeperKeptSession(input: { sessionId: string; cascade: boolean }): Promise<SweeperKeptSession | null> {
         return this.sweeperKeptAmong(this.pool, [input.sessionId, ...await this.sweeperDeleteSet(this.pool, input.sessionId, input.cascade)]);
+    }
+
+    /**
+     * Issue 412 (review R1-2): the Resource Manager's event maintenance (purge_old_events). Deletes the session events
+     * created before `cutoff`, except the events of a finished Workflow session and of every session under it: the Log
+     * of a finished Workflow (its own events and its agent sessions' histories) stays readable for as long as the session
+     * exists. A finished Workflow session here is one the Sweeper's rule can keep (not deleted, not a definition test
+     * bench, a live run and no admitted, running or paused run), whatever its ancestors' states, so a session above it that
+     * becomes active again finds its Log whole. Returns the number of events deleted.
+     *
+     * 1. Events of sessions that are not in a Workflow's tree (a Workflow session that is not a test bench, and the
+     *    sessions under it) are deleted in one statement, as before. Whether a session is in such a tree never changes
+     *    while it exists, so this needs no lock.
+     * 2. In one transaction, each Workflow session of such a tree that has not finished (a draft, or an active run) is
+     *    held FOR SHARE, SKIP LOCKED: every writer of a Workflow's runs holds its session row first (FOR NO KEY UPDATE),
+     *    so a held Workflow cannot admit or end a run until this commits, and one a writer holds now is skipped. Then the
+     *    old events of those trees are deleted, except those of a Workflow that has finished or was not held, and of the
+     *    sessions under it. A run that ends while this runs either ended before (its Log is kept) or waits until the
+     *    events are gone, as a purge before its end would leave them.
+     */
+    async purgeSessionEventsBefore(cutoff: Date): Promise<number> {
+        const workflowTrees = `workflow_trees AS (
+                 SELECT s.session_id FROM ${this.t.sessions} AS s
+                  WHERE s.session_kind = 'workflow' AND s.deleted_at IS NULL AND s.service_kind IS DISTINCT FROM $2
+                 UNION
+                 SELECT c.session_id FROM ${this.t.sessions} AS c JOIN workflow_trees AS w ON c.parent_session_id = w.session_id
+                  WHERE c.deleted_at IS NULL
+             )`;
+        const finished = (activeStatuses: string) => `(EXISTS (SELECT 1 FROM ${this.t.runs} AS run WHERE run.workflow_session_id = s.session_id AND run.mode = 'live')
+                 AND NOT EXISTS (SELECT 1 FROM ${this.t.runs} AS run WHERE run.workflow_session_id = s.session_id AND run.status = ANY(${activeStatuses}::text[])))`;
+        const outside = await this.pool.query(
+            `WITH RECURSIVE ${workflowTrees}
+             DELETE FROM ${this.t.sessionEvents} AS e
+              WHERE e.created_at < $1 AND NOT EXISTS (SELECT 1 FROM workflow_trees AS w WHERE w.session_id = e.session_id)`,
+            [cutoff, WORKFLOW_TEST_BENCH_KIND]);
+        const inside = await this.transaction(async client => {
+            const { rows } = await client.query(
+                `SELECT s.session_id FROM ${this.t.sessions} AS s
+                  WHERE s.session_kind = 'workflow' AND s.deleted_at IS NULL AND s.service_kind IS DISTINCT FROM $1
+                    AND NOT ${finished("$2")}
+                  ORDER BY s.session_id FOR SHARE OF s SKIP LOCKED`,
+                [WORKFLOW_TEST_BENCH_KIND, ACTIVE_RUN_STATUSES]);
+            const held = rows.map(row => str(row, "session_id"));
+            return client.query(
+                `WITH RECURSIVE ${workflowTrees},
+                 kept AS (
+                     SELECT s.session_id FROM ${this.t.sessions} AS s
+                      WHERE s.session_kind = 'workflow' AND s.deleted_at IS NULL AND s.service_kind IS DISTINCT FROM $2
+                        AND (${finished("$3")} OR NOT (s.session_id = ANY($4::text[])))
+                     UNION
+                     SELECT c.session_id FROM ${this.t.sessions} AS c JOIN kept AS k ON c.parent_session_id = k.session_id
+                      WHERE c.deleted_at IS NULL
+                 )
+                 DELETE FROM ${this.t.sessionEvents} AS e
+                  WHERE e.created_at < $1
+                    AND EXISTS (SELECT 1 FROM workflow_trees AS w WHERE w.session_id = e.session_id)
+                    AND NOT EXISTS (SELECT 1 FROM kept AS k WHERE k.session_id = e.session_id)`,
+                [cutoff, WORKFLOW_TEST_BENCH_KIND, ACTIVE_RUN_STATUSES, held]);
+        });
+        return (outside.rowCount ?? 0) + (inside.rowCount ?? 0);
     }
 
     /**

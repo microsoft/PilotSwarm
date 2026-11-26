@@ -18,8 +18,10 @@ and is not completed, cancelled or failed (an idle session is active). The
 Workflow shows in its owner's Terminated row and reads in full. An ended
 session that holds such a Workflow is kept too. Once the Workflow and every
 session above it have ended, the Sweeper cleans them together. `cleanup_session`
-refuses such a cleanup with the status `WorkflowKept`. An explicit delete is
-unchanged. There is no retention cap: delete a finished Workflow to remove it.
+refuses such a cleanup with the status `WorkflowKept`. The Resource Manager's
+`purge_old_events` keeps the events of a finished Workflow and of the sessions
+under it, so its Log stays whole. An explicit delete is unchanged. There is no
+retention cap: delete a finished Workflow to remove it.
 
 ## 0.8.19 — 2026-11-25
 

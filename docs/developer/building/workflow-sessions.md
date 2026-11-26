@@ -1255,7 +1255,14 @@ its child Workflows) are kept with it, so the Log and the Node panel still read
 them. The kept Workflow shows its ended state in its owner's Terminated row, and
 `read_workflow`, the graph, the timeline, the Log, the Node panel and **Run
 again…** work as they do just after the run ended. Its ended controller's
-history can still be pruned: the run's record is in the store. The Sweeper
+history can still be pruned: the run's record is in the store. The Resource
+Manager's event purge (`purge_old_events`) keeps the events of a finished
+Workflow session and of the sessions under it, whatever the sessions above it,
+so its Log stays whole until the session is deleted
+(`WorkflowStore.purgeSessionEventsBefore`). The Sweeper's final check holds
+every session above its target `FOR SHARE` when a Workflow is in or above what
+it deletes, so a session above cannot become active, and a Workflow above
+cannot end its run, between the check and the delete. The Sweeper
 also keeps an ended session whose cleanup would delete such a Workflow, for
 example an ended owner whose parent is still active. Once the Workflow and
 every session above it have ended, the Sweeper cleans them together. A legacy

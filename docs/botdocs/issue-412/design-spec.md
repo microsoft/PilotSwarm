@@ -18,6 +18,8 @@ for that commit.
 | Sweeper | The system agent that cleans up sessions. Its tools are `scan_completed_sessions`, `cleanup_session` and `prune_orchestrations` (`sweeper-tools.ts`). |
 | Final check | The transaction in which the Sweeper checks a target again under the target's row lock and then soft-deletes it (`WorkflowStore.sweeperSoftDelete`, `workflow/store.ts:3790-3871`). |
 | Terminated row | The session list groups the ended children of a session in one row, labelled `Terminated` (`packages/app/ui/core/src/terminated-group.js:8, 25`). |
+| Event purge | The Resource Manager's tool `purge_old_events`: it deletes session events older than a cutoff, 24 hours by default (`resourcemgr-tools.ts:526-565`). Its agent instructions run it every third monitoring pass (`resourcemgr.agent.md:101-104`). |
+| Workflow tree | A Workflow session that is not a definition test bench, and every session under it. |
 
 ## 2. The problem on main
 
@@ -50,6 +52,13 @@ for that commit.
 6. An agent node's Log reads the agent session's history
    (`packages/app/ui/react/src/workflow-tab.js:1405-1414`). Once the agent session
    is deleted, the Log has none of the agent's lines.
+7. Even a session that is not deleted loses its Log: the event purge deletes
+   every event older than its cutoff, whatever its session
+   (`resourcemgr-tools.ts:551`). The Workflow Log reads the Workflow session's
+   events and its agent sessions' histories
+   (`packages/app/ui/react/src/workflow-tab.js:1392-1414`). Keeping the sessions
+   alone (steps 2 to 4) would still leave a day-old Workflow with an empty Log
+   (review round 1, finding 2).
 
 ### 2.2 Example
 
@@ -75,7 +84,9 @@ that deletes:
 | `scan_completed_sessions` | (lists candidates) | It does not list a candidate whose cleanup would delete a kept session. |
 | `cleanup_session` | The target and all its descendants | It refuses, with status `WorkflowKept` and a reason, when one of them is kept. |
 | `prune_orchestrations`, session pass | The target and the Workflow sessions the owner trigger deletes with it | It skips the target when one of them is kept. |
-| Final check (`sweeperSoftDelete`) | Exactly the sessions it has locked, and the target | It refuses with `WorkflowKept` when one of them is kept. It checks after it takes the locks, so a change after the tool's first check cannot slip through. |
+| Final check (`sweeperSoftDelete`) | Exactly the sessions it has locked, and the target | It refuses with `WorkflowKept` when one of them is kept. It checks after it takes the locks, so a change after the tool's first check cannot slip through. When a Workflow is among those sessions or above the target, it first holds every session above the target `FOR SHARE` (§3.5). |
+
+The event purge keeps the Log of a finished Workflow (§3.6).
 
 Nothing else changes:
 
@@ -155,25 +166,94 @@ in its owner's `Terminated` row (`terminated-group.js:8, 25`). Its run has ended
 so it runs no step; a run command on an ended run is recorded with that end and
 changes nothing, as just after the end
 (`docs/developer/building/workflow-sessions.md:1240-1241`). `read_workflow`, the graph, the timeline, the Log, the Node panel and
-**Run again…** read the store and the agent sessions, which are now kept.
+**Run again…** read the store, the agent sessions and their events, which are
+now kept (§3.6).
 
-### 3.5 Concurrency
+### 3.5 Concurrency of the final check
 
-The final check already runs under the target's row lock and NOWAIT locks on
-every session it deletes, and it re-reads the set under those locks
-(`workflow/store.ts:3800-3856`). The new check is one more read in that
-transaction, after the locks. No new lock is taken.
+The final check runs under the target's row lock and NOWAIT locks on every
+session it deletes, and it re-reads the set under those locks
+(`workflow/store.ts`, `sweeperSoftDelete`). Sessions in the set cannot change
+state, gain a run or finish a run while the Sweeper holds their locks:
+admissions and run ends take the session row lock first.
 
-- Sessions in the set cannot change state, gain a run or finish a run while the
-  Sweeper holds their locks: admissions and run ends take the session row lock.
-- Sessions above the target are read without a lock. A concurrent end of one of
-  them can only make the Sweeper refuse; a later scan cleans.
-- A session above the target that ended can run again in one case: a root whose
-  orchestration was pruned accepts a new first message (`client.ts:1015-1030,
-  1070-1076`). If that happens while a cleanup transaction runs, the cleanup's
-  read of the root precedes the root's update, and the cleanup writes nothing
-  the update reads, so the outcome is the same as the cleanup first, then the
-  new message. The Workflow was not kept when it was deleted.
+Whether a session in the set is kept also depends on sessions **above** the
+target, which the set does not contain. Two changes there can make a session
+kept while a cleanup runs:
+
+- **A root restarts.** A root that ended and whose orchestration was pruned
+  accepts a new first message: the client starts a new orchestration and sets
+  the row `running` (`client.ts:1015-1078`, `_ensureOrchestrationAndSend`).
+- **A Workflow above the target ends its run** (the target is, for example, an
+  agent session of that Workflow). The run's writer holds the Workflow's row
+  first (`lockLiveSession`, `FOR NO KEY UPDATE`).
+
+Round 1 read those sessions without a lock. Review round 1 (finding 1) showed
+the effect: the cleanup's check reads the root as ended; the root restarts and
+commits; the owner reads the full Workflow; then the delete commits. No serial
+order gives that sequence, and the restarted root saw the Workflow disappear.
+
+The fix: before the kept check, when a Workflow that is not a test bench is the
+target, is in the set, or is above the target, the final check holds **every
+session above the target `FOR SHARE`, NOWAIT**. Each change above takes that
+row's lock: a state update takes `FOR NO KEY UPDATE`, and a run end holds its
+Workflow's row the same way. `FOR SHARE` conflicts with both. So each change
+either committed before the lock (the check reads it and keeps the session) or
+waits until the delete has committed (it then finds the session deleted, as if
+the cleanup came first). A row that another transaction holds now refuses the
+cleanup at once (`Busy`); a later scan tries again. The Sweeper never waits
+while it holds a lock, as before, so no lock cycle can form.
+
+A cleanup with no Workflow in or above it cannot delete a kept session, and no
+change above it can make one kept: such a cleanup takes no new lock and behaves
+as on `main`. Whether a session is a Workflow (and not a test bench) never
+changes, so this test needs no lock.
+
+The model `docs/formal/workflow/retention/WorkflowRetention.tla` checks this
+with TLC: the round-1 check without the share locks reaches a delete of a kept
+session (the counterexample is the sequence above); the fix does not (§7).
+
+### 3.6 The event purge keeps a finished Workflow's Log
+
+The event purge (`purge_old_events`) now calls
+`WorkflowStore.purgeSessionEventsBefore(cutoff)`. It keeps the events of a
+**finished Workflow session and of every session under it**, and deletes every
+other old event as before. A finished Workflow session here is one the
+Sweeper's rule can keep (not deleted, not a test bench, a live run and no
+active run), whatever the states of the sessions above it. Its events go when
+the session is deleted: by a person, or by the Sweeper once no session above it
+is active.
+
+It does not use the exact kept rule: that rule depends on the states above the
+Workflow, and a root can restart (§3.5) after a purge has deleted the Log of a
+Workflow it is about to keep again. The wider set depends only on the Workflow
+itself, so the purge needs no lock on any session above it.
+
+The purge has two phases:
+
+1. One statement deletes the old events of every session that is **not in a
+   Workflow tree**. Whether a session is in a Workflow tree never changes while
+   it exists, so this phase takes no lock. It is the bulk of the events.
+2. One transaction handles the Workflow trees. It first holds `FOR SHARE`,
+   `SKIP LOCKED`, every Workflow session (not a test bench) that has not
+   finished: a draft, or one with an active run. Then it deletes the old events
+   of the Workflow trees, except those of a Workflow that has finished or that
+   it does not hold, and of every session under such a Workflow.
+
+A run can end while the purge runs. Every writer of a Workflow's runs holds the
+Workflow's row first (`FOR NO KEY UPDATE`). So a Workflow that the purge holds
+cannot end its run until the purge commits: its old events go as on `main` for
+a running Workflow, and its run ends afterwards. A Workflow that a writer holds
+now is skipped and keeps its events in this pass. The selection may read a run
+end that committed just before the lock as not ended yet; the delete reads
+again in a new statement under the lock and keeps that Workflow's Log. The
+purge never waits for a lock.
+
+Example. Owner `O` idle; finished Workflow `W` with agent session `A`; running
+Workflow `W2` with agent session `A2`; ordinary session `X`. Every session has
+one event two days old. After the purge, `W` and `A` keep theirs; `O`, `X`,
+`W2` and `A2` lose theirs, as on `main`. After a person deletes `W`, the next
+purge deletes the old events of `W` and `A`.
 
 ## 4. Alternatives considered
 
@@ -184,7 +264,13 @@ transaction, after the locks. No new lock is taken.
 | Treat the cleanup target as ended because its orchestration ended | Case 5: a session that never had a first message reads `NotFound` and would lose its Workflows, although it exists and has not ended. |
 | A new session state, column or migration for "kept" | Not needed: the existing state already places the session in the `Terminated` row. A migration adds upgrade cost. |
 | Exclude kept sessions from the scan only | `cleanup_session` with explicit ids and `prune_orchestrations` would still delete them. |
-| Lock the sessions above the target in the final check | Not needed (§3.5). A NOWAIT lock on a busy active parent would refuse ordinary cleanups that hold no Workflow. |
+| Read the sessions above the target without a lock (round 1) | Not serializable with a root's restart or a run's end above the target (§3.5, review round 1, finding 1). |
+| Lock the sessions above the target in every final check | A NOWAIT lock on a busy active parent would refuse ordinary cleanups (for example completed sub-agents of a running parent) that hold no Workflow. Such cleanups cannot delete a kept session, so they take no new lock. |
+| Wait for the locks above the target instead of NOWAIT | The Sweeper would wait while it holds the target's lock; a writer that locks parent before child could then form a lock cycle. NOWAIT keeps the existing rule: refuse, and a later scan tries again. |
+| Event purge: keep exactly the kept sessions' events | It depends on the states above each Workflow, which change (a root restart), so the purge would need the share locks of §3.5 on every such session in a bulk delete. Keeping every finished Workflow's Log needs no lock above it, and the extra events (a finished Workflow whose ancestors all ended) go when the Sweeper cleans it. |
+| Event purge: keep the events of every Workflow, also a running one | Changes the rule for active runs, which the issue keeps, and lets a long polling Workflow's events grow without limit while it runs. |
+| Event purge: one transaction that holds the active Workflows for the whole purge | Every running Workflow would wait for the whole bulk delete. Phase 1 deletes the events outside Workflow trees without any lock. |
+| Event purge: decide without holding the active Workflows | A run that ends between the delete's decision and its commit loses its Log after it was seen (model case `find.ret-purge-nolock`). |
 
 ## 5. Compatibility
 
@@ -194,10 +280,18 @@ transaction, after the locks. No new lock is taken.
 - No CMS migration, no session orchestration version, no Workflow controller
   version.
 - Sessions with no finished Workflow above or below them are cleaned exactly as
-  before.
+  before. A cleanup with no Workflow in or above it takes no new lock.
+- A cleanup with a Workflow in or above it can now refuse `Busy` when a session
+  above the target is being changed at that moment. `Busy` is an existing
+  refusal; a later scan tries again.
+- `purge_old_events` keeps its parameters and result shape (`eventsDeleted`,
+  `cutoff`, `olderThanMinutes`). Its description says that a finished
+  Workflow's Log is kept. A catalog without a Workflow store (a test double)
+  deletes as before.
 - Behavior the issue asks to change: a finished Workflow session, and the
-  sessions under it, are no longer cleaned while an ancestor is active, and an
-  ended session that holds such a Workflow is kept too.
+  sessions under it, are no longer cleaned while an ancestor is active, an
+  ended session that holds such a Workflow is kept too, and the Log of a
+  finished Workflow is no longer purged while the session exists.
 
 ## 6. Risks and known limits
 
@@ -208,12 +302,20 @@ transaction, after the locks. No new lock is taken.
   finished Workflows under it are kept until it, or they, are deleted. This
   follows the issue's definition of active.
 - The scan runs one more query per stale terminal candidate.
+- The events of finished Workflows, and of the sessions under them, are no
+  longer purged. A finished Workflow whose ancestors have all ended keeps its
+  events until the Sweeper cleans it (its next scan, every 6 hours by default).
+- Phase 2 of the purge holds the unfinished Workflows for the length of the
+  delete of the Workflow trees' old events. A run writer of such a Workflow
+  waits that long. Phase 1, the bulk, holds nothing.
 
 ## 7. Quality gates
 
-| Gate | Applies | Evidence |
-|---|---|---|
-| Database | Yes: a new read query in `WorkflowStore`; no schema change | Targeted local tests on a disposable PostgreSQL 16 (test-spec.md). |
-| Prompts and skills | Yes: `sweeper.agent.md` and the Sweeper `SKILL.md` text | The SDK unit suite with its prompt and skill size budget tests. |
-| Formal model | No: no new lock, state, message or orchestration step; one read inside the existing locked transaction (§3.5) | — |
-| Portal and UX | No: no UI code change | — |
+| Gate | Applies | Evidence | Status |
+|---|---|---|---|
+| Database: targeted tests on disposable PostgreSQL 16 | Yes: new queries in `WorkflowStore` (no schema change, no migration) | test-spec.md: 60 of 60 in the six targeted local files; every new regression failed before its fix | Run |
+| Database: `--all-providers` matrix (PostgreSQL 16 and live HorizonDB) | Yes (new SQL: recursive CTEs, `FOR SHARE NOWAIT`, `FOR SHARE OF s SKIP LOCKED`, a `DELETE` with CTEs) | The task's rules for this step allow only the targeted tests and forbid HorizonDB. PostgreSQL 16 only. | Not run |
+| Formal model (locks, concurrent deleters) | Yes: new share locks in the final check and the purge (§3.5, §3.6) | `docs/formal/workflow/retention/`: batch ret1, 18 of 18 as expected with TLC 2.19 (7 PASS, 4 deliberate faults violated on their named invariant, both round-1 behaviors among them, 7 witnesses reached) | Run |
+| Prompts and skills: size budgets | Yes: `sweeper.agent.md`, the Sweeper `SKILL.md`, tool descriptions of the Sweeper and `purge_old_events` | `npm run test:unit` (prompt and skill size budget tests) | Run |
+| Prompts and skills: positive and negative live-model checks | Yes: the Sweeper's instructions describe the new `WorkflowKept` refusal | This step has no model access (a placeholder `GITHUB_TOKEN`), and its rules allow no live-model suite. | Not run |
+| Portal and UX | No UI code change; the Terminated grouping is checked through the production list and tree builder (`workflow-kept-terminated.test.js`) | — | Not applicable |

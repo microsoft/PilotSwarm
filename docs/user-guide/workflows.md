@@ -268,7 +268,8 @@ output/error text, status and run identity under the owning session.
 session above that one, is still in use (idle counts: it has not been
 completed, canceled or failed). It shows under its session's **Terminated**
 row, and its graph, timeline, Log, Node panel and **Run again…** work as they
-did right after it ended, also the next day. Automatic session cleanup removes
+did right after it ended, also the next day: the cleanup of old events keeps a
+finished Workflow's Log. Automatic session cleanup removes
 it only after it and every session above it have ended, and then removes them
 together. Delete a finished Workflow yourself to remove it sooner. The end
 notice still has a short preview; once the Workflow session is gone, read the

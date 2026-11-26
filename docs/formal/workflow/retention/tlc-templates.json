@@ -1,0 +1,18 @@
+{
+  "WorkflowRetention": {
+    "indent": 4,
+    "constants": [
+      "Target",
+      "RInit",
+      "WInit",
+      "Sweep",
+      "Restart",
+      "RunEnd",
+      "Purge",
+      "AncLock",
+      "PurgeMode"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

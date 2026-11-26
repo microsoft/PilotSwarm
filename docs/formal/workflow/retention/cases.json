@@ -1,0 +1,692 @@
+[
+ {
+  "id": "ret.restart-cleanup-workflow",
+  "module": "WorkflowRetention",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.restart-cleanup-workflow.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_NoKeptDelete",
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "R ended, W finished: the Sweeper cleans W (with A) while R restarts. R is held FOR SHARE: the restart commits before the check (kept), or waits until the delete commits.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "ret.restart-cleanup-workflow (ret1; expected PASS): R ended, W finished: the Sweeper cleans W (with A) while R restarts. R is held FOR SHARE: the restart commits before the check (kept), or waits until the delete commits.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"finished\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "FALSE",
+    "Purge": "FALSE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_NoKeptDelete",
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.runend-cleanup-agent",
+  "module": "WorkflowRetention",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.runend-cleanup-agent.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_NoKeptDelete",
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "R active, W running: the Sweeper cleans A while W's run ends. W is held FOR SHARE: the run ends before the check (A kept), or waits until A's delete commits.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "ret.runend-cleanup-agent (ret1; expected PASS): R active, W running: the Sweeper cleans A while W's run ends. W is held FOR SHARE: the run ends before the check (A kept), or waits until A's delete commits.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"A\"",
+    "RInit": "\"active\"",
+    "WInit": "\"active\"",
+    "Sweep": "TRUE",
+    "Restart": "FALSE",
+    "RunEnd": "TRUE",
+    "Purge": "FALSE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_NoKeptDelete",
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.restart-runend-cleanup-agent",
+  "module": "WorkflowRetention",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.restart-runend-cleanup-agent.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_NoKeptDelete",
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "R ended, W running: R restarts and W's run ends while the Sweeper cleans A.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "ret.restart-runend-cleanup-agent (ret1; expected PASS): R ended, W running: R restarts and W's run ends while the Sweeper cleans A.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"A\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"active\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "TRUE",
+    "Purge": "FALSE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_NoKeptDelete",
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.purge-runend",
+  "module": "WorkflowRetention",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.purge-runend.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_NoKeptDelete",
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "The purge runs while W's run ends: a held W's old events go only while its run has not ended; a W a writer holds is skipped.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "ret.purge-runend (ret1; expected PASS): The purge runs while W's run ends: a held W's old events go only while its run has not ended; a W a writer holds is skipped.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"active\"",
+    "WInit": "\"active\"",
+    "Sweep": "FALSE",
+    "Restart": "FALSE",
+    "RunEnd": "TRUE",
+    "Purge": "TRUE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_NoKeptDelete",
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.purge-finished",
+  "module": "WorkflowRetention",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.purge-finished.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_NoKeptDelete",
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "A finished W's Log is kept whatever R's state.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "ret.purge-finished (ret1; expected PASS): A finished W's Log is kept whatever R's state.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"finished\"",
+    "Sweep": "FALSE",
+    "Restart": "FALSE",
+    "RunEnd": "FALSE",
+    "Purge": "TRUE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_NoKeptDelete",
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.all-workflow",
+  "module": "WorkflowRetention",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.all-workflow.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_NoKeptDelete",
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Every change at once, the Sweeper cleaning W.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "ret.all-workflow (ret1; expected PASS): Every change at once, the Sweeper cleaning W.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"active\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "TRUE",
+    "Purge": "TRUE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_NoKeptDelete",
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "ret.all-agent",
+  "module": "WorkflowRetention",
+  "group": "design",
+  "spec": "Spec",
+  "config": "ret.all-agent.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_Locks",
+   "Inv_NoKeptDelete",
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Every change at once, the Sweeper cleaning A.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "ret.all-agent (ret1; expected PASS): Every change at once, the Sweeper cleaning A.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"A\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"active\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "TRUE",
+    "Purge": "TRUE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_Locks",
+    "Inv_NoKeptDelete",
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.ret-r1-restart",
+  "module": "WorkflowRetention",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.ret-r1-restart.cfg",
+  "invariants": [
+   "Inv_NoKeptDelete"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoKeptDelete",
+  "deadlock": true,
+  "note": "Round 1 (17142cd0, review R1-1): the final check reads R with no lock; R restarts between the check and the commit, which deletes a kept W.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "find.ret-r1-restart (ret1; expected VIOLATION:Inv_NoKeptDelete): Round 1 (17142cd0, review R1-1): the final check reads R with no lock; R restarts between the check and the commit, which deletes a kept W.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"finished\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "FALSE",
+    "Purge": "FALSE",
+    "AncLock": "FALSE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Inv_NoKeptDelete"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.ret-r1-runend",
+  "module": "WorkflowRetention",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.ret-r1-runend.cfg",
+  "invariants": [
+   "Inv_NoKeptDelete"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoKeptDelete",
+  "deadlock": true,
+  "note": "Round 1: W's run ends between the check of A and its commit, which deletes a session the finished W keeps.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "find.ret-r1-runend (ret1; expected VIOLATION:Inv_NoKeptDelete): Round 1: W's run ends between the check of A and its commit, which deletes a session the finished W keeps.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"A\"",
+    "RInit": "\"active\"",
+    "WInit": "\"active\"",
+    "Sweep": "TRUE",
+    "Restart": "FALSE",
+    "RunEnd": "TRUE",
+    "Purge": "FALSE",
+    "AncLock": "FALSE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Inv_NoKeptDelete"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.ret-r1-purge",
+  "module": "WorkflowRetention",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.ret-r1-purge.cfg",
+  "invariants": [
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoFinishedLogPurge",
+  "deadlock": true,
+  "note": "Round 1 (review R1-2): purge_old_events deletes every old event, a finished W's Log too.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "find.ret-r1-purge (ret1; expected VIOLATION:Inv_NoFinishedLogPurge): Round 1 (review R1-2): purge_old_events deletes every old event, a finished W's Log too.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"active\"",
+    "WInit": "\"finished\"",
+    "Sweep": "FALSE",
+    "Restart": "FALSE",
+    "RunEnd": "FALSE",
+    "Purge": "TRUE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"none\""
+   },
+   "invariants": [
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "find.ret-purge-nolock",
+  "module": "WorkflowRetention",
+  "group": "finding",
+  "spec": "Spec",
+  "config": "find.ret-purge-nolock.cfg",
+  "invariants": [
+   "Inv_NoFinishedLogPurge"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoFinishedLogPurge",
+  "deadlock": true,
+  "note": "A purge that protects a finished W but decides without holding it: the run ends between the decision and the commit.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "find.ret-purge-nolock (ret1; expected VIOLATION:Inv_NoFinishedLogPurge): A purge that protects a finished W but decides without holding it: the run ends between the decision and the commit.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"active\"",
+    "WInit": "\"active\"",
+    "Sweep": "FALSE",
+    "Restart": "FALSE",
+    "RunEnd": "TRUE",
+    "Purge": "TRUE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"nolock\""
+   },
+   "invariants": [
+    "Inv_NoFinishedLogPurge"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-deleted",
+  "module": "WorkflowRetention",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-deleted.cfg",
+  "invariants": [
+   "Wit_Deleted"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_Deleted",
+  "deadlock": true,
+  "note": "The Sweeper deletes W.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "wit.ret-deleted (ret1; expected VIOLATION:Wit_Deleted): The Sweeper deletes W.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"finished\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "FALSE",
+    "Purge": "FALSE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Wit_Deleted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-restart-after-delete",
+  "module": "WorkflowRetention",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-restart-after-delete.cfg",
+  "invariants": [
+   "Wit_RestartAfterDelete"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_RestartAfterDelete",
+  "deadlock": true,
+  "note": "R restarts after W's delete committed.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "wit.ret-restart-after-delete (ret1; expected VIOLATION:Wit_RestartAfterDelete): R restarts after W's delete committed.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"finished\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "FALSE",
+    "Purge": "FALSE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Wit_RestartAfterDelete"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-busy",
+  "module": "WorkflowRetention",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-busy.cfg",
+  "invariants": [
+   "Wit_Busy"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_Busy",
+  "deadlock": true,
+  "note": "A restart that holds R first makes the Sweeper refuse (Busy).",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "wit.ret-busy (ret1; expected VIOLATION:Wit_Busy): A restart that holds R first makes the Sweeper refuse (Busy).",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"finished\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "FALSE",
+    "Purge": "FALSE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Wit_Busy"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-kept",
+  "module": "WorkflowRetention",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-kept.cfg",
+  "invariants": [
+   "Wit_Kept"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_Kept",
+  "deadlock": true,
+  "note": "A restart that commits first makes the check keep W.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "wit.ret-kept (ret1; expected VIOLATION:Wit_Kept): A restart that commits first makes the check keep W.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"ended\"",
+    "WInit": "\"finished\"",
+    "Sweep": "TRUE",
+    "Restart": "TRUE",
+    "RunEnd": "FALSE",
+    "Purge": "FALSE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Wit_Kept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-kept-runend",
+  "module": "WorkflowRetention",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-kept-runend.cfg",
+  "invariants": [
+   "Wit_Kept"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_Kept",
+  "deadlock": true,
+  "note": "A run end that commits first makes the check keep A.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "wit.ret-kept-runend (ret1; expected VIOLATION:Wit_Kept): A run end that commits first makes the check keep A.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"A\"",
+    "RInit": "\"active\"",
+    "WInit": "\"active\"",
+    "Sweep": "TRUE",
+    "Restart": "FALSE",
+    "RunEnd": "TRUE",
+    "Purge": "FALSE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Wit_Kept"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-purged-then-ended",
+  "module": "WorkflowRetention",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-purged-then-ended.cfg",
+  "invariants": [
+   "Wit_PurgedThenEnded"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_PurgedThenEnded",
+  "deadlock": true,
+  "note": "The purge deletes a running W's old events, then the run ends.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "wit.ret-purged-then-ended (ret1; expected VIOLATION:Wit_PurgedThenEnded): The purge deletes a running W's old events, then the run ends.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"active\"",
+    "WInit": "\"active\"",
+    "Sweep": "FALSE",
+    "Restart": "FALSE",
+    "RunEnd": "TRUE",
+    "Purge": "TRUE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Wit_PurgedThenEnded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.ret-kept-log-then-ended",
+  "module": "WorkflowRetention",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.ret-kept-log-then-ended.cfg",
+  "invariants": [
+   "Wit_KeptLogThenEnded"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_KeptLogThenEnded",
+  "deadlock": true,
+  "note": "A run writer holds W, the purge skips it and keeps its Log, then the run ends.",
+  "batch": "ret1",
+  "head": "issue-412-r2",
+  "tlc": {
+   "comment": "wit.ret-kept-log-then-ended (ret1; expected VIOLATION:Wit_KeptLogThenEnded): A run writer holds W, the purge skips it and keeps its Log, then the run ends.",
+   "spec": "Spec",
+   "constants": {
+    "Target": "\"W\"",
+    "RInit": "\"active\"",
+    "WInit": "\"active\"",
+    "Sweep": "FALSE",
+    "Restart": "FALSE",
+    "RunEnd": "TRUE",
+    "Purge": "TRUE",
+    "AncLock": "TRUE",
+    "PurgeMode": "\"locked\""
+   },
+   "invariants": [
+    "Wit_KeptLogThenEnded"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ }
+]
