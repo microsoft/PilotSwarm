@@ -3,8 +3,9 @@ import {
     Background, BackgroundVariant, Handle, MarkerType, Panel, Position, ReactFlow, getBezierPath, getViewportForBounds, useReactFlow, useStore,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
-import { WorkflowEdgeShape, WorkflowGroupBox, WorkflowJoinBar, WorkflowStepCard } from "./workflow-graph.js";
-import { workflowGraphEdgeKey, workflowGraphPlaces, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
+import { WorkflowEdgeShape, WorkflowGroupBox, WorkflowJoinBar, WorkflowStepCard, workflowGroupProps } from "./workflow-graph.js";
+import { workflowGraphPlaces, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
+import { workflowEdgeShown, workflowStepMarks } from "../../core/src/workflow-transitions.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 
 const h = React.createElement;
@@ -186,7 +187,8 @@ function JoinNode({ data }) {
  */
 function StepEdge({ data, markerEnd, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition }) {
     const edge = data.edge;
-    const lit = { litCount: data.litCount ?? 0, litAge: data.litAge ?? null, flowing: data.litFlow === true };
+    const lit = { litCount: data.litCount ?? 0, litAge: data.litAge ?? null, flowing: data.litFlow === true, visited: data.visited ?? null,
+        hover: data.hover === true, tag: data.tag ?? null };
     if (!data.motion) return h(WorkflowEdgeShape, { edge, markerEnd, ...lit });
     if (data.motion.offset) {
         return h("g", { transform: `translate(${data.motion.offset[0]},${data.motion.offset[1]})` }, h(WorkflowEdgeShape, { edge, markerEnd, ...lit }));
@@ -262,7 +264,7 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
  * its controls (UXP-TL-02).
  */
 export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null, mode = "normal",
-    lit = null, phone = false }) {
+    lit = null, phone = false, hoverEnd = null }) {
     const [hand, setHand] = React.useState(true);
     const hostRef = React.useRef(null);
     const [start] = React.useState(() => workflowViewportOf(viewport));
@@ -342,7 +344,7 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
             const place = shown.get(group.id);
             if (!place) return [];
             return [keep({ id: group.id, type: "workflowGroup", position: { x: place.at.x, y: place.at.y }, width: group.width, height: group.height,
-                data: { group, node: byId.get(group.parallel) ?? null }, ...fixed, draggable: true,
+                data: { ...workflowGroupProps(layout, group, byId, { selected, lit, hoverEnd }), onSelect }, ...fixed, draggable: true,
                 // Dragged by its label row only; the rest of the box lets a press reach the graph.
                 dragHandle: ".ps-workflow-group-head", className: "nopan", style: GROUP_STYLE, handles: handles(group.width, group.height, true, false) })];
         });
@@ -356,7 +358,7 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
                 id: node.id, type: "workflowStep", position: { x: place.at.x, y: place.at.y }, width: box.width, height: box.height,
                 ...(place.parent ? { parentId: place.parent } : {}),
                 data: { node, selected: node.id === selectedId, onSelect, litCount: shownLit?.count ?? 0, litAge: shownLit?.age ?? null,
-                    current: lit?.current === node.id },
+                    current: lit?.current === node.id, marks: workflowStepMarks(layout, node.id, lit, hoverEnd) },
                 ...fixed, draggable: true,
                 // A press on a step is the step's own (a click selects it, a drag moves it); it never moves the graph.
                 className: "nopan", style: NODE_STYLE,
@@ -375,17 +377,18 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         });
         made.current = next;
         return [...groups, ...steps, ...joins];
-    }, [layout, nodes, selectedId, onSelect, shown, lit]);
+    }, [layout, nodes, selectedId, onSelect, shown, lit, hoverEnd]);
     // An edge keeps its route until a box it joins moves; how each edge is drawn is all that changes it.
     const motions = layout.edges.map(edge => edgeMotion(edge, shown));
     const motionKey = JSON.stringify(motions);
-    // Owner 2026-11-09 (the timeline): each edge's lit count and age, as plain values.
-    const edgeLit = layout.edges.map(edge => lit?.edges?.get(workflowGraphEdgeKey(edge.from, edge.to)) ?? null);
+    // Owner 2026-11-09 (the timeline): each edge's lit count and age, as plain values; 2026-11-26: whether the run took it
+    // by the moment shown (R5), whether it leads into the hovered end, and the shown transition's temporary tag.
+    const edgeLit = layout.edges.map(edge => workflowEdgeShown(edge, lit, hoverEnd));
     const litFlow = lit?.flow === true;
-    const litKey = JSON.stringify([litFlow, edgeLit.map(item => (item ? [item.count, item.age] : 0))]);
+    const litKey = JSON.stringify([litFlow, edgeLit]);
     const flowEdges = React.useMemo(() => layout.edges.map((edge, index) => ({
         id: `e${index}`, source: edge.from, target: edge.to, type: "workflowEdge",
-        data: { edge, motion: motions[index], litCount: edgeLit[index]?.count ?? 0, litAge: edgeLit[index]?.age ?? null, litFlow },
+        data: { edge, motion: motions[index], ...edgeLit[index], litFlow },
         markerEnd: MARKER, selectable: false, deletable: false, focusable: false, reconnectable: false,
     })), [layout, motionKey, litKey]);
     // A box follows the pointer while it is dragged (the flow is controlled: React Flow says where, this keeps it). A box

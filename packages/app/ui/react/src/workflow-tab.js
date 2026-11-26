@@ -21,7 +21,9 @@ import {
 } from "../../core/src/workflow-decision.js";
 import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
-import { WORKFLOW_LIT_TRANSITIONS, workflowLitTransitions, workflowTransitions } from "../../core/src/workflow-transitions.js";
+import {
+    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorTransitions, workflowLitTransitions, workflowTransitions,
+} from "../../core/src/workflow-transitions.js";
 import {
     WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogSessions, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
 } from "../../core/src/workflow-agent-log.js";
@@ -970,9 +972,15 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const shownIndex = replayIndex ?? newest;
     // Owner 2026-11-09T06:40Z: while the run is active (running, paused, stopping), in Live and in history, a soft light moves
     // along each lit edge (`flow`); an ended run's lit edges are still.
+    // Owner 2026-11-26: the end the run reached by then lights in the Ends row.
+    const rootEnds = React.useMemo(() => (child.definition?.states ?? []).filter(node => node?.type === "terminal" && typeof node.parallel !== "string")
+        .map(node => node.id), [child.definition]);
     const lit = React.useMemo(() => (timeline && frames.length
-        ? { ...workflowLitTransitions(transitions, shownIndex, WORKFLOW_LIT_TRANSITIONS), flow: !ended } : null),
-    [timeline, transitions, shownIndex, frames.length, ended]);
+        ? { ...workflowLitTransitions(transitions, shownIndex, WORKFLOW_LIT_TRANSITIONS), flow: !ended,
+            endReached: workflowEndReached(transitions, rootEnds, shownIndex) } : null),
+    [timeline, transitions, shownIndex, frames.length, ended, rootEnds]);
+    // The timeline marks error transitions in red, so a person can jump to them.
+    const errorMarks = React.useMemo(() => workflowErrorTransitions(transitions), [transitions]);
     const logReplay = React.useMemo(() => replay ? {
         visits: new Set(frames.map(item => item.nodeExecutionId)), current: frame?.nodeExecutionId ?? null,
         onVisit: id => { const index = frames.findIndex(item => item.nodeExecutionId === id); if (index >= 0) { setPlaying(false); goTo(index); } },
@@ -1085,7 +1093,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         // The timeline stays with the graph (OF-S2-1).
-        graph && replay ? h(ReplayBar, replay) : null),
+        graph && replay ? h(ReplayBar, { ...replay, errors: errorMarks }) : null),
         stopping ? h(StopDialog, { controller, sessionId, runId: runControls?.runId ?? runId, title: `${definition.name} #${number}`, stop, cancel,
             onClose: () => setStopping(false) }) : null);
 }
@@ -1160,7 +1168,7 @@ export function timelineVisitAt(frames, index) {
  * the right end; Live has nothing to play. With no visit yet every control is off ("No steps yet"). The Log's line for the
  * visit shown is marked, and a click on a visit's line shows it.
  */
-export function ReplayBar({ frames, index, playing, ended = false, startMs = null, onGo, onPlay, onPause, onOlder = null }) {
+export function ReplayBar({ frames, index, playing, ended = false, startMs = null, onGo, onPlay, onPause, onOlder = null, errors = [] }) {
     const id = `wf-replay-${React.useId().replace(/:/g, "")}`;
     const count = frames.length;
     const newest = count - 1;
@@ -1191,9 +1199,15 @@ export function ReplayBar({ frames, index, playing, ended = false, startMs = nul
         h(WorkflowToolButton, { label: "Step on", glyph: "step-on", "data-action": "replay-on", disabled: live,
             title: !live && timelineVisitAt(frames, index + 1) === null ? `Back to ${liveWord}` : "Show the next visit", onClick: () => onGo(index + 1) }),
         h("label", { htmlFor: id, className: "ps-sr-only" }, "Timeline position"),
-        h("input", { id, type: "range", className: "ps-wf-replay-range", min: scale.min, max: scale.max, step: "any",
-            value: count ? frames[position].atMs : scale.min, disabled: count === 0, "aria-valuetext": words,
-            onChange: event => slide(Number(event.target.value)), onKeyDown: keys }),
+        h("span", { className: "ps-wf-replay-track" },
+            h("input", { id, type: "range", className: "ps-wf-replay-range", min: scale.min, max: scale.max, step: "any",
+                value: count ? frames[position].atMs : scale.min, disabled: count === 0, "aria-valuetext": words,
+                onChange: event => slide(Number(event.target.value)), onKeyDown: keys }),
+            // Owner 2026-11-26: each error transition is a red mark on the timeline; a click shows it.
+            errors.filter(at => Number.isSafeInteger(at) && at >= 0 && at < count).map(at => h("button", { key: frames[at].nodeExecutionId, type: "button",
+                className: "ps-wf-replay-error", "data-action": "replay-error", "aria-label": `Show the error at ${workflowReplayLabel(frames[at])}`,
+                title: `Error: ${workflowReplayLabel(frames[at])}`,
+                style: { left: `${((frames[at].atMs - scale.min) / Math.max(1, scale.max - scale.min)) * 100}%` }, onClick: () => onGo(at) }))),
         h("span", { className: "ps-wf-replay-label", title: count === 0 ? undefined
             : workflowTimeTitle(frames[live ? newest : index].atMs) ?? undefined }, words),
         // Live while the graph is live: pressed, and (UXFD-F15) off but still focusable, its title saying why.

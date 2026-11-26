@@ -1160,6 +1160,7 @@ function stateWithoutPrompt(state: JsonValue): JsonValue {
  */
 export function workflowGraphJson(ir: WorkflowIR, revision: number): { [key: string]: JsonValue } {
     return { revision, initial: ir.initial, ...(ir.notes !== undefined ? { notes: ir.notes } : {}),
+        ...(ir.catchAll !== null && ir.catchAll !== undefined ? { catchAll: ir.catchAll } : {}),
         states: describeWorkflowStates(ir).map(state => withStateAbout(state, ir)),
         inputsSchema: workflowResolvedInputsSchema(ir) };
 }

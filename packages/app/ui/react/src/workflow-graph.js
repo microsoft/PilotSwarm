@@ -1,6 +1,8 @@
 import React from "react";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphNodeHeight, WORKFLOW_GRAPH_LABEL_HEIGHT } from "../../core/src/workflow-graph-layout.js";
+import { workflowEdgeShown, workflowLanePill, workflowStepMarks } from "../../core/src/workflow-transitions.js";
+import { workflowJoinShort } from "../../core/src/workflow-view.js";
 
 const h = React.createElement;
 
@@ -42,7 +44,39 @@ const NODE_GLYPHS = {
  * four transitions entered it and how long ago (workflowLitTransitions), and `current`, the step of the visit shown; the
  * stylesheet draws them (data-lit, data-lit-age, data-current) apart from the selection.
  */
-export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 0, litAge = null, current = false }) {
+export function WorkflowStepCard({ marks = null, ...props }) {
+    const card = h(WorkflowStepCardFace, props);
+    const badge = marks?.badge ?? null;
+    const chips = marks?.chips ?? [];
+    if (!badge && !chips.length) return card;
+    // R1, R2: the ✕ badge on its corner and the end chips beside it, outside the card so it keeps its own box.
+    return h("div", { className: "ps-workflow-step" }, card,
+        badge ? h("span", { className: "ps-workflow-badge", role: "img", "aria-label": badge.title, title: badge.title, ...markAttributes(badge) },
+            h("span", { className: "ps-workflow-badge-mark", "aria-hidden": "true" }, "✕"), badge.ghost ? h(WorkflowGhost, { ghost: badge.ghost }) : null) : null,
+        chips.length ? h("span", { className: `ps-workflow-chips${badge ? " has-badge" : ""}` },
+            chips.map(chip => h("span", { key: chip.key, className: `ps-workflow-chip is-${chip.tone}`, "data-end": chip.end, ...markAttributes(chip),
+                title: `${chip.routes.map(route => route.replace(/_/g, " ")).join(", ")} → end ${chip.end} (${chip.outcome})` },
+            h("span", { className: "ps-workflow-chip-text" }, chip.text), chip.ghost ? h(WorkflowGhost, { ghost: chip.ghost }) : null))) : null);
+}
+
+/** A badge's or chip's state as attributes: lit (replay), not taken by the moment shown (R5), its end hovered in the Ends row. */
+function markAttributes(item) {
+    return { ...litAttributes(item.litCount, item.litAge), ...(item.visited === false ? { "data-visited": "false" } : {}),
+        ...(item.hover ? { "data-hover": "true" } : {}) };
+}
+
+/**
+ * Replay only: the temporary dashed line from a badge or chip to a ghost of its end, while its transition is among the
+ * last four; the ghost glows when it is the moment shown, with the transition's words ("✕ script failed").
+ */
+function WorkflowGhost({ ghost }) {
+    return h("span", { className: `ps-workflow-ghost is-${ghost.tone}`, ...(ghost.current ? { "data-current": "true" } : {}), "aria-hidden": "true" },
+        h("span", { className: "ps-workflow-ghost-line" }),
+        h("span", { className: "ps-workflow-ghost-end" }, `⏹ ${ghost.end}`),
+        ghost.words ? h("span", { className: "ps-workflow-ghost-tag" }, ghost.words) : null);
+}
+
+function WorkflowStepCardFace({ node, selected = false, onSelect, litCount = 0, litAge = null, current = false }) {
     const terminal = node.type === "terminal";
     const kind = node.kind;
     const Glyph = NODE_GLYPHS[kind] ?? null;
@@ -92,8 +126,8 @@ function edgeAria(edge, error) {
     // A named branch's lane starts at its first step, and ends at the join.
     if (edge.branch && typeof edge.lane === "string") return `${edge.from}: branch ${edge.lane} starts at ${edge.start}`;
     if (edge.branch && edge.start !== undefined) return `${edge.from}: each item starts${edge.start ? ` at ${edge.start}` : ""}`;
-    if (edge.join && typeof edge.lane === "string") return `${edge.from}: branch ${edge.lane} ends at the join of ${edge.owner}`;
-    if (edge.join) return `${edge.from}: the item ends at the join of ${edge.owner}`;
+    if (edge.join && typeof edge.lane === "string") return `${edge.from}: branch ${edge.lane} ends at the join of ${edge.parallel ?? edge.owner}`;
+    if (edge.join) return `${edge.from}: the item ends at the join of ${edge.parallel ?? edge.owner}`;
     return `${edge.owner ? `${edge.owner} after its join` : edge.from}: ${edgeWords(edge)} → ${edge.to}`;
 }
 
@@ -114,13 +148,16 @@ function edgeTitle(edge, error) {
  * An edge without a label (into a branch box or a join bar, H2) draws none. Owner 2026-11-09 (the timeline): a lit edge
  * (`litCount` taken among the last four transitions, `litAge` how long ago) has its own arrowhead in the lit colour.
  */
-export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null, flowing = false }) {
+export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null, flowing = false, visited = null, hover = false, tag = null }) {
     const error = edge.kind === "error";
     const width = edge.labelWidth ?? 60;
     const markerId = `wf-lit-${React.useId().replace(/:/g, "")}`;
     const lit = litAttributes(litCount, litAge);
+    // Replay: the shown transition's outcome beside a line that has no label of its own (R3), for that moment only.
+    const tagWidth = tag ? Math.ceil(tag.length * 6.2) + 14 : 0;
     return h("g", {
         className: "ps-workflow-edge", "data-from": edge.from, "data-to": edge.to, "data-kind": edge.kind, "aria-label": edgeAria(edge, error), ...lit,
+        ...(visited === false ? { "data-visited": "false" } : {}), ...(hover ? { "data-hover": "true" } : {}), ...(edge.spine ? { "data-spine": "true" } : {}),
     },
     lit["data-lit"] ? h("defs", null, h("marker", { id: markerId, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto",
         markerUnits: "userSpaceOnUse" }, h("path", { className: "ps-workflow-edge-lit-arrow", d: "M0 0L10 5L0 10z" }))) : null,
@@ -131,7 +168,13 @@ export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null
     lit["data-lit"] && flowing ? h("path", { className: "ps-workflow-edge-flow", d: edge.path, fill: "none", pathLength: 1, "aria-hidden": "true" }) : null,
     width > 0 ? h("g", { className: "ps-workflow-edge-label", transform: `translate(${edge.labelX},${edge.labelY})` },
         h("rect", { x: -width / 2, y: -WORKFLOW_GRAPH_LABEL_HEIGHT / 2, width, height: WORKFLOW_GRAPH_LABEL_HEIGHT, rx: 4 }),
-        h("text", { textAnchor: "middle", dominantBaseline: "central" }, edge.labelText ?? edge.outcome, h("title", null, edgeTitle(edge, error)))) : null);
+        h("text", { textAnchor: "middle", dominantBaseline: "central" }, edge.labelText ?? edge.outcome, h("title", null, edgeTitle(edge, error)))) : null,
+    // A line without a label still names its routes on hover.
+    width === 0 && Array.isArray(edge.outcomes) && edge.outcomes.length
+        ? h("path", { className: "ps-workflow-edge-hit", d: edge.path, fill: "none" }, h("title", null, edgeTitle(edge, error))) : null,
+    tag ? h("g", { className: "ps-workflow-edge-tag", transform: `translate(${edge.labelX},${edge.labelY})`, "aria-hidden": "true" },
+        h("rect", { x: -tagWidth / 2, y: -WORKFLOW_GRAPH_LABEL_HEIGHT / 2, width: tagWidth, height: WORKFLOW_GRAPH_LABEL_HEIGHT, rx: 4 }),
+        h("text", { textAnchor: "middle", dominantBaseline: "central" }, tag)) : null);
 }
 
 /**
@@ -140,15 +183,40 @@ export function WorkflowEdgeShape({ edge, markerEnd, litCount = 0, litAge = null
  * label row is where it is dragged (React Flow's drag handle). A box of named branches (`group.lanes`) is
  * "Branches", with no stack: its lanes stand side by side in it.
  */
-export function WorkflowGroupBox({ group, node = null }) {
+export function WorkflowGroupBox({ group, node = null, selected = false, onSelect = null, litCount = 0, litAge = null, current = false, marks = null,
+    pills = [] }) {
     const view = node?.joinBar ?? null;
     const named = Array.isArray(group.lanes) && group.lanes.length > 0;
-    return h("div", { className: `ps-workflow-group is-${view?.state ?? "idle"}${named ? " is-named" : ""}`, "data-group": group.parallel, role: "group",
+    const description = typeof node?.about?.description === "string" ? node.about.description.trim() : "";
+    const name = description || group.parallel;
+    const notReached = node?.hasRun && node.phase === "not-reached";
+    const Glyph = NODE_GLYPHS.parallel;
+    // B1: the parallel step is its box's title, with its progress and its own time limit; a click selects the step.
+    const meta = [view?.group.text ?? null, view?.limit?.text ?? null].filter(Boolean).join(" · ");
+    const select = () => onSelect?.(group.parallel);
+    return h("div", { className: `ps-workflow-group is-${view?.state ?? "idle"}${named ? " is-named" : ""}${notReached ? " is-not-reached" : ""}`,
+        "data-group": group.parallel, role: "group",
         "aria-label": `${named ? `Branches of ${group.parallel} (${group.lanes.join(", ")})` : `For each item of ${group.parallel}`}${view?.group.text ? `: ${view.group.text}` : ""}` },
-    h("div", { className: "ps-workflow-group-head", title: named
-        ? `Each branch of ${group.parallel} runs its own nodes: ${group.lanes.join(", ")}.` : `The nodes ${group.parallel} runs once for each item.` },
-        h("span", { className: "ps-workflow-group-label" }, view?.group.label ?? (named ? "Branches" : "For each item")),
-        view?.group.text ? h("span", { className: "ps-workflow-group-counts" }, view.group.text) : null));
+    h("div", { className: `ps-workflow-group-head${selected ? " is-selected" : ""}`, role: "button", tabIndex: 0, "aria-pressed": selected,
+        "aria-label": `Inspect ${group.parallel}${description ? `: ${description}` : ""}`, "data-node-id": group.parallel,
+        ...litAttributes(litCount, litAge), ...(current ? { "data-current": "true" } : {}),
+        title: [`${group.parallel} · ${node?.label ?? (named ? "Branches" : "For each item")}`, description || null, node?.stateLabel ?? null,
+            view?.limit?.title ?? null, named ? `Each branch runs its own nodes: ${group.lanes.join(", ")}.` : "The nodes in the box run once for each item."]
+            .filter(Boolean).join("\n"),
+        onClick: select,
+        onKeyDown: event => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); }
+        } },
+        h("span", { className: "ps-workflow-group-icon", "aria-hidden": "true" }, h(Glyph)),
+        h("span", { className: "ps-workflow-group-label" }, name),
+        meta ? h("span", { className: "ps-workflow-group-counts" }, meta) : null,
+        marks?.badge ? h("span", { className: "ps-workflow-badge is-group", role: "img", "aria-label": marks.badge.title, title: marks.badge.title,
+            ...markAttributes(marks.badge) }, h("span", { className: "ps-workflow-badge-mark", "aria-hidden": "true" }, "✕"),
+        marks.badge.ghost ? h(WorkflowGhost, { ghost: marks.badge.ghost }) : null) : null),
+    // B3: each lane's pill, with its branch's state at the moment shown.
+    pills.map(pill => h("span", { key: pill.name, className: `ps-workflow-lane-pill${pill.tone ? ` is-${pill.tone}` : ""}`, title: pill.title,
+        ...litAttributes(pill.litCount, pill.litAge),
+        style: { left: pill.x - pill.width / 2, top: pill.y - WORKFLOW_GRAPH_LABEL_HEIGHT / 2, width: pill.width } }, pill.text)));
 }
 
 /**
@@ -159,8 +227,9 @@ export function WorkflowGroupBox({ group, node = null }) {
 export function WorkflowJoinBar({ join, node = null, selected = false, onSelect }) {
     const view = node?.joinBar ?? null;
     const rule = `${view?.label ?? "Joins when all succeed"}${view?.stateText ? ` · ${view.stateText}` : ""}`;
-    // Owner decision join-k-of-n: its own time limit, which the engine enforces, on a line of its own.
+    // Owner decision join-k-of-n: its own time limit, which the engine enforces; B5: said short on the bar ("⋈ all ended · 24 h").
     const limit = view?.limit ?? null;
+    const short = workflowJoinShort(node, view);
     return h("div", {
         className: `ps-workflow-join is-${view?.state ?? "idle"}${selected ? " is-selected" : ""}`, "data-join": join.parallel, role: "button", tabIndex: 0,
         "aria-label": `${join.parallel}: ${rule}${limit ? ` · ${limit.text}` : ""}. Inspect ${join.parallel}`, "aria-pressed": selected,
@@ -171,8 +240,7 @@ export function WorkflowJoinBar({ join, node = null, selected = false, onSelect 
         },
     },
     h("span", { className: "ps-workflow-join-bar", "aria-hidden": true }),
-    h("span", { className: "ps-workflow-join-rule" }, rule),
-    limit ? h("span", { className: "ps-workflow-join-limit" }, limit.text) : null);
+    h("span", { className: "ps-workflow-join-rule" }, short));
 }
 
 /**
@@ -183,13 +251,29 @@ export function WorkflowJoinBar({ join, node = null, selected = false, onSelect 
 export function workflowGraphKey(definition) {
     const states = Array.isArray(definition?.states) ? definition.states : [];
     // A parallel step's body steps decide its branch box (owner batch 7, H2); every other step's entry is as before.
-    return JSON.stringify([definition?.revision ?? null, definition?.initial ?? null,
+    return JSON.stringify([definition?.revision ?? null, definition?.initial ?? null, definition?.catchAll ?? null,
         states.map(node => [node?.id, node?.type, workflowGraphNodeHeight(node), node?.next ?? null, node?.outcomes ?? null, node?.routeNotes ?? null,
+            node?.outcome ?? null, node?.namedBranches ?? null,
             node?.type === "parallel" && Array.isArray(node.body?.states) ? [node.body.initial ?? null, node.body.states] : node?.body?.initial ?? null])]);
 }
 
 /** The plain picture: the layout at its own size, scrolled when it is larger than the graph's area. */
-function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null }) {
+/**
+ * A parallel step's branch box as drawn now (B1, B3): its step's view, selection, lit state and badge, and its lanes'
+ * pills with each lane's state at the moment shown. Pure but for building props.
+ */
+export function workflowGroupProps(layout, group, byId, { selected = null, lit = null, hoverEnd = null } = {}) {
+    const shown = lit?.nodes?.get(group.parallel) ?? null;
+    const lanes = new Map((layout.lanes ?? new Map()).get?.(group.parallel)?.map?.(lane => [lane.name, lane.members]) ?? []);
+    const members = name => lanes.get(name) ?? (group.members ?? []).filter(id => byId.get(id)?.branchName === name);
+    return { group, node: byId.get(group.parallel) ?? null, selected: group.parallel === selected?.id,
+        litCount: shown?.count ?? 0, litAge: shown?.age ?? null, current: lit?.current === group.parallel,
+        marks: workflowStepMarks(layout, group.parallel, lit, hoverEnd),
+        pills: (group.lanePills ?? []).map(pill => workflowLanePill(group.parallel, pill, members(pill.name), byId, lit)) };
+}
+
+/** The plain picture: the layout at its own size, scrolled when it is larger than the graph's area. */
+function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hoverEnd = null }) {
     const markerId = `wf-arrow-${React.useId().replace(/:/g, "")}`;
     const byId = new Map(nodes.map(node => [node.id, node]));
     const slot = (box, className, child, key) => h("div", { key, className, style: { left: box.x, top: box.y, width: box.width, height: box.height } }, child);
@@ -197,23 +281,19 @@ function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null }) {
         h("div", { className: "ps-workflow-graph-canvas", style: { width: layout.width, height: layout.height } },
             // Branch boxes under the edges and steps, join bars over them (owner batch 7, H2).
             [...(layout.groups?.values() ?? [])].map(group => slot(group, "ps-workflow-group-slot",
-                h(WorkflowGroupBox, { group, node: byId.get(group.parallel) ?? null }), group.id)),
+                h(WorkflowGroupBox, { ...workflowGroupProps(layout, group, byId, { selected, lit, hoverEnd }), onSelect: select }), group.id)),
             h("svg", { className: "ps-workflow-graph-edges", width: layout.width, height: layout.height, viewBox: `0 0 ${layout.width} ${layout.height}` },
                 h("defs", null,
                     h("marker", { id: markerId, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto" },
                         h("path", { d: "M0 0L10 5L0 10z", fill: "currentColor" }))),
-                layout.edges.map(edge => {
-                    const key = workflowGraphEdgeKey(edge.from, edge.to);
-                    const shown = lit?.edges?.get(key) ?? null;
-                    return h(WorkflowEdgeShape, { key, edge, markerEnd: `url(#${markerId})`, litCount: shown?.count ?? 0, litAge: shown?.age ?? null,
-                        flowing: lit?.flow === true });
-                })),
+                layout.edges.map(edge => h(WorkflowEdgeShape, { key: workflowGraphEdgeKey(edge.from, edge.to), edge, markerEnd: `url(#${markerId})`,
+                    ...workflowEdgeShown(edge, lit, hoverEnd), flowing: lit?.flow === true }))),
             nodes.map(node => {
                 const box = layout.positions.get(node.id);
                 const shown = lit?.nodes?.get(node.id) ?? null;
                 return box ? h("div", { key: node.id, className: "ps-workflow-node-slot", style: { left: box.x, top: box.y, width: box.width, height: box.height } },
                     h(WorkflowStepCard, { node, selected: node.id === selected?.id, onSelect: select, litCount: shown?.count ?? 0, litAge: shown?.age ?? null,
-                        current: lit?.current === node.id })) : null;
+                        current: lit?.current === node.id, marks: workflowStepMarks(layout, node.id, lit, hoverEnd) })) : null;
             }),
             [...(layout.joins?.values() ?? [])].map(join => slot(join, "ps-workflow-join-slot",
                 h(WorkflowJoinBar, { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selected?.id, onSelect: select }), join.id))));
@@ -254,10 +334,33 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
         loadFlow().then(module => { if (live) setFlow(() => module.WorkflowFlow); }, () => {});
         return () => { live = false; };
     }, [Flow]);
+    // R2: the end hovered (or focused) in the Ends row; every way into it lights.
+    const [hoverEnd, setHoverEnd] = React.useState(null);
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
         definition.notes ? h("details", { className: "ps-workflow-definition-notes" },
             h("summary", null, "Definition notes"), h("div", { className: "ps-workflow-notes" }, definition.notes)) : null,
+        h(WorkflowEndsRow, { ends: layout.ends, reached: lit?.endReached ?? null, run: Boolean(lit), hoverEnd, onHover: setHoverEnd, select }),
         Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode, lit,
-            phone })
-            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit }));
+            phone, hoverEnd })
+            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd }));
+}
+
+/**
+ * R2: the run's ends, each once, with how many ways lead in (lines, chips and ✕ badges). Hover or focus lights every way
+ * in; a click inspects the end. In a run's view the end it reached (as of the moment shown) is lit, the others dimmed.
+ */
+export function WorkflowEndsRow({ ends, reached = null, run = false, hoverEnd = null, onHover = () => {}, select = () => {} }) {
+    if (!Array.isArray(ends) || !ends.length) return null;
+    return h("div", { className: "ps-workflow-ends", role: "group", "aria-label": "Ends" },
+        h("span", { className: "ps-workflow-ends-label" }, "Ends"),
+        ends.map(end => {
+            const ways = end.keys.length;
+            const waysText = `${ways} way${ways === 1 ? "" : "s"} in`;
+            return h("button", { type: "button", key: end.id, "data-end": end.id,
+                className: `ps-workflow-end is-${end.outcome}${reached === end.id ? " is-reached" : run ? " is-dim" : ""}${hoverEnd === end.id ? " is-hover" : ""}`,
+                title: `${end.id}: ends the run as ${end.outcome}; ${waysText}${reached === end.id ? "; the run ended here" : ""}. Point at it to light every way in.`,
+                onMouseEnter: () => onHover(end.id), onMouseLeave: () => onHover(null), onFocus: () => onHover(end.id), onBlur: () => onHover(null),
+                onClick: () => select(end.id) },
+            h("span", { className: "ps-workflow-end-mark", "aria-hidden": "true" }, end.box ? "●" : "⏹"), ` ${end.id} · ${waysText}`);
+        }));
 }

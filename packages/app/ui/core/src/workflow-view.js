@@ -125,6 +125,8 @@ export function workflowDefinition(data, meta = {}) {
     return {
         name: data.name ?? meta.name ?? undefined, version: data.version ?? meta.version ?? undefined, initial, states,
         ...(typeof data.notes === "string" ? { notes: data.notes } : {}),
+        // The root catch-all state, when the graph names one of its states (R1: the steps it covers carry an error badge).
+        ...(typeof data.catchAll === "string" && ids.has(data.catchAll) ? { catchAll: data.catchAll } : {}),
         ...definedOnly({ revision: data.revision ?? meta.revision, definitionHash: data.definitionHash ?? meta.definitionHash,
             irSha256: data.irSha256 ?? meta.irSha256 }),
     };
@@ -367,10 +369,11 @@ export function annotateWorkflowEdges(definition, layout) {
     for (const edge of layout.edges) {
         // A parallel state's edge to its body's first state (or into its branch box) is how each branch starts, not a route.
         if (edge.branch) { edge.kind = "branch"; continue; }
-        if (edge.join) { edge.kind = "join"; continue; }
-        const owner = byId.get(edge.owner ?? edge.from);
+        if (edge.join && !(edge.outcomes?.length > 0)) { edge.kind = "join"; continue; }
+        // A branch's line into its join bar (B2) is its step's routes.
+        const owner = byId.get(edge.step ?? edge.owner ?? edge.from);
         const kinds = new Set(edge.outcomes.map(label => workflowRouteKind(owner, label)));
-        edge.kind = kinds.size > 1 ? "mixed" : [...kinds][0];
+        edge.kind = edge.join ? "join" : kinds.size > 1 ? "mixed" : [...kinds][0];
         // Review 18:45Z: an edge's title and screen-reader words name its error routes in the Next words ("✕ limit"),
         // never by their raw outcome ids.
         edge.outcomeWords = edge.outcomes.map(label => (workflowRouteKind(owner, label) === "error" ? workflowErrorRouteWords(label) : label));
@@ -1845,6 +1848,18 @@ export function workflowJoinRule(node, visit = null) {
     if (first === 1) return "first success";
     const items = joinItems(node, visit);
     return items === null ? `first ${first}` : `first ${first} of ${items}`;
+}
+
+/**
+ * A join bar's short words (B5): "⋈ all ended · 24 h", "⋈ first success", "⋈ first 2 · 30 min", with its state once it
+ * has one ("⋈ all ended · 24 h · joined"). `view` is the step's join view (workflowJoinView), or null. Pure.
+ */
+export function workflowJoinShort(node, view = null) {
+    const first = workflowJoinFirst(node);
+    const rule = first === null ? "all ended" : first === 1 ? "first success" : `first ${first}`;
+    const seconds = node?.timeoutSeconds;
+    const limit = typeof seconds === "number" ? formatSeconds(seconds) : seconds !== undefined && seconds !== null ? "limit from input" : null;
+    return ["⋈ " + rule, limit, view?.stateText ?? null].filter(Boolean).join(" · ");
 }
 
 /**
