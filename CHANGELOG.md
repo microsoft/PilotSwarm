@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: deploy the workers.** No migration and no orchestration version.
+
+### Decision cleanups
+
+- For an unanswered yes-or-no Decision call, a Workflow test report now
+  suggests the fixture `{ type: "noul", noul: 1 }`, the shape the live service
+  sends. It no longer adds a `probabilities` object. A fixture that gives
+  `probabilities` still works.
+- Migration 0098 (the Cluster Decision Default) writes the schema name with any
+  double quote escaped, like the other Decision migrations. Its SQL is the same
+  for every schema name without a double quote, so nothing runs again.
+
 ## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start
@@ -411,6 +425,35 @@ as in earlier releases.
 **Rollback:** before restoring workers that lack controller 1.2.0, drain or stop
 both runs awaiting a 1.2.0 start and executions already on 1.2.0. The stored
 admission version alone does not identify a run that moved at continue-as-new.
+
+### Other changes in this release
+
+These changes came with the Decision work but also apply without a Decision.
+
+- **Admin Settings asks no key for `foundry-wif`.** The portal's copy of the
+  workload-identity rule (`providerTypeUsesWorkloadIdentity` in
+  `packages/app/ui/core`) now names `foundry-wif` as well as `anthropic-wif`,
+  as the SDK rule already did. Adding a `foundry-wif` provider shows "Use the
+  Workload Identity configured in the worker" instead of a key field, and the
+  provider offers no "Update key".
+- **A repeated publish, publish-and-start or start returns its stored result
+  first.** With the same operation id, `applyWorkflowUpdate` reads the stored
+  receipt before it checks the Decision catalog again, so a retry returns the
+  original result even if the Cluster Decision Default changed in between.
+- **A repeated Workflow test reuses its test bench.** A repeated `test` call
+  with the same operation id uses the definition, revision and `expect` that
+  its bench already claimed, not the current default revision. A repeat that
+  names another revision or `expect` is refused with `WORKFLOW_EXISTS`, and
+  nothing is tested.
+- **A runtime provider resolves only the models its type lists.**
+  `resolveProviderCredential` gives no credential for a model name that the
+  model-providers file does not list under the provider's type. Before, any
+  model name under a known type resolved.
+- **The worker keeps a cluster default model only when a shared provider can
+  run it.** `buildRuntimeRegistry` keeps the configured cluster default only
+  when it is a chat model that a shared provider instance resolves. Otherwise
+  the worker uses the first shared runtime model. Before, any default whose
+  provider name matched a runtime provider was kept.
 
 ## 0.8.13 — 2026-11-20
 
