@@ -727,6 +727,221 @@ async function testAdmissionBetweenReadAndDeleteRefuses(env) {
     }
 }
 
+/** Set sessions' states as a session's end (or an idle wait) sets them. */
+async function setStates(db, schema, ids, state) {
+    await db.query(`UPDATE ${schema}.sessions SET state = $2 WHERE session_id = ANY($1::text[])`, [ids, state]);
+}
+
+/** An agent node's session under a Workflow session, ended with its run. */
+async function makeAgentSession(catalog, db, schema, workflowSessionId) {
+    const id = randomUUID();
+    await catalog.createSession(id, { parentSessionId: workflowSessionId });
+    await setStates(db, schema, [id], "completed");
+    return id;
+}
+
+const sessionState = async (catalog, id) => (await catalog.getSession(id))?.state;
+
+/** Issue 412: a finished Workflow, and its agent session, are kept by every Sweeper path while their owner is idle. */
+async function testKeptWhileOwnerIdle(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        await setStates(db, schema, [owner], "idle");
+        const workflow = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        await setStates(db, schema, [workflow.id], "completed");
+        const agent = await makeAgentSession(catalog, db, schema, workflow.id);
+        await ageSessions(env, [owner, workflow.id, agent], 60);
+        const status = new Map([
+            [`session-${owner}`, { status: "Running" }],
+            [workflow.runs[0].controller, { status: "Completed" }],
+            [`session-${agent}`, { status: "Completed" }],
+        ]);
+        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(status), factStore: null });
+
+        const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
+        const listed = scanned.sessions.map(s => s.sessionId);
+        assertEqual(listed.includes(workflow.id), false, "the scan does not list the finished Workflow of an idle owner");
+        assertEqual(listed.includes(agent), false, "the scan does not list the agent session of that Workflow");
+        for (const id of [workflow.id, agent]) {
+            for (const grace of [undefined, 0]) {
+                const refused = await findTool(tools, "cleanup_session").handler({ sessionId: id, ...(grace === undefined ? {} : { graceMinutes: grace }) });
+                assertEqual(refused.ok, false, `cleanup refuses ${id.slice(0, 8)} (grace ${grace ?? "default"})`);
+                assertEqual(refused.status, "WorkflowKept", `the refusal of ${id.slice(0, 8)} says the Workflow is kept`);
+                for (const word of [workflow.id, owner, "idle"]) assertEqual(refused.error.includes(word), true, `the refusal names ${word}`);
+            }
+        }
+        // The final check refuses on its own, when a caller judged the session ended without the tool's check.
+        const store = catalog.workflowStore();
+        const version = await store.sweeperRowVersion(workflow.id);
+        const final = await store.sweeperSoftDelete({ sessionId: workflow.id, version: version.version, cascade: true, orchestrationNotFound: false });
+        assertEqual(final.refused?.status, "WorkflowKept", "the final check refuses a kept Workflow");
+        // After the prune's bulk pass deleted their ended orchestrations, they read NotFound: its session pass keeps them.
+        status.set(workflow.runs[0].controller, { status: "NotFound" });
+        status.set(`session-${agent}`, { status: "NotFound" });
+        const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+        assertEqual(pruned.ok, true, "prune ran");
+        assertEqual(pruned.cmsRefused, 0, "prune skips kept sessions before its final check");
+        for (const id of [owner, workflow.id, agent]) assertEqual(await isLive(catalog, id), true, `${id.slice(0, 8)} stays`);
+        assertEqual(await sessionState(catalog, workflow.id), "completed", "the kept Workflow keeps its ended state (the Terminated row)");
+        assertEqual(await definitionState(db, schema, workflow.id), "draft", "its definition is untouched");
+        console.log("  ✓ a finished Workflow of an idle owner and its agent session are kept by every Sweeper path");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
+/** Issue 412: an ended owner that holds a finished Workflow is kept while its parent is active, and cleaned with it after. */
+async function testEndedOwnerKeptWhileParentActive(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        const parent = randomUUID();
+        const owner = randomUUID();
+        await catalog.createSession(parent);
+        await catalog.createSession(owner, { parentSessionId: parent });
+        await setStates(db, schema, [parent], "idle");
+        const workflow = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        await setStates(db, schema, [workflow.id], "completed");
+        const agent = await makeAgentSession(catalog, db, schema, workflow.id);
+        await setStates(db, schema, [owner], "completed");
+        await ageSessions(env, [parent, owner, workflow.id, agent], 60);
+        const status = new Map([
+            [`session-${parent}`, { status: "Running" }],
+            [`session-${owner}`, { status: "Completed" }],
+            [workflow.runs[0].controller, { status: "Completed" }],
+            [`session-${agent}`, { status: "Completed" }],
+        ]);
+        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(status), factStore: null });
+
+        const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
+        const listed = scanned.sessions.map(s => s.sessionId);
+        for (const id of [owner, workflow.id, agent]) assertEqual(listed.includes(id), false, `the scan does not list ${id.slice(0, 8)}`);
+        const refused = await findTool(tools, "cleanup_session").handler({ sessionId: owner, graceMinutes: 0 });
+        assertEqual(refused.ok, false, "cleanup refuses the ended owner");
+        assertEqual(refused.status, "WorkflowKept", "the refusal says its Workflow is kept");
+        for (const word of [workflow.id, parent]) assertEqual(refused.error.includes(word), true, `the refusal names ${word}`);
+        const store = catalog.workflowStore();
+        const version = await store.sweeperRowVersion(owner);
+        const final = await store.sweeperSoftDelete({ sessionId: owner, version: version.version, cascade: true, orchestrationNotFound: false });
+        assertEqual(final.refused?.status, "WorkflowKept", "the final check refuses the owner's cleanup");
+        // Prune: the owner reads NotFound; its delete would take its Workflow children with it (the owner trigger).
+        status.set(`session-${owner}`, { status: "NotFound" });
+        const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+        assertEqual(pruned.ok, true, "prune ran");
+        for (const id of [parent, owner, workflow.id, agent]) assertEqual(await isLive(catalog, id), true, `${id.slice(0, 8)} stays`);
+
+        // The parent ends: nothing above the Workflow is active, so the parent's cleanup removes them all.
+        await setStates(db, schema, [parent], "completed");
+        await ageSessions(env, [parent], 60);
+        status.set(`session-${parent}`, { status: "Completed" });
+        const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: parent, graceMinutes: 0 });
+        assertEqual(cleaned.ok, true, `the parent's cleanup succeeds: ${JSON.stringify(cleaned)}`);
+        for (const id of [parent, owner, workflow.id, agent]) assertEqual(await isLive(catalog, id), false, `${id.slice(0, 8)} is cleaned`);
+        assertEqual(await definitionState(db, schema, workflow.id), "deleted", "the Workflow's definition is a tombstone");
+        console.log("  ✓ an ended owner with a finished Workflow is kept while its parent is active, then cleaned with it");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
+/** Issue 412: once the owner and every ancestor have ended, the Sweeper cleans the owner with its Workflow. */
+async function testCleanedOnceEveryAncestorEnded(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        await setStates(db, schema, [owner], "idle");
+        const workflow = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        await setStates(db, schema, [workflow.id], "completed");
+        const agent = await makeAgentSession(catalog, db, schema, workflow.id);
+        await ageSessions(env, [owner, workflow.id, agent], 60);
+        const status = new Map([
+            [`session-${owner}`, { status: "Running" }],
+            [workflow.runs[0].controller, { status: "Completed" }],
+            [`session-${agent}`, { status: "Completed" }],
+        ]);
+        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(status), factStore: null });
+        const kept = await findTool(tools, "cleanup_session").handler({ sessionId: workflow.id, graceMinutes: 0 });
+        assertEqual(kept.status, "WorkflowKept", "while the owner is idle the Workflow is kept");
+
+        await setStates(db, schema, [owner], "completed");
+        await ageSessions(env, [owner], 60);
+        status.set(`session-${owner}`, { status: "Completed" });
+        const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
+        assertEqual(scanned.sessions.some(s => s.sessionId === owner), true, "the ended owner is listed");
+        const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: owner, graceMinutes: 0 });
+        assertEqual(cleaned.ok, true, `the owner's cleanup succeeds: ${JSON.stringify(cleaned)}`);
+        for (const id of [owner, workflow.id, agent]) assertEqual(await isLive(catalog, id), false, `${id.slice(0, 8)} is cleaned`);
+        assertEqual(await runStatus(db, schema, workflow.runs[0].runId), "completed", "the ended run is unchanged");
+        console.log("  ✓ the owner and its Workflow are cleaned once every ancestor has ended");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
+/** Issue 412: an explicit delete of the owner, or of the Workflow, deletes a kept Workflow at once. */
+async function testExplicitDeleteDeletesKeptWorkflow(env) {
+    const catalog = await createCatalog(env);
+    const db = new pg.Pool({ connectionString: env.store, max: 1 });
+    const schema = `"${env.cmsSchema}"`;
+    try {
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        await setStates(db, schema, [owner], "idle");
+        const first = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        const second = await makeWorkflow(catalog, db, schema, { parent: owner, runs: [{ mode: "live", status: "completed" }] });
+        await setStates(db, schema, [first.id, second.id], "completed");
+        await ageSessions(env, [owner, first.id, second.id], 60);
+        const tools = createSweeperTools({ catalog, duroxideClient: makeStubDuroxide(new Map([
+            [`session-${owner}`, { status: "Running" }],
+            [first.runs[0].controller, { status: "Completed" }],
+            [second.runs[0].controller, { status: "Completed" }],
+        ])), factStore: null });
+        const kept = await findTool(tools, "cleanup_session").handler({ sessionId: first.id, graceMinutes: 0 });
+        assertEqual(kept.status, "WorkflowKept", "the Sweeper keeps the finished Workflow");
+
+        await catalog.softDeleteSession(second.id);
+        assertEqual(await isLive(catalog, second.id), false, "an explicit delete of the Workflow deletes it at once");
+        await catalog.softDeleteSession(owner);
+        assertEqual(await isLive(catalog, first.id), false, "an explicit delete of the owner deletes its kept Workflow at once");
+        assertEqual(await definitionState(db, schema, first.id), "deleted", "the deleted Workflow's definition is a tombstone");
+        console.log("  ✓ an explicit delete removes a kept Workflow at once");
+    } finally {
+        await db.end();
+        await catalog.close();
+    }
+}
+
+describe("finished Workflows kept while an ancestor is active (issue 412)", () => {
+    beforeAll(async () => { await preflightChecks(); });
+
+    it("a finished Workflow of an idle owner, and its agent session, are kept by scan, cleanup, prune and the final check", { timeout: TIMEOUT }, async () => {
+        await testKeptWhileOwnerIdle(getEnv());
+    });
+
+    it("an ended owner that holds a finished Workflow is kept while the owner's parent is active, then cleaned with it", { timeout: TIMEOUT }, async () => {
+        await testEndedOwnerKeptWhileParentActive(getEnv());
+    });
+
+    it("the owner and its Workflow are cleaned once the owner and every ancestor have ended", { timeout: TIMEOUT }, async () => {
+        await testCleanedOnceEveryAncestorEnded(getEnv());
+    });
+
+    it("deleting the owning session, or the Workflow, deletes a kept Workflow at once", { timeout: TIMEOUT }, async () => {
+        await testExplicitDeleteDeletesKeptWorkflow(getEnv());
+    });
+});
+
 describe("Sweeper cleanup guardrails", () => {
     beforeAll(async () => { await preflightChecks(); });
 

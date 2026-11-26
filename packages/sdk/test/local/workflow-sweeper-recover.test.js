@@ -22,7 +22,7 @@ import pg from "pg";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
-import { updateWorkflowFromTool } from "../../src/workflow/tools.ts";
+import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 import { registerWorkflow, sessionQueueTransport, workflowNotifyInstanceId } from "../../src/workflow/runtime.ts";
 import { saveSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
@@ -280,6 +280,52 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
                 const ancestor = await tool("cleanup_session").handler({ sessionId: h.owner, graceMinutes: 0 });
                 expect(ancestor, JSON.stringify(ancestor)).toMatchObject({ ok: true });
                 for (const id of [h.owner, benchId, deadId]) expect(await isLive(h.catalog, id), id).toBe(false);
+            } finally {
+                await h.stop();
+            }
+        });
+
+    it("issue 412: a finished Workflow of an idle owner stays Terminated through every Sweeper pass, with its graph, steps, Log and variables",
+        { timeout: TIMEOUT }, async () => {
+            const env = getEnv();
+            const h = await harness(env);
+            try {
+                const tool = name => findTool(createSweeperTools({ catalog: h.catalog, duroxideClient: h.client, factStore: null }), name);
+                await h.catalog.updateSession(h.owner, { state: "idle" });
+                const workflowId = randomUUID();
+                const run = (await createWorkflow(h.host, { workflowSessionId: workflowId, parentSessionId: h.owner, yaml: TWO_STEPS, notifyParent: true,
+                    actor: ACTOR, operationId: "start", start: { inputs: {}, vars: { topic: "postgres" } } })).receipt.run;
+                await until(async () => (await h.store.readRun(run.runId))?.status === "completed", "the Workflow to complete");
+                await until(async () => (await h.client.getStatus(run.controllerInstanceId)).status === "Completed", "its controller to complete");
+                await ageSessions(env, [workflowId], 60);
+
+                const scanned = await tool("scan_completed_sessions").handler({ graceMinutes: 5 });
+                expect(scanned.sessions.map(s => s.sessionId)).not.toContain(workflowId);
+                for (const grace of [undefined, 0]) {
+                    const kept = await tool("cleanup_session").handler({ sessionId: workflowId, ...(grace === undefined ? {} : { graceMinutes: grace }) });
+                    expect(kept, `grace ${grace ?? "default"}`).toMatchObject({ ok: false, refused: true, status: "WorkflowKept" });
+                }
+                for (const minutes of [5, 0]) {
+                    const pruned = await tool("prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: minutes });
+                    expect(pruned.ok, JSON.stringify(pruned)).toBe(true);
+                }
+                // The prune deleted the ended controller's instance for real; the session and its record stay.
+                expect((await h.client.getStatus(run.controllerInstanceId)).status).toBe("NotFound");
+                const row = await h.catalog.getSession(workflowId);
+                expect(row?.deletedAt ?? null).toBeNull();
+                expect(row.state).toBe("completed");
+                expect((await h.catalog.listSessions()).map(s => s.sessionId)).toContain(workflowId);
+
+                const view = JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: h.owner, host: h.host }));
+                expect(view, JSON.stringify(view)).toMatchObject({ ok: true, workflowId });
+                expect(view.deleted).toBeUndefined();
+                expect(view.graph).toMatchObject({ initial: "first" });
+                expect(view.run).toMatchObject({ runId: run.runId, status: "completed" });
+                expect(view.run.nodeExecutions.map(node => node.stateId).sort()).toEqual(["done", "first", "second"]);
+                expect(view.run.nodeExecutions.find(node => node.stateId === "second").outputPreview).toContain('"n":2');
+                expect(JSON.stringify(view.run.kv)).toContain("postgres");
+                const log = await h.catalog.getSessionEvents(workflowId, 0, 200);
+                expect(log.some(event => String(event.eventType).startsWith("workflow."))).toBe(true);
             } finally {
                 await h.stop();
             }
