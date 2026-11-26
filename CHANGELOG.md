@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+No CMS migration and no session orchestration or Workflow controller version
+change.
+
+### A finished Workflow stays while its session is in use
+
+The Sweeper deleted a finished Workflow session at its next scan (every 6 hours)
+once the run had ended more than 5 minutes before, like a completed sub-agent
+(#412). Only the terminal result stayed with
+the owning session, so the next day the graph, the timeline, the Log and the
+input and output of each step were gone. The Sweeper now keeps a finished
+Workflow session, and the sessions under it (its agent node sessions and child
+Workflows), while any session above it is active: it exists, is not deleted,
+and is not completed, cancelled or failed (an idle session is active). The
+Workflow shows in its owner's Terminated row and reads in full. An ended
+session that holds such a Workflow is kept too. Once the Workflow and every
+session above it have ended, the Sweeper cleans them together. `cleanup_session`
+refuses such a cleanup with the status `WorkflowKept`. An explicit delete is
+unchanged. There is no retention cap: delete a finished Workflow to remove it.
+
 ## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

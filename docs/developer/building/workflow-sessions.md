@@ -1244,14 +1244,29 @@ is told: a later command that lost changes nothing.
 A finished live Workflow writes its complete terminal result to the owning
 session's child-outcome row in the same transaction that ends the run. The row
 keeps the run id, pinned definition identity, status, outcome, full output and
-redacted error. The Sweeper can then treat the terminal Workflow session like a
-completed sub-agent: it is eligible after the normal grace period, and its
-controller history can be pruned. A legacy finished Workflow gets the same
-owner result during the guarded cleanup transaction before its session is
-deleted. `read_workflow` remains the full execution view only while the Workflow
-session exists; `getChildOutcome` and `listChildOutcomes` read the retained
-terminal result from the owner after cleanup. Deleting the owning session
-removes those owner-scoped outcomes and its Workflows.
+redacted error.
+
+The Sweeper keeps a finished Workflow session while any of its ancestors is
+active: the owning session, its parent, and so on up to the root. Active means
+that the session exists, is not deleted, and has not ended (its state is not
+completed, cancelled or failed); an idle session is active. The sessions under
+the finished Workflow (its agent node sessions, the sessions they started and
+its child Workflows) are kept with it, so the Log and the Node panel still read
+them. The kept Workflow shows its ended state in its owner's Terminated row, and
+`read_workflow`, the graph, the timeline, the Log, the Node panel and **Run
+again…** work as they do just after the run ended. Its ended controller's
+history can still be pruned: the run's record is in the store. The Sweeper
+also keeps an ended session whose cleanup would delete such a Workflow, for
+example an ended owner whose parent is still active. Once the Workflow and
+every session above it have ended, the Sweeper cleans them together. A legacy
+finished Workflow gets the same owner result during the guarded cleanup
+transaction before its session is deleted. `read_workflow` is the full
+execution view while the Workflow session exists; after it is cleaned up or
+deleted, `getChildOutcome` and `listChildOutcomes` read the retained terminal
+result from the owner. Deleting the Workflow, or the owning session or another
+ancestor, deletes the Workflow at once; deleting the owning session also
+removes those owner-scoped outcomes. A long-lived owner keeps all its finished
+Workflows; delete one to remove it.
 
 An active run, a draft with no own live run, and a definition test bench are
 not independent cleanup candidates. A run whose controller is gone still goes
@@ -1318,7 +1333,7 @@ A Workflow belongs to the session that coordinates it, and it cannot move to ano
 
 - A Workflow belongs to the session that coordinates it. That session starts it and is told when it ends. Of all sessions, only that one can read it or control it.
 - Sessions are meant to be long-lived. When the work is done, leave the session idle. Do not complete it, and do not delete it. An idle session runs no turns, and the Sweeper never cleans it up: it cleans up only a session whose own orchestration ended (`sweeper-tools.ts:170-176, 224-256`, this release).
-- A finished live Workflow records its complete terminal outcome under its owning session before the run can end successfully. The Workflow session is then an ordinary Sweeper candidate after its terminal grace period, like a completed sub-agent. Definition test benches keep their separate retention. The owner-scoped outcome remains readable after the Workflow session is gone and is removed with the owning session (`workflow/store.ts`, `sweeper-tools.ts`, migration 0096).
+- A finished live Workflow records its complete terminal outcome under its owning session before the run can end successfully. The Sweeper keeps the Workflow session, with the sessions under it, while any of its ancestors is active (exists, is not deleted, and is not completed, cancelled or failed); it shows in the owner's Terminated row and reads in full. Once it and every ancestor have ended, the Sweeper cleans them together. Definition test benches keep their separate retention. The owner-scoped outcome remains readable after the Workflow session is gone and is removed with the owning session (`workflow/store.ts` `sweeperKeptSession`, `sweeper-tools.ts`, migration 0096).
 
 | Who | Can read or control a Workflow | Source |
 |---|---|---|
@@ -1326,7 +1341,7 @@ A Workflow belongs to the session that coordinates it, and it cannot move to ano
 | A person who can use the session | Yes: the Workflow tab of the portal, or `readWorkflow` and `updateWorkflow` of the management API | `management-client.ts:2008, 2079`; `workflow/human-commands.ts:217-249` |
 | Every other session, also one of the same user, also a replacement coordinator | No. The call is refused `FORBIDDEN`: "Only the agent that created this workflow may change or read it with this tool." | `workflow/tools.ts:283-291`; for `read_workflow` in this release, `workflow/tools.ts:1594-1597` |
 
-The notice of a run's end carries only a preview of the output, at most 1,000 characters (`workflow/runtime.ts`). The owning session's child-outcome row keeps the exact canonical terminal output/error text (`outputText` and `errorText`), including escaped NUL and lone surrogates. `read_workflow` returns that retained outcome after the Workflow session is swept and gives the whole execution record while it still exists.
+The notice of a run's end carries only a preview of the output, at most 1,000 characters (`workflow/runtime.ts`). The owning session's child-outcome row keeps the exact canonical terminal output/error text (`outputText` and `errorText`), including escaped NUL and lone surrogates. `read_workflow` gives the whole execution record while the Workflow session exists (the Sweeper keeps it while its owner, or another ancestor, is active), and returns that retained outcome after it is cleaned up or deleted.
 
 **The one exception.** A session that holds a Workflow whose result still matters must not be completed, cancelled, deleted or archived until one of these is true:
 
@@ -1336,7 +1351,8 @@ The notice of a run's end carries only a preview of the output, at most 1,000 ch
 | When the session | Its finished Workflows and their results | Source |
 |---|---|---|
 | Is deleted | Are deleted with it | `migrations/workflow-session-names-0089.ts:95-105` |
-| Is completed, cancelled or failed | Stay until the session is cleaned up. The Sweeper, a system agent, scans every 6 hours by default. It cleans up a session that ended more than 5 minutes before, with every session below it | `sweeper-tools.ts:224-239, 361-386`, this release; `packages/sdk/plugins/mgmt/agents/sweeper.agent.md:63`, this release |
+| Is completed, cancelled or failed | Stay until the session is cleaned up. The Sweeper, a system agent, scans every 6 hours by default. It cleans up a session that ended more than 5 minutes before, with every session below it, but only once every session above it has ended too: while one of them is active, the session and its finished Workflows are kept | `sweeper-tools.ts`, `workflow/store.ts` `sweeperKeptSession`; `packages/sdk/plugins/mgmt/agents/sweeper.agent.md:63` |
+| Is active (idle, running, waiting, `error`, or with no first message yet) | Stay, with their whole record, until they or the session are deleted | the same |
 
 - Between the end and the cleanup, only a person can read the results: a session that ended runs no turn.
 - PilotSwarm has no archive operation for a session. If a process of your own archives a session by completing or deleting it, this rule applies to that process.
@@ -1357,7 +1373,7 @@ This matters most when the session that starts a watcher is short-lived: for exa
 
 - `error` is not an end. `failed` is: it is set only for a fatal fault, such as lost session state (`orchestration/turn.ts:663-671`).
 - A coordinator can end without that intent. A completion is never refused because a Workflow is active (see [Stopping a workflow](#stopping-a-workflow)). It can come from a person's Complete, from the coordinator's own parent (`complete_agent`, `cancel_agent`, `delete_agent`), or from the end of that parent: its cascade reaches every child (`orchestration/agents.ts:748-761`).
-- Only an active run is cancelled. A run that had already ended keeps its state and its result (`migrations/workflow-session-names-0089.ts:111-135`). It keeps them until the session that ended is cleaned up or deleted (see [The model](#the-model-a-workflow-belongs-to-its-session)).
+- Only an active run is cancelled. A run that had already ended keeps its state and its result (`migrations/workflow-session-names-0089.ts:111-135`). It keeps them until the session that ended is cleaned up (once every session above it has ended too) or deleted (see [The model](#the-model-a-workflow-belongs-to-its-session)).
 - **Nobody is told when the parent's end cancels a Workflow.** A run's end is reported only to its parent, and a parent that is gone is not told (`workflow/runtime.ts:3990-3994, 4104-4105`). A session that the Workflow sent messages to sees only that they stop. The Workflow's row reads **Canceled**.
 
 ### Where a watcher reports

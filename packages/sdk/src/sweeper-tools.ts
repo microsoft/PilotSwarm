@@ -17,7 +17,11 @@ import type { SessionCatalog } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import type { Tool } from "@github/copilot-sdk";
 import { WORKFLOW_TEST_BENCH_KIND } from "./workflow/test-bench.js";
-import { SWEEPER_ENDED_SESSION_STATES } from "./workflow/store.js";
+import { SWEEPER_ENDED_SESSION_STATES, sweeperKeptDetail, type SweeperKeptSession } from "./workflow/store.js";
+
+/** Issue 412: the rule a WorkflowKept refusal states. */
+const WORKFLOW_KEPT_RULE = "A finished Workflow and every session under it are kept, read-only, while any session above it is active; "
+    + "the Sweeper cleans them with those sessions once all of them have ended. An explicit delete removes them at once.";
 
 /**
  * Create sweeper tools bound to the given CMS catalog and duroxide client.
@@ -152,12 +156,29 @@ export function createSweeperTools(opts: {
         return { deleted };
     }
 
+    /**
+     * Issue 412: the first kept session a cleanup of `sessionId` would delete (with `cascade`, its whole subtree; without,
+     * the Workflow sessions the owner trigger deletes with it), or `unreadable` when the read fails. A catalog without the
+     * store's check (a test double) keeps nothing, as it has no final check either.
+     */
+    async function readKept(sessionId: string, cascade: boolean): Promise<{ kept: SweeperKeptSession | null } | { unreadable: string }> {
+        const store = typeof catalog.workflowStore === "function" ? catalog.workflowStore() : null;
+        if (!store || typeof store.sweeperKeptSession !== "function") return { kept: null };
+        try {
+            return { kept: await store.sweeperKeptSession({ sessionId, cascade }) };
+        } catch (err: any) {
+            return { unreadable: `the sessions a cleanup of ${sessionId} would delete: ${String(err?.message ?? err)}` };
+        }
+    }
+
     /** The words of a refusal of the final check (softDeleteChecked). */
     function finalCheckRefusal(sessionId: string, refused: { status: string; detail: string }): string {
         switch (refused.status) {
             case "ActiveRun":
                 return `Refusing to clean Workflow session ${sessionId}: ${refused.detail} (it was admitted after the Sweeper read the session). `
                     + "It ends through its controller; nothing was deleted.";
+            case "WorkflowKept":
+                return `Refusing to clean session ${sessionId}: ${refused.detail}. ${WORKFLOW_KEPT_RULE} Nothing was deleted.`;
             case "StartUnresolved":
                 return `Refusing to clean session ${sessionId}: ${refused.detail}. Nothing was deleted; a later scan reads it again.`;
             case "Busy":
@@ -233,6 +254,22 @@ export function createSweeperTools(opts: {
                     reason: `Target orchestration is ${orchStatus} but was updated within the last ${graceMinutes}m; not yet stale.`,
                 };
             }
+            // Issue 412: never a cleanup that would delete a kept session (the final check asks again under its locks).
+            const kept = await readKept(session.sessionId, true);
+            if ("unreadable" in kept) {
+                return {
+                    eligible: false,
+                    status: "Unreadable",
+                    reason: `Could not read ${kept.unreadable}; nothing is deleted on a failed read. Try again later.`,
+                };
+            }
+            if (kept.kept) {
+                return {
+                    eligible: false,
+                    status: "WorkflowKept",
+                    reason: `Refusing to clean session ${session.sessionId}: ${sweeperKeptDetail(session.sessionId, kept.kept)}. ${WORKFLOW_KEPT_RULE}`,
+                };
+            }
             return { eligible: true, status: orchStatus, reason: `Orchestration ${orchStatus.toLowerCase()}`, instanceId: read.instanceId,
                 ...(read.controllers ? { controllers: read.controllers } : {}) };
         }
@@ -260,7 +297,7 @@ export function createSweeperTools(opts: {
         description:
             "Scan for terminal sessions that are eligible for cleanup. " +
             "Only sessions whose OWN orchestration is Completed, Failed, Terminated, or NotFound are returned. " +
-            "Finished live Workflow sessions are cleaned like other terminal children; definition test benches follow separate retention. " +
+            "A finished live Workflow session, and every session under it, is kept while any session above it is active, so a session whose cleanup would delete one is not returned; definition test benches follow separate retention. " +
             "Idle, zombie, orphaned, or otherwise live sessions are not cleanup candidates, including child sessions. " +
             "Pass only sessionId values from sessions[] to cleanup_session.",
         parameters: {
@@ -321,6 +358,13 @@ export function createSweeperTools(opts: {
                         orchStatus.status === "NotFound"
                     ) {
                         if (session.updatedAt < cutoff) {
+                            // Issue 412: a session whose cleanup would delete a kept session is not a candidate.
+                            const kept = await readKept(session.sessionId, true);
+                            if ("unreadable" in kept) {
+                                unreadable.push(session.sessionId);
+                                continue;
+                            }
+                            if (kept.kept) continue;
                             results.push({
                                 sessionId: session.sessionId,
                                 parentSessionId: session.parentSessionId ?? undefined,
@@ -426,7 +470,7 @@ export function createSweeperTools(opts: {
             "Accepts a single sessionId OR a batch sessionIds[] — clean many stale sessions (e.g. all the children a scan returned) in one call. " +
             "Removes from CMS (soft-delete) and deletes the duroxide orchestration instance. " +
             "Independently re-verifies EACH target is terminal and REFUSES system sessions plus any live/non-terminal root or child session. " +
-            "Finished live Workflow sessions are independent cleanup targets after their full result is saved under the owner; definition test benches are retained by their own policy. " +
+            "A finished live Workflow session, and every session under it, is kept while any session above it is active: a cleanup that would delete one is refused (WorkflowKept) and deletes nothing; once all of them have ended it is cleaned with them. Definition test benches are retained by their own policy. " +
             "The final check and the delete are one transaction on the target's lock: a target that changed since it was read " +
             "(a run admitted, a message that started it), an ordinary session whose accepted start has not been seen to end " +
             "(it reads NotFound until a worker picks it up), or one with a session another transaction holds is refused and " +
@@ -513,7 +557,7 @@ export function createSweeperTools(opts: {
             "instances older than N minutes, and (2) prune old executions from all instances, " +
             "keeping only the last N executions per instance. " +
             "It then soft-deletes the session rows (older than the same cutoff) whose orchestration is NotFound " +
-            "(finished live Workflow rows may be removed after their full result is saved for the owner; definition test bench rows are retained); " +
+            "(a row whose delete would remove a finished live Workflow, or a session under one, while a session above that Workflow is active is kept; definition test bench rows are retained); " +
             "a status read that fails deletes nothing (cmsUnreadable counts them), and a row that changed since its read " +
             "(a run admitted, a message that started it), or has a session another transaction holds is kept (cmsRefused " +
             "counts them); an ordinary session whose accepted start has not been seen to end is not a candidate. " +
@@ -585,6 +629,14 @@ export function createSweeperTools(opts: {
                         }
                         if (s.sessionKind === "workflow" && s.serviceKind === WORKFLOW_TEST_BENCH_KIND) continue;
                         if (read.status !== "NotFound") continue;
+                        // Issue 412: a row whose delete would remove a kept session stays (its final check would refuse).
+                        const kept = await readKept(s.sessionId, false);
+                        if ("unreadable" in kept) {
+                            cmsUnreadable++;
+                            console.warn(`[sweeper] prune: could not read ${kept.unreadable}; not deleted`);
+                            continue;
+                        }
+                        if (kept.kept) continue;
                         try {
                             // The final check and the soft delete in one transaction (reviews AS-02, AR-01..AR-03): a row
                             // changed or started since its read, or one another transaction holds, is kept.

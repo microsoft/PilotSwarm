@@ -33,6 +33,7 @@ import { workflowAgentSessionContinues } from "./agent-ids.js";
 import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
 import { workflowControllerFeatures } from "./controller-features.js";
 import { computeSessionLevel } from "./input-policy.js";
+import { WORKFLOW_TEST_BENCH_KIND } from "./test-bench.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -74,6 +75,25 @@ export const ACTIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "r
  * not one of them: a session whose turn failed may still run.
  */
 export const SWEEPER_ENDED_SESSION_STATES: readonly string[] = ["completed", "cancelled", "failed"];
+/**
+ * Issue 412: a session the Sweeper keeps. `sessionId` would be deleted; `workflowSessionId` is the finished Workflow that
+ * keeps it (the session itself or one of its ancestors); `ancestorSessionId` is an active session above that Workflow.
+ */
+export interface SweeperKeptSession {
+    sessionId: string;
+    workflowSessionId: string;
+    ancestorSessionId: string;
+    ancestorState: string;
+}
+/** Issue 412: how a Sweeper cleanup of `targetSessionId` meets a kept session, in words. */
+export function sweeperKeptDetail(targetSessionId: string, kept: SweeperKeptSession): string {
+    const workflow = `the finished Workflow ${kept.workflowSessionId}`;
+    const relation = kept.workflowSessionId === targetSessionId ? `it is ${workflow}`
+        : kept.sessionId === targetSessionId ? `it belongs to ${workflow}`
+            : kept.sessionId === kept.workflowSessionId ? `its cleanup would delete ${workflow}`
+                : `its cleanup would delete session ${kept.sessionId} of ${workflow}`;
+    return `${relation}, which is kept while its ancestor ${kept.ancestorSessionId} is active (state ${kept.ancestorState})`;
+}
 /** The Sweeper's NOWAIT lock found a session another transaction holds (sweeperSoftDelete). */
 class SweeperBusy extends Error {
     constructor() { super("a session the Sweeper would delete is held by another transaction"); }
@@ -3780,7 +3800,10 @@ export class WorkflowStore {
      *   StartUnresolved, at any age (review DR-01). A start that no worker has picked up yet reads NotFound, for as long
      *   as it waits; only a terminal status or an ended state shows that it ended;
      * - has a session the delete would change that another transaction holds (each one is locked NOWAIT, in session id
-     *   order, before anything is changed, so the Sweeper never waits holding a lock): Busy.
+     *   order, before anything is changed, so the Sweeper never waits holding a lock): Busy;
+     * - would soft-delete a kept session (issue 412: a finished Workflow session, or a session under one, whose Workflow
+     *   has an active ancestor; sweeperKeptAmong), checked under the locks on exactly the sessions it would delete:
+     *   WorkflowKept.
      * The sessions locked first: with `cascade`, all its descendants (a parent's lifecycle owns its children's: an active
      * run under it ends with it); without, the Workflow sessions the owner-session trigger deletes with it. They are read
      * again under those locks, and a set that grew refuses (Changed: review DR-02; creation locks its parent first, so no
@@ -3789,8 +3812,8 @@ export class WorkflowStore {
      */
     async sweeperSoftDelete(input: { sessionId: string; version: string; cascade: boolean; orchestrationNotFound: boolean }): Promise<
         | { deleted: string[] }
-        | { refused: { status: "Changed" | "System" | "ActiveRun" | "StartUnresolved" | "Busy"; detail: string; runId?: string; runStatus?: WorkflowRunStatus } }> {
-        const s = `"${this.schema}"`;
+        | { refused: { status: "Changed" | "System" | "ActiveRun" | "StartUnresolved" | "Busy" | "WorkflowKept"; detail: string; runId?: string;
+            runStatus?: WorkflowRunStatus; kept?: SweeperKeptSession } }> {
         try {
             return await this.transaction(async client => {
                 const { rows } = await client.query(
@@ -3816,19 +3839,7 @@ export class WorkflowStore {
                             detail: `its run ${str(active.rows[0], "run_id")} is ${runStatus} in the store` } };
                     }
                 }
-                const enumerate = async (): Promise<string[]> => {
-                    const { rows: affected } = input.cascade
-                        ? await client.query(`SELECT session_id FROM ${s}.cms_get_descendant_session_ids($1)`, [input.sessionId])
-                        : await client.query(
-                            `SELECT session_id FROM ${this.t.sessions}
-                              WHERE session_kind = 'workflow' AND deleted_at IS NULL
-                                AND (parent_session_id = $1
-                                     OR parent_session_id IN (
-                                         SELECT session_id FROM ${this.t.sessions}
-                                          WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL
-                                     ))`, [input.sessionId]);
-                    return affected.map(item => str(item, "session_id"));
-                };
+                const enumerate = (): Promise<string[]> => this.sweeperDeleteSet(client, input.sessionId, input.cascade);
                 const ids = await enumerate();
                 let locked: string[] = [];
                 if (ids.length > 0) {
@@ -3852,6 +3863,8 @@ export class WorkflowStore {
                 if (added.length > 0) {
                     return { refused: { status: "Changed" as const, detail: `its subtree changed while it was read (${added.length} session(s) were created under it)` } };
                 }
+                const kept = await this.sweeperKeptAmong(client, [input.sessionId, ...locked]);
+                if (kept) return { refused: { status: "WorkflowKept" as const, detail: sweeperKeptDetail(input.sessionId, kept), kept } };
                 if (workflow) {
                     const latestLive = await client.query(`SELECT run_id FROM ${this.t.runs}
                         WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC, run_id DESC LIMIT 1`, [input.sessionId]);
@@ -3870,6 +3883,69 @@ export class WorkflowStore {
             }
             throw error;
         }
+    }
+
+    /**
+     * The sessions a Sweeper delete of `sessionId` soft-deletes besides it: with `cascade`, all its descendants; without,
+     * the Workflow sessions the owner-session trigger deletes with it (its Workflow children and theirs).
+     */
+    private async sweeperDeleteSet(client: Pick<PoolClient, "query">, sessionId: string, cascade: boolean): Promise<string[]> {
+        const { rows } = cascade
+            ? await client.query(`SELECT session_id FROM "${this.schema}".cms_get_descendant_session_ids($1)`, [sessionId])
+            : await client.query(
+                `SELECT session_id FROM ${this.t.sessions}
+                  WHERE session_kind = 'workflow' AND deleted_at IS NULL
+                    AND (parent_session_id = $1
+                         OR parent_session_id IN (
+                             SELECT session_id FROM ${this.t.sessions}
+                              WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL
+                         ))`, [sessionId]);
+        return rows.map(item => str(item, "session_id"));
+    }
+
+    /**
+     * Issue 412: the first kept session among `sessionIds`, or null. A session is kept when it, or one of its ancestors, is
+     * a finished Workflow session (not deleted, not a definition test bench, with a live run and no run that is admitted,
+     * running or paused) that has an active ancestor (not deleted and not completed, cancelled or failed). One statement:
+     * each id's path up to its root, joined to itself.
+     */
+    private async sweeperKeptAmong(client: Pick<PoolClient, "query">, sessionIds: string[]): Promise<SweeperKeptSession | null> {
+        if (sessionIds.length === 0) return null;
+        const { rows } = await client.query(
+            `WITH RECURSIVE chain AS (
+                 SELECT s.session_id AS start_id, s.session_id, s.parent_session_id, s.session_kind, s.service_kind, s.state, s.deleted_at,
+                        0 AS depth
+                   FROM ${this.t.sessions} AS s
+                  WHERE s.session_id = ANY($1::text[])
+                 UNION ALL
+                 SELECT chain.start_id, p.session_id, p.parent_session_id, p.session_kind, p.service_kind, p.state, p.deleted_at,
+                        chain.depth + 1
+                   FROM chain JOIN ${this.t.sessions} AS p ON p.session_id = chain.parent_session_id
+             )
+             SELECT w.start_id, w.session_id AS workflow_session_id, a.session_id AS ancestor_session_id, a.state AS ancestor_state
+               FROM chain AS w
+               JOIN chain AS a ON a.start_id = w.start_id AND a.depth > w.depth
+              WHERE w.deleted_at IS NULL AND w.session_kind = 'workflow' AND w.service_kind IS DISTINCT FROM $3
+                AND EXISTS (SELECT 1 FROM ${this.t.runs} AS run WHERE run.workflow_session_id = w.session_id AND run.mode = 'live')
+                AND NOT EXISTS (SELECT 1 FROM ${this.t.runs} AS run
+                                 WHERE run.workflow_session_id = w.session_id AND run.status = ANY($4::text[]))
+                AND a.deleted_at IS NULL AND NOT (a.state = ANY($2::text[]))
+              ORDER BY w.depth, a.depth, w.start_id
+              LIMIT 1`,
+            [sessionIds, SWEEPER_ENDED_SESSION_STATES, WORKFLOW_TEST_BENCH_KIND, ACTIVE_RUN_STATUSES]);
+        const row = rows[0];
+        if (!row) return null;
+        return { sessionId: str(row, "start_id"), workflowSessionId: str(row, "workflow_session_id"),
+            ancestorSessionId: str(row, "ancestor_session_id"), ancestorState: str(row, "ancestor_state") };
+    }
+
+    /**
+     * Issue 412: the first kept session that a Sweeper delete of `sessionId` would remove (the session and the set its final
+     * check would lock: sweeperDeleteSet), or null. The Sweeper's tools ask before they list or clean a session; the final
+     * check asks again under its locks.
+     */
+    async sweeperKeptSession(input: { sessionId: string; cascade: boolean }): Promise<SweeperKeptSession | null> {
+        return this.sweeperKeptAmong(this.pool, [input.sessionId, ...await this.sweeperDeleteSet(this.pool, input.sessionId, input.cascade)]);
     }
 
     /**

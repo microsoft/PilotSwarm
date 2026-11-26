@@ -8,7 +8,8 @@
  * controller's instance for real. None of them touches either run: the store counts both as active. Recover then
  * dispatches the lost run, which runs to its end, and ends the dead one as failed, with its receipt and the parent's
  * notice. An ended test bench and recovered Workflow remain readable; terminal controller instances can be pruned
- * independently. Finished live Workflows become normal terminal cleanup candidates. Deleting the ordinary owning session still deletes its test bench and other descendants.
+ * independently. Finished live Workflows are kept while their owner is active (issue 412), with their whole record. Cleaning
+ * the ordinary owning session once it ended still deletes its test bench and other descendants.
  *
  * The owner session stands for a live session: its `session-<id>` instance is a stand-in orchestration that waits, so
  * the Sweeper reads it as Running (a session's lifecycle owns its children's: cleaning an ended owner removes them).
@@ -160,7 +161,7 @@ const isLive = async (catalog, sessionId) => {
 };
 
 describe("the Sweeper and Workflow recovery on the real runtime", () => {
-    it("every Sweeper pass preserves active Workflow recovery, cleans finished live Workflows, and lets ancestor deletion remove retained test benches",
+    it("every Sweeper pass preserves active Workflow recovery, keeps finished live Workflows while their owner is active, and lets ancestor deletion remove them and retained test benches",
         { timeout: TIMEOUT }, async () => {
             const env = getEnv();
             const h = await harness(env);
@@ -265,21 +266,23 @@ describe("the Sweeper and Workflow recovery on the real runtime", () => {
                 expect(h.notices.map(notice => [notice.parentSessionId, notice.clientMessageId]).sort()).toEqual([
                     [h.owner, `workflow:${deadId}:${dead.runId}:terminal`], [h.owner, `workflow:${lostId}:${lost.runId}:terminal`]].sort());
 
-                // A completed live Workflow is independently cleanable after its full outcome is saved for the owner.
+                // A completed live Workflow is kept while its owner is active (issue 412); its full outcome is also saved for the owner.
                 const after = await tool("cleanup_session").handler({ sessionId: lostId, graceMinutes: 0 });
-                expect(after, JSON.stringify(after)).toMatchObject({ ok: true });
-                expect(await isLive(h.catalog, lostId)).toBe(false);
+                expect(after, JSON.stringify(after)).toMatchObject({ ok: false, refused: true, status: "WorkflowKept" });
+                expect(await isLive(h.catalog, lostId)).toBe(true);
                 expect((await h.store.readRun(lost.runId)).status).toBe("completed");
                 expect((await h.catalog.getChildOutcome(lostId))?.resultJson?.current).toMatchObject({
                     parentSessionId: h.owner, status: "completed", outputText: '{"n":2}',
                 });
 
-                // The ordinary owner's lifecycle still owns its other descendants, including the retained test bench and failed Workflow.
+                // The ordinary owner's lifecycle still owns its descendants: once it ended (its orchestration, and its state as
+                // a session's end sets it), its cleanup removes the retained test bench and its finished Workflows.
                 await h.client.raiseEvent(`session-${h.owner}`, "end", {});
                 await until(async () => (await h.client.getStatus(`session-${h.owner}`)).status === "Completed", "the owner to end");
+                await h.catalog.updateSession(h.owner, { state: "completed" });
                 const ancestor = await tool("cleanup_session").handler({ sessionId: h.owner, graceMinutes: 0 });
                 expect(ancestor, JSON.stringify(ancestor)).toMatchObject({ ok: true });
-                for (const id of [h.owner, benchId, deadId]) expect(await isLive(h.catalog, id), id).toBe(false);
+                for (const id of [h.owner, benchId, deadId, lostId]) expect(await isLive(h.catalog, id), id).toBe(false);
             } finally {
                 await h.stop();
             }
