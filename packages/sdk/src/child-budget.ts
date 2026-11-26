@@ -9,7 +9,8 @@
  * - a sub-agent (any session that is not a Workflow) whose state is pending (made, not started yet) or running;
  * - a Workflow whose live run is admitted, running or paused;
  * - a Workflow a Start claimed and has not admitted yet (its creation records the session's pin and it has no run): the claim
- *   is its reservation, kept across an interrupted creation, and reused when the same operation goes on.
+ *   is its reservation, kept across an interrupted creation, and reused when the same operation goes on. A claim whose pinned
+ *   definition was deleted is not counted (issue 409): no Start can admit it any more, as a deletion is permanent.
  */
 export const WORKFLOW_CHILD_BUDGET_MAX = 50;
 
@@ -31,7 +32,10 @@ export function childBudgetCountSql(s: string): string {
               EXISTS (SELECT 1 FROM ${s}.workflow_runs r WHERE r.workflow_session_id = c.session_id AND r.mode = 'live'
                         AND r.status IN (${CHILD_BUDGET_RUN_STATUSES.map(status => `'${status}'`).join(", ")}))
            OR (c.creation_config -> 'workflow' ? 'sessionPin'
-               AND NOT EXISTS (SELECT 1 FROM ${s}.workflow_runs r WHERE r.workflow_session_id = c.session_id)))))`;
+               AND NOT EXISTS (SELECT 1 FROM ${s}.workflow_runs r WHERE r.workflow_session_id = c.session_id)
+               AND NOT EXISTS (SELECT 1 FROM ${s}.session_workflow_definitions sd
+                                WHERE sd.definition_id = c.creation_config -> 'workflow' -> 'sessionPin' ->> 'definitionId'
+                                  AND sd.deleted_at IS NOT NULL)))))`;
 }
 
 /** The refusal's words, the same for spawn_agent and Start. */

@@ -41,6 +41,7 @@ import { readWorkflowModel, readWorkflowView } from "../../src/workflow/tools.ts
 import { startSessionWorkflowTest } from "../../src/workflow/definition-test.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
+import { WORKFLOW_CHILD_BUDGET_MAX } from "../../src/child-budget.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 
@@ -731,6 +732,79 @@ states:
             expect(tested).toMatchObject({ definitionId: old.definitionId, revision: 1, runId: expect.any(String) });
             expect(await workflowMode(tested.testId)).toBe("continue");
         } finally {
+            await h.stop();
+        }
+    });
+});
+
+describe("a Start and a Delete of the same definition (issue 409)", () => {
+    const DELETED_WORDS = "hn-top-watch was deleted. Nothing was started.";
+    /** The admission's lock on the definition (requireSessionStartLocked), the moment the Start's claim is already committed. */
+    const isAdmissionLock = (sql, params, definitionId) => /session_workflow_definitions WHERE definition_id = \$1 FOR SHARE/.test(sql) && params?.[0] === definitionId;
+    /** The session's running children, as spawn_agent and a Start count them (child-budget.ts). */
+    const budget = (h, session) => h.catalog.countBudgetChildren(session);
+
+    it("a Start whose admission meets a committed Delete is refused with no run and holds no child slot; its retry is refused the same", { timeout: TIMEOUT }, async () => {
+        const { h, host, session } = await harness();
+        try {
+            const id = (await save(host, session, YAML(30), null)).receipt.definitionId;
+            let deleted = null;
+            let fired = false;
+            h.control.hook = async ({ sql, params, query }) => {
+                if (!fired && isAdmissionLock(sql, params, id)) {
+                    fired = true;
+                    deleted = await deleteSessionWorkflowDefinition(host, { ownerSessionId: session, definitionId: id, actor: PERSON, operationId: "delete-race" });
+                }
+                return query(sql, params);
+            };
+            const lost = await refused(start(host, session, id, { operationId: "start-race" }), "DEFINITION_DELETED");
+            h.control.hook = null;
+            expect(deleted?.receipt).toMatchObject({ definitionId: id, name: "hn-top-watch" });
+            expect(lost.message).toBe(DELETED_WORDS);
+            expect(await h.q("SELECT 1 FROM SCHEMA.workflow_definitions WHERE session_definition_id = $1", [id])).toEqual([]);
+            expect(await budget(h, session)).toBe(0);
+            const again = await refused(start(host, session, id, { operationId: "start-race" }), "DEFINITION_DELETED");
+            expect(again.message).toBe(DELETED_WORDS);
+            expect(await budget(h, session)).toBe(0);
+        } finally {
+            h.control.hook = null;
+            await h.stop();
+        }
+    });
+
+    it("a Start interrupted after its claim holds a child slot until its definition is deleted; its retry in a full session is refused DEFINITION_DELETED", { timeout: TIMEOUT }, async () => {
+        const { h, host, session } = await harness();
+        try {
+            const id = (await save(host, session, YAML(30), null)).receipt.definitionId;
+            const other = (await save(host, session, YAML(40, "other-watch"), null, { name: "other-watch" })).receipt.definitionId;
+            const interrupt = async (definitionId, operationId) => {
+                let stopped = false;
+                h.control.hook = async ({ sql, params, query }) => {
+                    if (!stopped && isAdmissionLock(sql, params, definitionId)) {
+                        stopped = true;
+                        throw new Error("worker stopped before the admission");
+                    }
+                    return query(sql, params);
+                };
+                await expect(start(host, session, definitionId, { operationId })).rejects.toThrow("worker stopped before the admission");
+                h.control.hook = null;
+            };
+            await interrupt(id, "start-interrupted");
+            await interrupt(other, "start-other");
+            expect(await budget(h, session)).toBe(2);
+            await deleteSessionWorkflowDefinition(host, { ownerSessionId: session, definitionId: id, actor: PERSON, operationId: "delete-after-claim" });
+            expect(await budget(h, session)).toBe(1);
+            // The freed slot is usable: sub-agents fill the session to the limit (the other definition's claim is one of them).
+            for (let count = 1; count < WORKFLOW_CHILD_BUDGET_MAX; count++) {
+                await h.catalog.createSession(randomUUID(), { parentSessionId: session, childBudget: { max: WORKFLOW_CHILD_BUDGET_MAX } });
+            }
+            expect(await budget(h, session)).toBe(WORKFLOW_CHILD_BUDGET_MAX);
+            // A retry of the deleted definition's Start is still told the definition was deleted, not that the session is full.
+            const retry = await refused(start(host, session, id, { operationId: "start-interrupted" }), "DEFINITION_DELETED");
+            expect(retry.message).toBe(DELETED_WORDS);
+            expect(await budget(h, session)).toBe(WORKFLOW_CHILD_BUDGET_MAX);
+        } finally {
+            h.control.hook = null;
             await h.stop();
         }
     });

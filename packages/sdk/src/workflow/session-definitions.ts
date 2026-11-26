@@ -424,7 +424,14 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
                 + `${first ? ` (${first.path}): ${first.message}` : "."} Save it again with that change. Nothing was started.`, { revision: prior.revision });
         }
         requireWorkflowScripts(host, again.ir, "start");
-        await requireWorkflowStartLimits(host, parentSessionId, request.nestingLevel ?? null, { claimedWorkflowSessionId: workflowSessionId });
+        try {
+            await requireWorkflowStartLimits(host, parentSessionId, request.nestingLevel ?? null, { claimedWorkflowSessionId: workflowSessionId });
+        } catch (error) {
+            // Issue 409: a claim whose definition was deleted is not counted, so another child may hold its slot now. It can
+            // never start; the admission below answers it (DEFINITION_DELETED, or the conflict of another request), not the budget.
+            if (!(error instanceof WorkflowStoreError && error.code === "CHILD_LIMIT")
+                || (await host.store.sessionDefinitions.readDefinition(prior.definitionId))?.deletedAt == null) throw error;
+        }
         resumedIr = again.ir;
     }
     // FB-008: a resumed claim has started nothing yet, so its grant is required as a first Start's is; a stored Workflow is

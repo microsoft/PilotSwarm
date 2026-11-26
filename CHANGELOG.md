@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+No CMS migration and no session orchestration or Workflow controller version
+change.
+
+### A Start refused by a definition delete no longer holds a child slot
+
+A Start of a session's Workflow definition that ran at the same moment as a
+person's delete of that definition was already refused `DEFINITION_DELETED`
+and made no run, but the Workflow session it had claimed still counted against
+the session's 50 running sub-agents and Workflows (#409). The same was true of
+a Start interrupted before its admission whose definition was deleted later.
+Such a claim can never run, and it is no longer counted.
+
 ## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start
