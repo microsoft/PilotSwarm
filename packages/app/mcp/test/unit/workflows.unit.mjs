@@ -355,7 +355,7 @@ console.log("✅ every server registers update_workflow unless a test passes nul
     delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
     try {
         for (const off of [descriptions({ workflowCommands: true, mgmt: {} }), descriptions({ workflowCommands: true, workflowTestMode: false, mgmt: {} })]) {
-            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,", "replace_definition", "publish_and_start", "publish"]) assert.ok(!off.includes(word), word);
+            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,", "replace_definition", "publish_and_start", "publish", "approval_respond"]) assert.ok(!off.includes(word), word);
             // Stop is named without a condition; legacy definition operations are removed; recover refusal is stated.
             assert.ok(off.includes("operation (set_vars, pause, resume, cancel and stop),"), off);
             assert.ok(/persons are refused recover/i.test(off), off);
@@ -363,7 +363,9 @@ console.log("✅ every server registers update_workflow unless a test passes nul
             assert.ok(off.includes("grace_seconds"));
         }
         const on = descriptions({ workflowCommands: true, workflowTestMode: true, mgmt: {} });
-        for (const word of ["test_respond", "test_advance", "agent_mode", "interception_id"]) assert.ok(on.includes(word), word);
+        for (const word of ["test_respond", "test_advance", "agent_mode", "interception_id", "expected_revision", "inputs", "vars"]) assert.ok(on.includes(word), word);
+        assert.ok(!on.includes("approval_respond"), on);
+        assert.ok(!on.includes("no test"), on);
         assert.ok(on.includes("cancel, stop, test, test_respond and test_advance),"), on);
         assert.ok(!/controller 1\.9\.0|when the workers run/.test(on), on);
         // read_workflow (review SF-5): off, its description names no test run's part either.
@@ -516,6 +518,13 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
                     graph: { states: [{ id: "compute", type: "script" }] },
                 };
             }
+            if (ref.definitionId === "d-child-wf-script" || ref.name === "child-wf-script") {
+                return {
+                    definitionId: "d-child-wf-script", name: "child-wf-script", locked: false,
+                    revision: { yaml: 'apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: child-wf-script, version: "1.0.0" }\ninitial: compute\nstates:\n  compute:\n    type: script\n    outcomes: [ok]\n    source: |\n      await callTool("child_workflows", { operation: "list" });\n      await setResult("ok", {});\n    transition: { next: { ok: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n' },
+                    graph: { states: [{ id: "compute", type: "script" }] },
+                };
+            }
             if (ref.definitionId === "d-wait" || ref.name === "wait-wf") {
                 return { definitionId: "d-wait", name: "wait-wf", locked: false, graph: { states: [{ id: "hold", type: "wait" }] } };
             }
@@ -525,7 +534,13 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
         saveSessionWorkflowDefinition: async (sid, req, opts) => { calls.push(["save", sid, req, opts]); return { definitionId: "d1", name: req.name, revision: 1, valid: true, replayed: false }; },
         startSessionWorkflowDefinition: async (sid, req, opts) => {
             calls.push(["start", sid, req, opts]);
-            const defId = req.definitionId ?? (req.name === "script-wf" ? "d-script" : req.name === "pure-script-wf" ? "d-pure-script" : req.name === "wait-wf" ? "d-wait" : "d-pkg");
+            const defId = req.definitionId ?? (
+                req.name === "script-wf" ? "d-script"
+                : req.name === "pure-script-wf" ? "d-pure-script"
+                : req.name === "child-wf-script" ? "d-child-wf-script"
+                : req.name === "wait-wf" ? "d-wait"
+                : "d-pkg"
+            );
             return { operation: "start", definitionId: defId, name: req.name ?? "script-wf", revision: req.revision ?? 1, workflowId: "wf-1", runId: "r-1", replayed: false };
         },
         updateSessionWorkflowPackage: async (sid, req, opts) => { calls.push(["updatePkg", sid, req, opts]); return { operation: "attach", definitionId: "d-pkg", name: "demo/pkg", revision: 3, replayed: false }; },
@@ -581,11 +596,16 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     assert.equal(startCall[2].operationId, "key:k1");
     assert.equal(startCall[2].key, "k1");
 
-    // start with pure script state (no callTool) -> no WORKFLOW_PERSON_START_NO_TOOL_BINDING warning
+    // start with pure script state (no callTool) or child_workflows-only script -> no WORKFLOW_PERSON_START_NO_TOOL_BINDING warning
     const pureScriptStart = JSON.parse((await wfDef({
         operation: "start", owner_session_id: OWNER_SID, name: "pure-script-wf", operation_id: "op-ps1", workspace: "none",
     })).content[0].text);
     assert.equal(Boolean(pureScriptStart.warnings?.some(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")), false);
+
+    const childWfScriptStart = JSON.parse((await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "child-wf-script", operation_id: "op-cw1", workspace: "none",
+    })).content[0].text);
+    assert.equal(Boolean(childWfScriptStart.warnings?.some(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")), false);
 
     // start without script state -> no WORKFLOW_PERSON_START_NO_TOOL_BINDING warning
     const waitStart = JSON.parse((await wfDef({

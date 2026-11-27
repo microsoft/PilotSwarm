@@ -462,7 +462,7 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
         assert.equal(del2.replayed, true);
         assert.equal(del2.definitionId, del1.definitionId);
 
-        // 9. approval_respond refused 403 FORBIDDEN
+        // 9. approval_respond refused over MCP (not advertised in schema; handler also keeps 403 FORBIDDEN)
         const appRes = await client.callTool({
             name: "update_workflow",
             arguments: {
@@ -470,9 +470,7 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
                 command: { operation: "approval_respond", approval_id: "a1", decision: "approve" },
             },
         });
-        assert.equal(appRes.isError, true);
-        assert.equal(parse(appRes).code, "FORBIDDEN");
-        assert.equal(parse(appRes).status, 403);
+        assert.equal(appRes.isError, true, `${modeLabel}: approval_respond must be refused over MCP`);
 
         console.log(`✅ workflows-mcp.live.mjs [${modeLabel}] PASS`);
     } finally {

@@ -41,8 +41,10 @@ validate, author, save, start, copy, read, and delete session Workflow
 Definitions in both direct and Web API modes — with zero SQL migrations and no
 session orchestration or Workflow controller version changes:
 
-- **SDK & Web API:** Exported `compileWorkflow` and pure no-write
-  `validateWorkflowYaml` from `pilotswarm-sdk`; moved `createSessionForWorkflow`
+- **SDK & Web API:** Exported `compileWorkflow`, `scriptToolRequirements`, and
+  pure no-write `validateWorkflowYaml` from `pilotswarm-sdk`; added SDK
+  validation warning `WORKFLOW_SCRIPT_CONTEXT_VARS` when script states read
+  `context.vars` instead of `context.kv`; moved `createSessionForWorkflow`
   (preserving S2SF-F3 delete-on-attach-failure and separate `principal` vs
   `owner`) onto `PilotSwarmManagementClient` and `WebPilotSwarmManagementClient`;
   added `readWorkflowSkills` (`GET /api/v1/workflow-definitions/skills`),
@@ -60,13 +62,14 @@ session orchestration or Workflow controller version changes:
   `read_workflow_skill` (with MCP adaptation `note` at the top of the reply),
   and `workflow_definition` (`validate`, `list`, `read`, `card`, `save`, `start`
   with conditional `WORKFLOW_PERSON_START_NO_TOOL_BINDING` warning when a
-  script calls `callTool`, `update: true`, `delete`, `copy`); typed
-  `update_workflow.command` per operation; accepted `session_id` on
-  `get_agent_tree` (keeping `root_session_id` as an alias); warned
-  (`WORKFLOW_SCRIPT_CONTEXT_VARS`) in SDK validation when script states read
-  `context.vars` instead of `context.kv`; expanded `workflow_tools` capabilities
-  and added `501 WORKFLOW_API_UNAVAILABLE` fallback when `pilotswarm-mcp` is
-  upgraded ahead of an older portal.
+  script calls a non-`child_workflows` tool via `callTool`, `update: true`,
+  `delete`, `copy`); typed `update_workflow.command` per operation (now taking
+  only `pause`, `resume`, `stop`, `cancel`, and `set_vars`; definition
+  operations `replace_definition`, `publish`, `publish_and_start`, and `start`
+  are rejected — use `workflow_definition`); accepted `session_id` on
+  `get_agent_tree` (keeping `root_session_id` as an alias); expanded
+  `workflow_tools` capabilities and added `501 WORKFLOW_API_UNAVAILABLE`
+  fallback when `pilotswarm-mcp` is upgraded ahead of an older portal.
 
 ### Workflows: `session: continue` in named parallel branches
 

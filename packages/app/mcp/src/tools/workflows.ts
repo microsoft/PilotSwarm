@@ -44,7 +44,7 @@ function irScriptsCallTools(ir: ReturnType<typeof compileWorkflow>["ir"]): boole
     for (const node of Object.values(ir.nodes)) {
         if (node?.type !== "script") continue;
         const req = scriptToolRequirements(node.source);
-        if (req.tools.length > 0 || req.dynamic || req.unchecked) return true;
+        if (req.dynamic || req.unchecked || req.tools.some(t => t !== "child_workflows")) return true;
     }
     return false;
 }
@@ -242,7 +242,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
     // Off, update_workflow names stop and no test operation; with test mode on, the test operations too.
     const operations = testMode
         ? "operation (set_vars, pause, resume, cancel, stop, test, test_respond and test_advance), operation_id "
-            + "(repeat it to retry the same command) and the operation's arguments (set, delete, expected_kv_revision, run_id, reason, grace_seconds, "
+            + "(repeat it to retry the same command) and the operation's arguments (expected_revision, definition_hash, inputs, vars, "
+            + "set, delete, expected_kv_revision, run_id, reason, grace_seconds, "
             + "agent_mode, fixtures, scenario, interception_id, response, seconds). "
         : "operation (set_vars, pause, resume, cancel and stop), operation_id "
             + "(repeat it to retry the same command) and the operation's arguments (set, delete, expected_kv_revision, run_id, reason, grace_seconds). ";
@@ -268,7 +269,6 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             delete: z.array(z.string()).optional().describe("Variable names to delete"),
             expected_kv_revision: z.number().int().positive().describe("Current kvRevision from read_workflow"),
         }).passthrough(),
-        z.object({ operation: z.literal("approval_respond") }).passthrough(),
     ] as const;
     const commandSchema = testMode
         ? z.discriminatedUnion("operation", [
@@ -278,6 +278,10 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             z.object({ operation: z.literal("test_advance"), operation_id: cmdOpId }).passthrough(),
         ])
         : z.discriminatedUnion("operation", baseCommandBranches);
+    const updateGapWorkaround = testMode
+        ? "Over MCP there is no send_workflow_input; workaround: ask the owner session to run it via send_and_wait, "
+            + "or use a Workflow with a messaging send state."
+        : WORKFLOW_MCP_GAP_WORKAROUND;
     server.registerTool(
         "update_workflow",
         {
@@ -285,8 +289,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             description:
                 "Send one command to a running Workflow, as a person: "
                 + operations
-                + "Persons are refused recover (the parent agent recovers runs) and approval_respond (answer approvals in the portal). "
-                + `${WORKFLOW_MCP_GAP_WORKAROUND} `
+                + "Persons are refused recover (the parent agent recovers runs); approvals must be answered directly in the portal. "
+                + `${updateGapWorkaround} `
                 + "Answers the command's receipt. "
                 + "A workflow started under another workflow's agent step takes only pause, stop and cancel; read a workflow with read_workflow "
                 + "first.",
@@ -299,7 +303,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
         },
         withToolErrors(async ({ session_id, command, originating_session_id }) => {
             try {
-                if (command.operation === "approval_respond") {
+                if ((command as { operation?: unknown }).operation === "approval_respond") {
                     return errorResult("A person must read and answer this approval directly in the portal. MCP cannot give consent.",
                         { code: "FORBIDDEN", status: 403, session_id });
                 }
