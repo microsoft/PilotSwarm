@@ -359,22 +359,40 @@ export class WebPilotSwarmManagementClient {
             ...(ref.name ? { name: ref.name } : {}), ...(ref.revision != null ? { revision: ref.revision } : {}) });
     }
 
+    /** Phase 4: read one package Workflow Definition's interface card in a session (readSessionWorkflowCard, session:manage). */
+    async readSessionWorkflowCard(ownerSessionId: string, ref: { name: string }): Promise<any> {
+        return this._api.call("readSessionWorkflowCard", { sessionId: ownerSessionId, name: ref.name });
+    }
+
     /** Stage 2.1: a person saves a revision (saveSessionWorkflowDefinition, session:manage); the server stamps the caller. */
     async saveSessionWorkflowDefinition(ownerSessionId: string, request: { name: string; yaml: string; definitionId?: string | null; expectedRevision?: number | null;
-        operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("saveSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
+        operationId: string }, options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        return this._api.call("saveSessionWorkflowDefinition", {
+            sessionId: ownerSessionId,
+            ...request,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /** Stage 2.1: a person starts a Workflow from a revision (startSessionWorkflowDefinition, session:manage). */
-    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
+    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; revision?: number | null; runAgainOf?: string | null;
         agentModels?: unknown; decisionModels?: unknown; inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean;
-        operationId: string; key?: string; workspace?: unknown }, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("startSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
+        operationId: string; key?: string; workspace?: unknown }, options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        return this._api.call("startSessionWorkflowDefinition", {
+            sessionId: ownerSessionId,
+            ...request,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /** Stage 2.1: a person deletes a definition (deleteSessionWorkflowDefinition, session:manage). */
-    async deleteSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("deleteSessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
+    async deleteSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; operationId: string },
+        options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        return this._api.call("deleteSessionWorkflowDefinition", {
+            sessionId: ownerSessionId,
+            ...request,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /** Stage 2.3: the package Workflow Definitions the caller can make a session for (listCreatableWorkflows); the server scopes them. */
@@ -382,15 +400,48 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("listCreatableWorkflows", {});
     }
 
+    /** Phase 4: create a coordinating session for a package Workflow Definition (createSessionForWorkflow, session:create). */
+    async createSessionForWorkflow(ref: string, options: { model?: string; reasoningEffort?: string; contextTier?: string; groupId?: string | null; visibility?: string | null } = {}): Promise<any> {
+        return this._api.call("createSessionForWorkflow", {
+            ref,
+            ...(options.model !== undefined ? { model: options.model } : {}),
+            ...(options.reasoningEffort !== undefined ? { reasoningEffort: options.reasoningEffort } : {}),
+            ...(options.contextTier !== undefined ? { contextTier: options.contextTier } : {}),
+            ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
+            ...(options.visibility !== undefined ? { visibility: options.visibility } : {}),
+        });
+    }
+
+    /** Phase 4: read Workflow skills packaged with this deployment (readWorkflowSkills, authed). */
+    async readWorkflowSkills(options: { name?: string | null } = {}): Promise<any> {
+        return this._api.call("readWorkflowSkills", {
+            ...(options?.name !== undefined && options?.name !== null ? { name: options.name } : {}),
+        });
+    }
+
+    /** Phase 4: pure no-write validation of Workflow YAML (validateWorkflowDefinition, authed). */
+    async validateWorkflowDefinition(yaml: string): Promise<any> {
+        return this._api.call("validateWorkflowDefinition", { yaml });
+    }
+
     /** Stage 2.3: a person attaches a package's newer version for the next Workflow (updateSessionWorkflowPackage, session:manage). */
-    async updateSessionWorkflowPackage(ownerSessionId: string, request: { definitionId: string; operationId: string }, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("updateSessionWorkflowPackage", { sessionId: ownerSessionId, ...request });
+    async updateSessionWorkflowPackage(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; operationId: string },
+        options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        return this._api.call("updateSessionWorkflowPackage", {
+            sessionId: ownerSessionId,
+            ...request,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /** Stage 2.3: a person's Make a copy of a package's definition (copySessionWorkflowDefinition, session:manage). */
-    async copySessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; operationId: string },
-        _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("copySessionWorkflowDefinition", { sessionId: ownerSessionId, ...request });
+    async copySessionWorkflowDefinition(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; revision?: number | null; operationId: string },
+        options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        return this._api.call("copySessionWorkflowDefinition", {
+            sessionId: ownerSessionId,
+            ...request,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /**

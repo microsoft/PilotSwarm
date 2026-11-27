@@ -25,14 +25,14 @@ import { compileWorkflow } from "./compiler.js";
 import type { WorkflowHost } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import {
-    deleteSessionWorkflowDefinition, listSessionWorkflowDefinitions, readSessionWorkflowDefinition, requireSessionDefinitionsWritable,
+    deleteSessionWorkflowDefinition, listSessionWorkflowDefinitions, readSessionWorkflowDefinition,
     saveSessionWorkflowDefinition, startSessionWorkflowDefinition, type SessionDefinitionView,
     storedStartPin, workflowStartSessionId,
 } from "./session-definitions.js";
 import { workflowToolErrorPayload } from "./tools.js";
 import { definitionTestBench, startSessionWorkflowTest, waitSessionWorkflowTest, WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS } from "./definition-test.js";
 import { parseTestFixtures } from "./test-mode.js";
-import type { SessionDeleteReceipt, SessionRevisionRow, SessionSaveReceipt } from "./session-definition-store.js";
+import type { SessionRevisionRow, SessionSaveReceipt } from "./session-definition-store.js";
 import {
     attachSessionPackageWorkflow, readPackageWorkflowCard, refuseLockedSave, requirePackageRef, withPackageUpdates,
 } from "./session-definitions.js";
@@ -412,67 +412,12 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             if (!ref.definitionId && !ref.name) {
                 throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "delete needs name or definition_id.");
             }
-            await requireSessionDefinitionsWritable(context.host, session);
-            const storedOp = await context.host.store.sessionDefinitions.readStoredOperation?.<SessionDeleteReceipt>(session, operationId);
-            if (storedOp) {
-                if (storedOp.kind !== "delete") {
-                    throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was used for a different request; use another operation id.`);
-                }
-                const matchesId = !ref.definitionId || storedOp.receipt.definitionId === ref.definitionId;
-                const matchesName = !ref.name || storedOp.receipt.name === ref.name;
-                if (!matchesId || !matchesName) {
-                    throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was used for a different request; use another operation id.`);
-                }
-                const replayed = await deleteSessionWorkflowDefinition(context.host, {
-                    ownerSessionId: session,
-                    definitionId: storedOp.receipt.definitionId,
-                    actor: sessionActor,
-                    operationId,
-                    allowLocked: false,
-                });
-                return JSON.stringify({
-                    ok: true,
-                    ...replayed.receipt,
-                    replayed: replayed.replayed,
-                    message: `${replayed.receipt.name} was already deleted by this operation; no new change was made.`,
-                });
-            }
-            if (ref.name && ref.name.includes("/") && !ref.definitionId) {
-                const attached = await context.host.store.sessionDefinitions.readDefinitionByName?.(session, ref.name);
-                if (attached?.locked) {
-                    throw new WorkflowStoreError("DEFINITION_LOCKED",
-                        `${attached.name} comes from the package ${attached.packageName ?? "it was published in"} and is locked: a session can only delete its own definitions, not package definitions. Nothing was deleted.`,
-                        { definitionId: attached.definitionId, packageName: attached.packageName });
-                }
-                throw new WorkflowStoreError("DEFINITION_LOCKED",
-                    `${ref.name} names a package Workflow Definition, which is locked: a session can only delete its own definitions, not package definitions. Nothing was deleted.`);
-            }
-            let targetId: string | null = ref.definitionId;
-            if (targetId && ref.name) {
-                const existing = await context.host.store.sessionDefinitions.readDefinition(targetId);
-                if (existing && existing.ownerSessionId === session && existing.name !== ref.name) {
-                    throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
-                        `definition_id ${targetId} is ${existing.name}, not ${ref.name}. Pass either definition_id or name, or matching values. Nothing was deleted.`);
-                }
-            } else if (!targetId && ref.name) {
-                const live = await context.host.store.sessionDefinitions.readDefinitionByName(session, ref.name);
-                if (live) {
-                    targetId = live.definitionId;
-                } else {
-                    const all = await context.host.store.sessionDefinitions.listDefinitions(session, { includeDeleted: true });
-                    const deleted = all.filter(item => item.name === ref.name && item.deletedAt !== null).at(-1) ?? null;
-                    if (deleted) {
-                        targetId = deleted.definitionId;
-                    } else {
-                        throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This session has no Workflow Definition named ${ref.name}.`);
-                    }
-                }
-            }
             let stored;
             try {
                 stored = await deleteSessionWorkflowDefinition(context.host, {
                     ownerSessionId: session,
-                    definitionId: targetId!,
+                    definitionId: ref.definitionId,
+                    name: ref.name,
                     actor: sessionActor,
                     operationId,
                     allowLocked: false,

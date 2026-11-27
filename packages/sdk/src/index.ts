@@ -68,6 +68,8 @@ export type {
     ModelDefaultInput,
     SystemModelDefaultInput,
     ResolvedModelDefault,
+    CreateSessionForWorkflowOptions,
+    CreatedWorkflowCoordinatingSession,
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
