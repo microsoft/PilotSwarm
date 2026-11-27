@@ -733,6 +733,8 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
             "This script is too deeply nested to analyze. Its module syntax and tool requirements could not be checked; run-time checks still apply.");
         if (analysis.concurrent) diagnostics.warning("WORKFLOW_TOOLS_CONCURRENT", `${path}.source`,
             `Promise.all or Promise.allSettled may overlap this script's tool calls. ${WORKFLOW_TOOL_CONCURRENCY_MESSAGE}`);
+        if (analysis.contextVars) diagnostics.warning("WORKFLOW_SCRIPT_CONTEXT_VARS", `${path}.source`,
+            "The script context has context.kv, not context.vars (context.vars is undefined at run time). Use context.kv instead.");
     }
     let timeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS;
     if (raw.timeoutSeconds !== undefined) {
@@ -1102,6 +1104,13 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
         if (!isJsonObject(raw.correlate)) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.correlate`, "correlate must map correlation keys to values or bindings.");
         else correlate = bindingValue(raw.correlate, `${path}.correlate`, diagnostics);
     }
+    // UX round 2 (A1): a child's end message is sent with an empty correlation, so a receive that correlates never takes it.
+    const receivesEnded = contract === WORKFLOW_ENDED_CONTRACT || (Array.isArray(contract) && contract.includes(WORKFLOW_ENDED_CONTRACT));
+    if (receivesEnded && isJsonObject(raw.correlate) && Object.keys(raw.correlate).length > 0) {
+        diagnostics.warning("WORKFLOW_ENDED_CORRELATE", `${path}.correlate`,
+            `${WORKFLOW_ENDED_CONTRACT} carries no correlation, so this receive never takes a child's end message. Match one child with `
+            + `from: "\${states.<spawn>.output.workflowId}" instead of correlate, and give the receive a wait.`);
+    }
     let waitSeconds: number | string | null = null;
     let waitTotalSeconds: number | string | null = null;
     if (raw.wait !== undefined) {
@@ -1448,8 +1457,8 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     let session: "continue" | null = null;
     if (raw.session !== undefined && raw.session !== "new") {
         if (raw.session === "continue") session = "continue";
-        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.session`, "session must be continue (one agent session across the state's visits, the default) "
-            + "or new (a new agent session for each visit, the only choice inside a For each or a parallel branch).");
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.session`, "session must be continue (one agent session across the state's visits, the default outside parallel states) "
+            + "or new (a new agent session for each visit, the only choice inside a For each).");
     }
     // FU-17: `tools: none` or a list of tool names limits what the state's agent may use; absent, it has its session's tools.
     let tools: string[] | null = null;
@@ -1821,15 +1830,15 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
             ? node.branches.map(branch => ({ id: node.id, initial: branch.initial, states: new Set(branch.states), branch: branch.name as string | null }))
             : [{ id: node.id, initial: node.body.initial, states: new Set(node.body.states), branch: null as string | null }]);
     const inBody = new Set(bodies.flatMap(body => [...body.states]));
-    // Owner decision agent-node-continue-20261106: items of a For each run side by side, so they cannot share one agent session.
+    // Owner decision agent-node-continue-20261106 & I8: items of a For each run side by side, so they cannot share one agent
+    // session; named parallel branches each have their own Workflow-unique state ids and allow explicit session: continue.
     for (const body of bodies) {
+        if (body.branch !== null) continue;
         for (const member of body.states) {
             const node = ir.nodes[member];
             if (node?.type === "agent" && node.session === "continue") {
-                diagnostics.error("WORKFLOW_FIELD_INVALID", body.branch !== null ? `states.${body.id}.branches.${body.branch}.states.${member}.session`
-                    : `states.${body.id}.body.states.${member}.session`, body.branch !== null
-                    ? `state '${member}' cannot continue its agent session: it runs inside branch '${body.branch}' of parallel state '${body.id}'. Use session: new.`
-                    : `state '${member}' cannot continue its agent session: it runs inside For each state '${body.id}', whose items run side by side and cannot share one agent session. Use session: new.`);
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `states.${body.id}.body.states.${member}.session`,
+                    `state '${member}' cannot continue its agent session: it runs inside For each state '${body.id}', whose items run side by side and cannot share one agent session. Use session: new.`);
             }
         }
     }
@@ -2335,6 +2344,8 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
     checkFixedInputs(nodes, contracts, schemas.defs, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
     warnInputMismatches(nodes, schemas.defs, diagnostics);
+    // A warning is advice: it never fails a save or a load (whole-PR review P-14).
+    try { warnWholeChildOutputs(nodes, diagnostics); } catch { /* no warning */ }
     if (runDeadline !== null) {
         for (const node of Object.values(nodes)) {
             if (node.type === "wait" && typeof node.seconds === "number" && node.seconds > runDeadline.timeoutSeconds) {
@@ -2632,6 +2643,116 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
                             + "map the input with input: or add the property.");
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Owner decision i6-downstream (2026-11-26): a child's WorkflowEnded@1 output arrives whole (up to 195,584 bytes), and the
+ * limits after the receive still apply. A warning, never an error, when a binding carries a child's whole output (the end
+ * message, a list receive's `{ contract, from, payload }`, the payload, or the output itself; under `result` when the
+ * receive has carry) into a limit one such output can pass:
+ * - a send's or request's message (16 KiB); without `input:` the message is the value as it arrived;
+ * - a parallel branch's terminal output, when two or more such branch outputs can be joined (the joined output, 256 KiB):
+ *   every item of a For each, or two or more named branches that carry one;
+ * - a root terminal's output that holds two or more children's (the run's output, 256 KiB; one always fits).
+ * The end message arrives at the state a receive's `received` (or `WorkflowEnded@1`) route enters and passes through waits
+ * with no `input:` and no carry; `${states.<receive>.output}` holds it for a single-contract receive. Anything else stays
+ * silent: a part of the result is mapped down, and a list receive's state output may be another contract's message.
+ */
+function warnWholeChildOutputs(nodes: Record<string, WorkflowIRNode>, diagnostics: Diagnostics): void {
+    type Segments = ReadonlyArray<string | number>;
+    const pathOf = new Map<string, string>();
+    const parallelOf = new Map<string, { parallel: WorkflowIRParallel; branch: string | null }>();
+    for (const node of Object.values(nodes)) {
+        if (node.type !== "parallel") continue;
+        const members: Array<[string, string, string | null]> = node.branches !== undefined
+            ? node.branches.flatMap(branch => branch.states.map((id): [string, string, string] => [id, `states.${node.id}.branches.${branch.name}.states.${id}`, branch.name]))
+            : node.body.states.map((id): [string, string, null] => [id, `states.${node.id}.body.states.${id}`, null]);
+        for (const [id, path, branch] of members) { pathOf.set(id, path); parallelOf.set(id, { parallel: node, branch }); }
+    }
+    // Where a child's whole output sits in a state's input when the end message arrives with it, and the receive it came from.
+    const arriving = new Map<string, Array<{ where: Segments; from: string }>>();
+    const singleEnded = new Set<string>();
+    for (const node of Object.values(nodes)) {
+        if (node.type !== "messaging" || node.mode !== "receive" || !receiveContractsOf(node).includes(WORKFLOW_ENDED_CONTRACT)) continue;
+        const list = Array.isArray(node.contract);
+        if (!list) singleEnded.add(node.id);
+        const where: Segments = [...(node.carry !== undefined ? ["result"] : []), ...(list ? ["payload"] : []), "output"];
+        const seen = new Set<string>();
+        for (let target = node.next[list ? WORKFLOW_ENDED_CONTRACT : RECEIVE_RECEIVED]; target !== undefined && !seen.has(target);) {
+            seen.add(target);
+            arriving.set(target, [...(arriving.get(target) ?? []), { where, from: node.id }]);
+            const next = nodes[target];
+            if (next?.type !== "wait" || next.hasInput || next.carry !== undefined) break;
+            target = next.next[WAIT_ELAPSED];
+        }
+    }
+    const within = (segments: Segments, whole: Segments): boolean => segments.length <= whole.length && segments.every((s, i) => s === whole[i]);
+    const words = (root: string, segments: Segments): string => "${" + root + segments.map(s => (typeof s === "number" ? `[${s}]` : `.${s}`)).join("") + "}";
+    // The receives whose whole output a template carries, and a binding that keeps only the child's outcome instead.
+    const carried = (id: string, template: JsonValue, asArrived: boolean): { children: Set<string>; example: string } => {
+        const here = arriving.get(id) ?? [];
+        if (asArrived) return { children: new Set(here.slice(0, 1).map(item => item.from)), example: here.length > 0 ? words("input", [...here[0].where.slice(0, -1), "outcome"]) : "" };
+        const children = new Set<string>();
+        let example = "";
+        let expressions: ReturnType<typeof bindingExpressionsOf>;
+        try { expressions = bindingExpressionsOf(template); } catch { return { children, example }; }
+        for (const { expression: { root, segments } } of expressions) {
+            const match = root === "input" ? here.find(item => within(segments, item.where)) : undefined;
+            if (match !== undefined) {
+                children.add(match.from);
+                example ||= words("input", [...match.where.slice(0, -1), "outcome"]);
+            } else if (root === "states" && typeof segments[0] === "string" && singleEnded.has(segments[0]) && segments[1] === "output"
+                && within(segments.slice(2), ["output"])) {
+                children.add(segments[0]);
+                example ||= words("states", [segments[0], "output", "outcome"]);
+            }
+        }
+        return { children, example };
+    };
+    const thing = `a child's whole ${WORKFLOW_ENDED_CONTRACT} output (up to about 190 KiB)`;
+    const fullOutput = "a script reads the whole result with child_workflows read full_output.";
+    const terminals = new Map<string, { children: Set<string>; example: string }>();
+    // The named branches of each parallel state whose terminal carries a whole output.
+    const wholeBranches = new Map<string, Set<string>>();
+    for (const node of Object.values(nodes)) {
+        if (node.type !== "terminal" || !node.hasOutput) continue;
+        const found = carried(node.id, node.output, false);
+        terminals.set(node.id, found);
+        const member = parallelOf.get(node.id);
+        if (found.children.size > 0 && member?.branch != null) {
+            wholeBranches.set(member.parallel.id, new Set([...(wholeBranches.get(member.parallel.id) ?? []), member.branch]));
+        }
+    }
+    for (const node of Object.values(nodes)) {
+        const at = pathOf.get(node.id) ?? `states.${node.id}`;
+        if (node.type === "messaging" && (node.mode === "send" || node.mode === "request")) {
+            const { children, example } = carried(node.id, node.input, !node.hasInput);
+            if (children.size === 0) continue;
+            const what = node.mode === "send" ? "message" : "request";
+            diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", node.hasInput ? `${at}.input` : at,
+                `this ${what} ${node.hasInput ? "holds" : "is, as it arrived,"} ${thing}, and a ${what} is at most 16 KiB: the state fails invalid_input `
+                + `when the output is larger. Keep only what the recipient needs, for example input: { outcome: "${example}" }; ${fullOutput}`);
+        } else if (node.type === "terminal" && terminals.has(node.id)) {
+            const { children, example } = terminals.get(node.id)!;
+            if (children.size === 0) continue;
+            const member = parallelOf.get(node.id);
+            if (member !== undefined) {
+                const { parallel } = member;
+                // Each item of a For each runs this terminal; named branches count those that carry a whole output.
+                const carrying = parallel.branches !== undefined ? wholeBranches.get(parallel.id)?.size ?? 0
+                    : Array.isArray(parallel.forEach) ? parallel.forEach.length : Infinity;
+                if ((typeof parallel.join === "object" ? Math.min(parallel.join.first, carrying) : carrying) < 2) continue;
+                diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", `${at}.output`,
+                    `this branch output holds ${thing}, and parallel state '${parallel.id}' joins its branches' outputs into at most 256 KiB: `
+                    + `it fails invalid_output when they add up to more. Keep only what you need from each child, for example `
+                    + `output: { outcome: "${example}" }; ${fullOutput}`);
+            } else if (children.size >= 2) {
+                diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", `${at}.output`,
+                    `this output holds ${children.size} children's whole ${WORKFLOW_ENDED_CONTRACT} outputs (up to about 190 KiB each), and a run's output `
+                    + `is at most 256 KiB: the run fails when they add up to more. Keep only what you need from each child; ${fullOutput}`);
             }
         }
     }

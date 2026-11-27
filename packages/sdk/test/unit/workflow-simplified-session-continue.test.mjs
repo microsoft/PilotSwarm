@@ -27,7 +27,7 @@ import {
     workflowAgentPrompt,
 } from "../../dist/workflow/runtime.js";
 import { workflowAgentReminderText } from "../../dist/workflow/agent-reminder.js";
-import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/agent-node-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowAgentCycleMemoryLostPrompt } from "../../dist/workflow/agent-node-service.js";
 import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
 
 const errors = result => result.diagnostics.filter(item => item.severity === "error");
@@ -134,7 +134,7 @@ test("the compiler: continue is the default where it is allowed and is carried; 
 
     const wrong = compileWorkflow(LOOP("sometimes"));
     assert.deepEqual(errors(wrong).map(item => [item.code, item.path]), [["WORKFLOW_FIELD_INVALID", "states.talk.session"]]);
-    assert.match(errors(wrong)[0].message, /^session must be continue \(one agent session across the state's visits, the default\) or new /);
+    assert.match(errors(wrong)[0].message, /^session must be continue \(one agent session across the state's visits, the default outside parallel states\) or new /);
 });
 
 test("the compiler: in a For each body or a named branch an agent state that sets no session gets a new session each visit", () => {
@@ -147,10 +147,12 @@ test("the compiler: in a For each body or a named branch an agent state that set
     for (const id of ["left_talk", "right_talk"]) assert.equal(Object.hasOwn(branches.ir.nodes[id], "session"), false, id);
     // Outside the parallel state the same Workflow's agent state continues.
     assert.equal(branches.ir.nodes.sum_up.session, "continue");
-    // An explicit continue in a branch is still refused, in today's words; an explicit new is accepted.
-    const refused = errors(compileWorkflow(BRANCHES("continue"))).filter(item => item.path === "states.fan.branches.left.states.left_talk.session");
-    assert.equal(refused.length, 1);
-    assert.equal(refused[0].message, "state 'left_talk' cannot continue its agent session: it runs inside branch 'left' of parallel state 'fan'. Use session: new.");
+    // I8: explicit continue inside a named branch is accepted (one continued session per run and state);
+    // sibling states that omit session stay new, and explicit new is accepted.
+    const branchContinue = compileWorkflow(BRANCHES("continue"));
+    assert.deepEqual(errors(branchContinue), [], JSON.stringify(branchContinue.diagnostics));
+    assert.equal(branchContinue.ir.nodes.left_talk.session, "continue");
+    assert.equal(Object.hasOwn(branchContinue.ir.nodes.right_talk, "session"), false);
     assert.deepEqual(errors(compileWorkflow(BRANCHES("new"))), []);
 });
 
@@ -227,6 +229,31 @@ test("the prompts: a continued session's first asks for node_execution_id; the c
     assert.equal(JSON.parse(restartJson).cycle, 2);
 });
 
+test("a later cycle whose earlier cycles were lost after their report is told so instead of being told they are above (I1 D-2)", () => {
+    const above = "in this same agent session: what you did in earlier cycles is above.";
+    const cycle4 = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 4 });
+    assert.ok(cycle4.includes(above));
+    // Nothing lost, only later cycles named, or a prompt without the words: unchanged.
+    assert.equal(workflowAgentCycleMemoryLostPrompt(cycle4, 4, []), cycle4);
+    assert.equal(workflowAgentCycleMemoryLostPrompt(cycle4, 4, [4, 5]), cycle4);
+    const first = workflowAgentPrompt({ ...INVOCATION, continues: true });
+    assert.equal(workflowAgentCycleMemoryLostPrompt(first, 2, [1]), first);
+
+    const one = workflowAgentCycleMemoryLostPrompt(cycle4, 4, [3]);
+    assert.ok(!one.includes(above));
+    assert.ok(one.includes("in this same agent session. The conversation of cycle 3 is not available: it was lost after that cycle "
+        + "reported its result, before it was saved, so it is not above."));
+    assert.ok(one.includes("What you did in the other earlier cycles is above."));
+    const two = workflowAgentCycleMemoryLostPrompt(cycle4, 4, [3, 1, 3]);
+    assert.ok(two.includes("The conversation of cycles 1 and 3 is not available: it was lost after those cycles reported their result"));
+    assert.ok(two.includes("What you did in the other earlier cycles is above."));
+    const all = workflowAgentCycleMemoryLostPrompt(cycle4, 4, [1, 2, 3]);
+    assert.ok(all.includes("The conversation of cycles 1, 2 and 3 is not available"));
+    assert.ok(!all.includes("other earlier cycles"));
+    // Only the system line changes: the JSON and the task stay as sent.
+    assert.deepEqual(one.split("\n").slice(1), cycle4.split("\n").slice(1));
+});
+
 test("the graph shows the mode only when the session continues; the reminder names the cycle; the tool takes node_execution_id", () => {
     const continued = compileWorkflow(LOOP("continue"));
     const plain = compileWorkflow(LOOP("new"));
@@ -246,21 +273,20 @@ test("the graph shows the mode only when the session continues; the reminder nam
 test("the skills every Workflow author reads explain both session modes and when to choose each", () => {
     const skill = name => fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("call `load_skill` with name `workflow-authoring`"));
-    // Owner 2026-11-09T05:38Z: continue is the default; new only when the person asks; For each and branches use new.
+    // Owner 2026-11-09T05:38Z + I8: continue is the default outside parallel; named branches default new and allow continue; For each uses new only.
     const authoring = skill("workflow-authoring");
-    assert.ok(authoring.includes("`session: continue` (default): one agent session keeps the step's memory across visits. `session: new` (a fresh "
-        + "one each visit) only if the person asks; For each and branches: `new`. Session lifecycle: workflow-reference."));
+    assert.ok(authoring.includes("`session: continue` (default): keeps step memory across visits (allowed in `branches:`, default `new`). "
+        + "`session: new` (fresh visit) only if asked, and only choice in `forEach`. Session lifecycle: workflow-reference."));
     // The formal review's known limit, in plain words.
     assert.ok(authoring.includes("Limit: after a visit times out, the next visit's prompt can wait behind the old turn until its abort lands, "
         + "and the next visit's time limit runs during that wait."));
     const reference = skill("workflow-reference");
-    assert.ok(reference.includes("| `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |"));
+    assert.ok(reference.includes("| `session` | Optional. `continue` (default outside parallel) or `new`. Named `branches:` default `new` (`continue` allowed); `forEach` only `new`. |"));
     assert.ok(reference.includes("`session: continue` (the default) keeps one agent session across the state's visits in a Workflow"));
     assert.ok(reference.includes("The step remembers earlier cycles (no repeats, incremental work); its context grows, so it costs more."));
     assert.ok(reference.includes("Use `session: new` (a fresh agent session each visit: clean, cheaper, no drift) only when the person asks for it, "
         + "or the visits are independent and the person wants that."));
-    assert.ok(reference.includes("In a For each or a parallel branch each visit has its own agent session: `new` is the default there and "
-        + "`continue` is refused."));
+    assert.ok(reference.includes("In named `branches:`, `new` is default and `continue` is allowed (one session per run and state); `forEach` allows only `new`."));
     assert.ok(reference.includes("Another Workflow (Run again) starts new agent sessions."));
     assert.ok(reference.includes("Each completion gives `node_execution_id` from its prompt."));
     assert.ok(reference.includes("Session lifecycle: the time limit is per visit; the agent session ends with the Workflow"));

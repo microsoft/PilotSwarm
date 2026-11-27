@@ -210,7 +210,8 @@ test("d52e5ed2: a session definition's Start gates the revision it would start b
     };
     // Its session definitions read, and whether this start's Workflow exists (none); anything else of the store (what creating
     // the Workflow would use) fails the test.
-    const store = new Proxy({ sessionDefinitions, readDefinition: async () => null, readWorkflowLineage: async () => null },
+    const store = new Proxy({ sessionDefinitions, readDefinition: async () => null,
+        readWorkflowLineage: async () => ({ sessionId: "chat", level: 0, hasWorkflow: false, agentRoot: null, deleted: false }) },
         { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const host = { catalog: claimReadsOnly(), store, duroxideClient: untouchable("duroxide"), scripts: false };
     let captured = 0;
@@ -242,15 +243,46 @@ test("stage 2.4: Start keeps spawn_agent's depth limit and its budget of 50 runn
         nestingLevel: async () => level,
     };
     let level = 0;
-    const store = new Proxy({ sessionDefinitions, readDefinition: async () => made, readWorkflowLineage: async () => null },
-        { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
+    let hasWorkflow = false;
+    let lineageMissing = false;
+    const store = new Proxy({
+        sessionDefinitions,
+        readDefinition: async () => made,
+        readWorkflowLineage: async () => (lineageMissing ? null : { sessionId: "chat", level, hasWorkflow, agentRoot: null, deleted: false }),
+    }, { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const host = { catalog: claimReadsOnly(), store, duroxideClient: untouchable("duroxide"), scripts: true };
     let captured = 0;
     const start = (extra = {}) => refusal(startSessionWorkflowDefinition(host, { ownerSessionId: "chat", definition: { definitionId: "def-1" }, inputs: {},
         actor: ACTOR, operationId: "op-limit", binding: async () => { captured += 1; return null; }, ...extra }));
-    const deep = await start({ nestingLevel: 2 });
+    // Missing or unreadable lineage fails closed with WORKFLOW_NESTING_LIMIT.
+    lineageMissing = true;
+    const missing = await start({ nestingLevel: 0 });
+    assert.equal(missing?.code, "WORKFLOW_NESTING_LIMIT");
+    assert.match(missing.message, /cannot be verified.*Nothing was started\.$/);
+    lineageMissing = false;
+    level = null;
+    const broken = await start({ nestingLevel: 0 });
+    assert.equal(broken?.code, "WORKFLOW_NESTING_LIMIT");
+    assert.match(broken.message, /cannot be verified.*Nothing was started\.$/);
+    level = 0;
+    // I9: caller at level 2 with hasWorkflow = false (Chain #13) starts its first Workflow at level 2 (allowed, reaches store).
+    assert.match(String((await start({ nestingLevel: 2 }))?.message), /was used$/);
+    assert.equal(captured, 1);
+    captured = 0;
+    // Caller at nestingLevel 3 is refused (workflowLevel = 3 > 2).
+    const deep = await start({ nestingLevel: 3 });
     assert.equal(deep?.code, "WORKFLOW_NESTING_LIMIT");
-    assert.match(deep.message, /^This session is at nesting level 2 \(max 2\), .* Nothing was started\.$/);
+    assert.match(deep.message, /^This session is at level 3, and the Workflow it starts would be at level 3\. Nothing goes past level 2: .* Nothing was started\.$/);
+    // Caller with hasWorkflow = true at level 2 (Chain #14 / 4th nested Workflow) is refused (workflowLevel = 3 > 2).
+    level = 2;
+    hasWorkflow = true;
+    for (const given of [{}, { nestingLevel: 0 }, { nestingLevel: null }]) {
+        const stored = await start(given);
+        assert.equal(stored?.code, "WORKFLOW_NESTING_LIMIT", JSON.stringify(given));
+        assert.match(stored.message, /^This session is at level 2, and the Workflow it starts would be at level 3\. Nothing goes past level 2:/);
+    }
+    level = 0;
+    hasWorkflow = false;
     running = 50;
     const full = await start({ nestingLevel: 1 });
     assert.equal(full?.code, "CHILD_LIMIT");
@@ -260,15 +292,6 @@ test("stage 2.4: Start keeps spawn_agent's depth limit and its budget of 50 runn
     running = 49;
     assert.match(String((await start({ nestingLevel: 1 }))?.message), /was used$/);
     assert.equal(captured, 1);
-    // S2RT-F4: the session's own stored level counts when the caller gives none (a person's Start), and when it gives less.
-    running = 0;
-    level = 2;
-    for (const given of [{}, { nestingLevel: 0 }, { nestingLevel: null }]) {
-        const stored = await start(given);
-        assert.equal(stored?.code, "WORKFLOW_NESTING_LIMIT", JSON.stringify(given));
-        assert.match(stored.message, /^This session is at nesting level 2 \(max 2\)/);
-    }
-    level = 0;
     // A repeat of a start whose Workflow exists is answered as before, whatever the budget now (S2RT-F5: from its pin).
     running = 50;
     made = { workflowSessionId: "w", state: "published", sessionDefinitionId: "def-1", sessionRevision: 1 };

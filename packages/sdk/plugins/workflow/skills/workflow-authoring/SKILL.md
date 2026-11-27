@@ -30,22 +30,22 @@ For a `decision` state, call `load_skill` with name `workflow-decision`.
 | A durable delay | `wait` | `sleep` or timers in a script |
 | A check every N minutes or days | `wait`, check, repeat; load `workflow-polling` first | `cron`, a `receive` |
 | The owner's consent | `approval` | an agent's answer |
-| A typed message from a session or a workflow, maybe with a time limit | `messaging`, `mode: receive` | a polling loop in a script |
-| A one-way typed message to a session or a workflow | `messaging`, `mode: send` | reply text |
-| A typed answer from a session before a deadline | `messaging`, `mode: request` | a send and a receive |
-| The same steps for each item of a list, then one join | `parallel` | many agent states copied by hand |
+| A typed message (optional time limit) | `messaging`, `mode: receive` | a polling loop in a script |
+| A one-way typed message | `messaging`, `mode: send` | reply text |
+| A typed answer before a deadline | `messaging`, `mode: request` | a send and a receive |
+| Same steps per list item, then join | `parallel` | many agent states copied by hand |
 | Different nodes at once (a prompt or a model for each branch), then one join | `parallel` with named `branches` | several Workflows |
-| Start another saved Workflow without waiting and collect `WorkflowEnded@1` later | `spawn` | a blocking agent step in a loop |
+| Start a saved Workflow async, collect `WorkflowEnded@1` | `spawn` | a blocking agent step in a loop |
 | The end of the run, with its outcome | `terminal` | — |
 
 ## 3. Design a bounded graph
 
-- Keep graphs small and straight. Give judgment to agents, work to scripts.
 - Every reachable state must reach a terminal.
 - Route every outcome; handle errors by code (`workflow-reference`) or `failure`.
 - Root `catchAll` takes unhandled errors once per run; otherwise they fail the run.
 - Bound loops with `maxVisits` (route `exhausted` out; doesn't bound one wait) or receive `wait: { totalSeconds: 120 }` (route `elapsed` out); not interchangeable. `limits.maxNodeExecutions` (default 1,000) is the visit budget.
 - Child Workflows: `spawn` (`started`) outputs `{ workflowId, runId, definition, revision }`; `from: "${states.<spawn>.output.workflowId}"`; end sends `WorkflowEnded@1`; `child_workflows`; max level 2.
+- Fan-out: keep only what you need per child; size limits: `workflow-limits`.
 - A deadline (`limits: { timeoutSeconds: 3600 }`) cancels pending work and
   fails the run with `timed_out`, paused or not.
 - Terminal `output` is null unless bound. Root `outputSchema` checks
@@ -88,10 +88,10 @@ freeze entry data across failures; load `workflow-carry`.
   with `input:`, or let its `inputSchema` take those fields: a closed schema
   (`additionalProperties: false`) refuses extra ones, such as `ciState`.
   Call `load_skill` with name `workflow-patterns` for a polling loop.
-- Only the parent (`vars` at start, `set_vars`) and the person (Variables)
-  set KV; no state writes it. Read a KV key with a default (`kv.x ?? 30`),
-  and only keys they set: name the person's keys in the description. A value
-  the run needs is a required input, not KV.
+- The parent (`vars` at start, `set_vars`), its ancestors (`set_vars`)
+  and the person (Variables) set KV; no state does. Read keys with a
+  default (`kv.x ?? 30`), only keys they set; name the person's keys in the
+  description. A value the run needs is a required input, not KV.
 
 ## 5. Write scripts
 
@@ -106,7 +106,7 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
   Save checks syntax without running it; syntax errors prevent Start.
 - `setResult(outcome, output)`: a declared outcome, and plain JSON (at most
   256 KB) that matches the state's `outputSchema`; else `invalid_output`.
-- `callTool(name, args)`: one call at a time, at most 100 calls in one state,
+- `callTool(name, args)`: one call at a time, capped (`workflow-limits`),
   only the tools your session could use when the workflow was created (not
   scheduling, delegation, `ask_user` or workflow tools). Await calls in
   sequence (`for...of`), never with `Promise.all`; the runtime refuses overlap.
@@ -151,9 +151,9 @@ An agent state runs one task and waits for its typed result.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
 - For long work, use short visits with a sleep outcome and a Workflow wait
   between them. Call `load_skill` with name `workflow-long-agent`.
-- `session: continue` (default): one agent session keeps the step's memory
-  across visits. `session: new` (a fresh one each visit) only if the
-  person asks; For each and branches: `new`. Session lifecycle:
+- `session: continue` (default): keeps step memory across visits (allowed
+  in `branches:`, default `new`). `session: new` (fresh visit) only if
+  asked, and only choice in `forEach`. Session lifecycle:
   workflow-reference. Limit: after a visit times out, the next visit's
   prompt can wait behind the old turn until its abort lands, and the next
   visit's time limit runs during that wait.
@@ -171,15 +171,13 @@ An agent state runs one task and waits for its typed result.
 - People can read the agent session. They cannot prompt, answer or steer it,
   and it cannot use `ask_user`: it consults you or completes with
   `needs_input`. Route `needs_input` to a state that asks the parent.
-- The agent session may delegate; its children are level 3, the deepest.
+- Step sits at its Workflow's level; first Workflow free, max level 2.
 
 ## 8. Parallel states
 
-A parallel state runs its `body` once for each item of `forEach`, or its
-named `branches`, and joins the branches.
+Runs `body` per `forEach` item, or named `branches`, then joins.
 
-- `forEach`: one binding that gives a list, or a list (at most 64 items),
-  read once at the state's start.
+- `forEach`: list or binding (max 64 items), evaluated once at entry.
 - `concurrency` (1 to 16, default 1): the most branches active at once. Keep
   it below the worker's slots (`PILOTSWARM_WORKER_CONCURRENCY`), or a race's
   losers may stop late and finish their side effects.
@@ -195,11 +193,9 @@ named `branches`, and joins the branches.
   branch and `needed`.
 - `failFast: true` cancels the other branches once the join can no longer
   succeed; without it they run to their end, then the join blocks.
-- `timeoutSeconds` (optional): the state's own time limit from its start;
-  it needs a `timed_out` route. At the limit running branches are
-  cancelled: with k successes saved by then it joins, else it fails
-  `timed_out` (or is `blocked`); `workflow-reference` has the details. A
-  pause does not stop it.
+- `timeoutSeconds`: state limit (needs `timed_out` route); cancels running
+  branches (joins if k already succeeded, else `timed_out`/`blocked`). Pause
+  does not stop it.
 
 Named branches run different nodes at once (a prompt or a model for each):
 `branches: { <name>: { initial, states, input? } }` instead of `forEach` and
@@ -231,6 +227,10 @@ dynamic names stay unchecked.
 4. Test only when the person asks: `test` with `inputs`, `fixtures`
    (prepared answers) and `expect` (the end it must reach); a failed test's
    report gives the fixture to add.
+5. Delete unused definitions you own with `delete` (`name` or `definition_id`,
+   optional `operation_id`). Package defs and active-Workflow defs
+   (`DEFINITION_IN_USE`) are refused; never cancel a running Workflow on your
+   own, and keep defs named by active `spawn` states.
 
 ## 10. Diagnose a failure
 
@@ -263,7 +263,7 @@ decision itself into the graph:
 
 - Direct human consent: load `workflow-approval`; never answer it.
 - An agent's decision: a `request` state to `{ parent: true }` whose response contract
-  carries the decision (for example `approved: boolean`), with routes for
+  carries the decision (`approved: boolean`), with routes for
   `responded`, `declined` and `timed_out`; a script reads the decision and
   routes `approved` or `rejected`.
 - Rework: route a review's "changes required" outcome to a `request` for

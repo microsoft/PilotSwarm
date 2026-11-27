@@ -782,8 +782,9 @@ a cancel receipt that an earlier build stored, and who is told that the run
 ended. A cancel records its requester as `controlWorkflowRun` does: an
 agent's session id, or null for any other actor (`Rec`); the model keeps
 the actual requester (`endTruth`) apart from that recorded, nullable value
-(`endReq`). `update_workflow` admits only the parent, so `other` and
-`system` are service callers, not production entry points; the system actor
+(`endReq`). `update_workflow` admits the parent and, since I2, the sessions
+above it (`other` is such a session, or a service caller); `system` is a
+service caller, not a production entry point; the system actor
 is the input of the control regression "tells the parent of a run another
 requester's cancel ended before it began" (finding
 `be9aa9b3-lifecycle-requester`). Pause before begin is in the admission

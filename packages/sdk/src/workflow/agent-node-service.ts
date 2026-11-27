@@ -30,7 +30,7 @@ export const COMPLETE_WORKFLOW_NODE_TOOL_SPEC = {
         + "completions are taken), OUTPUT_ATTEMPTS_EXHAUSTED (the state failed invalid_output), NODE_EXPIRED (its deadline passed), "
         + "NODE_CLOSED (the workflow ended the state), COMPLETION_CONFLICT (it was completed with another result), OPERATION_CONFLICT "
         + "(this operation_id gave another result), COMPLETION_INVALID (the call's shape) or AGENT_NODE_NOT_FOUND (this session runs no "
-        + "workflow state).",
+        + "workflow state). Call it alone and last: after it no tool runs in this turn, and background work this turn started is stopped.",
     parameters: {
         type: "object",
         properties: {
@@ -92,6 +92,32 @@ export function workflowCompletionFailure(error: unknown): string {
         ...(error instanceof WorkflowStoreError && failure.details !== undefined ? { details: failure.details } : {}) } });
 }
 
+/**
+ * Issue I1: how long a Workflow agent step's turn may go on writing its reply after its result is recorded before it is
+ * stopped (session-proxy's runTurn). Not turned off by `turnTimeoutMs: 0`; tests shorten `ms`.
+ */
+export const WORKFLOW_AGENT_REPLY_SETTLE = { ms: 5 * 60_000 };
+
+/** A later cycle's prompt says the earlier cycles' conversation is in the session (issue I1: it is, once committed). */
+export const WORKFLOW_AGENT_CYCLE_MEMORY_WORDS = "in this same agent session: what you did in earlier cycles is above.";
+
+/**
+ * Issue I1, review D-2: a later cycle's prompt when the conversation of earlier cycles `lost` of its session was not saved
+ * after they reported their result (a reply stopped at its limit or by force, a lost Copilot session or worker, a snapshot
+ * not committed). It says plainly that their conversation is not available instead of saying it is above. The worker applies
+ * it as the cycle's turn starts, the first point where a loss is known (the prompt is sent while the earlier reply may still run).
+ */
+export function workflowAgentCycleMemoryLostPrompt(prompt: string, cycle: number, lost: readonly number[]): string {
+    const cycles = [...new Set(lost)].filter(n => Number.isSafeInteger(n) && n >= 1 && n < cycle).sort((a, b) => a - b);
+    if (cycles.length === 0 || !prompt.includes(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS)) return prompt;
+    const one = cycles.length === 1;
+    const named = one ? `cycle ${cycles[0]}` : `cycles ${cycles.slice(0, -1).join(", ")} and ${cycles[cycles.length - 1]}`;
+    const others = cycle - 1 > cycles.length ? " What you did in the other earlier cycles is above." : "";
+    return prompt.replace(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, `in this same agent session. The conversation of ${named} is not available: it `
+        + `was lost after ${one ? "that cycle" : "those cycles"} reported ${one ? "its" : "their"} result, before it was saved, so it is not `
+        + `above. previousResult and the variables in the JSON say where the earlier cycles ended.${others}`);
+}
+
 export async function completeWorkflowNodeFromTool(args: Record<string, unknown>, context: {
     callerSessionId: string;
     store: Pick<WorkflowStore, "completeAgentNode">;
@@ -100,6 +126,12 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
     turnVisit?: string | null;
     /** Close local tool admission before waiting for the controller wake. */
     onDecided?: () => void;
+    /**
+     * Issue I1 (review R2-3): whether the store has the turn's visit decided, read after a completion write whose outcome is
+     * unknown (it failed with anything but a store refusal, so it may have committed). True or a read that fails: onDecided
+     * runs (the visit is decided, or that cannot be verified: no more tools run in the turn). False: the call can be retried.
+     */
+    visitDecided?: () => Promise<boolean | null>;
 }): Promise<string> {
     try {
         const call: Record<string, unknown> = {};
@@ -144,6 +176,10 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
         if (result.attemptsLeft !== null) error.attemptsLeft = result.attemptsLeft;
         return JSON.stringify({ ok: false, replayed: result.replayed, error, state: result.state });
     } catch (error) {
+        if (!(error instanceof WorkflowStoreError) && context.visitDecided && context.onDecided) {
+            const decided = await context.visitDecided().catch(() => null);
+            if (decided !== false) context.onDecided();
+        }
         return workflowCompletionFailure(error);
     }
 }

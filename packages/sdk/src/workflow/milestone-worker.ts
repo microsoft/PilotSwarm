@@ -77,7 +77,7 @@ function childSessionClient(options: PilotSwarmClientOptions, shared: WorkflowCh
  * the worker's own store (`clientOptions`), at the latest version.
  */
 export function workflowMilestoneAgentNodes(deps: {
-    catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "getAgentPackagesInstallManifest" | "updateSession">;
+    catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "getAgentPackagesInstallManifest" | "updateSession" | "workflowStore">;
     deploymentAgents: () => WorkflowHostAgents;
     clientOptions: PilotSwarmClientOptions;
     /** Review L4: the worker's own storage, lent to each child's client; null starts each client on its own (tests). */
@@ -85,6 +85,7 @@ export function workflowMilestoneAgentNodes(deps: {
 }): WorkflowAgentNodeHost {
     return createWorkflowAgentNodeHost({
         getSession: sessionId => deps.catalog.getSession(sessionId),
+        ...(deps.catalog.workflowStore ? { readLineage: sessionId => deps.catalog.workflowStore!().readWorkflowLineage(sessionId) } : {}),
         getSessionCreationConfig: sessionId => deps.catalog.getSessionCreationConfig?.(sessionId) ?? Promise.resolve(null),
         resolveAgent: createWorkflowAgentResolver({ catalog: deps.catalog, deploymentAgents: deps.deploymentAgents }),
         createChild: clientWorkflowAgentChildCreator(() => childSessionClient(deps.clientOptions, deps.shared ?? null), deps.catalog),

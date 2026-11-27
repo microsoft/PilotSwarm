@@ -12,7 +12,7 @@
  * only what is recorded. Long text is folded (`more`). Pure.
  */
 import { callText, firstCallLine } from "./chat-activity.js";
-import { workflowEventText } from "./workflow-view.js";
+import { compareWorkflowVisitRank, workflowEventText } from "./workflow-view.js";
 import { workflowNodeClock } from "./workflow-node-summary.js";
 import { workflowDuration, workflowFailureDetail, workflowModelWords, workflowOutcomeWord, workflowSpawnedModels } from "./workflow-words.js";
 import { sha256Hex } from "./sha256.js";
@@ -136,7 +136,7 @@ export function workflowPromptVisit(event) {
 /** The visits of an agent node the Log shows, newest first, at most `limit`. */
 export function workflowAgentLogVisits(node, limit = WORKFLOW_AGENT_LOG_VISITS) {
     const visits = (Array.isArray(node?.executions) ? node.executions : []).filter(item => typeof item?.id === "string");
-    return visits.slice().sort((a, b) => (b.ordinal ?? 0) - (a.ordinal ?? 0)).slice(0, Math.max(1, limit));
+    return visits.slice().sort((a, b) => compareWorkflowVisitRank(b, a)).slice(0, Math.max(1, limit));
 }
 
 /** The agent sessions the shown visits used (a continued session once): what the Log reads. */
@@ -367,9 +367,20 @@ export function workflowAgentNodeLog({ node, events = [], agentSessions = new Ma
     const spawned = workflowSpawnedModels(events, runId);
     // Each session is cut once by the prompts of the visits shown; a visit with its own session takes all of it. Review UI-D5: a
     // continued session's rows before its first loaded prompt go to a visit only on evidence; otherwise they are shown apart.
+    const spawnedCycles = new Map();
+    for (const event of Array.isArray(events) ? events : []) {
+        if (event?.eventType !== "workflow.agent_spawned" || !isRecord(event.data)) continue;
+        if (runId && event.data.runId !== runId) continue;
+        if (typeof event.data.nodeExecutionId === "string" && Number.isSafeInteger(event.data.cycle) && event.data.cycle >= 1) {
+            spawnedCycles.set(event.data.nodeExecutionId, event.data.cycle);
+        }
+    }
+    const allSorted = all.slice().sort((a, b) => compareWorkflowVisitRank(a, b));
+    const fallbackCycles = !node?.partial ? new Map(allSorted.map((item, idx) => [item.id, idx + 1])) : new Map();
+    const visitById = new Map(visits.map(visit => [visit.id, visit]));
     const cut = new Map();
     for (const agentSessionId of new Set(visits.map(visit => visit.agent?.childSessionId).filter(Boolean))) {
-        const own = visits.filter(visit => visit.agent?.childSessionId === agentSessionId).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
+        const own = visits.filter(visit => visit.agent?.childSessionId === agentSessionId).sort((a, b) => compareWorkflowVisitRank(a, b));
         const single = node?.session !== "continue"
             || (all.filter(visit => visit.agent?.childSessionId === agentSessionId).length === 1 && !node?.partial);
         const loaded = read.get(agentSessionId);
@@ -394,9 +405,12 @@ export function workflowAgentNodeLog({ node, events = [], agentSessions = new Ma
         const started = visit.enteredAt ? workflowNodeClock(visit.enteredAt, now) : null;
         // UI-10: the visit's start (its prompt) is not loaded while the session has older events: the group is not complete.
         const truncated = !waiting && Boolean(agentSessionId) && covered.get(agentSessionId)?.hasOlder === true && !rows.some(row => row.label === "Prompt");
+        const inBranch = Boolean(visit.branch?.parallelNodeExecutionId || (Number.isSafeInteger(visit.parallelOrdinal) && visit.parallelOrdinal > 0));
+        const cycle = node?.session === "continue" && inBranch ? (spawnedCycles.get(visit.id) ?? fallbackCycles.get(visit.id) ?? null) : null;
+        const cycleLabel = Number.isSafeInteger(cycle) && cycle !== visit.ordinal ? ` · cycle ${cycle}` : "";
         return {
             visitId: visit.id, ordinal: visit.ordinal ?? null, agentSessionId, loading: waiting, truncated, older: truncated ? workflowAgentLogOlder(covered.get(agentSessionId)) : null,
-            header: `Visit ${visit.ordinal ?? "—"}${started ? ` · ${started}` : ""}`, status: agentRunStatus(visit), rows,
+            header: `Visit ${visit.ordinal ?? "—"}${cycleLabel}${started ? ` · ${started}` : ""}`, status: agentRunStatus(visit), rows,
             ...visitModel(spawned.get(visit.id), agentSessionId ? models.get(agentSessionId) : null),
         };
     });
@@ -405,7 +419,7 @@ export function workflowAgentNodeLog({ node, events = [], agentSessions = new Ma
     // a later row says which visit shows them. Review UI-D9: every Base instructions row of a visit counts, in recorded
     // order: each distinct digest is shown in full once; a reference names which of a visit's instructions it means when
     // that visit has more than one; a visit with none carries the session's last ones.
-    const byOrdinal = groups.slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
+    const byOrdinal = groups.slice().sort((a, b) => compareWorkflowVisitRank(visitById.get(a.visitId), visitById.get(b.visitId)));
     const lastBase = new Map();
     const shownBySha = new Map();
     const where = from => `visit ${from.ordinal ?? "—"}${from.count > 1 ? ` · instructions ${from.number}/${from.count}` : ""}`;

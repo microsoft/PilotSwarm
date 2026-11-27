@@ -165,14 +165,21 @@ describe("Child Workflows store & Start function (C5, C1 race, A2, B1)", () => {
                 actor: ENGINE, operationId: nxClosed, owner: OWNER,
             }), "RUN_ENDED");
 
-            // T7a: Level-2 child Workflow cannot spawn a level-3 Workflow -> WORKFLOW_NESTING_LIMIT, no child row.
-            const beforeDepth = (await h.q("SELECT count(*)::int AS c FROM SCHEMA.workflow_definitions WHERE parent_session_id = $1", [child1.workflowId]))[0].c;
+            // T7a (I9): 3-deep Workflows allowed (chat 0 -> parentWf 0 -> child1 1 -> grandchild1 2), while 4th Workflow -> WORKFLOW_NESTING_LIMIT, no child row.
+            const nxGrand = await admitSpawnVisit(child1.runId, 1);
+            const grandchild1 = await startSessionWorkflowDefinition(host, {
+                ownerSessionId: chat, parentSessionId: child1.workflowId, spawn: { nodeExecutionId: nxGrand },
+                definition: { name: "child-wf" }, inputs: { cycle: 98 },
+                actor: ENGINE, operationId: nxGrand, owner: OWNER,
+            });
+            expect(await h.store.readWorkflowLineage(grandchild1.workflowId)).toMatchObject({ level: 2, hasWorkflow: true });
+            const beforeDepth = (await h.q("SELECT count(*)::int AS c FROM SCHEMA.workflow_definitions WHERE parent_session_id = $1", [grandchild1.workflowId]))[0].c;
             await refused(startSessionWorkflowDefinition(host, {
-                ownerSessionId: chat, parentSessionId: child1.workflowId, spawn: { nodeExecutionId: "nx-too-deep" },
+                ownerSessionId: chat, parentSessionId: grandchild1.workflowId, spawn: { nodeExecutionId: "nx-too-deep" },
                 definition: { name: "child-wf" }, inputs: { cycle: 99 },
                 actor: ENGINE, operationId: "nx-too-deep", owner: OWNER,
             }), "WORKFLOW_NESTING_LIMIT");
-            expect((await h.q("SELECT count(*)::int AS c FROM SCHEMA.workflow_definitions WHERE parent_session_id = $1", [child1.workflowId]))[0].c).toBe(beforeDepth);
+            expect((await h.q("SELECT count(*)::int AS c FROM SCHEMA.workflow_definitions WHERE parent_session_id = $1", [grandchild1.workflowId]))[0].c).toBe(beforeDepth);
 
             // T7b: Invalid inputs -> WORKFLOW_INPUT_INVALID, no child row.
             const nxBad = await admitSpawnVisit(parentWf.runId, 4);

@@ -1,8 +1,10 @@
 /**
  * The session's Workflow Definition tool (Workflow Simplified stage 2.1; spec "tools"): workflow_definition, with the
- * operations save, start, read and list. It replaces spawn_workflow for changing and starting definitions: a change is a
- * new revision of the same definition, and Start makes a Workflow from a revision. read_workflow and update_workflow stay
- * for one Workflow's run (read, pause, resume, stop, cancel, set_vars). Deleting a definition is a person's (Q8).
+ * operations list, read, save, start, test, card and delete. It replaces spawn_workflow for changing and starting definitions:
+ * a change is a new revision of the same definition, and Start makes a Workflow from a revision. read_workflow and
+ * update_workflow stay for one Workflow's run (read, pause, resume, stop, cancel, set_vars). Owner decision 2026-11-26
+ * (reversing Q8): a session may delete its own definitions (refused for package definitions and while any Workflow of the
+ * definition is active, DEFINITION_IN_USE).
  *
  * spawn_workflow stays one release (D2), mapped to save then start (spawnWorkflowCompatFromTool): its save is guarded by
  * the newest revision the session has seen of that definition (Q2), and its start pins exactly the revision it saved (F4).
@@ -23,7 +25,8 @@ import { compileWorkflow } from "./compiler.js";
 import type { WorkflowHost } from "./service.js";
 import { requireWorkflowScripts } from "./scripts-gate.js";
 import {
-    listSessionWorkflowDefinitions, readSessionWorkflowDefinition, saveSessionWorkflowDefinition, startSessionWorkflowDefinition, type SessionDefinitionView,
+    deleteSessionWorkflowDefinition, listSessionWorkflowDefinitions, readSessionWorkflowDefinition,
+    saveSessionWorkflowDefinition, startSessionWorkflowDefinition, type SessionDefinitionView,
     storedStartPin, workflowStartSessionId,
 } from "./session-definitions.js";
 import { workflowToolErrorPayload } from "./tools.js";
@@ -48,20 +51,21 @@ export function workflowDefinitionToolSpec() {
     return {
         description:
             "This session's Workflow Definitions, each named, with revisions 1, 2, 3. list: yours, and under canStart the package definitions "
-            + "(<package>/<name>, locked) you may start. read: one, with its YAML, errors and Workflows. save: a new revision (to change one, "
+            + "(<package>/<name>, locked) you may start. read: one, with YAML, errors and Workflows. save: a new revision (to change one, "
             + "definition_id and the expected_revision you read; a stale save is refused); a revision with errors is saved but cannot start. "
-            + "start: a new Workflow from a revision (default the newest valid); start again to run it again. "
+            + "start: a new Workflow from a revision (default newest valid); start again to run it again. "
+            + "delete: remove one of your own definitions (refused while an active Workflow uses or spawns it). "
             + "test: only when the user asks, or before you publish it in a package. "
             + "card: a package definition's inputs and results; read it before you start one. "
-            + "A definition's inputs are one JSON Schema under inputs.schema, as in: inputs: { schema: { type: object, required: [topic], "
-            + "properties: { topic: { type: string } } } }. "
+            + "Inputs: inputs: { schema: { type: object, required: [topic], properties: { topic: { type: string } } } }. "
             + "Call load_skill with name workflow-tools for every argument. Returns JSON.",
         parameters: {
             type: "object",
             properties: {
-                operation: { type: "string", enum: ["list", "read", "save", "start", "test", "card"] },
+                operation: { type: "string", enum: ["list", "read", "save", "start", "test", "card", "delete"] },
                 name: { type: "string", description: "metadata.name, or <package>/<name>." },
                 definition_id: { type: "string" },
+                operation_id: { type: "string", description: "delete: optional idempotency id (reuse on retry; defaults to this tool call)." },
                 expected_revision: { type: "integer", description: "save: the revision you read." },
                 yaml: { type: "string", description: "save: the whole YAML (pilotswarm.dev/v1)." },
                 revision: { type: "integer" },
@@ -387,7 +391,58 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 owner: async () => context.owner, binding: async () => { try { return await context.binding(); } catch { return null; } } });
             return JSON.stringify(await waitSessionWorkflowTest(context.host, started, { actor, ...context.testWait }));
         }
-        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be list, read, save, start or test.");
+        if (operation === "delete") {
+            let operationId: string;
+            if (args.operation_id !== undefined && args.operation_id !== null) {
+                if (typeof args.operation_id !== "string" || !args.operation_id.trim() || args.operation_id.length > 256 || args.operation_id.includes("\u0000")) {
+                    throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation_id must be 1-256 characters without NUL characters.");
+                }
+                operationId = args.operation_id;
+            } else if (context.toolCallId) {
+                operationId = `definition:${context.toolCallId}`;
+            } else {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "delete needs operation_id or a tool call id.");
+            }
+            if (args.definition_id !== undefined && args.definition_id !== null && !ref.definitionId) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "definition_id must be a non-empty string.");
+            }
+            if (args.name !== undefined && args.name !== null && !ref.name) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "name must be a non-empty string.");
+            }
+            if (!ref.definitionId && !ref.name) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "delete needs name or definition_id.");
+            }
+            let stored;
+            try {
+                stored = await deleteSessionWorkflowDefinition(context.host, {
+                    ownerSessionId: session,
+                    definitionId: ref.definitionId,
+                    name: ref.name,
+                    actor: sessionActor,
+                    operationId,
+                    allowLocked: false,
+                });
+            } catch (error) {
+                if (error instanceof WorkflowStoreError && error.code === "DEFINITION_IN_USE") {
+                    const ids = Array.isArray((error.details as { workflowSessionIds?: unknown } | null)?.workflowSessionIds)
+                        ? (error.details as { workflowSessionIds: unknown[] }).workflowSessionIds : [];
+                    const pronoun = ids.length > 1 ? "them" : "it";
+                    throw new WorkflowStoreError("DEFINITION_IN_USE",
+                        `${error.message} Ask the person before stopping or canceling ${pronoun}; do not stop or cancel a running Workflow on your own.`,
+                        error.details);
+                }
+                throw error;
+            }
+            return JSON.stringify({
+                ok: true,
+                ...stored.receipt,
+                replayed: stored.replayed,
+                message: stored.replayed
+                    ? `${stored.receipt.name} was already deleted by this operation; no new change was made.`
+                    : `Deleted ${stored.receipt.name}. Its finished Workflows keep their copies.`,
+            });
+        }
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be list, read, save, start, test, card or delete.");
     } catch (error) {
         return workflowToolErrorPayload(error);
     }

@@ -4,7 +4,8 @@ import type { SessionOwnerInfo, SessionWorkspace, WorkspaceDefaultsRecord } from
 import { readWorkflowWorkspace } from "../workspace.js";
 import type { MessageSender } from "../message-sender.js";
 import type { WorkflowAgentModelUsed, WorkflowAgentNodeHost, WorkflowAgentSpawnRequest } from "./runtime.js";
-import { computeSessionLevel, SESSION_MAX_NESTING_LEVEL, type SessionLevelNode } from "./input-policy.js";
+import { effectiveLevel, SESSION_MAX_NESTING_LEVEL, type SessionLevelNode } from "./input-policy.js";
+import type { WorkflowLineage } from "./store.js";
 import { pinnedAgentPackageId } from "../agent-package-pins.js";
 import type { JsonValue } from "./json.js";
 
@@ -111,6 +112,8 @@ export interface WorkflowAgentChildSpec {
 
 export interface WorkflowAgentHostDeps {
     getSession(sessionId: string): Promise<WorkflowAgentHostSessionRow | null>;
+    /** Stored lineage reader including soft-deleted ancestors (WorkflowStore.readWorkflowLineage). */
+    readLineage?(sessionId: string): Promise<WorkflowLineage | null>;
     getSessionCreationConfig?(workflowSessionId: string): Promise<Record<string, unknown> | null>;
     /**
      * The agent definition the workflow's owner sees by this name (as
@@ -130,7 +133,7 @@ export interface WorkflowAgentHostDeps {
     createChild(spec: WorkflowAgentChildSpec): Promise<void>;
 }
 
-/** A session's level by rule 5 (root 0, agent step +0, every other child +1); null when its lineage is missing, cyclic or deeper than maxDepth. */
+/** A session's effective level (root/platform-system 0, first Workflow free, agent step +0, every other child +1); null when missing, cyclic or deeper than maxDepth. */
 export async function sessionLevel(getSession: WorkflowAgentHostDeps["getSession"], sessionId: string, maxDepth = 16): Promise<number | null> {
     const chain: SessionLevelNode[] = [];
     const seen = new Set<string>();
@@ -139,10 +142,12 @@ export async function sessionLevel(getSession: WorkflowAgentHostDeps["getSession
         if (seen.has(cursor)) return null;
         seen.add(cursor);
         const row = await getSession(cursor);
-        if (!row) return null;
+        if (!row) {
+            return chain.length > 0 && chain[chain.length - 1].isSystem ? effectiveLevel(chain) : null;
+        }
         const parent = row.parentSessionId ?? null;
-        chain.push({ sessionId: cursor, parentSessionId: parent });
-        if (parent === null) return computeSessionLevel(chain);
+        chain.push({ sessionId: cursor, parentSessionId: parent, isWorkflow: row.sessionKind === "workflow", isSystem: row.isSystem === true });
+        if (parent === null) return effectiveLevel(chain);
         cursor = parent;
     }
     return null;
@@ -151,15 +156,22 @@ export async function sessionLevel(getSession: WorkflowAgentHostDeps["getSession
 export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): WorkflowAgentNodeHost {
     return {
         async spawn(request: WorkflowAgentSpawnRequest) {
-            const workflowLevel = await sessionLevel(deps.getSession, request.workflowSessionId);
+            let workflowLevel: number | null;
+            if (deps.readLineage) {
+                const lineage = await deps.readLineage(request.workflowSessionId);
+                workflowLevel = !lineage || lineage.deleted || lineage.level === null ? null : lineage.level;
+            } else {
+                workflowLevel = await sessionLevel(deps.getSession, request.workflowSessionId);
+            }
             if (workflowLevel === null) {
                 return { refused: { code: "unavailable" as const, message: `The lineage of workflow ${request.workflowSessionId} cannot be read.` } };
             }
-            // Rule 5: an agent step is at its Workflow's level.
+            // Rule 4: an agent step is at its Workflow's level.
             const level = workflowLevel;
             if (level > SESSION_MAX_NESTING_LEVEL) {
                 return { refused: { code: "forbidden" as const, message: `Node ${request.stateId} cannot start its agent: its session would be at `
-                    + `level ${level} (the top-level session is level 0), and sessions inside a Workflow stop at level ${SESSION_MAX_NESTING_LEVEL}. `
+                    + `level ${level}, and nothing goes past level ${SESSION_MAX_NESTING_LEVEL} `
+                    + "(each sub-agent or Workflow is one level below whoever started it, the first Workflow in a chain is free, and an agent step sits at its Workflow's level). "
                     + "Start this Workflow from a session nearer the top." } };
             }
             const owner = await resolveEffectiveSpawnOwner(id => deps.getSession(id), request.workflowSessionId);

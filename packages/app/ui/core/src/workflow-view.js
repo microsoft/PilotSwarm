@@ -805,6 +805,32 @@ function branchOfScope(scopeId) {
 }
 
 /**
+ * Composite visit rank `[parallelOrdinal, ordinal]` for an execution (I8): `parallelOrdinal` is the enclosing
+ * parallel execution's ordinal (from `executions`, or stamped `execution.parallelOrdinal` from `projectWorkflow`),
+ * or `0` for root-scope visits. Keeps visits monotonically ordered even when an outer loop re-enters a parallel
+ * state and resets per-scope `ordinal` to `1`. Pure.
+ */
+export function workflowVisitRank(execution, executions = null) {
+    const parallelId = execution?.branch?.parallelNodeExecutionId
+        ?? branchOfScope(execution?.scopeId)?.parallelNodeExecutionId
+        ?? null;
+    let parallelOrdinal = 0;
+    if (parallelId) {
+        const parent = Array.isArray(executions) ? executions.find(item => item?.id === parallelId) : null;
+        if (Number.isSafeInteger(parent?.ordinal)) parallelOrdinal = parent.ordinal;
+        else if (Number.isSafeInteger(execution?.parallelOrdinal)) parallelOrdinal = execution.parallelOrdinal;
+    }
+    return [parallelOrdinal, Number.isSafeInteger(execution?.ordinal) ? execution.ordinal : 0];
+}
+
+/** Ascending comparator over composite visit rank `[parallelOrdinal, ordinal]` (I8). Pure. */
+export function compareWorkflowVisitRank(a, b, executions = null) {
+    const [pa, oa] = workflowVisitRank(a, executions);
+    const [pb, ob] = workflowVisitRank(b, executions);
+    return (pa - pb) || (oa - ob);
+}
+
+/**
  * A visit as a state event tells it. Re-check RC-3: an event that names its scope keeps it, and a branch scope gives the
  * visit its branch as a read row would, so a visit known only from live events is grouped with its own branch; a
  * completion that names none takes its start's (they are one visit: collectExecutions merges them by node execution).
@@ -1223,7 +1249,7 @@ function visitScopes(list, parallelVisit) {
 
 function nodeView(node, executions, context) {
     const kind = workflowKind(node);
-    const list = executions.filter(item => item.stateId === node.id).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
+    const list = executions.filter(item => item.stateId === node.id).sort((a, b) => compareWorkflowVisitRank(a, b));
     // R2-UI-4: visit numbers count within a scope (the root, or one branch of one parallel visit). Each scope's pending
     // visit is stale only against an ended visit of the same scope, and a branch step says its branches' state in the
     // parallel step's shown visit: running while any of them runs, else its latest ended visit there.
@@ -1383,6 +1409,18 @@ export function projectWorkflow({ definition = null, readModel = null, workflowM
     if (branchNames.size) {
         collected.executions = collected.executions.map(item => (isRecord(item.branch) && branchNames.has(item.stateId)
             ? { ...item, branch: { ...item.branch, name: branchNames.get(item.stateId) } } : item));
+    }
+    // I8: stamp each branch execution with its enclosing parallel execution's ordinal so downstream views
+    // (AgentNodeLog, workflowNodeSummary) rank visits by [parallelOrdinal, ordinal] across outer-loop re-entries.
+    const parallelOrdinals = new Map(collected.executions
+        .filter(item => typeof item?.id === "string" && Number.isSafeInteger(item.ordinal) && !isRecord(item.branch))
+        .map(item => [item.id, item.ordinal]));
+    if (parallelOrdinals.size) {
+        collected.executions = collected.executions.map(item => {
+            const parentId = item?.branch?.parallelNodeExecutionId ?? branchOfScope(item?.scopeId)?.parallelNodeExecutionId ?? null;
+            const parentOrd = parentId ? parallelOrdinals.get(parentId) : undefined;
+            return Number.isSafeInteger(parentOrd) ? { ...item, parallelOrdinal: parentOrd } : item;
+        });
     }
     const { ignoredEvents, ignoredRows } = collected;
     // Stage 2.4 (the replay): the visits as they stood at `asOf` (epoch milliseconds); every visit loaded stays in allExecutions.

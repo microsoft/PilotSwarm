@@ -9,6 +9,8 @@ import {
     BoundAgentPackageUnavailableError,
     isSessionLockAcquireTimeoutError,
     PackageToolBindingError,
+    STOP_TASK_CANCEL_DEADLINE_MS,
+    withWorkspaceDeadline,
     type SessionManager,
 } from "./session-manager.js";
 import { findCanvasApp } from "./canvas-app-catalog.js";
@@ -33,6 +35,7 @@ import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, INTAKE_ENDED_BEFORE_SEND_MESSAGE, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type TurnOptions, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord, type TurnControl } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
+import type { ManagedSession } from "./managed-session.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -70,10 +73,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
-import { workflowVisitOfStopRequestId, type WorkflowLineage, type WorkflowStore, type WorkflowTurnVisit } from "./workflow/store.js";
+import { workflowVisitOfStopRequestId, type WorkflowAgentMemoryLossReason, type WorkflowLineage, type WorkflowStore, type WorkflowTurnVisit } from "./workflow/store.js";
 import { CapabilityGrantError } from "./tool-grant.js";
 import type { WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "./workflow/agent-turn-failure.js";
+import { workflowAgentSessionContinues } from "./workflow/agent-ids.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
 import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
 import { faultPoint, faultPointAsync } from "./fault-injection.js";
@@ -85,7 +89,8 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { childWorkflowsFromTool, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/tools.js";
 import { WORKFLOW_UPDATE_DATA_LINE, isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/request-service.js";
-import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/agent-node-service.js";
+import { completeWorkflowNodeFromTool, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, WORKFLOW_AGENT_REPLY_SETTLE, workflowAgentCycleMemoryLostPrompt,
+    workflowCompletionFailure } from "./workflow/agent-node-service.js";
 import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef, workflowBaseInstructionsText } from "./workflow/base-instructions.js";
 import { publishedScheduleActive } from "./workflow/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/agent-resolver.js";
@@ -94,7 +99,7 @@ import { workflowDefinitionFromTool } from "./workflow/definition-tool.js";
 import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/session-packages.js";
 import { requireWorkflowScriptsInYaml } from "./workflow/scripts-gate.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/test-agent-tools.js";
-import { SESSION_MAX_NESTING_LEVEL, sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
+import { SESSION_MAX_NESTING_LEVEL, sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, spawnNestingRefusalReason, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
 import { applyOperatorCommandToWorkflow, applySessionCommandToWorkflow } from "./workflow/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/intake.js";
 import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/intake-admission.js";
@@ -662,6 +667,19 @@ function isLiveSessionLostErrorMessage(message?: string): boolean {
 
 /** Issue 329: how long a turn that lost its runtime waits for its warm session's disconnect before forgetting it. */
 const TRANSPORT_LOSS_DESTROY_DEADLINE_MS = 5_000;
+
+/**
+ * Issue I1 (reviews R3-3, R4-3): how long a turn that drops its warm session (a run a Stop settled by force, or a decided
+ * visit's turn that lost its Copilot session) waits for the disconnect before forgetting the handle, so the session lock is
+ * released even when the CLI no longer answers. It bounds the disconnect only, not the workspace-task cancel before it.
+ */
+const DROPPED_TURN_DESTROY_DEADLINE_MS = 5_000;
+
+/** Issue I1 (review R3-1): how long the read of a turn's Workflow visit waits for a decision still in flight. */
+const WORKFLOW_VISIT_READ_LOCK_MS = 10_000;
+
+/** Issue I1 (whole-PR review P-1): when the report's second task cancel runs, for work the report's own message started. */
+const WORKFLOW_REPORT_TASK_RECHECK_MS = 2_000;
 
 function isToolCallTranscriptCorruptionErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
@@ -2130,6 +2148,56 @@ export function registerActivities(
             return out;
         };
 
+        // Issue I1: a Workflow agent step's turn is not stopped when its result is recorded (complete_workflow_node); it
+        // finishes its reply, so its snapshot is committed. Its tools refuse from then on. A reply still running
+        // WORKFLOW_AGENT_REPLY_SETTLE.ms later (a model that keeps going; turnTimeoutMs may be 0) is stopped as a Stop stops a
+        // turn, so the next visit's prompt never waits behind it for long; that reply is not committed.
+        let visitDecidedThisTurn = false;
+        let replySettleTimer: ReturnType<typeof setTimeout> | null = null;
+        // Review D-2: why this turn, whose visit is decided, may end without its snapshot committed (recorded on the visit).
+        let replyLimitHit = false;
+        let runForcedSettled = false;
+        let notRunAgainRan = false;
+        let notRunAtAdmission = false;
+        // Review D-2: the earlier cycles this later cycle's prompt says were lost (recovery runs rebuild the prompt with them).
+        let lostCycles: { cycle: number; lost: number[] } | null = null;
+        // The store and the turn's visit, for the record at the commit (set once the turn's Workflow fence exists).
+        let memoryLossFence: { store: WorkflowStore; visit: () => WorkflowTurnVisit | null } | null = null;
+        const withLostCycles = (text: string): string => lostCycles ? workflowAgentCycleMemoryLostPrompt(text, lostCycles.cycle, lostCycles.lost) : text;
+        const noteVisitDecided = (managed: Pick<ManagedSession, "getActiveTurn" | "cancelBackgroundTasks">): void => {
+            visitDecidedThisTurn = true;
+            if (replySettleTimer) return;
+            // Review D-1: the background work this turn started before the report (a shell the turn waits for) ends now, as a
+            // Stop ends it, so the reply can finish and its snapshot be committed. Tasks of earlier turns are kept. Each pass
+            // runs only while this same turn still runs, so its window (the turn's start until now) holds this turn's tasks only;
+            // it is bounded as the Stop's own cancel is.
+            const active = managed.getActiveTurn();
+            const cancelTurnTasks = (when: string): void => {
+                if (!active || managed.getActiveTurn() !== active) return;
+                void withWorkspaceDeadline(
+                    managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedWithin: { since: active.startedAt, until: Date.now() } }),
+                    "the report's task cancel", STOP_TASK_CANCEL_DEADLINE_MS,
+                ).then((cancelled) => { if (cancelled > 0) activityCtx.traceInfo(`[runTurn] session=${input.sessionId}: ${when} ended ${cancelled} background task(s) of its turn`); })
+                    .catch((err: any) => traceWarn(`[runTurn] session=${input.sessionId}: ${when} could not end its turn's background tasks: ${err?.message ?? err}`));
+            };
+            cancelTurnTasks("the report");
+            // Whole-PR review P-1: a call in the report's own model message is not refused (the CLI runs a message's pre-tool
+            // hooks before any handler), so it may start background work just after the report. A second pass takes it.
+            const recheck = setTimeout(() => cancelTurnTasks("the check after the report"), WORKFLOW_REPORT_TASK_RECHECK_MS);
+            (recheck as any).unref?.();
+            const reason = "The workflow step's result is recorded, and its turn did not finish its reply in time.";
+            replySettleTimer = setTimeout(() => {
+                // Whole-PR review P-9: a reply that already ended is not stopped, nor counted as stopped at the limit.
+                if (!active || managed.getActiveTurn() !== active) return;
+                replyLimitHit = true;
+                sessionManager.abortWarmSessionTurn(input.sessionId, {
+                    reason, cancelTurnTasks: true, ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
+                }).then((outcome) => traceWarn(`[runTurn] session=${input.sessionId}: ${reason} (${outcome.outcome})`))
+                    .catch((err: any) => traceWarn(`[runTurn] session=${input.sessionId}: the reply's stop failed: ${err?.message ?? err}`));
+            }, WORKFLOW_AGENT_REPLY_SETTLE.ms);
+            (replySettleTimer as any).unref?.();
+        };
+
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
@@ -2660,7 +2728,7 @@ export function registerActivities(
         }
         // Workflow agent states: this session's stored lineage. An
         // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
-        // refusal and nests up to level 3 (design 03 human-input denial and depth), and in a test run's agent state's
+        // refusal and follows the effectiveLevel depth cap of 2 (first Workflow free, agent step +0), and in a test run's agent state's
         // subtree (design 05 agent mode real) its framework tool calls are intercepted. A session outside every agent state
         // gets none of these. A lineage or test scope that cannot be read fails the turn (it is retried): a session in an
         // agent state's subtree never runs a turn without its denial or, under a test, with live tools. Both are read before
@@ -2716,6 +2784,25 @@ export function registerActivities(
         // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
         // and its reminder and completion name only that visit. Null for every other session (session: new included).
         const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
+        if (workflowFenceStore) memoryLossFence = { store: workflowFenceStore, visit: () => workflowTurnVisit };
+        // Issue I1 (reviews R1-3, R2-1, R2-3, R3-1): whether the store has this turn's Workflow visit decided. The visit is the
+        // one the turn is bound to: a continued session's turn visit (none when the turn has no visit), or a session: new
+        // step's own visit (oneShotVisit). Null when the turn has no such visit. The read waits for a decision still in flight
+        // (a completion whose COMMIT answer was lost), up to WORKFLOW_VISIT_READ_LOCK_MS; a read that fails throws (after the
+        // store retries a transient failure).
+        const oneShotVisit = (): string | null => {
+            const root = workflowLineage?.agentRoot;
+            return root && root.distance === 0
+                && !workflowAgentSessionContinues({ nodeExecutionId: root.nodeExecutionId, childSessionId: input.sessionId })
+                ? root.nodeExecutionId : null;
+        };
+        const storedTurnVisitDecided = async (): Promise<boolean | null> => {
+            const visit = workflowTurnVisit?.nodeExecutionId ?? oneShotVisit();
+            if (!workflowFenceStore || !visit) return null;
+            const state = await cmsRetryCritical(`runTurn.visitDecided session=${input.sessionId}`,
+                () => workflowFenceStore.readNodeStateAfterWriters(visit, WORKFLOW_VISIT_READ_LOCK_MS), (msg) => activityCtx.traceInfo(msg));
+            return state !== null && state !== "pending";
+        };
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -3382,7 +3469,8 @@ export function registerActivities(
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
                     await Promise.all(pendingWorkflowToolCalls);
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
-                        onDecided: () => session.closeWorkflowTools(),
+                        onDecided: () => { session.decideWorkflowVisit(); noteVisitDecided(session); },
+                        visitDecided: storedTurnVisitDecided,
                         // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
                         ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
@@ -3571,12 +3659,12 @@ export function registerActivities(
                     if (args.lock_title === true && !catalog) {
                         return "[SYSTEM: spawn_agent failed: session title storage is unavailable.]";
                     }
-                    // Workflow agent states (rule 5): an agent step is at its Workflow's level; no session nests deeper than
-                    // level 2, counted on the stored lineage. Elsewhere the ordinary limit applies.
+                    // I9 depth rule: nothing goes past level 2; first Workflow is free; an agent step is at its Workflow's level.
                     const { childNestingLevel, maxNestingLevel } = spawnNesting(input.nestingLevel ?? 0, MAX_NESTING_LEVEL, workflowLineage);
                     if (childNestingLevel > maxNestingLevel) {
-                        // Spec 14: inside a Workflow the refusal says so, with the levels, in words.
-                        return spawnNestingRefusal(childNestingLevel - 1, maxNestingLevel, workflowDefinitionToolsRefused(workflowLineage));
+                        const callerLevel = workflowLineage === null ? (input.nestingLevel ?? 0) : workflowLineage.level;
+                        const insideWorkflow = Boolean(workflowLineage?.agentRoot || workflowLineage?.hasWorkflow);
+                        return spawnNestingRefusal(callerLevel, maxNestingLevel, insideWorkflow);
                     }
 
                     // S2RT-F3: the shared budget's own count (sub-agents pending or running, and active Workflows), as Start
@@ -4791,6 +4879,17 @@ export function registerActivities(
             };
             const decidedTurnVisit = (): string | null =>
                 workflowTurnVisit?.nodeExecutionId && !workflowTurnVisit.open ? workflowTurnVisit.nodeExecutionId : null;
+            // Issue I1 (reviews R3-2, R4-1): the turn's fixed visit (a continued session's turn visit, or a session: new step's
+            // own visit, which readTurnVisit does not give) is read again ordered after any decision in flight: readTurnVisit's
+            // plain read can see an open visit while a decision of it commits (a retry whose earlier attempt's completion was
+            // still committing when its worker was lost). A turn whose visit is decided does not run; a read that fails or
+            // times out fails the turn (it is retried). The visit chosen and the Stops' routing do not change.
+            const decidedAtAdmission = async (): Promise<string | null> => {
+                const decided = decidedTurnVisit();
+                if (decided) return decided;
+                const visit = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : oneShotVisit();
+                return visit && await storedTurnVisitDecided() === true ? visit : null;
+            };
 
             // ── Turn control T3: turn start (replaces setActiveTurnIndex) ──
             // Not best-effort: without it no control could reach this turn,
@@ -4810,7 +4909,7 @@ export function registerActivities(
                 if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 // RT-D2 (C1): the end's fence is the visit this admission uses, set before any path can end the turn.
                 tc.visitFence = workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : null;
-                const decided = decidedTurnVisit();
+                const decided = await decidedAtAdmission();
                 let start = 0;
                 if (lifecycle && (started.stopped || started.controls.length > 0)) {
                     // The saved cursor is read only when needed. A session
@@ -4830,6 +4929,7 @@ export function registerActivities(
                     tc.startCursor = start;
                     tc.carriedTaken = tc.carried.length > 0;
                     await Promise.allSettled(pendingEventWrites.splice(0));
+                    notRunAtAdmission = Boolean(decided);
                     activityCtx.traceInfo(decided && !started.stopped && !openStop
                         ? `[turn-control] session=${input.sessionId} turn=${tc.turn} not run: its workflow visit ${decided} is decided`
                         : `[turn-control] session=${input.sessionId} turn=${tc.turn} stopped at turn start`);
@@ -4871,12 +4971,26 @@ export function registerActivities(
                 // No turn control: no Stop reaches a turn, but a turn whose visit is decided still does not run (the fence).
                 workflowTurnVisit = await readWorkflowTurnVisit();
                 if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
-                const decided = decidedTurnVisit();
+                const decided = await decidedAtAdmission();
                 if (decided) {
                     session.closeWorkflowTools();
                     await Promise.allSettled(pendingEventWrites.splice(0));
+                    notRunAtAdmission = true;
                     activityCtx.traceInfo(`[runTurn] session=${input.sessionId} not run: its workflow visit ${decided} is decided`);
                     return { type: "stopped", reason: `The workflow already ended cycle ${decided}; this turn was not run.` } as TurnResult;
+                }
+            }
+            // Issue I1, review D-2: a later cycle whose earlier cycles' conversation was lost after their report (recorded when
+            // their turn ended, before this one started) is told so instead of being told those cycles are above.
+            if (workflowFenceStore && workflowTurnVisit?.nodeExecutionId && !workflowTurnVisit.inherited
+                && effectivePrompt.includes(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS)) {
+                const visit = workflowTurnVisit.nodeExecutionId;
+                const lost = await cmsRetryCritical(`runTurn.cyclesLost session=${input.sessionId}`,
+                    () => workflowFenceStore.readAgentCyclesLostBefore(input.sessionId, visit), (msg) => activityCtx.traceInfo(msg));
+                if (lost && lost.lost.length > 0) {
+                    lostCycles = lost;
+                    effectivePrompt = withLostCycles(effectivePrompt);
+                    activityCtx.traceInfo(`[runTurn] session=${input.sessionId}: cycle ${lost.cycle} is told cycles ${lost.lost.join(",")} were lost`);
                 }
             }
 
@@ -5175,13 +5289,16 @@ export function registerActivities(
                     throw new Error(TURN_CUT_BY_SHUTDOWN_MESSAGE);
                 }
                 throwIfDrainCut("after the model run");
-                // Review RT-F1: a model run aborted after a turn-control failure that did not settle is not reused or saved
-                // live: its warm session is dropped (destroyed, so the CLI stops and flushes) before the snapshot is committed.
+                // Review RT-F1: a model run aborted after a turn-control failure that did not settle (or, review R2-2 of
+                // issue I1, a run a Stop settled by force) is not reused or saved live: its warm session is dropped
+                // (destroyed, so the CLI stops and flushes) before the snapshot is committed and the session lock is released.
                 const unsettled = (targetSession as { takeUnsettledRun?: () => boolean }).takeUnsettledRun;
                 if (typeof unsettled === "function" && unsettled.call(targetSession)) {
-                    traceWarn(`[runTurn] session=${input.sessionId}: the model run aborted after a turn-control failure did not settle; dropping its warm session`);
+                    runForcedSettled = true;
+                    traceWarn(`[runTurn] session=${input.sessionId}: the model run did not settle after its abort; dropping its warm session`);
                     try {
-                        await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true });
+                        // Review R3-3: bounded, so the session lock is released even when the CLI does not answer the disconnect.
+                        await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true, destroyDeadlineMs: DROPPED_TURN_DESTROY_DEADLINE_MS });
                     } catch (err: any) {
                         // Review RT-F1-L1: the unsettled session is never committed or reused. invalidateWarmSession forgets
                         // the handle whatever fails; this attempt fails (retryable) so nothing of it is saved.
@@ -5194,6 +5311,25 @@ export function registerActivities(
 
             if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });
             let result = await runTurnWithPrompt(session, effectivePrompt);
+
+            // Issue I1 (reviews R1-3, R2-1): a turn whose Workflow visit is decided (its result was recorded in this turn, in
+            // any of its runs, or its visit closed meanwhile) is not replayed after a lost live session or a corrupted
+            // transcript: the replay would run the visit's task again with its tools open. Each recovery checks before it
+            // resets anything, and again just before its model run. The turn ends as stopped instead, as a Stop would end it:
+            // nothing of it is committed (the next turn starts from the last committed snapshot), and it is not retried. A
+            // store that cannot be read fails the turn (it is retried, and the turn-start fence reads the visit again).
+            const visitDecidedNow = async (): Promise<boolean> => visitDecidedThisTurn || await storedTurnVisitDecided() === true;
+            const notRunAgain = async (why: string): Promise<TurnResult> => {
+                notRunAgainRan = true;
+                traceWarn(`[runTurn] session=${input.sessionId}: the turn's workflow visit is decided; it is not run again after: ${why}`);
+                await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true, destroyDeadlineMs: DROPPED_TURN_DESTROY_DEADLINE_MS }).catch((err: any) =>
+                    traceWarn(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`));
+                return { type: "stopped", reason: "The workflow step's result is recorded; the rest of its turn was lost with its "
+                    + "Copilot session, so the turn was not run again." } as TurnResult;
+            };
+            const replayable = (): boolean => result.type === "error" && (result as any).transportLoss !== true
+                && (isLiveSessionLostErrorMessage((result as any).message) || isToolCallTranscriptCorruptionErrorMessage((result as any).message));
+            if (replayable() && await visitDecidedNow()) result = await notRunAgain((result as any).message);
 
             if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
                 activityCtx.traceInfo(
@@ -5240,12 +5376,14 @@ export function registerActivities(
 
                 // Turn control: the re-run starts from the folded turn prompt,
                 // so the carried and turn-start steers reach the model again.
-                const recoveryBase = tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt;
+                const recoveryBase = withLostCycles(tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt);
                 const recoveredPrompt = mergePromptSections([SESSION_RECOVERY_NOTICE, recoveryBase]) || recoveryBase;
                 // Turn control: the lost conversation took any steers applied
                 // to it; count from the start again so turn end carries them.
                 tc?.live?.conversationLost();
-                result = await runTurnWithPrompt(session, recoveredPrompt);
+                result = await visitDecidedNow()
+                    ? await notRunAgain("a lost live Copilot session")
+                    : await runTurnWithPrompt(session, recoveredPrompt);
 
                 if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
                     const fatalMessage = buildUnrecoverableSessionLossMessage(input.sessionId, (result as any).message);
@@ -5271,6 +5409,9 @@ export function registerActivities(
                 });
                 result = { ...result, message: lostMessage } as TurnResult;
             }
+
+            // The live-session recovery's own run may have reported the result (review R2-1).
+            if (replayable() && await visitDecidedNow()) result = await notRunAgain((result as any).message);
 
             if (result.type === "error" && isToolCallTranscriptCorruptionErrorMessage((result as any).message)) {
                 const transcriptError = (result as any).message;
@@ -5330,12 +5471,14 @@ export function registerActivities(
                     return { type: "error", message: fatalMessage } as TurnResult;
                 }
 
-                const recoveryBase = tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt;
+                const recoveryBase = withLostCycles(tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt);
                 const recoveredPrompt = mergePromptSections([CORRUPTED_TRANSCRIPT_REPLAY_NOTICE, recoveryBase]) || recoveryBase;
                 // Turn control: the lost conversation took any steers applied
                 // to it; count from the start again so turn end carries them.
                 tc?.live?.conversationLost();
-                result = await runTurnWithPrompt(session, recoveredPrompt);
+                result = await visitDecidedNow()
+                    ? await notRunAgain("an inconsistent live Copilot transcript")
+                    : await runTurnWithPrompt(session, recoveredPrompt);
             }
 
             if (
@@ -5563,6 +5706,8 @@ export function registerActivities(
         const fullBodyResult: TurnResult = (runConfig as ManagedSessionConfig).workspaceAttach
             ? { ...(await runBody()), workspaceAttached: true }
             : await runBody();
+        // Whole-PR review P-9: the model run has returned, so the reply limit has nothing left to stop.
+        if (replySettleTimer) { clearTimeout(replySettleTimer); replySettleTimer = null; }
 
         // The result is stored durably twice: as this activity's result (the
         // orchestration history) and in .ps-turn-commit.json (the session
@@ -5640,6 +5785,22 @@ export function registerActivities(
                     }], workerNodeId),
                     (msg) => activityCtx.traceInfo(msg),
                 );
+            }
+            // Issue I1, review D-2: the turn of a continued visit its agent decided ended without its snapshot (its reply stopped
+            // at the limit or by force, its Copilot session or its worker lost, its snapshot not saved). The visit records that
+            // its conversation is lost before this turn ends, so before the next cycle's turn starts and reads it. A turn not run
+            // at admission counts only for the visit whose own prompt it carries: an earlier attempt of it reported and was lost.
+            const lossFence = memoryLossFence as { store: WorkflowStore; visit: () => WorkflowTurnVisit | null } | null;
+            const lossVisit = lossFence?.visit() ?? null;
+            if (!committed.published && !committed.alreadyCommitted && lossFence && lossVisit?.nodeExecutionId
+                && (visitDecidedThisTurn || notRunAgainRan || (notRunAtAdmission && !lossVisit.inherited))) {
+                const reason: WorkflowAgentMemoryLossReason = replyLimitHit ? (runForcedSettled ? "forced_stop" : "reply_limit")
+                    : notRunAgainRan || notRunAtAdmission || committed.unpublishedReason === "transport_loss" ? "session_lost"
+                        : committed.unpublishedReason === "stopped" ? "stopped" : "not_committed";
+                const visit = lossVisit.nodeExecutionId;
+                await cmsRetryBestEffort(`runTurn.memoryLost session=${input.sessionId}`,
+                    () => lossFence.store.recordAgentCycleMemoryLost({ nodeExecutionId: visit, childSessionId: input.sessionId, reason }),
+                    (msg) => activityCtx.traceInfo(msg));
             }
             if (catalog && committed.sizeBytes != null) {
                 await cmsRetryBestEffort(
@@ -5728,6 +5889,7 @@ export function registerActivities(
             turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
             throw err;
         } finally {
+            if (replySettleTimer) clearTimeout(replySettleTimer);
             if (tc?.live) {
                 tc.live.retire();
                 sessionManager.getTurnControlHub?.()?.unregister(tc.live);
@@ -5807,118 +5969,132 @@ export function registerActivities(
         parentContext?: { transcriptEpoch: number; workspaceRevision: number; turnIndex?: number };
         grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling;
         agent: ResolvedAgentDefinition | null; legacyToolNames?: boolean;
-    }) => sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
-        input.legacyToolNames === true, async () => {
-            const parent = await catalog?.getSession(input.parentSessionId);
-            if (!parent || parent.deletedAt) throw new CapabilityGrantError("The parent session is unavailable. No child was created.");
-            // Older scheduled captures lack parentConfig; never substitute the child's config or an unrestricted default.
-            const config = input.parentConfig ?? await catalog?.getSessionCreationConfig?.(input.parentSessionId);
-            if (!config) throw new CapabilityGrantError("The parent's configuration is unavailable. No child was created.");
-            const turnIndex = input.parentContext?.turnIndex ?? parent.currentIteration ?? 0;
-            const transcriptEpoch = input.parentContext?.transcriptEpoch ?? parent.transcriptEpoch ?? 0;
-            if (turnIndex <= 0 && (fs.existsSync(path.join(sessionManager.getSessionStateDir(), input.parentSessionId))
-                || await sessionStore?.exists(input.parentSessionId, transcriptEpoch))) {
-                throw new CapabilityGrantError("The parent's turn index is unavailable. Its saved conversation was not changed; no child was created.");
-            }
-            const runConfig: ManagedSessionConfig = buildRunTurnConfig(config, os.hostname(), parent.agentId ?? undefined);
-            runConfig.workflowMilestoneTurn = true;
-            runConfig.toolCompositionTurn = true;
-            if (!runConfig.workspace && (input.parentContext?.workspaceRevision ?? 0) > 0) runConfig.workspaceCleared = true;
-            if (parent.model) {
-                if (parent.reasoningEffort != null && !isReasoningEffort(parent.reasoningEffort)) {
-                    throw new CapabilityGrantError("The parent's reasoning effort is invalid. No child was created.");
-                }
-                if (parent.contextTier != null && parent.contextTier !== "default" && parent.contextTier !== "long_context") {
-                    throw new CapabilityGrantError("The parent's context tier is invalid. No child was created.");
-                }
-                runConfig.model = parent.model;
-                runConfig.reasoningEffort = parent.reasoningEffort ?? undefined;
-                runConfig.contextTier = parent.contextTier ?? undefined;
-            }
-            const boundAgent = resolveBoundAgentBackfill(runConfig, parent.agentId, userAgents);
-            if (boundAgent) {
-                runConfig.boundAgentName = boundAgent;
-                if (!runConfig.promptLayering) runConfig.promptLayering = { kind: "app-agent" };
-            }
-            runConfig.isCrawler = resolveCrawlerRole(runConfig.agentIdentity, runConfig.boundAgentName, userAgents, systemAgents);
-            runConfig.isHarvester = runConfig.isCrawler;
-            const store = catalog?.workflowStore?.();
-            const lineage = store ? await store.readWorkflowLineage(input.parentSessionId) : null;
+    }) => {
+        // I9 Check 4: enforce stored-chain effectiveLevel at the top of the capture activity (covering warm and cold
+        // parents alike) so orchestration/agents.ts stays byte-identical with no orchestration version bump.
+        const store = catalog?.workflowStore?.();
+        const lineage = store ? await store.readWorkflowLineage(input.parentSessionId) : null;
+        if (store) {
             if (lineage?.deleted) throw new CapabilityGrantError("The parent session was deleted. No child was created.");
-            const workflowAgentTools = await applyWorkflowToolContext(runConfig, lineage, store);
-            if (store) {
-                if (parent.workflowRef) runConfig.workflowContextTrigger = "lasting";
-                runConfig.workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.parentSessionId);
+            const { childNestingLevel, maxNestingLevel } = lineage === null
+                ? { childNestingLevel: SESSION_MAX_NESTING_LEVEL + 1, maxNestingLevel: SESSION_MAX_NESTING_LEVEL }
+                : spawnNesting(0, SESSION_MAX_NESTING_LEVEL, lineage);
+            if (childNestingLevel > maxNestingLevel) {
+                const callerLevel = lineage !== null && Number.isSafeInteger(lineage.level) ? lineage.level : null;
+                const insideWorkflow = Boolean(lineage?.agentRoot || lineage?.hasWorkflow);
+                throw new CapabilityGrantError(spawnNestingRefusalReason(callerLevel, maxNestingLevel, insideWorkflow));
             }
-            const provider = sessionManager.getWorkspaceProvider();
-            const defaults = await resolveWorkspaceDefaults(provider, {
-                sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
-                owner: parent.owner, isSystem: parent.isSystem,
-            }, { onError: message => activityCtx.traceInfo(`[captureSpawnTools] ${message}`) });
-            const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, defaults);
-            const workspace = withDefaults.workspace;
-            if (workspace) {
-                const request: import("./types.js").WorkspaceAttachRequest = {
-                    sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
-                    workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
-                    turnIndex, purpose: "turn",
-                };
-                const sent: import("./types.js").WorkspaceAttachRequest[] = [];
-                const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
-                    sent.push(request);
-                    sessionManager.holdWorkspaceFolders(input.parentSessionId, sent.map(request => ({
-                        root: request.workspace.root, ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
-                        ...(request.attachment ? { attachment: request.attachment } : {}),
-                        rootSessionId: request.rootSessionId, revision: request.revision, turnIndex: request.turnIndex,
-                    })));
-                };
-                const prepared = await prepareWorkspace(provider, { ...request, workspace: workingFolderOf(workspace) }, { onAttach });
-                const optionalHome = !runConfig.workspace && withDefaults.homeIsWorkingFolder && defaults?.home?.required !== true;
-                if (!prepared.ok && !optionalHome) throw new CapabilityGrantError(`The parent's workspace is unavailable (${prepared.code}: ${prepared.message}). No child was created.`);
-                if (!prepared.ok) activityCtx.traceInfo(`[captureSpawnTools] optional home unavailable: ${prepared.code} ${prepared.message}`);
-                if (prepared.ok) {
-                    const extras = workspace.extra ? await prepareWorkspaceExtras(provider, request,
-                        { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) }) : [];
-                    const bad = extras.find(extra => !extra.ok && extra.required);
-                    if (bad && !bad.ok) throw new CapabilityGrantError(`The parent's required extra folder '${bad.name}' is unavailable (${bad.code}: ${bad.message}). No child was created.`);
-                    const homeExtra = withDefaults.homeExtra ? extras.find(extra => extra.ok && extra.name === withDefaults.homeExtra) : undefined;
-                    runConfig.workspaceAttach = {
-                        root: prepared.root.name, rootPath: prepared.root.path, path: prepared.path, realPath: prepared.realPath,
-                        ...(prepared.adopt ? { adopt: prepared.adopt } : {}), ...(prepared.repo ? { repo: prepared.repo } : {}),
-                        ...(withDefaults.homeIsWorkingFolder ? { homeIsWorkingFolder: true } : {}),
-                        ...(withDefaults.defaultNames.length ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
-                        ...(homeExtra?.ok && homeExtra.adopt ? {
-                            home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
-                        } : {}),
-                        ...(prepared.readOnly ? { readOnly: true } : {}),
-                        revision: request.revision, rootSessionId: request.rootSessionId, turnIndex: request.turnIndex,
-                        ...(typeof activityCtx.sessionId === "string" ? { affinityKey: activityCtx.sessionId } : {}),
-                        extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
-                        extrasUnavailable: extras.flatMap(extra => extra.ok ? [] : [{
-                            name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
-                            code: extra.code, message: extra.message,
-                        }]),
-                    };
+        }
+        return sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
+            input.legacyToolNames === true, async () => {
+                const parent = await catalog?.getSession(input.parentSessionId);
+                if (!parent || parent.deletedAt) throw new CapabilityGrantError("The parent session is unavailable. No child was created.");
+                // Older scheduled captures lack parentConfig; never substitute the child's config or an unrestricted default.
+                const config = input.parentConfig ?? await catalog?.getSessionCreationConfig?.(input.parentSessionId);
+                if (!config) throw new CapabilityGrantError("The parent's configuration is unavailable. No child was created.");
+                const turnIndex = input.parentContext?.turnIndex ?? parent.currentIteration ?? 0;
+                const transcriptEpoch = input.parentContext?.transcriptEpoch ?? parent.transcriptEpoch ?? 0;
+                if (turnIndex <= 0 && (fs.existsSync(path.join(sessionManager.getSessionStateDir(), input.parentSessionId))
+                    || await sessionStore?.exists(input.parentSessionId, transcriptEpoch))) {
+                    throw new CapabilityGrantError("The parent's turn index is unavailable. Its saved conversation was not changed; no child was created.");
                 }
-            }
-            let epochStart = false;
-            if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
-                // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
-                const preamble = await runTurnPreamble({
-                    store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
-                    transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
-                    dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
+                const runConfig: ManagedSessionConfig = buildRunTurnConfig(config, os.hostname(), parent.agentId ?? undefined);
+                runConfig.workflowMilestoneTurn = true;
+                runConfig.toolCompositionTurn = true;
+                if (!runConfig.workspace && (input.parentContext?.workspaceRevision ?? 0) > 0) runConfig.workspaceCleared = true;
+                if (parent.model) {
+                    if (parent.reasoningEffort != null && !isReasoningEffort(parent.reasoningEffort)) {
+                        throw new CapabilityGrantError("The parent's reasoning effort is invalid. No child was created.");
+                    }
+                    if (parent.contextTier != null && parent.contextTier !== "default" && parent.contextTier !== "long_context") {
+                        throw new CapabilityGrantError("The parent's context tier is invalid. No child was created.");
+                    }
+                    runConfig.model = parent.model;
+                    runConfig.reasoningEffort = parent.reasoningEffort ?? undefined;
+                    runConfig.contextTier = parent.contextTier ?? undefined;
+                }
+                const boundAgent = resolveBoundAgentBackfill(runConfig, parent.agentId, userAgents);
+                if (boundAgent) {
+                    runConfig.boundAgentName = boundAgent;
+                    if (!runConfig.promptLayering) runConfig.promptLayering = { kind: "app-agent" };
+                }
+                runConfig.isCrawler = resolveCrawlerRole(runConfig.agentIdentity, runConfig.boundAgentName, userAgents, systemAgents);
+                runConfig.isHarvester = runConfig.isCrawler;
+                const workflowAgentTools = await applyWorkflowToolContext(runConfig, lineage, store);
+                if (store) {
+                    if (parent.workflowRef) runConfig.workflowContextTrigger = "lasting";
+                    runConfig.workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.parentSessionId);
+                }
+                const provider = sessionManager.getWorkspaceProvider();
+                const defaults = await resolveWorkspaceDefaults(provider, {
+                    sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                    owner: parent.owner, isSystem: parent.isSystem,
+                }, { onError: message => activityCtx.traceInfo(`[captureSpawnTools] ${message}`) });
+                const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, defaults);
+                const workspace = withDefaults.workspace;
+                if (workspace) {
+                    const request: import("./types.js").WorkspaceAttachRequest = {
+                        sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                        workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
+                        turnIndex, purpose: "turn",
+                    };
+                    const sent: import("./types.js").WorkspaceAttachRequest[] = [];
+                    const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
+                        sent.push(request);
+                        sessionManager.holdWorkspaceFolders(input.parentSessionId, sent.map(request => ({
+                            root: request.workspace.root, ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
+                            ...(request.attachment ? { attachment: request.attachment } : {}),
+                            rootSessionId: request.rootSessionId, revision: request.revision, turnIndex: request.turnIndex,
+                        })));
+                    };
+                    const prepared = await prepareWorkspace(provider, { ...request, workspace: workingFolderOf(workspace) }, { onAttach });
+                    const optionalHome = !runConfig.workspace && withDefaults.homeIsWorkingFolder && defaults?.home?.required !== true;
+                    if (!prepared.ok && !optionalHome) throw new CapabilityGrantError(`The parent's workspace is unavailable (${prepared.code}: ${prepared.message}). No child was created.`);
+                    if (!prepared.ok) activityCtx.traceInfo(`[captureSpawnTools] optional home unavailable: ${prepared.code} ${prepared.message}`);
+                    if (prepared.ok) {
+                        const extras = workspace.extra ? await prepareWorkspaceExtras(provider, request,
+                            { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) }) : [];
+                        const bad = extras.find(extra => !extra.ok && extra.required);
+                        if (bad && !bad.ok) throw new CapabilityGrantError(`The parent's required extra folder '${bad.name}' is unavailable (${bad.code}: ${bad.message}). No child was created.`);
+                        const homeExtra = withDefaults.homeExtra ? extras.find(extra => extra.ok && extra.name === withDefaults.homeExtra) : undefined;
+                        runConfig.workspaceAttach = {
+                            root: prepared.root.name, rootPath: prepared.root.path, path: prepared.path, realPath: prepared.realPath,
+                            ...(prepared.adopt ? { adopt: prepared.adopt } : {}), ...(prepared.repo ? { repo: prepared.repo } : {}),
+                            ...(withDefaults.homeIsWorkingFolder ? { homeIsWorkingFolder: true } : {}),
+                            ...(withDefaults.defaultNames.length ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
+                            ...(homeExtra?.ok && homeExtra.adopt ? {
+                                home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
+                            } : {}),
+                            ...(prepared.readOnly ? { readOnly: true } : {}),
+                            revision: request.revision, rootSessionId: request.rootSessionId, turnIndex: request.turnIndex,
+                            ...(typeof activityCtx.sessionId === "string" ? { affinityKey: activityCtx.sessionId } : {}),
+                            extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
+                            extrasUnavailable: extras.flatMap(extra => extra.ok ? [] : [{
+                                name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
+                                code: extra.code, message: extra.message,
+                            }]),
+                        };
+                    }
+                }
+                let epochStart = false;
+                if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
+                    // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
+                    const preamble = await runTurnPreamble({
+                        store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
+                        transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
+                        dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
+                        trace: activityTrace(activityCtx, "captureSpawnTools"),
+                    });
+                    epochStart = preamble.kind === "fresh" && preamble.uncommittedDiscard && turnIndex > 0;
+                }
+                await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
+                    turnIndex, transcriptEpoch, lockHeld: true,
+                    ...(epochStart ? { epochStart: true } : {}),
                     trace: activityTrace(activityCtx, "captureSpawnTools"),
+                    ...(workflowAgentTools ? { workflowAgentTools } : {}),
                 });
-                epochStart = preamble.kind === "fresh" && preamble.uncommittedDiscard && turnIndex > 0;
-            }
-            await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
-                turnIndex, transcriptEpoch, lockHeld: true,
-                ...(epochStart ? { epochStart: true } : {}),
-                trace: activityTrace(activityCtx, "captureSpawnTools"),
-                ...(workflowAgentTools ? { workflowAgentTools } : {}),
-            });
-        }));
+        });
+    });
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

@@ -2,7 +2,193 @@
 
 ## Unreleased
 
-**Upgrade: deploy the workers.** No migration and no orchestration version.
+**Upgrade: stop every worker, deploy, then start them. Do not roll the
+workers.** No CMS migration, and no session orchestration or Workflow
+controller version change. Why: a child Workflow's `WorkflowEnded@1` notice to
+its parent now has a new form (`runId`, and outputs up to 195,584 bytes). An
+old worker that replays a new-style `WorkflowEnded@1` notice fails with
+`OPERATION_CONFLICT`, because the stored notice differs from the one it
+builds; the parent still has the message. **Rollback:** drain child end
+notices first. Let running child Workflows finish and keep the new workers up
+until every ended child has told its parent (no child end notice pending or
+retrying), then stop every worker, deploy the older release, and start them.
+See "Upgrading to whole child Workflow results" in
+[`docs/developer/deploy/aks.md`](docs/developer/deploy/aks.md).
+
+**Behaviour change for existing Workflow parents.** Child outputs from about
+16 KiB to 195,584 bytes, which `0.8.19` left out of `WorkflowEnded@1`
+(`outputTruncated: true`), now arrive whole. The notice's budget covers only
+the receiving state's own input. Later limits still apply and can now be hit: a
+parallel join's output (256 KiB, the parallel state fails `invalid_output`), a
+collecting script's output (256 KiB), a `send` state's message (16 KiB, the
+state fails `invalid_input`), and the run's output (256 KiB). Review fan-out
+parents that end branches with a received `WorkflowEnded@1` or forward it with
+`send`, and test them with realistic child output sizes before the upgrade.
+Keep only what you need from each child (for example
+`output: { outcome: "${input.outcome}" }`); a script reads the whole result
+with `child_workflows` `read` `full_output: true`. Saving now warns
+`WORKFLOW_ENDED_WHOLE_OUTPUT` where a child's whole output reaches one of those
+limits as it arrived.
+
+**Behaviour change for `workflow_definition`.** `workflow_definition` (and the Web API it uses) now refuses a `definition_id` together with a different `name` with `WORKFLOW_COMMAND_INVALID`; before, the id won.
+
+### Workflows over MCP
+
+An external LLM connected only through `pilotswarm-mcp` can now discover and
+start packaged Workflows, read the deployment's packaged Workflow authoring
+skills on demand, distinguish Workflow sessions in `list_sessions`, and
+validate, author, save, start, copy, read, and delete session Workflow
+Definitions in both direct and Web API modes — with zero SQL migrations and no
+session orchestration or Workflow controller version changes:
+
+- **SDK & Web API:** Exported `compileWorkflow`, `scriptToolRequirements`, and
+  pure no-write `validateWorkflowYaml` from `pilotswarm-sdk`; added SDK
+  validation warning `WORKFLOW_SCRIPT_CONTEXT_VARS` when script states read
+  `context.vars` instead of `context.kv`; moved `createSessionForWorkflow`
+  (preserving S2SF-F3 delete-on-attach-failure and separate `principal` vs
+  `owner`) onto `PilotSwarmManagementClient` and `WebPilotSwarmManagementClient`;
+  added `readWorkflowSkills` (`GET /api/v1/workflow-definitions/skills`),
+  `validateWorkflowDefinition` (`POST /api/v1/workflow-definitions/validate`),
+  and `readSessionWorkflowCard` (`GET /api/v1/sessions/:sessionId/workflow-definitions/card`,
+  enforced `session:manage`); added name-based lookup with receipt-first
+  `operation_id` replay safety across `start`, `delete` (sharing
+  `resolveDeleteTarget`), `copy`, and `updateSessionWorkflowPackage`; enforced
+  SF-2 (`403 WORKFLOW_DEFINITION_TOOLS_REFUSED`) on `originatingSessionId`
+  inside a Workflow (and on `create_session_for_workflow` plus MCP-only A1
+  tool filtering).
+- **MCP Server:** Wired direct-mode `artifactStore` in `context.ts` for package
+  Workflows; projected `session_kind` on `list_sessions`; added
+  `list_creatable_workflows`, `create_session_for_workflow`,
+  `read_workflow_skill` (with MCP adaptation `note` at the top of the reply),
+  and `workflow_definition` (`validate`, `list`, `read`, `card`, `save`, `start`
+  with conditional `WORKFLOW_PERSON_START_NO_TOOL_BINDING` warning when a
+  script calls a non-`child_workflows` tool via `callTool`, `update: true`,
+  `delete`, `copy`); typed `update_workflow.command` per operation (now taking
+  only `pause`, `resume`, `stop`, `cancel`, and `set_vars`; definition
+  operations `replace_definition`, `publish`, `publish_and_start`, and `start`
+  are rejected — use `workflow_definition`); accepted `session_id` on
+  `get_agent_tree` (keeping `root_session_id` as an alias); expanded
+  `workflow_tools` capabilities and added `501 WORKFLOW_API_UNAVAILABLE`
+  fallback when `pilotswarm-mcp` is upgraded ahead of an older portal.
+
+### Workflows: `session: continue` in named parallel branches
+
+Agent states inside named parallel `branches:` may now declare `session: continue`,
+keeping one durable agent session per `(runId, stateId)` across both
+intra-branch loops and outer-loop re-entries of the enclosing `parallel` state
+(building on continued-session memory commits). Omitting `session:` inside a
+named branch still defaults to `session: new` so existing definitions recompile
+unchanged at Start; `forEach` bodies remain `session: new` only (enforced by the
+compiler and a `WORKFLOW_STORE_CORRUPT` guard on non-named branch scopes in
+`enter`). Continued-session store queries and Portal Agent Log / Node Summary
+views now rank visits by composite `(enclosing parallel ordinal, node ordinal)`
+so outer-loop re-entries that reset per-scope ordinals preserve cycle order,
+replacement numbering, and graceful-stop `Q5` semantics, and the Agent Log
+displays ` · cycle N` on re-entered forks. Previously saved invalid revisions
+that used `session: continue` in `branches:` must be saved as a new revision to
+start; worker rollouts remain stop-all.
+
+### Workflows: single level-2 depth rule (first Workflow free)
+
+All four session and Workflow depth checks (`spawn_agent` inline, Workflow
+Start / `spawn` steps, Workflow agent-step host, and fallback
+`captureSpawnToolsV1` with no session orchestration version bump) now share one
+`effectiveLevel` helper over stored lineage: nothing goes past level `2`, the
+first Workflow in a chain is free (`+0`), each later Workflow and sub-agent
+adds `+1`, an agent step sits at its Workflow's level (`+0`), and platform
+system sessions (with all-system ancestry) reset to `0`. Chains without a
+Workflow are unchanged (except all-system platform chains). A child
+Workflow's agent step now sits at level `1` and can spawn a level-`2`
+sub-agent, and Workflows may nest up to three deep (`0 -> 1 -> 2`). Refusal
+messages, `docs/user-guide/workflows.md` (*How deep can sessions and Workflows
+go?*), `docs/developer/building/workflow-sessions.md`, and the
+`workflow-limits` / `workflow-authoring` skills all state the same rule.
+
+### Workflow definition cleanup
+
+- `workflow_definition` now supports `operation: "delete"` (`definition_id` or
+  `name`, optional `operation_id`) so a session can delete its own throwaway or
+  unused definitions. Package definitions (`<package>/<name>`, locked) are
+  refused with `DEFINITION_LOCKED`, sessions inside a Workflow keep their
+  existing refusal, and definitions with active Workflows — or named by any
+  `spawn` state (including inside parallel lanes) of an active Workflow of the
+  owning session (including spawned child Workflows) — are refused across every
+  surface (agent tool, SDK management clients, Web API, and portal) with
+  `DEFINITION_IN_USE` naming the Workflows (name and number) and spawn states
+  and instructing to stop or cancel them first or wait for them to end.
+  Finished Workflows keep their pinned revision copies.
+
+### Workflows: every session above a Workflow reads and controls it
+
+`read_workflow` and `update_workflow` now work on Workflows nested below the
+session's own: a grandparent reads, pauses, resumes, stops, cancels, recovers
+and sets the variables of a child Workflow of its batch, through any number of
+nested Workflows, when every session between is live and has the same owner.
+Changing, testing and starting a definition, and controlling a test run, stay
+with the session that started the Workflow. A Workflow's own agent step, and
+its sub-agents, read the Workflow (its definition, variables and step outputs)
+but do not control it. Each refusal names its rule. A cleaned-up Workflow's
+kept outcome is readable by the same sessions above it. Owners compare exactly:
+in a tree of sessions without an owner, a session above a nested Workflow may
+read and cancel it; a system session is refused on the Workflows below its
+direct child, as another owner is, because the sessions it spawns belong to
+the System user.
+
+### Workflows: whole child results
+
+A child Workflow's `WorkflowEnded@1` message now carries its whole output up to
+195,584 bytes (was 16 KiB), measured on the widest form a receiving state passes
+on, and names the child's `runId`. `outputTruncated` is `true` only when the
+output was left out; then `child_workflows` `read` with `full_output: true`
+returns it whole, also after the child was cleaned up. Saving a receive of
+`WorkflowEnded@1` with a non-empty `correlate:` now warns
+`WORKFLOW_ENDED_CORRELATE`: the message has no correlation; match a child with
+`from:`. The received value, passed on as is with a carry of up to 64 KiB,
+fits the next state's 256 KiB input; the next state's own input mapping and
+later limits (a join, a `send`, the run's output) are still checked as usual.
+Saving warns `WORKFLOW_ENDED_WHOLE_OUTPUT` when a child's whole output reaches
+a `send` or `request` message, a parallel branch's output that is joined with
+others, or (two or more of them) the run's output, with no mapping in between.
+The new `workflow-limits` skill lists the size limits a run meets.
+`workflow-reference` now gives the message's values: `status` is `completed`
+(`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`;
+`outcome` is the terminal state's, else `null`.
+
+### Workflows: an agent step remembers its earlier visits
+
+A `session: continue` agent step now remembers what it did in earlier visits.
+When the agent reports its result (`complete_workflow_node`) while the run is
+active, its turn is no longer stopped: it finishes its reply and is saved, and
+the next visit's prompt starts a new turn after it ("what you did in earlier
+cycles is above" is now true for a visit its agent completed). A time limit, a
+cancel and the run's end still stop the turn. Once the result is recorded, every
+tool call of that turn is refused, the shell, file edits and sub-agents
+included, and the background tasks the turn started (a shell or a sub-agent
+still running, also one started in the result's own message) are cancelled, so
+the reply can finish and be saved. This applies to every agent step,
+`session: new` included: the refusal, the cancel and the reply limit below
+(before, a `session: new` step's reply was bounded only by `turnTimeoutMs`).
+`complete_workflow_node` tells the agent to call it alone and last. A reply still running
+5 minutes after the result is stopped (also with `turnTimeoutMs: 0`), and the
+run's end stops a reply that still runs before it ends the session. A turn whose
+result is recorded is never run again: not after a lost Copilot session or a
+corrupted transcript, and not when a worker retries it (also for
+`session: new` steps). A turn that is stopped or lost before it is saved is not
+remembered; its result is kept. While the run is active, such a visit records
+it (event `workflow.agent_cycle_memory_lost`, shown by `read_workflow` as the
+visit's `agent.memoryLost` with a reason), and the next visit's prompt says that
+visit's conversation is not available instead of saying it is above.
+
+Known limits, accepted: a visit that finishes before its spawn is recorded gets
+no Stop either (its turn ends by itself, as any finished visit's does); the
+run's end can cut the last visit's reply, and an end retried later for a
+session that was not visible yet at the run's end sends no Stop (the reply
+limit bounds it); and the reply limit is a fixed 5 minutes. A turn whose
+activity fails for good after the result records no lost memory. Two older
+cases are not recorded either, and the next cycle's prompt still says the
+earlier cycles are above: a visit decided by its time limit or a cancel (its
+Stop ends its turn unsaved), and a recovery that starts a fresh conversation
+(a corrupted transcript, a missing snapshot).
 
 ### Decision cleanups
 

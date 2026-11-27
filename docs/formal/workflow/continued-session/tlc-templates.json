@@ -1,4 +1,21 @@
 {
+  "WfBranchContinuedSession": {
+    "indent": 4,
+    "constants": [
+      "Branches",
+      "MaxForks",
+      "MaxBranchVisits",
+      "AllowCut",
+      "AllowStopFail",
+      "AllowPersonEnd",
+      "AllowGracefulStop",
+      "AllowRunCancel",
+      "FailEndBranch",
+      "OrderByNodeOrdinalOnly"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
   "WfContinuedSession": {
     "indent": 4,
     "constants": [
@@ -33,7 +50,17 @@
       "AllowTurnFail",
       "FailReport",
       "TimeoutFair",
-      "AllowRecover"
+      "AllowRecover",
+      "SplitTurn",
+      "NoStopOnDone",
+      "SessionEndStop",
+      "AllowStall",
+      "ReplyLimit",
+      "AsyncAbort",
+      "AckLost",
+      "Reconcile",
+      "AllowLoss",
+      "NoteLoss"
     ],
     "lists": "block",
     "deadlockFirst": false

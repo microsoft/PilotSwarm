@@ -32,7 +32,7 @@ import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLock
 import { workflowAgentSessionContinues } from "./agent-ids.js";
 import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
 import { workflowControllerFeatures } from "./controller-features.js";
-import { computeSessionLevel } from "./input-policy.js";
+import { effectiveLevelDetail } from "./input-policy.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -772,6 +772,16 @@ export interface WorkflowAgentInvocation {
     endChildStatus: string | null;
 }
 
+/** Issue I1, review D-2: the event on the Workflow session that says a continued visit's conversation was lost after its report. */
+export const WORKFLOW_AGENT_MEMORY_LOST_EVENT = "workflow.agent_cycle_memory_lost";
+/**
+ * Why: reply_limit (the reply was stopped at its limit), forced_stop (that stop had to settle the turn by force), session_lost
+ * (the Copilot session or its worker was lost), stopped (another Stop ended the turn), not_committed (its snapshot was not).
+ */
+export type WorkflowAgentMemoryLossReason = "reply_limit" | "forced_stop" | "session_lost" | "stopped" | "not_committed";
+/** A visit whose conversation was lost after its report: its cycle, why, its session and when it was recorded. */
+export interface WorkflowAgentMemoryLoss { cycle: number; reason: string; childSessionId: string; at: string }
+
 /** The receipt of the complete_workflow_node operation that decided an agent state. */
 export interface WorkflowAgentCompletionReceipt {
     nodeExecutionId: string;
@@ -816,8 +826,10 @@ export type WorkflowAgentCompletionResult =
  */
 export interface WorkflowLineage {
     sessionId: string;
-    /** Its distance from the root (0 for a root); null when its lineage is cyclic, has a missing parent, or is deeper than any allowed. */
+    /** Its effective level from the segment root (0 for a root/system session); null when its lineage is cyclic, has a missing parent, or is deeper than any allowed. */
     level: number | null;
+    /** True when the active delegation segment (at or below its root/system reset) contains at least one Workflow session. */
+    hasWorkflow: boolean;
     /**
      * The nearest of the session and its ancestors that is an agent state's
      * child (distance 0: the session itself), with that state's workflow and
@@ -1881,7 +1893,7 @@ export class WorkflowStore {
 
     /** Stage 2.1: the session-owned Workflow Definitions (migration 0088), on this store's pool and schema. */
     get sessionDefinitions(): SessionDefinitionStore {
-        if (!this.definitionStore) this.definitionStore = new SessionDefinitionStore(this.pool, this.schema);
+        if (!this.definitionStore) this.definitionStore = new SessionDefinitionStore(this.pool, this.schema, id => this.readWorkflowLineage(id));
         return this.definitionStore;
     }
     private readonly t: {
@@ -3586,6 +3598,8 @@ export class WorkflowStore {
         limit?: number | null;
         offset?: number;
         includeDeleted?: boolean;
+        /** Only children whose definition also names this parent (child_workflows; I2 review r1). */
+        requireDefinitionParent?: boolean;
     } = {}): Promise<Array<{
         workflowSessionId: string;
         deletedAt: Date | null;
@@ -3605,6 +3619,7 @@ export class WorkflowStore {
         const params: unknown[] = [parentWorkflowSessionId];
         const where: string[] = ["s.parent_session_id = $1", "s.session_kind = 'workflow'"];
         if (options.includeDeleted === false) where.push("s.deleted_at IS NULL");
+        if (options.requireDefinitionParent === true) where.push("d.parent_session_id = $1");
         if (options.status === "active") {
             params.push(ACTIVE_RUN_STATUSES);
             where.push(`r.status = ANY($${params.length}::text[])`);
@@ -4518,6 +4533,20 @@ export class WorkflowStore {
         return rows[0] ? nodeFrom(rows[0]) : null;
     }
 
+    /**
+     * Issue I1 (review R3-1): a node execution's state, read under a row lock that conflicts with the lock a decision takes
+     * (FOR UPDATE, as completeAgentNode's), so the read is ordered after any decision still in flight: a COMMIT whose
+     * answer was lost is waited for, not read around. `lockTimeoutMs` bounds the wait; past it the read fails (SQLSTATE
+     * 55P03). Null: no such node execution.
+     */
+    async readNodeStateAfterWriters(nodeExecutionId: string, lockTimeoutMs: number): Promise<WorkflowNodeExecutionRow["state"] | null> {
+        return this.transaction(async client => {
+            await client.query("SELECT set_config('lock_timeout', $1, true)", [`${Math.max(1, Math.floor(lockTimeoutMs))}ms`]);
+            const { rows } = await client.query(`SELECT state FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR SHARE`, [nodeExecutionId]);
+            return rows[0] ? (str(rows[0], "state") as WorkflowNodeExecutionRow["state"]) : null;
+        });
+    }
+
     async listNodeExecutions(runId: string, limit = 500): Promise<WorkflowNodeExecutionRow[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.t.nodes} WHERE run_id = $1 ORDER BY entered_at, node_execution_id LIMIT $2`, [runId, limit]);
@@ -4864,11 +4893,17 @@ export class WorkflowStore {
             const decided = await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
             if (!decided.live) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             const { rows: priorRows } = await client.query(
-                `SELECT run_id, request_sha256, receipt FROM ${this.t.inbox}
+                `SELECT run_id, request_sha256, receipt, contract FROM ${this.t.inbox}
                   WHERE workflow_session_id = $1 AND sender_session_id = $2 AND operation_id = $3`,
                 [input.workflowSessionId, input.senderSessionId, input.operationId]);
             if (priorRows[0]) {
-                if (str(priorRows[0], "request_sha256") !== input.requestSha256) {
+                // I6: a child's end notice is one message per child run, whatever its form. A retry by a newer runtime may build
+                // it in a newer form (runId, a whole output) than the one an older runtime already stored under the same
+                // operation id; it is the same notice from the same child to the same parent, so the stored one is its receipt.
+                const sameEndNotice = input.bypassInboxLimits === true && input.contract === WORKFLOW_ENDED_CONTRACT
+                    && input.operationId.startsWith("ended:") && str(priorRows[0], "contract") === WORKFLOW_ENDED_CONTRACT
+                    && decided.senderParentSessionId === input.workflowSessionId;
+                if (str(priorRows[0], "request_sha256") !== input.requestSha256 && !sameEndNotice) {
                     throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${input.operationId} was already used for a different input.`,
                         { operationId: input.operationId });
                 }
@@ -6571,6 +6606,12 @@ export class WorkflowStore {
         } : null;
     }
 
+    /** Join enclosing parallel execution `parallelAlias` from a branch node's `scope_id` (`<parallelNx>#<index>`), NULL for root (I8). */
+    private parallelJoinSql(nodeAlias: string, parallelAlias: string): string {
+        return `LEFT JOIN ${this.t.nodes} ${parallelAlias} ON ${parallelAlias}.run_id = ${nodeAlias}.run_id `
+            + `AND ${parallelAlias}.node_execution_id = CASE WHEN strpos(${nodeAlias}.scope_id, '#') > 1 THEN split_part(${nodeAlias}.scope_id, '#', 1) ELSE NULL END`;
+    }
+
     /**
      * A session's workflow lineage (design 03 human-input denial and depth;
      * R13, R16): one recursive read of the session rows from the session up
@@ -6583,30 +6624,33 @@ export class WorkflowStore {
         if (!storableId(sessionId)) return null;
         const lineageSql = (withInvocations: boolean) => `
             WITH RECURSIVE lineage AS (
-                SELECT session_id, parent_session_id, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
+                SELECT session_id, parent_session_id, ${withInvocations ? "session_kind, " : ""}is_system, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
                 UNION ALL
-                SELECT parent.session_id, parent.parent_session_id, lineage.distance + 1, parent.deleted_at IS NOT NULL
+                SELECT parent.session_id, parent.parent_session_id, ${withInvocations ? "parent.session_kind, " : ""}parent.is_system, lineage.distance + 1, parent.deleted_at IS NOT NULL
                   FROM ${this.t.sessions} parent JOIN lineage ON parent.session_id = lineage.parent_session_id
                  WHERE lineage.distance < ${WORKFLOW_LINEAGE_MAX_DEPTH}
             )
-            SELECT lineage.session_id, lineage.parent_session_id, lineage.distance, lineage.deleted,
+            SELECT lineage.session_id, lineage.parent_session_id, ${withInvocations ? "lineage.session_kind, " : ""}lineage.is_system, lineage.distance, lineage.deleted,
                    ${withInvocations ? "invocation.node_execution_id, invocation.workflow_session_id, invocation.controlling_session_id"
                        : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
               FROM lineage
               ${withInvocations ? `LEFT JOIN LATERAL (
                   -- One row per lineage session (review RT-4): a session that continues has one invocation per visit, and
-                  -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest.
+                  -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest (composite
+                  -- rank (COALESCE(p.ordinal, 0), n.ordinal) across outer-loop parallel re-entries, I8).
                   SELECT i.node_execution_id, i.workflow_session_id, i.controlling_session_id
                     FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                    ${this.parallelJoinSql("n", "p")}
                    WHERE i.child_session_id = lineage.session_id
-                   ORDER BY COALESCE(n.state = 'pending', false) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC
+                   ORDER BY COALESCE(n.state = 'pending', false) DESC, COALESCE(p.ordinal, 0) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC
                    LIMIT 1) invocation ON true` : ""}
              ORDER BY lineage.distance`;
         let rows: Row[];
         try {
             ({ rows } = await this.pool.query(lineageSql(true), [sessionId]));
         } catch (error) {
-            if ((error as { code?: unknown })?.code !== "42P01") throw error;
+            const code = (error as { code?: unknown })?.code;
+            if (code !== "42P01" && code !== "42703") throw error;
             ({ rows } = await this.pool.query(lineageSql(false), [sessionId]));
         }
         if (!rows[0]) return null;
@@ -6623,12 +6667,60 @@ export class WorkflowStore {
                     controllingSessionId: strOrNull(row, "controlling_session_id"), distance: int(row, "distance") };
             }
         }
-        const level = cyclic ? null : computeSessionLevel(rows.map(row => ({
+        const detail = cyclic ? null : effectiveLevelDetail(rows.map(row => ({
             sessionId: str(row, "session_id"),
             parentSessionId: strOrNull(row, "parent_session_id"),
+            isWorkflow: strOrNull(row, "session_kind") === "workflow",
+            isSystem: row.is_system === true,
             isAgentStep: strOrNull(row, "node_execution_id") !== null,
         })));
-        return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
+        return { sessionId, level: detail?.level ?? null, hasWorkflow: detail?.hasWorkflow ?? false, agentRoot, deleted: rows[0].deleted === true };
+    }
+
+    /**
+     * I6: a Workflow's newest live run and its result, read in one statement so its status and its output are of the same
+     * moment (review r2): the output is the stored canonical JSON text exactly, "null" for a JSON null output and null when
+     * the run has none (readRun parses both to null). Null when the Workflow has no live run.
+     */
+    async readLiveRunResult(workflowSessionId: string): Promise<{
+        runId: string; status: WorkflowRunStatus; outcome: string | null; terminalState: string | null; outputText: string | null; error: JsonValue;
+    } | null> {
+        const { rows } = await this.pool.query(
+            `SELECT run_id, status, terminal_outcome, terminal_node_id, terminal_output, terminal_error FROM ${this.t.runs}
+              WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC, run_id DESC LIMIT 1`, [workflowSessionId]);
+        if (!rows[0]) return null;
+        const status = str(rows[0], "status");
+        if (!isRunStatus(status)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Unknown run status ${status}.`);
+        return {
+            runId: str(rows[0], "run_id"), status, outcome: strOrNull(rows[0], "terminal_outcome"), terminalState: strOrNull(rows[0], "terminal_node_id"),
+            outputText: strOrNull(rows[0], "terminal_output"), error: redactWorkflowErrorValue(jsonOrNull(rows[0], "terminal_error")),
+        };
+    }
+
+    /**
+     * I2: a session and the sessions above it, nearest first, in one recursive read of the session rows (soft-deleted rows
+     * included, so a deleted link is seen as deleted, not as missing), each with its owner as the typed-input rule reads it.
+     * At most WORKFLOW_LINEAGE_MAX_DEPTH sessions above it; empty when the session row does not exist. A cycle repeats rows:
+     * the caller stops at the first repeat.
+     */
+    async readSessionAncestry(sessionId: string): Promise<Array<AuthoritySession & { sessionId: string }>> {
+        if (!storableId(sessionId)) return [];
+        const { rows } = await this.pool.query(`
+            WITH RECURSIVE chain AS (
+                SELECT session_id, parent_session_id, 0 AS distance FROM ${this.t.sessions} WHERE session_id = $1
+                UNION ALL
+                SELECT parent.session_id, parent.parent_session_id, chain.distance + 1
+                  FROM ${this.t.sessions} parent JOIN chain ON parent.session_id = chain.parent_session_id
+                 WHERE chain.distance < ${WORKFLOW_LINEAGE_MAX_DEPTH}
+            )
+            SELECT s.session_id, s.deleted_at, s.is_system, s.session_kind, s.parent_session_id,
+                   u.provider AS owner_provider, u.subject AS owner_subject
+              FROM chain
+              JOIN ${this.t.sessions} s ON s.session_id = chain.session_id
+              LEFT JOIN ${this.t.sessionOwners} so ON so.session_id = s.session_id
+              LEFT JOIN ${this.t.users} u ON u.user_id = so.user_id
+             ORDER BY chain.distance`, [sessionId]);
+        return rows.map(row => ({ sessionId: str(row, "session_id"), ...authoritySessionFrom(row) }));
     }
 
     // ─── Agent states (migration 0088) ──
@@ -6722,13 +6814,16 @@ export class WorkflowStore {
 
     /**
      * The newest invocation whose child agent session is `childSessionId` (a session that continues has one per visit), or
-     * null. Newest by the visit's ordinal (review PRR-3: the database clock can step back between two visits), then time.
+     * null. Newest by composite (COALESCE(p.ordinal, 0), n.ordinal) rank (PRR-3 + I8: clock-skew-immune and monotonic
+     * across outer-loop parallel re-entries), then time.
      */
     async readAgentInvocationByChild(childSessionId: string): Promise<WorkflowAgentInvocation | null> {
         if (!storableId(childSessionId)) return null;
         const { rows } = await this.pool.query(
             `SELECT i.* FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
-              WHERE i.child_session_id = $1 ORDER BY n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId]);
+               ${this.parallelJoinSql("n", "p")}
+              WHERE i.child_session_id = $1
+              ORDER BY COALESCE(p.ordinal, 0) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId]);
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
     }
 
@@ -6785,8 +6880,9 @@ export class WorkflowStore {
             if (ids.length === 0) return null;
             const { rows } = await this.pool.query(
                 `SELECT i.node_execution_id, n.state FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                   ${this.parallelJoinSql("n", "p")}
                   WHERE i.child_session_id = $1 AND i.node_execution_id = ANY($2::text[])
-                  ORDER BY (n.state = 'pending') DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
+                  ORDER BY (n.state = 'pending') DESC, COALESCE(p.ordinal, 0) DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
             return rows[0] ? { id: str(rows[0], "node_execution_id"), open: str(rows[0], "state") === "pending" } : null;
         };
         const own = await visitsOf(promptClientMessageIds.map(workflowVisitOfPromptId).filter((id): id is string => id !== null));
@@ -6854,12 +6950,71 @@ export class WorkflowStore {
         const { rows } = await this.pool.query(
             `SELECT count(*) OVER () AS visits, i.* FROM ${this.t.agentInvocations} i
                JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+               ${this.parallelJoinSql("n", "p")}
               WHERE i.run_id = $1 AND n.node_id = $2
-                AND ($3::text IS NULL OR (n.ordinal, i.created_at, i.node_execution_id) <
-                     (SELECT bn.ordinal, b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b
-                        JOIN ${this.t.nodes} bn ON bn.node_execution_id = b.node_execution_id WHERE b.node_execution_id = $3))
-              ORDER BY n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
+                AND ($3::text IS NULL OR (COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id) <
+                     (SELECT COALESCE(bp.ordinal, 0), bn.ordinal, b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b
+                        JOIN ${this.t.nodes} bn ON bn.node_execution_id = b.node_execution_id
+                        ${this.parallelJoinSql("bn", "bp")}
+                       WHERE b.node_execution_id = $3))
+              ORDER BY COALESCE(p.ordinal, 0) DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
         return rows[0] ? { count: int(rows[0], "visits"), previous: agentInvocationFrom(rows[0]) } : { count: 0, previous: null };
+    }
+
+    /**
+     * Issue I1, review D-2: a continued session's visit whose conversation was not saved after its agent reported its result
+     * (`reason`: its reply stopped at the reply limit or by force, its Copilot session lost, or its snapshot not committed).
+     * Recorded once, on the Workflow session (workflow.agent_cycle_memory_lost), for a visit its agent decided, while the run
+     * is active (a stopping run included: a later visit it started still runs); a run that ended has no later cycle to tell.
+     * The next cycle's prompt and read_workflow read it.
+     */
+    async recordAgentCycleMemoryLost(input: { nodeExecutionId: string; childSessionId: string; reason: WorkflowAgentMemoryLossReason })
+        : Promise<{ recorded: boolean }> {
+        const invocation = await this.readAgentInvocation(input.nodeExecutionId);
+        if (!invocation || invocation.childSessionId !== input.childSessionId || !workflowAgentSessionContinues(invocation)) return { recorded: false };
+        const node = await this.readNodeExecution(input.nodeExecutionId);
+        if (!node || node.state !== "completed" || node.winner !== "agent") return { recorded: false };
+        const run = await this.readRun(invocation.runId);
+        if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return { recorded: false };
+        if ((await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).has(input.nodeExecutionId)) return { recorded: false };
+        const { count } = await this.readAgentVisitsBefore(invocation.runId, node.nodeId, input.nodeExecutionId);
+        await this.recordSessionEvents(invocation.workflowSessionId, [{ eventType: WORKFLOW_AGENT_MEMORY_LOST_EVENT, data: {
+            runId: invocation.runId, nodeExecutionId: input.nodeExecutionId, stateId: node.nodeId, childSessionId: input.childSessionId,
+            cycle: count + 1, reason: input.reason,
+        } }]);
+        return { recorded: true };
+    }
+
+    /** Review D-2: the visits of Workflow `workflowSessionId` whose conversation was lost after their report, by node execution id. */
+    async readAgentCycleMemoryLost(workflowSessionId: string): Promise<Map<string, WorkflowAgentMemoryLoss>> {
+        const lost = new Map<string, WorkflowAgentMemoryLoss>();
+        if (!storableId(workflowSessionId)) return lost;
+        const { rows } = await this.pool.query(`SELECT data, created_at FROM ${this.t.sessionEvents}
+            WHERE session_id = $1 AND event_type = '${WORKFLOW_AGENT_MEMORY_LOST_EVENT}' ORDER BY seq`, [workflowSessionId]);
+        for (const row of rows) {
+            const data = row.data && typeof row.data === "object" ? row.data as Record<string, unknown> : {};
+            if (typeof data.nodeExecutionId !== "string" || lost.has(data.nodeExecutionId)) continue;
+            lost.set(data.nodeExecutionId, {
+                cycle: typeof data.cycle === "number" ? data.cycle : 0, reason: typeof data.reason === "string" ? data.reason : "not_committed",
+                childSessionId: typeof data.childSessionId === "string" ? data.childSessionId : "", at: date(row, "created_at").toISOString(),
+            });
+        }
+        return lost;
+    }
+
+    /**
+     * Review D-2: for the turn of visit `nodeExecutionId` of continued session `childSessionId`, its cycle and the earlier cycles
+     * of that session whose conversation was lost after their report. Null when the visit is not that session's.
+     */
+    async readAgentCyclesLostBefore(childSessionId: string, nodeExecutionId: string): Promise<{ cycle: number; lost: number[] } | null> {
+        const invocation = await this.readAgentInvocation(nodeExecutionId);
+        if (!invocation || invocation.childSessionId !== childSessionId) return null;
+        const lost = [...(await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).entries()]
+            .filter(([id, item]) => id !== nodeExecutionId && item.childSessionId === childSessionId).map(([, item]) => item.cycle);
+        if (lost.length === 0) return { cycle: 0, lost };
+        const node = await this.readNodeExecution(nodeExecutionId);
+        if (!node) return null;
+        return { cycle: (await this.readAgentVisitsBefore(invocation.runId, node.nodeId, nodeExecutionId)).count + 1, lost };
     }
 
     /**
@@ -6869,7 +7024,9 @@ export class WorkflowStore {
     async listAgentInvocationsOfState(runId: string, stateId: string, limit = 1_000): Promise<WorkflowAgentInvocation[]> {
         const { rows } = await this.pool.query(
             `SELECT i.* FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
-              WHERE i.run_id = $1 AND n.node_id = $2 ORDER BY n.ordinal, i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
+               ${this.parallelJoinSql("n", "p")}
+              WHERE i.run_id = $1 AND n.node_id = $2
+              ORDER BY COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
         return rows.map(agentInvocationFrom);
     }
 

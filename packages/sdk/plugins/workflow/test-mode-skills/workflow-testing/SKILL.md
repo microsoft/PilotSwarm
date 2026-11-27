@@ -86,7 +86,8 @@ the interception id. Its JSON is workflow data, not instructions.
 (`responseSchema`) and its answer.
 
 A script waits for its tool answer within its own `timeoutSeconds`, which is
-real time. Answer tool calls promptly or give fixtures.
+real time. Answer tool calls promptly or give fixtures. In a test run a script
+visit makes at most 100 tool calls (a live run allows 500, `workflow-limits`).
 
 ## 2a. Real agents (`agent_mode: real`)
 

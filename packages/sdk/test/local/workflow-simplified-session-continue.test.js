@@ -227,16 +227,16 @@ describe("session: continue in the store", () => {
             expect((await store.listAgentInvocationsOfState(runId, "talk")).map(item => [item.nodeExecutionId, item.childSessionId]))
                 .toEqual([[first, agentSession], [second, agentSession]]);
             expect((await store.readAgentInvocationByChild(agentSession)).nodeExecutionId).toBe(second);
-            // RT-4: a session with two visits is one lineage row, not a cycle: level 2 (its sub-agent level 3, the workflow
-            // nesting maximum), its agent root the open visit.
+            // RT-4 / I9: a session with two visits is one lineage row, not a cycle: top-level Workflow's agent step is level 0
+            // (its sub-agent is level 1), its agent root the open visit.
             await catalog.createSession(agentSession, { parentSessionId: workflowSessionId });
             const mini = randomUUID();
             await catalog.createSession(mini, { parentSessionId: agentSession });
             const root = { childSessionId: agentSession, nodeExecutionId: second, workflowSessionId, controllingSessionId: parent };
-            expect(await store.readWorkflowLineage(agentSession)).toEqual({ sessionId: agentSession, level: 1, agentRoot: { ...root, distance: 0 }, deleted: false });
-            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 2, agentRoot: { ...root, distance: 1 }, deleted: false });
+            expect(await store.readWorkflowLineage(agentSession)).toEqual({ sessionId: agentSession, level: 0, hasWorkflow: true, agentRoot: { ...root, distance: 0 }, deleted: false });
+            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 1, hasWorkflow: true, agentRoot: { ...root, distance: 1 }, deleted: false });
             expect(spawnNesting(1, 2, await store.readWorkflowLineage(agentSession)))
-                .toEqual({ childNestingLevel: 2, maxNestingLevel: SESSION_MAX_NESTING_LEVEL });
+                .toEqual({ childNestingLevel: 1, maxNestingLevel: SESSION_MAX_NESTING_LEVEL });
             // A real-agent test's scope (workflowTestAgentScope) is the agent root's visit: the open one, not the first.
 
             // RT-5: the visits are counted in the store, with no cap. 1,001 older decided visits (copies of the first,
@@ -320,7 +320,7 @@ describe("session: continue in the store", () => {
                 nodeExecutionId: second })).toMatchObject({ kind: "accepted", receipt: { nodeExecutionId: second, outcome: "finish" } });
             expect(await store.recordAgentReminder({ childSessionId: agentSession, turn: 8, visit: second })).toMatchObject({ recorded: false, reason: "decided" });
             // With no visit open, the lineage's agent root is the newest visit, still one row.
-            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 2, agentRoot: { ...root, nodeExecutionId: second, distance: 1 }, deleted: false });
+            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 1, hasWorkflow: true, agentRoot: { ...root, nodeExecutionId: second, distance: 1 }, deleted: false });
         } finally {
             await catalog.close();
             await direct.end();
@@ -583,6 +583,13 @@ describe("the default session mode on the controller", () => {
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.session, data.cycle]))
                 .toEqual([[agentSession, "continue", 1], [agentSession, "continue", 2]]);
+            // Issue I1: a visit its agent completed sends its turn no Stop; the turn ends by itself and its memory is committed.
+            // The run's end stops whatever turn of the session still runs, with a Stop that names no visit, before its end (the
+            // run's cleanup, which may come after the run reads completed).
+            await until(async () => (await commandsOf(h, agentSession)).length > 0, `the end of ${agentSession}`, 30_000);
+            expect(h.stops.map(stop => stop.requestId)).toEqual([`workflow-session-stop:${agentSession}`]);
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_cycle_ended")).map(data => [data.end, data.turnStopped]))
+                .toEqual([["done", false], ["done", false]]);
             expect((await readWorkflowView(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).toMatchObject({ session: "continue" });
         } finally {
             await h.stop();
@@ -685,6 +692,10 @@ describe("session: continue on the controller", () => {
             expect(h.spawns).toHaveLength(2);
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_cycle_ended")).map(data => data.nodeExecutionId))
                 .toEqual([first.nodeExecutionId, second.nodeExecutionId]);
+            // The time limit's end stops the first visit's turn; the second visit, which its agent completed, sends no Stop (issue I1).
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_cycle_ended")).map(data => [data.end, data.turnStopped]))
+                .toEqual([["cancel", true], ["done", false]]);
+            expect(h.stops.filter(stop => stop.requestId.startsWith(`workflow-cycle-stop:${second.nodeExecutionId}`))).toEqual([]);
             expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_ended"))
                 .toEqual([expect.objectContaining({ childSessionId: agentSession, end: "done", sent: true, session: "continue" })]);
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.session, data.cycle]))
@@ -1271,9 +1282,12 @@ describe("session: continue on the controller", () => {
                 expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
                 const end = await until(async () => (await commandsOf(h, child))[0] ?? null, `the end of ${child}`, 30_000);
                 expect(end).toMatchObject({ type: "cmd", cmd: "cancel" });
-                expect(h.stops.filter(stop => stop.sessionId === child))
-                    .toEqual([expect.objectContaining({ kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` })]);
-                expect(commandsAtStop).toEqual([0]);
+                // A continued session's end also stops whatever turn of it still runs (issue I1: a completed visit's reply).
+                expect(h.stops.filter(stop => stop.sessionId === child)).toEqual([
+                    expect.objectContaining({ kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` }),
+                    ...(session === "continue" ? [expect.objectContaining({ kind: "stop", requestId: `workflow-session-stop:${child}` })] : []),
+                ]);
+                expect(commandsAtStop).toEqual(session === "continue" ? [0, 0] : [0]);
             } finally {
                 await h.stop();
             }
@@ -1325,6 +1339,8 @@ describe("session: continue on the controller", () => {
             await ended(h, run.runId);
             await pause(1_000);
             expect(await commandsOf(h, agentSession)).toHaveLength(1);
+            // Issue I1: visit 1, completed by its agent while the run was active, sent its turn no Stop.
+            expect(h.stops.filter(stop => stop.requestId.startsWith(`workflow-cycle-stop:${firstVisit}`))).toEqual([]);
         } finally {
             await h.stop();
             await direct.end();

@@ -182,12 +182,17 @@ import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
 import { NATIVE_EXCLUDED_TOOLS } from "./native-subagents.js";
 import { readWorkflowModel, retainedWorkflowReadModel, workflowExclusiveRead } from "./workflow/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
+import { PilotSwarmClient, type PilotSwarmSession } from "./client.js";
+import { loadSkillsSync } from "./skills.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
 import {
     attachSessionPackageWorkflow, copySessionPackageWorkflow, deleteSessionWorkflowDefinition, findPackageWorkflow, listSessionWorkflowDefinitions,
-    packageWorkflowFacts,
-    readSessionWorkflowDefinition, requireSessionDefinitionsWritable, saveSessionWorkflowDefinition, startSessionWorkflowDefinition, withPackageUpdates,
+    packageWorkflowFacts, readPackageWorkflowCard, readSessionWorkflowDefinition, refuseSessionDefinitionFromInsideWorkflow, requirePackageRef,
+    requireSessionDefinitionsWritable, saveSessionWorkflowDefinition, startSessionWorkflowDefinition, withPackageUpdates,
 } from "./workflow/session-definitions.js";
+import type { SessionAttachReceipt } from "./workflow/session-definition-store.js";
+import { WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR } from "./workflow/guidance.js";
+import { validateWorkflowYaml, type WorkflowValidationResult } from "./workflow/validation.js";
 import { createPackageWorkflowSource, type PackageViewer, type PackageWorkflowSource } from "./workflow/session-packages.js";
 import { coordinatingInstructions, workflowEffectFactsWords, workflowModelHintWords } from "./workflow/package-card.js";
 import { resolveWorkflowTestMode } from "./workflow/test-mode-switch.js";
@@ -214,6 +219,46 @@ import path from "node:path";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { SqliteProvider, Client } = require("duroxide");
+
+export interface CreateSessionForWorkflowOptions {
+    model?: string;
+    reasoningEffort?: ReasoningEffort | string;
+    contextTier?: ContextTier | string;
+    /** Session row owner, passed to createSession only when given (unchanged behavior). */
+    owner?: SessionOwnerInfo | null;
+    /** Package viewer and attach actor. Defaults to owner when it has provider and subject, else null. */
+    principal?: { provider: string; subject: string; displayName?: string | null } | null;
+    groupId?: string | null;
+    visibility?: SessionVisibility | string | null;
+    /** When proxied for an agent session, refuses if that session is inside a Workflow (403 WORKFLOW_DEFINITION_TOOLS_REFUSED) (proposed; owner to confirm). */
+    originatingSessionId?: string | null;
+    /** Direct mode only: reuse caller's started PilotSwarmClient instead of opening a temporary client. */
+    client?: Pick<PilotSwarmClient, "createSession">;
+    /** Direct mode only: invoked with the live PilotSwarmSession handle ONLY when options.client was supplied and attach succeeded. */
+    onSession?: (session: PilotSwarmSession) => void;
+}
+
+export interface CreatedWorkflowCoordinatingSession {
+    sessionId: string;
+    model: string | null;
+    reasoningEffort?: string;
+    workflowRef: string;
+    title: string;
+}
+
+const cachedBaseWorkflowSkills: { loaded: ReturnType<typeof loadSkillsSync> | null } = { loaded: null };
+const cachedTestModeWorkflowSkills: { loaded: ReturnType<typeof loadSkillsSync> | null } = { loaded: null };
+
+function loadCachedWorkflowSkills(testMode: boolean): ReturnType<typeof loadSkillsSync> {
+    if (!cachedBaseWorkflowSkills.loaded) {
+        cachedBaseWorkflowSkills.loaded = loadSkillsSync(WORKFLOW_SKILLS_DIR);
+    }
+    if (!testMode) return cachedBaseWorkflowSkills.loaded;
+    if (!cachedTestModeWorkflowSkills.loaded) {
+        cachedTestModeWorkflowSkills.loaded = loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
+    }
+    return [...cachedBaseWorkflowSkills.loaded, ...cachedTestModeWorkflowSkills.loaded];
+}
 
 const STATUS_WAIT_SLICE_MS = 10_000;
 // The longest title a person may give a session. A named agent's prefix
@@ -2400,16 +2445,44 @@ export class PilotSwarmManagementClient {
     }
 
     /**
+     * Phase 4: Read one package Workflow Definition's interface card in the context of an owning session.
+     * Uses the owning session's owner as package viewer (matching Start).
+     */
+    async readSessionWorkflowCard(ownerSessionId: string, ref: { name: string }): Promise<Record<string, unknown>> {
+        try {
+            const host = await this._sessionForDefinitions(ownerSessionId);
+            const name = typeof ref?.name === "string" && ref.name.trim() ? ref.name.trim() : null;
+            if (!name) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "card needs name: <package>/<name>.");
+            const card = await readPackageWorkflowCard(host, ownerSessionId, requirePackageRef(name).ref, await this._sessionViewer(ownerSessionId));
+            return {
+                name: card.ref,
+                package: card.packageName,
+                version: card.semver,
+                attached: card.attached !== null,
+                ...(card.newerVersion ? { newerVersion: card.newerVersion } : {}),
+                inputsSchema: card.interface?.inputSchema ?? null,
+                exampleInputs: card.card.inputs.example,
+                outcomes: card.card.outcomes,
+                card: card.words,
+            };
+        } catch (error) {
+            throw this._definitionFailure(error);
+        }
+    }
+
+    /**
      * Stage 2.1: a person saves a revision (the YAML tab's Save; E2-1..E2-4). `definitionId` and `expectedRevision` name the
      * revision the edit was based on (Q1); without them, the first save of `name`. The session gets a note on its next turn
      * ("<person> saved <name> revision N."); nothing wakes it.
      */
     async saveSessionWorkflowDefinition(ownerSessionId: string, request: { name: string; yaml: string; definitionId?: string | null; expectedRevision?: number | null;
-        operationId: string }, options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null; email?: string | null } | null } = {})
+        operationId: string }, options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null; email?: string | null } | null;
+        originatingSessionId?: string | null } = {})
         : Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
             const host = await this._sessionForDefinitions(ownerSessionId);
+            await refuseSessionDefinitionFromInsideWorkflow(host.store, options.originatingSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const display = String(options.principal?.displayName ?? options.principal?.email ?? "").trim() || null;
@@ -2425,17 +2498,18 @@ export class PilotSwarmManagementClient {
     }
 
     /** Stage 2.1: a person starts a Workflow from a revision (Start; Run again names the Workflow it repeats). */
-    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; runAgainOf?: string | null;
+    async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; revision?: number | null; runAgainOf?: string | null;
         inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean; operationId: string; key?: string;
         workspace?: SessionWorkspace | { root: string; folder?: string; extra?: Record<string, unknown> } | null | "none";
         /** Agent node models chosen at start, by state id (agent-models.ts); absent with runAgainOf: the repeated one's. */
         agentModels?: unknown;
         /** Additive Decision-node model overrides; absent with Run again retains the repeated effective bindings. */
         decisionModels?: unknown },
-        options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
+        options: { principal?: { provider?: string | null; subject?: string | null } | null; originatingSessionId?: string | null } = {}): Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
             const host = await this._sessionForDefinitions(ownerSessionId);
+            await refuseSessionDefinitionFromInsideWorkflow(host.store, options.originatingSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
@@ -2470,7 +2544,8 @@ export class PilotSwarmManagementClient {
             const capturedWorkingDirectory = inheritedWorkspace && workspaceRevision === 0 && capturedWorkspace === null
                 && typeof creation?.workingDirectory === "string" && creation.workingDirectory
                 ? creation.workingDirectory : undefined;
-            return (await startSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId, definition: { definitionId: request.definitionId },
+            return (await startSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId,
+                definition: { definitionId: request.definitionId ?? null, name: request.name ?? null },
                 revision: request.revision ?? null, runAgainOf: request.runAgainOf ?? null, inputs: inputs as JsonValue,
                 vars: (request.vars ?? null) as { [key: string]: JsonValue } | null, notifyParent: request.notifyParent !== false, actor,
                 operationId: request.operationId,
@@ -2489,18 +2564,172 @@ export class PilotSwarmManagementClient {
     }
 
     /** Stage 2.1: a person deletes a definition (Q8); refused while one of its Workflows is active (R6). */
-    async deleteSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; operationId: string },
-        options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null } = {}): Promise<Record<string, unknown>> {
+    async deleteSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; operationId: string },
+        options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null; originatingSessionId?: string | null } = {}): Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
             const host = await this._sessionForDefinitions(ownerSessionId);
+            await refuseSessionDefinitionFromInsideWorkflow(host.store, options.originatingSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const actor = provider && subject ? { kind: "user" as const, provider, subject, display: options.principal?.displayName ?? null }
                 : { kind: "system" as const, name: "management-client" };
-            const stored = await deleteSessionWorkflowDefinition(host, { ownerSessionId: ownerSessionId, definitionId: request.definitionId, actor,
-                operationId: request.operationId });
+            const stored = await deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: ownerSessionId,
+                definitionId: request.definitionId ?? null,
+                name: request.name ?? null,
+                actor,
+                operationId: request.operationId,
+            });
             return { ...stored.receipt, replayed: stored.replayed } as unknown as Record<string, unknown>;
+        } catch (error) {
+            throw this._definitionFailure(error);
+        }
+    }
+
+    /**
+     * Phase 4: Read Workflow skills packaged with this deployment (exact name match, never path-joined).
+     * Lists all available Workflow skills when `name` is omitted; returns `{ name, description, content }` when given.
+     */
+    async readWorkflowSkills(options: { name?: string | null } = {})
+        : Promise<{ skills: Array<{ name: string; description: string }> } | { name: string; description: string; content: string }> {
+        this._ensureStarted();
+        try {
+            const testMode = resolveWorkflowTestMode(this.config.workflowCommands?.testMode);
+            const loaded = loadCachedWorkflowSkills(testMode);
+            const byName = new Map<string, (typeof loaded)[number]>();
+            for (const skill of loaded) {
+                if (!byName.has(skill.name)) byName.set(skill.name, skill);
+            }
+            const sorted = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+            if (options?.name === undefined || options?.name === null) {
+                return { skills: sorted.map(skill => ({ name: skill.name, description: skill.description })) };
+            }
+            if (typeof options.name !== "string" || !options.name.trim()) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "name must be a non-empty Workflow skill name.");
+            }
+            const requested = options.name.trim();
+            const found = sorted.find(skill => skill.name === requested);
+            if (!found) {
+                throw new WorkflowStoreError(
+                    "WORKFLOW_SKILL_NOT_FOUND",
+                    `No Workflow skill '${requested}' is available on this deployment. Available skills: ${sorted.map(s => s.name).join(", ")}.`,
+                );
+            }
+            return { name: found.name, description: found.description, content: found.prompt };
+        } catch (error) {
+            throw this._definitionFailure(error);
+        }
+    }
+
+    /**
+     * Phase 4: Pure no-write validation of Workflow YAML against this deployment's compiler, scripts posture,
+     * and Cluster Decision Default capability.
+     */
+    async validateWorkflowDefinition(yaml: string): Promise<WorkflowValidationResult> {
+        this._ensureStarted();
+        try {
+            if (typeof yaml !== "string") {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "yaml must be a string.");
+            }
+            return await validateWorkflowYaml(yaml, {
+                ...(this.config.workflowScripts !== undefined ? { scripts: this.config.workflowScripts } : {}),
+                decisionCapability: () => this._workflowDecisionCapability(),
+            });
+        } catch (error) {
+            throw this._definitionFailure(error);
+        }
+    }
+
+    /**
+     * Phase 4 / Stage 2.3: Create a coordinating session for a package Workflow Definition `<package>/<name>`:
+     * prepare (version-pinned) -> createSession -> attachSessionWorkflowPackage (delete on failure, S2SF-F3) -> kickoff send.
+     *
+     * Callers that already hold a started `PilotSwarmClient` (TUI, Portal, MCP direct mode) should pass `options.client`
+     * to avoid the per-call cost of starting and initializing a temporary `PilotSwarmClient`.
+     */
+    async createSessionForWorkflow(ref: string, options: CreateSessionForWorkflowOptions = {}): Promise<CreatedWorkflowCoordinatingSession> {
+        this._ensureStarted();
+        try {
+            if (options.originatingSessionId !== undefined && options.originatingSessionId !== null) {
+                await refuseSessionDefinitionFromInsideWorkflow(this._catalog?.workflowStore?.() ?? null, options.originatingSessionId);
+            }
+            const principal = options.principal !== undefined
+                ? options.principal
+                : (options.owner?.provider && options.owner?.subject
+                    ? { provider: options.owner.provider, subject: options.owner.subject, displayName: options.owner.displayName ?? options.owner.email ?? null }
+                    : null);
+            const prepared = await this.prepareSessionForWorkflow(ref, principal);
+            let tempClient: PilotSwarmClient | null = null;
+            let sessionClient: Pick<PilotSwarmClient, "createSession">;
+            if (options.client) {
+                sessionClient = options.client;
+            } else {
+                tempClient = new PilotSwarmClient({
+                    store: this.config.store!,
+                    ...(this.config.storageConfig ? { storageConfig: this.config.storageConfig } : {}),
+                    ...(this.config.useManagedIdentity !== undefined ? { useManagedIdentity: this.config.useManagedIdentity } : {}),
+                    ...(this.config.cmsFactsDatabaseUrl ? { cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl } : {}),
+                    ...(this.config.aadDbUser ? { aadDbUser: this.config.aadDbUser } : {}),
+                    ...(this.config.cmsSchema ? { cmsSchema: this.config.cmsSchema } : {}),
+                    ...(this.config.duroxideSchema ? { duroxideSchema: this.config.duroxideSchema } : {}),
+                    ...(this.config.factsSchema ? { factsSchema: this.config.factsSchema } : {}),
+                    ...(this.config.factsProvider ? { factsProvider: this.config.factsProvider } : {}),
+                    ...(this.config.enhancedFactsDatabaseUrl ? { enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl } : {}),
+                    ...(this.config.enhancedFactsSchema ? { enhancedFactsSchema: this.config.enhancedFactsSchema } : {}),
+                    ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
+                    ...(this.config.traceWriter ? { traceWriter: this.config.traceWriter } : {}),
+                } as any);
+                await tempClient.start();
+                sessionClient = tempClient;
+            }
+            try {
+                const session = await sessionClient.createSession({
+                    ...(options.model ? { model: options.model } : {}),
+                    ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+                    ...(options.contextTier ? { contextTier: options.contextTier } : {}),
+                    systemMessage: prepared.systemMessage,
+                    ...(options.owner ? { owner: options.owner } : {}),
+                    ...(options.groupId ? { groupId: options.groupId } : {}),
+                    ...(options.visibility ? { visibility: options.visibility } : {}),
+                } as any);
+                try {
+                    await this.attachSessionWorkflowPackage(
+                        session.sessionId,
+                        {
+                            ref: prepared.ref,
+                            operationId: `session-for-workflow:${session.sessionId}`,
+                            coordinating: true,
+                            title: prepared.title,
+                            packageId: prepared.packageId,
+                            sha256: prepared.sha256,
+                        },
+                        { principal },
+                    );
+                } catch (error) {
+                    await this.deleteSession(session.sessionId).catch(() => {});
+                    throw error;
+                }
+                if (options.client) {
+                    options.onSession?.(session);
+                }
+                await session.send(prepared.kickoff, {
+                    bootstrap: true,
+                    sender: { kind: "system", display: `${prepared.ref} kickoff`, origin: "api" },
+                });
+                const created = await this.getSession(session.sessionId).catch(() => null);
+                return {
+                    sessionId: session.sessionId,
+                    model: created?.model || null,
+                    reasoningEffort: created?.reasoningEffort || (options.reasoningEffort as string | undefined) || undefined,
+                    workflowRef: prepared.ref,
+                    title: prepared.title,
+                };
+            } finally {
+                if (tempClient) {
+                    await tempClient.stop().catch(() => {});
+                }
+            }
         } catch (error) {
             throw this._definitionFailure(error);
         }
@@ -2599,16 +2828,42 @@ export class PilotSwarmManagementClient {
     }
 
     /** P6: a person attaches the package's newer version to a locked definition, for the session's next Workflow. */
-    async updateSessionWorkflowPackage(ownerSessionId: string, request: { definitionId: string; operationId: string },
-        options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null } = {}): Promise<Record<string, unknown>> {
+    async updateSessionWorkflowPackage(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; operationId: string },
+        options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null; originatingSessionId?: string | null } = {}): Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
             const host = await this._sessionForDefinitions(ownerSessionId);
+            await refuseSessionDefinitionFromInsideWorkflow(host.store, options.originatingSessionId);
             // Review PRS-002: refused for a session inside a Workflow before the definition is looked up (as the attach it makes).
             await requireSessionDefinitionsWritable(host, ownerSessionId);
-            const definition = await host.store.sessionDefinitions.readDefinition(request.definitionId);
+            const reqDefId = typeof request.definitionId === "string" && request.definitionId.trim() ? request.definitionId.trim() : null;
+            const reqName = typeof request.name === "string" && request.name.trim() ? request.name.trim() : null;
+            if (!reqDefId && !reqName) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "updateSessionWorkflowPackage needs definitionId or name.");
+            }
+            const storedOp = await host.store.sessionDefinitions.readStoredOperation?.<SessionAttachReceipt>(ownerSessionId, request.operationId);
+            if (storedOp) {
+                if (storedOp.kind !== "attach") {
+                    throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${request.operationId} was used for a different request; use another operation id.`);
+                }
+                const matchesId = !reqDefId || storedOp.receipt.definitionId === reqDefId;
+                const matchesName = !reqName || storedOp.receipt.name === reqName;
+                if (!matchesId || !matchesName) {
+                    throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${request.operationId} was used for a different request; use another operation id.`);
+                }
+                return { ...storedOp.receipt, replayed: true } as unknown as Record<string, unknown>;
+            }
+            const definition = reqDefId
+                ? await host.store.sessionDefinitions.readDefinition(reqDefId)
+                : await host.store.sessionDefinitions.readDefinitionByName(ownerSessionId, reqName!);
+            if (reqDefId && reqName && definition && definition.ownerSessionId === ownerSessionId && definition.name !== reqName) {
+                throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+                    `definition_id ${reqDefId} is ${definition.name}, not ${reqName}. Pass either definition_id or name, or matching values.`);
+            }
             if (!definition || definition.ownerSessionId !== ownerSessionId || definition.deletedAt !== null || !definition.locked) {
-                throw new WorkflowStoreError("DEFINITION_NOT_FOUND", "This session has no package Workflow Definition with that id.");
+                throw new WorkflowStoreError("DEFINITION_NOT_FOUND", reqName
+                    ? `This session has no package Workflow Definition named ${reqName}.`
+                    : "This session has no package Workflow Definition with that id.");
             }
             // S2SF-F6 / L4: only the same package's strictly greater version (PACKAGE_NOT_NEWER for a rollback or another package).
             return await this.attachSessionWorkflowPackage(ownerSessionId, { ref: definition.name, operationId: request.operationId, newerOnly: true }, options);
@@ -2618,18 +2873,26 @@ export class PilotSwarmManagementClient {
     }
 
     /** E2-7, P5: a person's Make a copy of a locked definition: an editable definition of the session's own, at revision 1. */
-    async copySessionWorkflowDefinition(ownerSessionId: string, request: { definitionId: string; revision?: number | null; operationId: string },
-        options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null; email?: string | null } | null } = {})
+    async copySessionWorkflowDefinition(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; revision?: number | null; operationId: string },
+        options: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null; email?: string | null } | null; originatingSessionId?: string | null } = {})
         : Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
             const host = await this._sessionForDefinitions(ownerSessionId);
+            await refuseSessionDefinitionFromInsideWorkflow(host.store, options.originatingSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
             const subject = String(options.principal?.subject ?? "").trim();
             const display = String(options.principal?.displayName ?? options.principal?.email ?? "").trim() || null;
             const actor = provider && subject ? { kind: "user" as const, provider, subject, display } : { kind: "system" as const, name: "management-client" };
-            const stored = await copySessionPackageWorkflow(host, { ownerSessionId: ownerSessionId, definitionId: request.definitionId, revision: request.revision ?? null,
-                actor, operationId: request.operationId, personWords: display ?? (subject || "A person") });
+            const stored = await copySessionPackageWorkflow(host, {
+                ownerSessionId: ownerSessionId,
+                definitionId: request.definitionId ?? null,
+                name: request.name ?? null,
+                revision: request.revision ?? null,
+                actor,
+                operationId: request.operationId,
+                personWords: display ?? (subject || "A person"),
+            });
             return { ...stored.receipt, replayed: stored.replayed } as unknown as Record<string, unknown>;
         } catch (error) {
             throw this._definitionFailure(error);

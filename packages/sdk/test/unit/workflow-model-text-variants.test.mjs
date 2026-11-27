@@ -263,7 +263,7 @@ test("G-11: the workflow-tools skill speaks of revisions and this session's Work
     for (const phrase of [
         "| `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |",
         "| `LIVE_RUN_EXISTS` | This Workflow already has its live run. To run the definition again, `start` it again: each start is a new Workflow. |",
-        "| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this session's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |",
+        "| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take this session's Workflows and their child Workflows, at any depth; an agent step only reads its own. A person changes theirs in the Workflow tab. |",
         "It controls a Workflow's run; to change or start a definition, use `workflow_definition`.",
     ]) assert.ok(flat.includes(phrase), phrase);
     assert.ok(Buffer.byteLength(text, "utf8") <= 20 * 1024, `${Buffer.byteLength(text, "utf8")} bytes`);

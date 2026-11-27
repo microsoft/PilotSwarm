@@ -11,7 +11,7 @@
  *   not live, a definition that is deleted, or a revision that is not valid, under their locks (Q3).
  * - read and list: definitions, revisions, diagnostics, YAML and the Workflows started from each. A read by the session
  *   records what it has seen (Q2).
- * - delete: a person's only (Q8), refused while one of its Workflows is active (R6).
+ * - delete: the session (its own definitions only) or a person deletes a definition; refused while one of its Workflows is active (R6).
  *
  * Stage 2.3 (P2–P6, E2-7; session-packages.ts): a package's Workflow Definition is attached to a session as its locked definition
  * `<package>/<name>` (attachSessionPackageWorkflow); Start then works as for the session's own. A newer package version is
@@ -26,8 +26,11 @@ import { readWorkflowWorkspace, sameDefaultsRecord, workflowWorkspaceSnapshot } 
 import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, readWorkflowToolBinding, type WorkflowToolBinding } from "./tool-policy.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
-import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
-import { SESSION_MAX_NESTING_LEVEL, WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
+import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt, type WorkflowStore } from "./store.js";
+import {
+    effectiveChildLevel, sessionInsideWorkflow, SESSION_MAX_NESTING_LEVEL, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED,
+    WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError,
+} from "./input-policy.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
     requireAgentModelsForRevision, workflowAgentModelsText, workflowDecisionModelRequestDigest, workflowDecisionModelsForRevision, workflowDecisionNodes,
     workflowDecisionSaveDiagnostics, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE, type WorkflowAgentModels } from "./agent-models.js";
@@ -48,10 +51,10 @@ import {
 } from "./package-card.js";
 
 /**
- * Stage 2.4 (PR 235 2b893906): Start keeps spawn_agent's limits. A Workflow is a child of its session, one level deeper,
- * and no session may be deeper than WORKFLOW_START_MAX_NESTING_LEVEL (spawn_agent's ordinary limit: 0 the root, 1 a
- * child, 2 a grandchild); a session's running sub-agents and active Workflows share one budget of
- * WORKFLOW_START_MAX_RUNNING_CHILDREN.
+ * Stage 2.4 / I9: Start keeps spawn_agent's depth and child-budget limits under one effectiveLevel rule.
+ * Nothing goes past WORKFLOW_START_MAX_NESTING_LEVEL (2): the first Workflow in a chain is free (+0), each later
+ * Workflow adds +1, and an agent step sits at its Workflow's level (+0). A session's running sub-agents and active
+ * Workflows share one budget of WORKFLOW_START_MAX_RUNNING_CHILDREN.
  */
 export const WORKFLOW_START_MAX_NESTING_LEVEL = SESSION_MAX_NESTING_LEVEL;
 export const WORKFLOW_START_MAX_RUNNING_CHILDREN = WORKFLOW_CHILD_BUDGET_MAX;
@@ -63,12 +66,26 @@ export const WORKFLOW_START_MAX_RUNNING_CHILDREN = WORKFLOW_CHILD_BUDGET_MAX;
  */
 export async function requireWorkflowStartLimits(host: Pick<WorkflowHost, "store">, ownerSessionId: string, given: number | null = null,
     options: { claimedWorkflowSessionId?: string } = {}): Promise<void> {
-    const derived = await host.store.sessionDefinitions.nestingLevel(ownerSessionId);
-    const nestingLevel = Math.max(derived, Number.isSafeInteger(given) ? given as number : 0);
-    if (nestingLevel + 1 > WORKFLOW_START_MAX_NESTING_LEVEL) {
-        throw new WorkflowStoreError("WORKFLOW_NESTING_LIMIT", `This session is at nesting level ${nestingLevel} (max ${WORKFLOW_START_MAX_NESTING_LEVEL}), `
-            + "and a Workflow it starts would be one level deeper than any session may be. Ask a session nearer the top to start it. Nothing was started.",
-        { nestingLevel, maxNestingLevel: WORKFLOW_START_MAX_NESTING_LEVEL });
+    const lineage = await host.store.readWorkflowLineage(ownerSessionId);
+    if (lineage === null || lineage.level === null) {
+        throw new WorkflowStoreError(
+            "WORKFLOW_NESTING_LIMIT",
+            `This session's delegation chain cannot be verified, and nothing goes past level ${WORKFLOW_START_MAX_NESTING_LEVEL}. Nothing was started.`,
+            { nestingLevel: null, maxNestingLevel: WORKFLOW_START_MAX_NESTING_LEVEL },
+        );
+    }
+    const hasWorkflow = lineage.hasWorkflow !== false;
+    const callerLevel = Math.max(lineage.level, Number.isSafeInteger(given) ? given as number : 0);
+    const workflowLevel = effectiveChildLevel({ level: callerLevel, hasWorkflow }, "workflow");
+    if (workflowLevel > WORKFLOW_START_MAX_NESTING_LEVEL) {
+        throw new WorkflowStoreError(
+            "WORKFLOW_NESTING_LIMIT",
+            `This session is at level ${callerLevel}, and the Workflow it starts would be at level ${workflowLevel}. `
+            + `Nothing goes past level ${WORKFLOW_START_MAX_NESTING_LEVEL}: each sub-agent or Workflow is one level below whoever started it, `
+            + "but the first Workflow in a chain is free, and an agent step sits at its Workflow's level. "
+            + "Start this Workflow from a session nearer the top. Nothing was started.",
+            { nestingLevel: callerLevel, workflowLevel, maxNestingLevel: WORKFLOW_START_MAX_NESTING_LEVEL },
+        );
     }
     const running = options.claimedWorkflowSessionId
         ? await host.store.sessionDefinitions.runningChildren(ownerSessionId, options.claimedWorkflowSessionId)
@@ -255,8 +272,33 @@ export async function definitionOf(host: Pick<WorkflowHost, "store">, ownerSessi
         throw new WorkflowStoreError("DEFINITION_NOT_FOUND", ref.name ? `This session has no Workflow Definition named ${ref.name}.`
             : `This session has no Workflow Definition ${ref.definitionId ?? ""}.`);
     }
+    if (ref.definitionId && ref.name && found.name !== ref.name) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+            `definition_id ${ref.definitionId} is ${found.name}, not ${ref.name}. Pass either definition_id or name, or matching values.`);
+    }
     if (found.deletedAt !== null) throw new WorkflowStoreError("DEFINITION_DELETED", `${found.name} was deleted.`, { definitionId: found.definitionId });
     return found;
+}
+
+/**
+ * SF-2 for session Workflow Definition mutations/starts: when a caller passes `originatingSessionId`
+ * (e.g. an MCP server or API call acting on behalf of an agent session), refuse with 403
+ * WORKFLOW_DEFINITION_TOOLS_REFUSED if that session's stored lineage is inside a Workflow.
+ */
+export async function refuseSessionDefinitionFromInsideWorkflow(
+    store: Pick<WorkflowStore, "readWorkflowLineage"> | null | undefined,
+    originatingSessionId: unknown,
+): Promise<void> {
+    if (originatingSessionId === undefined || originatingSessionId === null) return;
+    if (typeof originatingSessionId !== "string" || !originatingSessionId.trim() || originatingSessionId.length > 256) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "originatingSessionId, when given, must be a session id of 1 to 256 characters.");
+    }
+    if (!store) {
+        throw new WorkflowStoreError("WORKFLOW_STORE_UNAVAILABLE", "Cannot verify originatingSessionId lineage because the workflow store is unavailable.");
+    }
+    if (await sessionInsideWorkflow(store, originatingSessionId)) {
+        throw new WorkflowStoreError(WORKFLOW_DEFINITION_TOOLS_REFUSED, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT);
+    }
 }
 
 /**
@@ -391,7 +433,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
             + `${request.key !== undefined ? "a new key" : "another operation id"}.`);
     }
     if (request.definition.definitionId && request.definition.definitionId !== prior.definitionId) throw conflict(`definition ${request.definition.definitionId}`);
-    if (!request.definition.definitionId && request.definition.name && request.definition.name !== pinned.name) throw conflict(request.definition.name);
+    if (request.definition.name && request.definition.name !== pinned.name) throw conflict(request.definition.name);
     if (Number.isSafeInteger(request.revision) && request.revision !== prior.revision) throw conflict(`revision ${request.revision}`);
     const saved = await host.store.sessionDefinitions.readRevision(prior.definitionId, prior.revision);
     if (!saved) throw new WorkflowStoreError("REVISION_NOT_FOUND", `${pinned.name} has no revision ${prior.revision}.`);
@@ -772,13 +814,83 @@ export async function readSessionWorkflowDefinition(host: Pick<WorkflowHost, "st
     return { ...view, revision, graph: ir ? workflowGraphJson(ir, revision!.revision) : null };
 }
 
-/** A person deletes a definition (Q8); refused while one of its Workflows is active (R6). */
+/**
+ * Resolve a delete target by `definitionId` and/or `name` with receipt-first idempotent replay safety
+ * (shared by Unit F's agent `workflow_definition` `delete` tool with `allowLocked: false` and person/MCP
+ * `deleteSessionWorkflowDefinition` where `allowLocked` is unset so a person may delete locked package definitions).
+ */
+export async function resolveDeleteTarget(
+    host: Pick<WorkflowHost, "store">,
+    ownerSessionId: string,
+    ref: { definitionId?: string | null; name?: string | null },
+    operationId: string,
+    options: { allowLocked?: boolean } = {},
+): Promise<string> {
+    const definitionId = typeof ref.definitionId === "string" && ref.definitionId.trim() ? ref.definitionId.trim() : null;
+    const name = typeof ref.name === "string" && ref.name.trim() ? ref.name.trim() : null;
+    if (!definitionId && !name) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "delete needs name or definition_id.");
+    }
+    const storedOp = await host.store.sessionDefinitions.readStoredOperation?.<SessionDeleteReceipt>(ownerSessionId, operationId);
+    if (storedOp) {
+        if (storedOp.kind !== "delete") {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was used for a different request; use another operation id.`);
+        }
+        const matchesId = !definitionId || storedOp.receipt.definitionId === definitionId;
+        const matchesName = !name || storedOp.receipt.name === name;
+        if (!matchesId || !matchesName) {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was used for a different request; use another operation id.`);
+        }
+        return storedOp.receipt.definitionId;
+    }
+    if (options.allowLocked === false && name && name.includes("/") && !definitionId) {
+        const attached = await host.store.sessionDefinitions.readDefinitionByName?.(ownerSessionId, name);
+        if (attached?.locked) {
+            throw new WorkflowStoreError("DEFINITION_LOCKED",
+                `${attached.name} comes from the package ${attached.packageName ?? "it was published in"} and is locked: a session can only delete its own definitions, not package definitions. Nothing was deleted.`,
+                { definitionId: attached.definitionId, packageName: attached.packageName });
+        }
+        throw new WorkflowStoreError("DEFINITION_LOCKED",
+            `${name} names a package Workflow Definition, which is locked: a session can only delete its own definitions, not package definitions. Nothing was deleted.`);
+    }
+    if (definitionId && name) {
+        const existing = await host.store.sessionDefinitions.readDefinition(definitionId);
+        if (existing && existing.ownerSessionId === ownerSessionId && existing.name !== name) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+                `definition_id ${definitionId} is ${existing.name}, not ${name}. Pass either definition_id or name, or matching values. Nothing was deleted.`);
+        }
+        return definitionId;
+    }
+    if (definitionId) return definitionId;
+    const live = await host.store.sessionDefinitions.readDefinitionByName(ownerSessionId, name!);
+    if (live) return live.definitionId;
+    const all = await host.store.sessionDefinitions.listDefinitions(ownerSessionId, { includeDeleted: true });
+    const deleted = all.filter(item => item.name === name && item.deletedAt !== null).at(-1) ?? null;
+    if (deleted) return deleted.definitionId;
+    throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This session has no Workflow Definition named ${name}.`);
+}
+
+/** Delete a definition (the session for its own definitions with `allowLocked: false`, or a person); refused while one of its Workflows is active (R6). */
 export async function deleteSessionWorkflowDefinition(host: Pick<WorkflowHost, "store">, request: {
-    ownerSessionId: string; definitionId: string; actor: SessionDefinitionActor; operationId: string;
+    ownerSessionId: string; definitionId?: string | null; name?: string | null; actor: SessionDefinitionActor; operationId: string; allowLocked?: boolean;
 }): Promise<StoredSessionOperation<SessionDeleteReceipt>> {
     requireOperationId(request.operationId);
     await requireSessionDefinitionsWritable(host, request.ownerSessionId);
-    return host.store.sessionDefinitions.deleteDefinition({ ...request, requestSha256: sha256Hex(canonicalJson({ kind: "delete", definitionId: request.definitionId })) });
+    const definitionId = await resolveDeleteTarget(
+        host,
+        request.ownerSessionId,
+        { definitionId: request.definitionId ?? null, name: request.name ?? null },
+        request.operationId,
+        { allowLocked: request.allowLocked },
+    );
+    return host.store.sessionDefinitions.deleteDefinition({
+        ownerSessionId: request.ownerSessionId,
+        definitionId,
+        actor: request.actor,
+        operationId: request.operationId,
+        requestSha256: sha256Hex(canonicalJson({ kind: "delete", definitionId })),
+        ...(request.allowLocked !== undefined ? { allowLocked: request.allowLocked } : {}),
+    });
 }
 
 // ─── Stage 2.3: package Workflow Definitions in a session ─────────────────────────────────────────
@@ -882,7 +994,8 @@ export async function attachSessionPackageWorkflow(host: WorkflowHost, request: 
  */
 export async function copySessionPackageWorkflow(host: WorkflowHost, request: {
     ownerSessionId: string;
-    definitionId: string;
+    definitionId?: string | null;
+    name?: string | null;
     revision?: number | null;
     actor: SessionDefinitionActor;
     operationId: string;
@@ -890,18 +1003,25 @@ export async function copySessionPackageWorkflow(host: WorkflowHost, request: {
 }): Promise<StoredSessionOperation<SessionSaveReceipt>> {
     requireOperationId(request.operationId);
     await requireSessionDefinitionsWritable(host, request.ownerSessionId);
+    const reqDefId = typeof request.definitionId === "string" && request.definitionId.trim() ? request.definitionId.trim() : null;
+    const reqName = typeof request.name === "string" && request.name.trim() ? request.name.trim() : null;
+    if (!reqDefId && !reqName) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "copy needs name or definition_id.");
+    }
     // S2RT-F10: a repeat of this copy is answered from its receipt, before the source's newest revision is chosen again (a
     // newer package version attached since would make the same request another one). The copy records its source (L1).
     const stored = await host.store.sessionDefinitions.readStoredOperation?.<SessionSaveReceipt>(request.ownerSessionId, request.operationId);
     if (stored) {
         const copy = stored.kind === "save" ? await host.store.sessionDefinitions.readDefinition(stored.receipt.definitionId) : null;
         const from = copy?.copiedFrom ?? null;
-        if (!from || from.definitionId !== request.definitionId || (request.revision != null && request.revision !== from.revision)) {
+        const matchesId = !reqDefId || from?.definitionId === reqDefId;
+        const matchesName = !reqName || from?.name === reqName;
+        if (!from || !matchesId || !matchesName || (request.revision != null && request.revision !== from.revision)) {
             throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${request.operationId} was used for a different request; use another operation id.`);
         }
         return { receipt: stored.receipt, replayed: true };
     }
-    const definition = await definitionOf(host, request.ownerSessionId, { definitionId: request.definitionId });
+    const definition = await definitionOf(host, request.ownerSessionId, { definitionId: reqDefId, name: reqName });
     if (!definition.locked) {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${definition.name} is this session's own definition; it is changed by saving it, not copied.`);
     }

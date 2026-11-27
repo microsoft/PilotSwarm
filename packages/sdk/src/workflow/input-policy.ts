@@ -20,10 +20,10 @@ import type { WorkflowLineage, WorkflowStore } from "./store.js";
  *   portal stamps every caller as a user, so an API caller cannot claim it)
  *   is not human input; an agent's authority to message a session is decided
  *   where it sends (message_agent's lineage rule).
- * - An agent step is at the level of its Workflow; every other session is one
- *   level deeper than its parent; no session may be deeper than
- *   SESSION_MAX_NESTING_LEVEL (2), counted on the stored lineage, not on a
- *   nesting level a caller passes.
+ * - Nothing goes past SESSION_MAX_NESTING_LEVEL (2), counted on the stored
+ *   lineage: the first Workflow in a chain is free (+0), an agent step sits
+ *   at its Workflow's level (+0), every later Workflow and every sub-agent
+ *   adds +1, and platform system sessions reset to 0.
  * - ask_user is refused there: the agent consults its controlling parent
  *   agent or completes its state with needs_input.
  */
@@ -44,31 +44,88 @@ const ACTION_WORDS: Record<WorkflowHumanInputAction, string> = {
     definitions: "save, start, test, copy, update or delete its Workflow Definitions",
 };
 
-/** The deepest level any session may be (root is 0; an agent step is at its Workflow's level; every other child is +1). */
+/** The deepest level any session may be (root is 0; first Workflow is free; an agent step is at its Workflow's level; every other child is +1). */
 export const SESSION_MAX_NESTING_LEVEL = 2;
 
 export interface SessionLevelNode {
     sessionId: string;
     parentSessionId: string | null;
+    isWorkflow: boolean;
+    isSystem: boolean;
     isAgentStep?: boolean;
 }
 
+export interface EffectiveLevelDetail {
+    level: number;
+    /** True when the active delegation segment (at or below its root/system reset) contains at least one Workflow session. */
+    hasWorkflow: boolean;
+}
+
 /**
- * Compute a session's level from its lineage ordered from the session itself up to the root:
- * root is 0; an agent step is at its Workflow's level (+0); every other child is +1.
- * Returns null when the lineage is empty, cyclic, or does not reach a root (parentSessionId === null).
+ * Walk `chain` (ordered from the target session [0] up to its ancestor root) up to its segment root
+ * (`parentSessionId === null`, or a platform system session whose every remaining ancestor in `chain` is also `isSystem`),
+ * then evaluate from segment root down to target:
+ * - segment root: level 0 (hasWorkflow = Boolean(root.isWorkflow && !root.isSystem))
+ * - agent step (`isAgentStep === true`): +0
+ * - first Workflow in segment (`isWorkflow === true && !hasWorkflow`): +0, sets hasWorkflow = true
+ * - any later Workflow or any sub-agent (including a system agent spawned under a non-system session): +1
+ * Returns null when `chain` is empty, has a cycle, or never reaches a segment root.
  */
-export function computeSessionLevel(chain: readonly SessionLevelNode[]): number | null {
+export function effectiveLevelDetail(chain: readonly SessionLevelNode[]): EffectiveLevelDetail | null {
     if (chain.length === 0) return null;
-    const seen = new Set<string>();
-    let level = 0;
+    const allSeen = new Set<string>();
     for (const node of chain) {
-        if (seen.has(node.sessionId)) return null;
-        seen.add(node.sessionId);
-        if (node.parentSessionId === null) return level;
-        if (!node.isAgentStep) level += 1;
+        if (allSeen.has(node.sessionId)) return null;
+        allSeen.add(node.sessionId);
     }
-    return null;
+    const segment: SessionLevelNode[] = [];
+    let reachedRoot = false;
+    for (let i = 0; i < chain.length; i += 1) {
+        const node = chain[i];
+        segment.push(node);
+        // Rule 8: top-level platform system sessions and their all-system descendants reset the segment root to level 0;
+        // any system agent spawned under a non-system session stays in its parent's delegation chain.
+        const isPlatformSystemRoot = node.isSystem === true && chain.slice(i + 1).every(up => up.isSystem === true);
+        if (node.parentSessionId === null || isPlatformSystemRoot) {
+            reachedRoot = true;
+            break;
+        }
+    }
+    if (!reachedRoot) return null;
+    segment.reverse();
+    let level = 0;
+    let hasWorkflow = segment[0].isWorkflow === true && segment[0].isSystem !== true;
+    for (let i = 1; i < segment.length; i += 1) {
+        const node = segment[i];
+        if (node.isAgentStep === true) continue;
+        if (node.isWorkflow === true) {
+            if (!hasWorkflow) hasWorkflow = true;
+            else level += 1;
+        } else {
+            level += 1;
+        }
+    }
+    return { level, hasWorkflow };
+}
+
+export function effectiveLevel(chain: readonly SessionLevelNode[]): number | null {
+    return effectiveLevelDetail(chain)?.level ?? null;
+}
+
+/** Alias preserved for existing imports. */
+export const computeSessionLevel = effectiveLevel;
+
+/**
+ * Given a parent's EffectiveLevelDetail, compute the effective level of a direct child of kind `childKind`.
+ * Equivalent to appending the child to the parent's chain and calling `effectiveLevel`.
+ */
+export function effectiveChildLevel(
+    parent: EffectiveLevelDetail,
+    childKind: "sub_agent" | "workflow" | "agent_step",
+): number {
+    if (childKind === "agent_step") return parent.level;
+    if (childKind === "workflow") return parent.hasWorkflow ? parent.level + 1 : parent.level;
+    return parent.level + 1;
 }
 
 /**
@@ -77,6 +134,12 @@ export function computeSessionLevel(chain: readonly SessionLevelNode[]): number 
  * Ordinary sub-agents outside every Workflow keep them (O3). The tools that create or change a definition:
  */
 export const WORKFLOW_DEFINITION_TOOLS: readonly string[] = ["spawn_workflow", "update_workflow", "workflow_definition"];
+
+/**
+ * MCP-only A1 tool list (proposed; owner to confirm): adds create_session_for_workflow without widening
+ * WORKFLOW_DEFINITION_TOOLS (which also filters built-in tools).
+ */
+export const WORKFLOW_DEFINITION_MCP_TOOLS: readonly string[] = [...WORKFLOW_DEFINITION_TOOLS, "create_session_for_workflow"];
 
 /** The code of the A1 refusal. */
 export const WORKFLOW_DEFINITION_TOOLS_REFUSED = "WORKFLOW_DEFINITION_TOOLS_REFUSED";
@@ -104,7 +167,7 @@ export async function sessionInsideWorkflow(store: Pick<WorkflowStore, "readWork
 export function workflowDefinitionMcpToolFilters(serverNames: Iterable<string>): string[] {
     const filters: string[] = [];
     for (const server of serverNames) {
-        for (const tool of WORKFLOW_DEFINITION_TOOLS) filters.push(`mcp:${server}-${tool}`, `${server}-${tool}`);
+        for (const tool of WORKFLOW_DEFINITION_MCP_TOOLS) filters.push(`mcp:${server}-${tool}`, `${server}-${tool}`);
     }
     return filters;
 }
@@ -115,7 +178,7 @@ export function workflowDefinitionMcpToolFilters(serverNames: Iterable<string>):
  */
 export function workflowDefinitionMcpPermission<A extends unknown[], R>(base: (request: { kind?: string; toolName?: string } | undefined, ...rest: A) => R)
     : (request: { kind?: string; toolName?: string } | undefined, ...rest: A) => R | { kind: "reject"; feedback: string } {
-    return (request, ...rest) => (request?.kind === "mcp" && typeof request.toolName === "string" && WORKFLOW_DEFINITION_TOOLS.includes(request.toolName)
+    return (request, ...rest) => (request?.kind === "mcp" && typeof request.toolName === "string" && WORKFLOW_DEFINITION_MCP_TOOLS.includes(request.toolName)
         ? { kind: "reject", feedback: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT }
         : base(request, ...rest));
 }
@@ -126,14 +189,24 @@ export function workflowDefinitionToolsRefusal(): string {
 }
 
 /**
- * The nesting refusal of spawn_agent in words. `level` is the calling session's level; `max` the deepest a session may be.
+ * The nesting refusal reason of spawn_agent in words. `level` is the calling session's effective level (or null when
+ * its stored delegation chain cannot be verified); `max` is the deepest level any session may be.
  */
-export function spawnNestingRefusal(level: number, max: number, insideWorkflow: boolean): string {
+export function spawnNestingRefusalReason(level: number | null, max: number, insideWorkflow: boolean): string {
+    if (level === null) {
+        return `this session's delegation chain cannot be verified, and nothing goes past level ${max}. Do this work yourself.`;
+    }
     return insideWorkflow
-        ? `[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level ${level} (the top-level session is level 0), `
-            + `and sessions inside a Workflow stop at level ${max}. A sub-agent would be at level ${level + 1}. Do this work yourself.]`
-        : `[SYSTEM: spawn_agent failed — you are already at nesting level ${level} (max ${max}). `
-            + `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`;
+        ? `this session is at level ${level}, and nothing goes past level ${max} (your session is level 0; each sub-agent or Workflow is one level below whoever started it, the first Workflow in a chain is free, and an agent step sits at its Workflow's level). A sub-agent here would be at level ${level + 1}. Do this work yourself.`
+        : `you are already at nesting level ${level} (max ${max}). Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.`;
+}
+
+/**
+ * The nesting refusal of spawn_agent in words. `level` is the calling session's level (or null when unverified);
+ * `max` the deepest a session may be.
+ */
+export function spawnNestingRefusal(level: number | null, max: number, insideWorkflow: boolean): string {
+    return `[SYSTEM: spawn_agent failed — ${spawnNestingRefusalReason(level, max, insideWorkflow)}]`;
 }
 
 /** The refusal of human input to a session in an agent state's subtree: 403, with the workflow and its controlling agent. */
@@ -192,14 +265,17 @@ export function workflowInputCapabilities(lineage: WorkflowLineage | null): Work
 
 /**
  * The nesting of a child a session spawns (spawn_agent): its level and the
- * most it may be. In a workflow agent state's subtree, with a readable stored
- * lineage, the child's level is the session's stored level plus one and the
- * most is SESSION_MAX_NESTING_LEVEL (a nesting level a caller passes
- * does not count); elsewhere the session's own nesting level plus one and the
- * ordinary limit, exactly as before.
+ * most it may be. Whenever stored lineage is present, the child's level comes
+ * from `lineage.level + 1` (failing closed when `lineage.level === null`) and
+ * the cap is SESSION_MAX_NESTING_LEVEL; only when no lineage is passed does
+ * the session's own nesting level and ordinary limit apply.
  */
 export function spawnNesting(sessionNestingLevel: number, ordinaryMax: number, lineage: WorkflowLineage | null): { childNestingLevel: number; maxNestingLevel: number } {
-    if (lineage?.agentRoot && lineage.level !== null) return { childNestingLevel: lineage.level + 1, maxNestingLevel: SESSION_MAX_NESTING_LEVEL };
+    if (lineage !== null) {
+        const max = SESSION_MAX_NESTING_LEVEL;
+        if (!Number.isSafeInteger(lineage.level)) return { childNestingLevel: max + 1, maxNestingLevel: max };
+        return { childNestingLevel: (lineage.level as number) + 1, maxNestingLevel: max };
+    }
     return { childNestingLevel: sessionNestingLevel + 1, maxNestingLevel: ordinaryMax };
 }
 
