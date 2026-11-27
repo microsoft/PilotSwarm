@@ -66,7 +66,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -151,7 +152,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -239,7 +241,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -327,7 +330,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -408,7 +412,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -489,7 +494,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -570,7 +576,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -642,7 +649,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_PromptNotDropped"
@@ -709,7 +717,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_NoLoudFail"
@@ -785,7 +794,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -861,7 +871,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_NoPromptBehindStaleTurn"
@@ -941,7 +952,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1028,7 +1040,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1109,7 +1122,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1191,7 +1205,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1266,7 +1281,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_StopAtRunEnd"
@@ -1342,7 +1358,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1431,7 +1448,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1520,7 +1538,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1605,7 +1624,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1684,7 +1704,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1755,7 +1776,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1823,7 +1845,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_PromptNotDropped"
@@ -1893,7 +1916,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1972,7 +1996,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2057,7 +2082,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2146,7 +2172,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2234,7 +2261,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2318,7 +2346,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2394,7 +2423,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoRecheckFail"
@@ -2462,7 +2492,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2531,7 +2562,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2601,7 +2633,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2672,7 +2705,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2743,7 +2777,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2822,7 +2857,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2909,7 +2945,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2999,7 +3036,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3082,7 +3120,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3155,7 +3194,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3228,7 +3268,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3307,7 +3348,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3391,7 +3433,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3479,7 +3522,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3572,7 +3616,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3661,7 +3706,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3750,7 +3796,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3843,7 +3890,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3932,7 +3980,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4008,7 +4057,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoCarry"
@@ -4085,7 +4135,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4172,7 +4223,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4250,7 +4302,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4322,7 +4375,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4406,7 +4460,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4499,7 +4554,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4588,7 +4644,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4677,7 +4734,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4767,7 +4825,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4852,7 +4911,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4936,7 +4996,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5022,7 +5083,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5108,7 +5170,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5185,7 +5248,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5264,7 +5328,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5355,7 +5420,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5444,7 +5510,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5524,7 +5591,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5609,7 +5677,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5701,7 +5770,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5780,7 +5850,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5858,7 +5929,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5936,7 +6008,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6008,7 +6081,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6080,7 +6154,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6160,7 +6235,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6242,7 +6318,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6316,7 +6393,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6401,7 +6479,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6494,7 +6573,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6580,7 +6660,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6661,7 +6742,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6744,7 +6826,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6830,7 +6913,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6909,7 +6993,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6978,7 +7063,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_ResultOwnVisit"
@@ -7045,7 +7131,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoFailDecided"
@@ -7122,7 +7209,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7206,7 +7294,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7280,7 +7369,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoDroppedThenResult"
@@ -7347,7 +7437,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoDroppedThenTimeout"
@@ -7414,7 +7505,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoReuseAfterFail"
@@ -7482,7 +7574,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7551,7 +7644,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7626,7 +7720,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7713,7 +7808,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7807,7 +7903,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7899,7 +7996,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7990,7 +8088,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -8084,7 +8183,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -8165,7 +8265,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_StopOwnVisit"
@@ -8232,7 +8333,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoDoneCommitted"
@@ -8299,7 +8401,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoRanAfterDone"
@@ -8366,7 +8469,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoRanWithMemory"
@@ -8433,7 +8537,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoStopFenced"
@@ -8500,7 +8605,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoDoneStoppedAtEnd"
@@ -8567,7 +8673,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoEndStoppedTurn"
@@ -8634,7 +8741,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoReplyExpired"
@@ -8701,7 +8809,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoCycleStop"
@@ -8769,7 +8878,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "FALSE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -8844,7 +8954,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "FALSE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -8919,7 +9030,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "FALSE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -8994,7 +9106,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "TRUE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -9081,7 +9194,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "TRUE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -9175,7 +9289,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "TRUE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -9267,7 +9382,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "TRUE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -9345,7 +9461,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "TRUE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoAbortFenced"
@@ -9412,7 +9529,8 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "TRUE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoAckReconciled"
@@ -9479,10 +9597,513 @@
     "AsyncAbort": "TRUE",
     "AckLost": "TRUE",
     "Reconcile": "TRUE",
-    "AllowLoss": "TRUE"
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoLostNotRun"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.cc-false-memory-claim",
+  "module": "WfContinuedSession",
+  "config": "i1.cc-false-memory-claim.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoFalseMemoryClaim"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Design review D-2 at 58e4d056: the reply limit or a lost session ends a completed visit's turn without a commit, and the next cycle's prompt still says the earlier cycles are above.",
+  "tlc": {
+   "comment": "i1.cc-false-memory-claim (expected safety): Design review D-2 at 58e4d056: the reply limit or a lost session ends a completed visit's turn without a commit, and the next cycle's prompt still says the earlier cycles are above.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE",
+    "NoteLoss": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoFalseMemoryClaim"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "i1.fix-memory-safety",
+  "module": "WfContinuedSession",
+  "config": "i1.fix-memory-safety.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoStopOnActiveDone",
+   "Inv_StopOwnVisit",
+   "Inv_TurnsInOrder",
+   "Inv_EndStopsTurn",
+   "Inv_NoFalseMemoryClaim",
+   "Inv_LostNotCommitted"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "D-2 fix (1e0ea856): every safety property of i1.fix-r2-safety, and no later cycle's prompt says a lost earlier cycle is above (three visits, a person's end or delete, failing Stops).",
+  "tlc": {
+   "comment": "i1.fix-memory-safety (expected PASS): D-2 fix (1e0ea856): every safety property of i1.fix-r2-safety, and no later cycle's prompt says a lost earlier cycle is above (three visits, a person's end or delete, failing Stops).",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE",
+    "NoteLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoStopOnActiveDone",
+    "Inv_StopOwnVisit",
+    "Inv_TurnsInOrder",
+    "Inv_EndStopsTurn",
+    "Inv_NoFalseMemoryClaim",
+    "Inv_LostNotCommitted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.fix-memory-live",
+  "module": "WfContinuedSession",
+  "config": "i1.fix-memory-live.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoStopOnActiveDone",
+   "Inv_StopOwnVisit",
+   "Inv_TurnsInOrder",
+   "Inv_EndStopsTurn",
+   "Inv_NoFalseMemoryClaim",
+   "Inv_LostNotCommitted"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent",
+   "Prop_PromptTaken"
+  ],
+  "deadlock": true,
+  "note": "D-2 fix (1e0ea856): every visit decided, every agent session ended, owed ends sent, every queued prompt taken.",
+  "tlc": {
+   "comment": "i1.fix-memory-live (expected PASS): D-2 fix (1e0ea856): every visit decided, every agent session ended, owed ends sent, every queued prompt taken.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE",
+    "NoteLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoStopOnActiveDone",
+    "Inv_StopOwnVisit",
+    "Inv_TurnsInOrder",
+    "Inv_EndStopsTurn",
+    "Inv_NoFalseMemoryClaim",
+    "Inv_LostNotCommitted"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent",
+    "Prop_PromptTaken"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.fix-memory-turn-fails",
+  "module": "WfContinuedSession",
+  "config": "i1.fix-memory-turn-fails.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoStopOnActiveDone",
+   "Inv_StopOwnVisit",
+   "Inv_TurnsInOrder",
+   "Inv_EndStopsTurn",
+   "Inv_NoFalseMemoryClaim",
+   "Inv_LostNotCommitted"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "D-2 fix (1e0ea856) with tf1: turns that fail for good, before or after their report; every safety property (a failed visit is outside the claim, see the limit).",
+  "tlc": {
+   "comment": "i1.fix-memory-turn-fails (expected PASS): D-2 fix (1e0ea856) with tf1: turns that fail for good, before or after their report; every safety property (a failed visit is outside the claim, see the limit).",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"fix\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE",
+    "NoteLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoStopOnActiveDone",
+    "Inv_StopOwnVisit",
+    "Inv_TurnsInOrder",
+    "Inv_EndStopsTurn",
+    "Inv_NoFalseMemoryClaim",
+    "Inv_LostNotCommitted"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.wit-loss-told",
+  "module": "WfContinuedSession",
+  "config": "i1.wit-loss-told.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoLossTold"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "D-2 fix: a completed visit's turn ends without a commit, the visit records it, and the next cycle's turn starts told that cycle is not available.",
+  "tlc": {
+   "comment": "i1.wit-loss-told (expected safety): D-2 fix: a completed visit's turn ends without a commit, the visit records it, and the next cycle's turn starts told that cycle is not available.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE",
+    "NoteLoss": "TRUE"
+   },
+   "invariants": [
+    "W_NoLossTold"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "limit.i1-turn-fails-untold",
+  "module": "WfContinuedSession",
+  "config": "limit.i1-turn-fails-untold.cfg",
+  "mode": "proposal",
+  "meaning": "design-limit",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoUntoldFailed"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "D-2 limit: a completed visit's turn that fails for good after its report (its activity's retries spent) records nothing, so the next cycle's prompt still says the earlier cycles are above.",
+  "tlc": {
+   "comment": "limit.i1-turn-fails-untold (expected safety): D-2 limit: a completed visit's turn that fails for good after its report (its activity's retries spent) records nothing, so the next cycle's prompt still says the earlier cycles are above.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "TRUE",
+    "FailReport": "\"fix\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE",
+    "NoteLoss": "TRUE"
+   },
+   "invariants": [
+    "W_NoUntoldFailed"
    ],
    "properties": [],
    "deadlock": true
@@ -9546,7 +10167,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_ResultOwnVisit"
@@ -9613,7 +10235,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_OneLive"
@@ -9687,7 +10310,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -9761,7 +10385,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_EndOnce"
@@ -9828,7 +10453,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "Inv_NoTurnForDecided"
@@ -9895,7 +10521,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoReplacement"
@@ -9962,7 +10589,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoOwedEnd"
@@ -10029,7 +10657,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoCycleStop"
@@ -10096,7 +10725,8 @@
     "AsyncAbort": "FALSE",
     "AckLost": "FALSE",
     "Reconcile": "FALSE",
-    "AllowLoss": "FALSE"
+    "AllowLoss": "FALSE",
+    "NoteLoss": "FALSE"
    },
    "invariants": [
     "W_NoSkip"

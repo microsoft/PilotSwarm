@@ -14,7 +14,7 @@ def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failagentsess
        withdraw=False, outbox=False, carry=False, carrydelete="none",
        turnguard=False, markcreating=False, carrynotfound=False, turnfail=False, failreport="none", tofair=True, tfrecover=False,
        splitturn=False, nostopondone=False, sessionendstop=False, allowstall=False, replylimit=False,
-       asyncabort=False, acklost=False, reconcile=False, allowloss=False):
+       asyncabort=False, acklost=False, reconcile=False, allowloss=False, noteloss=False):
     return dict(V=v, Person=q(person), AllowStop=b(stop), AllowCancel=b(cancel), AllowStopFail=b(stopfail), FailAgentSession=failagentsession,
                 RecoverFair=b(recover), SpawnRecheck=b(recheck), RecheckSeesEnding=b(seesending), EndMark=b(endmark), StopBeforeSpawn=b(stopspawn), PerAgentSessionEnd=b(peragentsession),
                 StopAtRunEnd=b(stopend), Fault=q(fault), SplitSpawn=b(split), CheckAll=b(checkall), Fence=q(fence),
@@ -23,7 +23,8 @@ def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failagentsess
                 TurnGuard=b(turnguard), MarkCreating=b(markcreating), CarryNotFound=b(carrynotfound),
                 AllowTurnFail=b(turnfail), FailReport=q(failreport), TimeoutFair=b(tofair), AllowRecover=b(tfrecover),
                 SplitTurn=b(splitturn), NoStopOnDone=b(nostopondone), SessionEndStop=b(sessionendstop), AllowStall=b(allowstall),
-                ReplyLimit=b(replylimit), AsyncAbort=b(asyncabort), AckLost=b(acklost), Reconcile=b(reconcile), AllowLoss=b(allowloss))
+                ReplyLimit=b(replylimit), AsyncAbort=b(asyncabort), AckLost=b(acklost), Reconcile=b(reconcile), AllowLoss=b(allowloss),
+                NoteLoss=b(noteloss))
 M = "WfContinuedSession"
 CORE = ["TypeOK", "Inv_OneLive", "Inv_ResultOwnVisit", "Inv_ReplaceOnlyEnded", "Inv_NoTurnForDecided", "Inv_EndOnce"]
 ALL = CORE + ["Inv_PromptNotDropped", "Inv_NoLoudFail", "Inv_NoPromptBehindStaleTurn", "Inv_StopAtRunEnd"]
@@ -66,6 +67,10 @@ I1R2 = os.environ.get("I1_R2_HEAD", "0dae9760")   # i1 at review R2 (the R1 fixe
 I1E = dict(I1F, asyncabort=True, acklost=True, allowloss=True)                # review R2's environment: the abort lands later,
                                                                               # an acknowledgement is lost, a session is lost
 I1F2 = dict(I1E, reconcile=True)                                               # with the review R2 fixes
+I1M = os.environ.get("I1_MERGE_HEAD", "58e4d056")   # the Phase 1 merge head before the design review's a-fixes (D-1, D-2)
+I1AF = os.environ.get("I1_AFIX_HEAD", "AFIX")      # the a-fixes commit
+I1F3 = dict(I1F2, noteloss=True)                                               # with review D-2: a lost visit is recorded and told
+I1MINV = I1INV + ["Inv_NoFalseMemoryClaim", "Inv_LostNotCommitted"]
 CASES = [
  # the code as written, where no gap is triggered
  ("cc.safety", "reviewed", "confirmed", "Spec", cc(stopend=True), ALL, [], "PASS", True,
@@ -334,6 +339,22 @@ CASES = [
   "Review R2-3 fix: a result whose acknowledgement was lost is read back as decided, and the turn's reply limit is armed."),
  ("i1.wit-lost-not-run", "proposal", "witness", "Spec", cc(v=2, **I1F2), ["W_NoLostNotRun"], [], "safety", True,
   "Review R2-1 fix: a decided visit's turn that lost its session ends without running again."),
+ # Design review D-2 of i1 (owner decision a-fixes): a completed visit whose turn ends without a commit (the reply limit, a lost
+ # session, a Stop while the run is stopping) records it, and the next cycle's prompt says that cycle is not available
+ # (NoteLoss). D-1 (the turn's background tasks cancelled at the report) changes no modeled step: a reply that does not end by
+ # itself is already a choice (AllowStall).
+ ("i1.cc-false-memory-claim", "reviewed", "finding", "Spec", cc(v=2, **I1F2), ["TypeOK", "Inv_NoFalseMemoryClaim"], [], "safety", False,
+  f"Design review D-2 at {I1M}: the reply limit or a lost session ends a completed visit's turn without a commit, and the next cycle's prompt still says the earlier cycles are above."),
+ ("i1.fix-memory-safety", "proposal", "proposed-fix", "Spec", cc(person="any", stopfail=True, **I1F3), ALL + I1MINV, [], "PASS", True,
+  f"D-2 fix ({I1AF}): every safety property of i1.fix-r2-safety, and no later cycle's prompt says a lost earlier cycle is above (three visits, a person's end or delete, failing Stops)."),
+ ("i1.fix-memory-live", "proposal", "proposed-fix", "LiveSpec", cc(v=2, person="any", stopfail=True, **I1F3), CORE + I1MINV, LIVE + ["Prop_PromptTaken"], "PASS", True,
+  f"D-2 fix ({I1AF}): every visit decided, every agent session ended, owed ends sent, every queued prompt taken."),
+ ("i1.fix-memory-turn-fails", "proposal", "proposed-fix", "Spec", cc(v=2, stopfail=True, turnfail=True, failreport="fix", **I1F3), ALL + I1MINV, [], "PASS", True,
+  f"D-2 fix ({I1AF}) with tf1: turns that fail for good, before or after their report; every safety property (a failed visit is outside the claim, see the limit)."),
+ ("i1.wit-loss-told", "proposal", "witness", "Spec", cc(v=2, **I1F3), ["W_NoLossTold"], [], "safety", True,
+  "D-2 fix: a completed visit's turn ends without a commit, the visit records it, and the next cycle's turn starts told that cycle is not available."),
+ ("limit.i1-turn-fails-untold", "proposal", "design-limit", "Spec", cc(v=2, turnfail=True, failreport="fix", **I1F3), ["W_NoUntoldFailed"], [], "safety", True,
+  "D-2 limit: a completed visit's turn that fails for good after its report (its activity's retries spent) records nothing, so the next cycle's prompt still says the earlier cycles are above."),
  # faults
  ("fault.bind-newest", "deliberate", "deliberate", "Spec", cc(stopfail=True, fault="bind-newest"), ["Inv_ResultOwnVisit"], [], "safety", False,
   "A result bound to the newest pending visit instead of its own: an old turn decides the next visit."),

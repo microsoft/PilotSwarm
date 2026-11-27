@@ -253,6 +253,31 @@ constants `FALSE` (for example `cc.safety` 3,142 distinct states, `fix.all` 78,2
 the i1 cases keep their batch results (`i1.fix-safety` 445,565, `i1.fix-live` 23,899, `i1.fix-r2-safety` 6,521,296,
 `i1.fix-r2-live` 188,101).
 
+### Design review D-1 and D-2 of i1 (owner decision a-fixes, bound to 1e0ea856)
+
+D-2: a completed visit whose turn then ends without a commit (the reply limit, a lost session, a Stop while the run is
+stopping) left the next cycle's prompt saying "what you did in earlier cycles is above". The fix (`NoteLoss`) marks such a
+visit `lost` in the same step as that turn's end, while the run has not ended, and the next cycle's `TurnStart` checks
+the claim: `Inv_NoFalseMemoryClaim` (no later cycle's turn starts with the claim while an earlier completed cycle of its
+session did not commit and is not recorded lost) and `Inv_LostNotCommitted` (only a visit that did not commit is marked).
+A visit whose turn failed for good after its report (`TurnFails`, its activity's retries spent) records nothing in the
+code; it is outside the invariant and shown by the limit case. D-1 (the turn's background tasks cancelled at the report)
+changes no modelled step: a reply that never ends by itself is already a choice (`AllowStall`).
+`CORRESPONDENCE-i1-afix-1e0ea856.md` gives the mapping.
+
+Model sha256 `014926672f2e...`; the batch reran every `i1.*` case, the new limit case and the regression set (46 cases;
+TLC 2.19, OpenJDK 21, two workers), 2026-11-27: all as expected. With `NoteLoss` `FALSE` the earlier cases keep their
+state counts (`i1.fix-safety` 445,565, `i1.fix-r2-safety` 6,521,296, `i1.fix-r2-live` 188,101).
+
+| Case | Expected | Result |
+|---|---|---|
+| `i1.cc-false-memory-claim` (the code at 58e4d056) | `Inv_NoFalseMemoryClaim` violated | violated: report, the next visit queued, the reported turn loses its session, the next turn starts (1,004 distinct states) |
+| `i1.fix-memory-safety` (three visits, a person's end or delete, failing Stops) | PASS | PASS, 7,204,588 distinct states |
+| `i1.fix-memory-live` | PASS | PASS, 207,181 distinct states |
+| `i1.fix-memory-turn-fails` | PASS | PASS, 53,250 distinct states |
+| `i1.wit-loss-told` (non-vacuity) | reached | reached: the same trace, the next turn told |
+| `limit.i1-turn-fails-untold` | reached | reached (1,459 distinct states) |
+
 ## How to run
 
 As in `../../session-orchestration/README.md`: `TLA_TOOLS=<dir with tla2tools.jar> ./check-packet.sh` then

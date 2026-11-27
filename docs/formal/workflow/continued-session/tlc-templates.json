@@ -42,7 +42,8 @@
       "AsyncAbort",
       "AckLost",
       "Reconcile",
-      "AllowLoss"
+      "AllowLoss",
+      "NoteLoss"
     ],
     "lists": "block",
     "deadlockFirst": false

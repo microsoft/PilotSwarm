@@ -117,6 +117,12 @@ i1.fix-r2-stalled-reply	i1.fix-r2-stalled-reply.cfg	WfContinuedSession
 i1.wit-abort-fenced	i1.wit-abort-fenced.cfg	WfContinuedSession
 i1.wit-ack-reconciled	i1.wit-ack-reconciled.cfg	WfContinuedSession
 i1.wit-lost-not-run	i1.wit-lost-not-run.cfg	WfContinuedSession
+i1.cc-false-memory-claim	i1.cc-false-memory-claim.cfg	WfContinuedSession
+i1.fix-memory-safety	i1.fix-memory-safety.cfg	WfContinuedSession
+i1.fix-memory-live	i1.fix-memory-live.cfg	WfContinuedSession
+i1.fix-memory-turn-fails	i1.fix-memory-turn-fails.cfg	WfContinuedSession
+i1.wit-loss-told	i1.wit-loss-told.cfg	WfContinuedSession
+limit.i1-turn-fails-untold	limit.i1-turn-fails-untold.cfg	WfContinuedSession
 fault.bind-newest	fault.bind-newest.cfg	WfContinuedSession
 fault.replace-without-check	fault.replace-without-check.cfg	WfContinuedSession
 fault.no-owed-mark	fault.no-owed-mark.cfg	WfContinuedSession
