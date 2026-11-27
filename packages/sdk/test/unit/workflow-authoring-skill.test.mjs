@@ -87,6 +87,10 @@ test("the workflow skills load from their own plugin directory, which no worker 
     for (const phrase of ["nothing goes past level 2", "first Workflow in a chain is free", "agent step", "three deep"]) {
         assert.ok(limits.prompt.toLowerCase().includes(phrase.toLowerCase()), `workflow-limits covers depth rule: ${phrase}`);
     }
+    // I8 follow-up: workflow-limits states the 3 continued-session parallel limits/upgrade bullets.
+    for (const phrase of ["(runId, stateId)", "`forEach` bodies allow `session: new` only", "saved again as a new revision to start"]) {
+        assert.ok(limits.prompt.includes(phrase), `workflow-limits covers I8 parallel continue bullet: ${phrase}`);
+    }
     const userGuide = readFileSync(fileURLToPath(new URL("../../../../docs/user-guide/workflows.md", import.meta.url)), "utf8");
     assert.ok(userGuide.includes("## How deep can sessions and Workflows go?"), "user guide has depth-rules section");
     assert.ok(userGuide.includes("#how-deep-can-sessions-and-workflows-go"), "A.4 cross-links depth-rules section");

@@ -30,6 +30,23 @@ with `child_workflows` `read` `full_output: true`. Saving now warns
 `WORKFLOW_ENDED_WHOLE_OUTPUT` where a child's whole output reaches one of those
 limits as it arrived.
 
+### Workflows: `session: continue` in named parallel branches
+
+Agent states inside named parallel `branches:` may now declare `session: continue`,
+keeping one durable agent session per `(runId, stateId)` across both
+intra-branch loops and outer-loop re-entries of the enclosing `parallel` state
+(building on continued-session memory commits). Omitting `session:` inside a
+named branch still defaults to `session: new` so existing definitions recompile
+unchanged at Start; `forEach` bodies remain `session: new` only (enforced by the
+compiler and a `WORKFLOW_STORE_CORRUPT` guard on non-named branch scopes in
+`enter`). Continued-session store queries and Portal Agent Log / Node Summary
+views now rank visits by composite `(enclosing parallel ordinal, node ordinal)`
+so outer-loop re-entries that reset per-scope ordinals preserve cycle order,
+replacement numbering, and graceful-stop `Q5` semantics, and the Agent Log
+displays ` · cycle N` on re-entered forks. Previously saved invalid revisions
+that used `session: continue` in `branches:` must be saved as a new revision to
+start; worker rollouts remain stop-all.
+
 ### Workflows: single level-2 depth rule (first Workflow free)
 
 All four session and Workflow depth checks (`spawn_agent` inline, Workflow
@@ -44,6 +61,16 @@ sub-agent, and Workflows may nest up to three deep (`0 -> 1 -> 2`). Refusal
 messages, `docs/user-guide/workflows.md` (*How deep can sessions and Workflows
 go?*), `docs/developer/building/workflow-sessions.md`, and the
 `workflow-limits` / `workflow-authoring` skills all state the same rule.
+
+### Workflow definition cleanup
+
+- `workflow_definition` now supports `operation: "delete"` (`definition_id` or
+  `name`, optional `operation_id`) so a session can delete its own throwaway or
+  unused definitions. Package definitions (`<package>/<name>`, locked) are
+  refused with `DEFINITION_LOCKED`, sessions inside a Workflow keep their
+  existing refusal, and definitions with active Workflows remain refused with
+  `DEFINITION_IN_USE` naming the active Workflows and instructing to stop or
+  cancel them first. Finished Workflows keep their pinned revision copies.
 
 ### Workflows: every session above a Workflow reads and controls it
 
@@ -81,23 +108,6 @@ The new `workflow-limits` skill lists the size limits a run meets.
 (`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`;
 `outcome` is the terminal state's, else `null`.
 
-### Workflows: `session: continue` in named parallel branches
-
-Agent states inside named parallel `branches:` may now declare `session: continue`,
-keeping one durable agent session per `(runId, stateId)` across both
-intra-branch loops and outer-loop re-entries of the enclosing `parallel` state
-(building on continued-session memory commits). Omitting `session:` inside a
-named branch still defaults to `session: new` so existing definitions recompile
-unchanged at Start; `forEach` bodies remain `session: new` only (enforced by the
-compiler and a `WORKFLOW_STORE_CORRUPT` guard on non-named branch scopes in
-`enter`). Continued-session store queries and Portal Agent Log / Node Summary
-views now rank visits by composite `(enclosing parallel ordinal, node ordinal)`
-so outer-loop re-entries that reset per-scope ordinals preserve cycle order,
-replacement numbering, and graceful-stop `Q5` semantics, and the Agent Log
-displays ` · cycle N` on re-entered forks. Previously saved invalid revisions
-that used `session: continue` in `branches:` must be saved as a new revision to
-start; worker rollouts remain stop-all.
-
 ### Workflows: an agent step remembers its earlier visits
 
 A `session: continue` agent step now remembers what it did in earlier visits.
@@ -133,16 +143,6 @@ cases are not recorded either, and the next cycle's prompt still says the
 earlier cycles are above: a visit decided by its time limit or a cancel (its
 Stop ends its turn unsaved), and a recovery that starts a fresh conversation
 (a corrupted transcript, a missing snapshot).
-
-### Workflow definition cleanup
-
-- `workflow_definition` now supports `operation: "delete"` (`definition_id` or
-  `name`, optional `operation_id`) so a session can delete its own throwaway or
-  unused definitions. Package definitions (`<package>/<name>`, locked) are
-  refused with `DEFINITION_LOCKED`, sessions inside a Workflow keep their
-  existing refusal, and definitions with active Workflows remain refused with
-  `DEFINITION_IN_USE` naming the active Workflows and instructing to stop or
-  cancel them first. Finished Workflows keep their pinned revision copies.
 
 ### Decision cleanups
 

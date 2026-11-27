@@ -79,3 +79,9 @@ In practice (effective levels in parentheses):
 - Width limits apply alongside depth: at most 50 running sub-agents and active
   Workflows per session; 64 parallel branches (16 concurrent), 100 states, and
   1,000 state visits by default (10,000 max) per Workflow.
+
+## Continued agent sessions in parallel states
+
+- Named `branches:` allow explicit `session: continue` (omitting `session:` still defaults to `new`): one continued agent session per `(runId, stateId)` across both intra-branch loops and outer-loop re-entries of the enclosing `parallel` state.
+- `forEach` bodies allow `session: new` only (`session: continue` is refused because items run side by side).
+- Upgrade note: any revision saved invalid before `session: continue` in named `branches:` was allowed must be saved again as a new revision to start.
