@@ -401,8 +401,11 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   the server cannot tell. A parent asked by its child to change a definition
   must decide on its own.
   Any other session may hand prescriptive work to a Workflow; the base
-  guidance says so. Sessions inside a Workflow stop at level 3 below the
-  top-level session, and each refusal says so in words.
+  guidance says so. Nothing goes past effective level 2: the first Workflow in
+  a delegation segment is free (`+0`), each later Workflow and each sub-agent
+  is `+1`, an agent step sits at its Workflow's level (`+0`), and system
+  sessions (`is_system = true`) reset their segment root to `0`. Every refusal
+  states this rule in plain words.
 - **Test mode is hidden** (see [Test mode (hidden)](#test-mode-hidden)).
 
 ## A definition belongs to the session (stage 2.1)
@@ -424,15 +427,21 @@ Workflow tab), then Start that revision. An exact repeat of `spawn_workflow`
 (the same key and YAML) is answered from its save's receipt; after a crash
 between its save and its start, the repeat starts the revision that save made.
 
-Start keeps `spawn_agent`'s limits (stage 2.4): a Workflow is one level deeper
-than its session, so a session at the deepest level (2) starts none
-(`WORKFLOW_NESTING_LIMIT`). The session's level is read from its stored lineage
-for every Start, a person's included. A session's sub-agents (pending or
-running) and its active Workflows (a live run admitted, running or paused, or
-a Start claimed and not admitted yet) share one budget of 50 (`CHILD_LIMIT`,
-429). `spawn_agent` and Start count it with the same rule, under an exclusive
-lock on the session, in the transaction that makes the child, so two at the same
-moment cannot both take the 50th place. Workflows are always on, so this
+Start keeps `spawn_agent`'s limits (stage 2.4, unified on `effectiveLevel`):
+nothing goes past level 2 (`WORKFLOW_NESTING_LIMIT`). Because the first
+Workflow in a chain is free (`+0`) while each later Workflow adds `+1`, a
+level-2 sub-agent with no prior Workflow can start one Workflow (at level 2,
+whose agent steps cannot delegate), and Workflows may nest up to three deep
+(`0 -> 1 -> 2`; a fourth is refused at level 3). The session's effective level
+and `hasWorkflow` flag are read from its stored lineage for every Start, a
+person's included (failing closed on missing or broken lineage); the fallback
+`spawn_agent` path enforces the same stored-chain rule inside the
+`captureSpawnToolsV1` activity with no orchestration version change. A
+session's sub-agents (pending or running) and its active Workflows (a live run
+admitted, running or paused, or a Start claimed and not admitted yet) share one
+budget of 50 (`CHILD_LIMIT`, 429). `spawn_agent` and Start count it with the
+same rule, under an exclusive lock on the session, in the transaction that
+makes the child, so two at the same moment cannot both take the 50th place.
 budget always applies. System children are not counted, and a system child is
 created without the atomic budget; a calling system agent is not exempt: its
 `spawn_agent` is still refused once its counted children reach 50.

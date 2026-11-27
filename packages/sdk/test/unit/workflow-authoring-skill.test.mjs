@@ -81,6 +81,15 @@ test("the workflow skills load from their own plugin directory, which no worker 
     for (const name of ["workflow-reference", WORKFLOW_AUTHORING_SKILL]) {
         assert.match(skills().find(skill => skill.name === name).prompt, /keep only what you need (from each|per) child; size limits: `workflow-limits`\./, name);
     }
+    // I9 depth rule: full depth rules & level table live in workflow-limits; workflow-authoring drops stale "level 3" text; user guide documents it.
+    assert.ok(!core.prompt.includes("its children are level 3"), "workflow-authoring drops stale level 3 wording");
+    assert.ok(core.prompt.includes("Step sits at its Workflow's level; first Workflow free, max level 2."), "workflow-authoring names I9 level-2 rule");
+    for (const phrase of ["nothing goes past level 2", "first Workflow in a chain is free", "agent step", "three deep"]) {
+        assert.ok(limits.prompt.toLowerCase().includes(phrase.toLowerCase()), `workflow-limits covers depth rule: ${phrase}`);
+    }
+    const userGuide = readFileSync(fileURLToPath(new URL("../../../../docs/user-guide/workflows.md", import.meta.url)), "utf8");
+    assert.ok(userGuide.includes("## How deep can sessions and Workflows go?"), "user guide has depth-rules section");
+    assert.ok(userGuide.includes("#how-deep-can-sessions-and-workflows-go"), "A.4 cross-links depth-rules section");
     // The guides agents read do not teach test mode (spec 16): no test operation, test run or testing guide.
     for (const skill of skills()) {
         for (const word of ["workflow-testing", "test_respond", "test_advance", "test run", "test_waiting", "TEST_NEEDS_DRAFT"]) {

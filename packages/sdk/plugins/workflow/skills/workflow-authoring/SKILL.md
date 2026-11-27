@@ -171,7 +171,7 @@ An agent state runs one task and waits for its typed result.
 - People can read the agent session. They cannot prompt, answer or steer it,
   and it cannot use `ask_user`: it consults you or completes with
   `needs_input`. Route `needs_input` to a state that asks the parent.
-- The agent session may delegate; its children are level 3, the deepest.
+- Step sits at its Workflow's level; first Workflow free, max level 2.
 
 ## 8. Parallel states
 

@@ -409,6 +409,76 @@ skills. People then find it in the new-session picker.
   next Workflow. Workflows that already started keep the version they started
   with.
 
+## How deep can sessions and Workflows go?
+
+**In one sentence:** nothing goes past level 2. Each sub-agent or Workflow is
+one level below whoever started it, but the first Workflow in a chain is free,
+and an agent step sits at its Workflow's level.
+
+**The rules, and why each one exists:**
+
+1. **Your session is level 0. Each sub-agent, and each Workflow, is one level
+   below whoever started it.**
+   *Why:* each level of delegation adds cost, and the further a session is from
+   you, the harder it is to see what it does and why. Counting levels keeps the
+   tree small enough to read.
+2. **Nothing goes past level 2:** not sub-agents, not Workflows, not agent
+   steps. You can have helpers, and your helpers can have helpers; those cannot
+   delegate again.
+   *Why:* two levels cover the patterns that work: a lead, its specialists, and
+   their short-lived helpers. Deeper chains cost more and lose track of the
+   original request more than they help.
+3. **The first Workflow in a chain does not count.**
+   *Why:* a Workflow runs no model. It is a container you can audit, not a
+   thinker. Putting work into a Workflow should not cost you a level of
+   delegation. Only the first one is free, so nesting Workflows still costs
+   levels. Workflows may nest up to three deep.
+4. **A Workflow's agent step is at its Workflow's level.**
+   *Why:* the step is the Workflow doing its own work, not handing work to
+   someone else. Counting it would use up a level for nothing.
+
+   *In practice:*
+   - an agent step in a top-level Workflow sits at level 0 and can delegate two
+     levels down, the same as your own session;
+   - an agent step in a child Workflow sits at level 1 and can delegate one
+     level down (for example, an issue-batch coder starting a level-2 reviewer);
+   - an agent step whose Workflow is already at level 2 (such as a third nested
+     Workflow, or a Workflow started by a level-2 sub-agent) sits at level 2
+     and cannot delegate further.
+5. **Nothing inside a Workflow can start, change or save a Workflow.**
+   *Why:* a Workflow's shape comes from its definition, which you can read and
+   review before it runs. If agents could grow new Workflows from the inside,
+   the run would no longer match what you approved. Child Workflows are
+   declared in the definition, with `spawn` steps.
+6. **An agent step's tool list applies to every sub-agent under it.**
+   *Why:* delegating must not be a way around the limits that the Workflow's
+   author set.
+7. **Width is limited too:**
+   - at most 50 sub-agents and Workflows running at once per session;
+   - per Workflow: 64 branches in one parallel step with 16 running at once,
+     100 steps, and 1,000 step visits by default (10,000 at most).
+
+   *Why:* depth limits do not stop fan-out. These limits bound cost and load.
+8. **System sessions start again at level 0.**
+   *Why:* they are platform services, such as the Sweeper, not part of your
+   delegation chain. Your depth must not block them.
+9. **Native tasks have no level and cannot delegate.**
+   *Why:* a native task is a helper inside one turn of its parent, not a
+   session of its own. Work that runs long belongs in a durable sub-agent.
+
+**How each kind of session gets its level, for reference:**
+
+| Session | Level |
+|---|---|
+| Your session | 0 |
+| A sub-agent | its parent's level + 1 |
+| The first Workflow in a chain | the same level as whoever started it (free) |
+| Any later Workflow, including a child from a `spawn` step | its starter's level + 1 |
+| A Workflow's agent step | the same level as its Workflow |
+| A system session | starts again at 0 |
+| A native task | not a session, so no level |
+| Anything | refused above level 2 |
+
 
 # Part 2: Other ways to work with Workflows
 
@@ -1094,6 +1164,11 @@ admitted controller version.
 - **A session must have had a turn** before its Workflow sends to it or asks it
   something; otherwise that step fails as `unavailable`. A session that saved
   the definition itself always has.
+- **Depth stops at level 2.** Nothing goes past level 2: each sub-agent or
+  Workflow is one level below whoever started it, the first Workflow in a chain
+  is free, and an agent step sits at its Workflow's level (so Workflows may
+  nest three deep, and a child Workflow's agent step can spawn a level-2
+  sub-agent). See [How deep can sessions and Workflows go?](#how-deep-can-sessions-and-workflows-go).
 - **Quote errors.** When a save, start or run fails, give the person the
   actual code and message. Keep the first failure's evidence; do not change
   the definition and rerun until it passes unless the person asks.

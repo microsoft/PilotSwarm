@@ -30,6 +30,21 @@ with `child_workflows` `read` `full_output: true`. Saving now warns
 `WORKFLOW_ENDED_WHOLE_OUTPUT` where a child's whole output reaches one of those
 limits as it arrived.
 
+### Workflows: single level-2 depth rule (first Workflow free)
+
+All four session and Workflow depth checks (`spawn_agent` inline, Workflow
+Start / `spawn` steps, Workflow agent-step host, and fallback
+`captureSpawnToolsV1` with no session orchestration version bump) now share one
+`effectiveLevel` helper over stored lineage: nothing goes past level `2`, the
+first Workflow in a chain is free (`+0`), each later Workflow and sub-agent
+adds `+1`, an agent step sits at its Workflow's level (`+0`), and system
+sessions reset to `0`. Chains without a Workflow are unchanged. A child
+Workflow's agent step now sits at level `1` and can spawn a level-`2`
+sub-agent, and Workflows may nest up to three deep (`0 -> 1 -> 2`). Refusal
+messages, `docs/user-guide/workflows.md` (*How deep can sessions and Workflows
+go?*), `docs/developer/building/workflow-sessions.md`, and the
+`workflow-limits` / `workflow-authoring` skills all state the same rule.
+
 ### Workflows: every session above a Workflow reads and controls it
 
 `read_workflow` and `update_workflow` now work on Workflows nested below the

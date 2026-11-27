@@ -51,3 +51,34 @@ reaches a join, a message or the run's output with no mapping in between.
 
 A single child whose whole output is the run's output fits: no mapping is
 needed there.
+
+## Session and Workflow depth (max level 2)
+
+Nothing goes past level 2: each sub-agent or Workflow is one level below
+whoever started it, but the first Workflow in a chain is free (`+0`), and an
+agent step sits at its Workflow's level (`+0`). Workflows may nest three deep
+(`0 -> 1 -> 2`), and system sessions start again at level `0`.
+
+| Session | Level |
+|---|---|
+| Top-level session | `0` |
+| Sub-agent | parent's level `+ 1` |
+| First Workflow in a chain | starter's level (`+0`, free) |
+| Any later Workflow (`spawn` child) | starter's level `+ 1` |
+| Workflow agent step | its Workflow's level (`+0`) |
+| System session | resets to `0` |
+| Native task | no level; cannot delegate |
+| Anything above level `2` | refused |
+
+In practice:
+- An agent step in a top-level Workflow (`level 0`) can delegate two sub-agent
+  levels down (`1 -> 2`), matching a top-level session.
+- An agent step in a child Workflow (`level 1`) can spawn a sub-agent (`level 2`),
+  for example a coder step spawning its reviewer.
+- An agent step in a level-2 Workflow (a third nested Workflow, or a Workflow
+  started by a level-2 sub-agent) sits at level `2` and cannot delegate further.
+- Nothing inside a Workflow can save, change, or start a Workflow Definition
+  (`WORKFLOW_DEFINITION_TOOLS_REFUSED`); declare child Workflows with `spawn` steps.
+- Width limits apply alongside depth: at most 50 running sub-agents and active
+  Workflows per session; 64 parallel branches (16 concurrent), 100 states, and
+  1,000 state visits by default (10,000 max) per Workflow.
