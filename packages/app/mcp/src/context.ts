@@ -3,6 +3,8 @@ import {
     PilotSwarmManagementClient,
     WebPilotSwarmManagementClient,
     createManagementClient,
+    createSessionBlobStore,
+    FilesystemArtifactStore,
     createFactStoreForUrl,
     createWebFactStore,
     createGraphStoreForUrl,
@@ -14,6 +16,7 @@ import {
     ModelProviderRegistry,
     loadSkills,
     loadAgentFiles,
+    type ArtifactStore,
     type SharedManagementSurface,
     type FactStore,
     type EnhancedFactStore,
@@ -165,6 +168,27 @@ export function originatingSessionIdFromEnv(env: Record<string, string | undefin
     return value && value.length <= 256 ? value : null;
 }
 
+/**
+ * Direct-mode artifact store builder, mirroring NodeSdkTransport.createArtifactStore():
+ * uses Azure Blob Storage when configured (failing fast on broken blob config) and falls back
+ * to FilesystemArtifactStore(ARTIFACT_DIR) otherwise so package Workflows work in direct mode.
+ */
+export function createDirectArtifactStore(env: Record<string, string | undefined> = process.env): ArtifactStore {
+    const sessionStateDir = (env.SESSION_STATE_DIR || "").trim() || undefined;
+    const artifactDir = (env.ARTIFACT_DIR || "").trim() || undefined;
+    try {
+        const blobStore = createSessionBlobStore(env, { sessionStateDir });
+        if (blobStore) return blobStore;
+    } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new Error(
+            `Azure Blob Storage is configured but cannot be initialized (reason: ${reason}). `
+            + "Either fix the configuration or unset AZURE_STORAGE_CONNECTION_STRING / PILOTSWARM_BLOB_USE_MANAGED_IDENTITY / PILOTSWARM_USE_MANAGED_IDENTITY / AZURE_STORAGE_ACCOUNT_URL to fall back to the local filesystem artifact store.",
+        );
+    }
+    return new FilesystemArtifactStore(artifactDir);
+}
+
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
     let client: PilotSwarmClient;
     let mgmt: SharedManagementSurface;
@@ -253,8 +277,15 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         ctxRole = "admin";
         client = new PilotSwarmClient({ store: opts.store });
         await client.start();
-        mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands !== undefined ? { workflowCommands: opts.workflowCommands } : {}),
-            ...workflowScriptsOptionFromEnv() });
+        const artifactStore = createDirectArtifactStore(process.env);
+        const blobEnabled = Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING);
+        mgmt = new PilotSwarmManagementClient({
+            store: opts.store,
+            blobEnabled,
+            artifactStore,
+            ...(opts.workflowCommands !== undefined ? { workflowCommands: opts.workflowCommands } : {}),
+            ...workflowScriptsOptionFromEnv(),
+        });
         await mgmt.start();
 
         // Enhanced facts + graph provisioning from HORIZON_* env — the same

@@ -77,7 +77,14 @@ export function buildCapabilities(ctx: ServerContext) {
         // client's readWorkflow: the view, its pages and an execution's whole
         // value), and update_workflow only with the test-only option
         // workflowCommands.
-        workflow_tools: { read: true, commands: ctx.workflowCommands === true },
+        workflow_tools: {
+            read: true,
+            catalog: true,
+            session_for_workflow: true,
+            skills: true,
+            commands: ctx.workflowCommands === true,
+            definitions: ctx.workflowCommands === true,
+        },
     };
 }
 

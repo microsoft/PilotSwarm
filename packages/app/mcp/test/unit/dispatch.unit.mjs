@@ -478,6 +478,41 @@ async function main() {
         await client.close();
     }
 
+    // ── 9. Task 4: list_sessions projects session_kind (unpaged + paged) & initialize instructions ─
+    {
+        const calls = [];
+        const ctx = makeCtx(calls);
+        ctx.mgmt.listSessions = async () => [
+            { sessionId: "s-agent", title: "Agent", status: "idle", isSystem: false, createdAt: 1 },
+            { sessionId: "s-wf", sessionKind: "workflow", title: "Workflow: ping", status: "completed", isSystem: false, parentSessionId: "s-agent", createdAt: 2 },
+        ];
+        ctx.mgmt.listSessionsPage = async () => ({
+            sessions: [
+                { sessionId: "s-wf", sessionKind: "workflow", title: "Workflow: ping", status: "completed", isSystem: false, createdAt: 2 },
+                { sessionId: "s-agent", sessionKind: "agent", title: "Agent", status: "idle", isSystem: false, createdAt: 1 },
+            ],
+            hasMore: false,
+            nextCursor: null,
+        });
+        const client = await connect(ctx);
+        const unpaged = parse(await client.callTool({ name: "list_sessions", arguments: {} }));
+        record("list_sessions (unpaged) → session_kind projected",
+            unpaged.sessions?.[0]?.session_kind === "agent" && unpaged.sessions?.[1]?.session_kind === "workflow");
+
+        const paged = parse(await client.callTool({ name: "list_sessions", arguments: { limit: 10 } }));
+        record("list_sessions (paged) → session_kind projected",
+            paged.sessions?.[0]?.session_kind === "workflow" && paged.sessions?.[1]?.session_kind === "agent");
+
+        const instructions = client.getInstructions() ?? "";
+        record("server instructions mention read_workflow_skill and workflow_definition",
+            instructions.includes("read_workflow_skill")
+            && instructions.includes("workflow_definition")
+            && instructions.includes("list_creatable_workflows")
+            && instructions.includes("create_session_for_workflow")
+            && instructions.includes("workflow_definition start creates a Workflow session as a child of owner_session_id"));
+        await client.close();
+    }
+
     const failed = results.filter((r) => !r.ok);
     console.log(`\n${results.length - failed.length}/${results.length} passed`);
     process.exit(failed.length ? 1 : 0);

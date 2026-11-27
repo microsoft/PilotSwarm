@@ -10,6 +10,10 @@ import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
 // is already running. Mirrors the TUI pattern of holding onto sess.
 const sessionCache = new Map<string, PilotSwarmSession>();
 
+export function cacheSessionHandle(session: PilotSwarmSession): void {
+    sessionCache.set(session.sessionId, session);
+}
+
 export function registerSessionTools(server: McpServer, ctx: ServerContext) {
     // 1. create_session — Create a new PilotSwarm session
     server.registerTool(
@@ -638,6 +642,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
 
                 const data = sessions.map((s: any) => ({
                     session_id: s.sessionId,
+                    session_kind: s.sessionKind ?? "agent",
                     title: s.title ?? null,
                     status: s.status,
                     orchestration_status: s.orchestrationStatus ?? null,
