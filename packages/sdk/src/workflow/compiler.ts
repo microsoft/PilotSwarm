@@ -2342,6 +2342,7 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
     checkFixedInputs(nodes, contracts, schemas.defs, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
     warnInputMismatches(nodes, schemas.defs, diagnostics);
+    warnWholeChildOutputs(nodes, diagnostics);
     if (runDeadline !== null) {
         for (const node of Object.values(nodes)) {
             if (node.type === "wait" && typeof node.seconds === "number" && node.seconds > runDeadline.timeoutSeconds) {
@@ -2639,6 +2640,99 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
                             + "map the input with input: or add the property.");
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Owner decision i6-downstream (2026-11-26): a child's WorkflowEnded@1 output arrives whole (up to 195,584 bytes), and the
+ * limits after the receive still apply. A warning, never an error, when a binding carries a child's whole output (the end
+ * message, a list receive's `{ contract, from, payload }`, the payload, or the output itself; under `result` when the
+ * receive has carry) into a limit one such output can pass:
+ * - a send's or request's message (16 KiB); without `input:` the message is the value as it arrived;
+ * - a parallel branch's terminal output, when more than one branch output can be joined (the joined output, 256 KiB);
+ * - a root terminal's output that holds two or more of them (the run's output, 256 KiB; one always fits).
+ * The end message arrives at the state a receive's `received` (or `WorkflowEnded@1`) route enters and passes through waits
+ * with no `input:` and no carry; `${states.<receive>.output}` holds it for a single-contract receive. Anything else stays
+ * silent: a part of the result is mapped down, and a list receive's state output may be another contract's message.
+ */
+function warnWholeChildOutputs(nodes: Record<string, WorkflowIRNode>, diagnostics: Diagnostics): void {
+    type Segments = ReadonlyArray<string | number>;
+    const pathOf = new Map<string, string>();
+    const parallelOf = new Map<string, WorkflowIRParallel>();
+    for (const node of Object.values(nodes)) {
+        if (node.type !== "parallel") continue;
+        const members: Array<[string, string]> = node.branches !== undefined
+            ? node.branches.flatMap(branch => branch.states.map((id): [string, string] => [id, `states.${node.id}.branches.${branch.name}.states.${id}`]))
+            : node.body.states.map((id): [string, string] => [id, `states.${node.id}.body.states.${id}`]);
+        for (const [id, path] of members) { pathOf.set(id, path); parallelOf.set(id, node); }
+    }
+    // Where a child's whole output sits in a state's input when the end message arrives with it.
+    const arriving = new Map<string, Segments[]>();
+    const singleEnded = new Set<string>();
+    for (const node of Object.values(nodes)) {
+        if (node.type !== "messaging" || node.mode !== "receive" || !receiveContractsOf(node).includes(WORKFLOW_ENDED_CONTRACT)) continue;
+        const list = Array.isArray(node.contract);
+        if (!list) singleEnded.add(node.id);
+        const where: Segments = [...(node.carry !== undefined ? ["result"] : []), ...(list ? ["payload"] : []), "output"];
+        const seen = new Set<string>();
+        for (let target = node.next[list ? WORKFLOW_ENDED_CONTRACT : RECEIVE_RECEIVED]; target !== undefined && !seen.has(target);) {
+            seen.add(target);
+            arriving.set(target, [...(arriving.get(target) ?? []), where]);
+            const next = nodes[target];
+            if (next?.type !== "wait" || next.hasInput || next.carry !== undefined) break;
+            target = next.next[WAIT_ELAPSED];
+        }
+    }
+    const within = (segments: Segments, whole: Segments): boolean => segments.length <= whole.length && segments.every((s, i) => s === whole[i]);
+    const words = (root: string, segments: Segments): string => "${" + root + segments.map(s => (typeof s === "number" ? `[${s}]` : `.${s}`)).join("") + "}";
+    // How many whole outputs a template carries, and a binding that keeps only the child's outcome instead.
+    const carried = (id: string, template: JsonValue, asArrived: boolean): { count: number; example: string } => {
+        const here = arriving.get(id) ?? [];
+        if (asArrived) return { count: here.length > 0 ? 1 : 0, example: here.length > 0 ? words("input", [...here[0].slice(0, -1), "outcome"]) : "" };
+        let count = 0;
+        let example = "";
+        let expressions: ReturnType<typeof bindingExpressionsOf>;
+        try { expressions = bindingExpressionsOf(template); } catch { return { count, example }; }
+        for (const { expression: { root, segments } } of expressions) {
+            const where = root === "input" ? here.find(whole => within(segments, whole)) : undefined;
+            if (where !== undefined) {
+                count += 1;
+                example ||= words("input", [...where.slice(0, -1), "outcome"]);
+            } else if (root === "states" && typeof segments[0] === "string" && singleEnded.has(segments[0]) && segments[1] === "output"
+                && within(segments.slice(2), ["output"])) {
+                count += 1;
+                example ||= words("states", [segments[0], "output", "outcome"]);
+            }
+        }
+        return { count, example };
+    };
+    const thing = `a child's whole ${WORKFLOW_ENDED_CONTRACT} output (up to about 190 KiB)`;
+    const fullOutput = "a script reads the whole result with child_workflows read full_output.";
+    for (const node of Object.values(nodes)) {
+        const at = pathOf.get(node.id) ?? `states.${node.id}`;
+        if (node.type === "messaging" && (node.mode === "send" || node.mode === "request")) {
+            const { count, example } = carried(node.id, node.input, !node.hasInput);
+            if (count === 0) continue;
+            const what = node.mode === "send" ? "message" : "request";
+            diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", node.hasInput ? `${at}.input` : at,
+                `this ${what} ${node.hasInput ? "holds" : "is, as it arrived,"} ${thing}, and a ${what} is at most 16 KiB: the state fails invalid_input `
+                + `when the output is larger. Keep only what the recipient needs, for example input: { outcome: "${example}" }; ${fullOutput}`);
+        } else if (node.type === "terminal" && node.hasOutput) {
+            const { count, example } = carried(node.id, node.output, false);
+            const parallel = parallelOf.get(node.id);
+            if (parallel !== undefined) {
+                const items = parallel.branches !== undefined ? parallel.branches.length : Array.isArray(parallel.forEach) ? parallel.forEach.length : Infinity;
+                if (count === 0 || (typeof parallel.join === "object" ? Math.min(parallel.join.first, items) : items) < 2) continue;
+                diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", `${at}.output`,
+                    `this branch output holds ${thing}, and parallel state '${parallel.id}' joins its branches' outputs into at most 256 KiB: `
+                    + `it fails invalid_output when they add up to more. Keep only what you need from each child, for example `
+                    + `output: { outcome: "${example}" }; ${fullOutput}`);
+            } else if (count >= 2) {
+                diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", `${at}.output`,
+                    `this output holds ${count} children's whole ${WORKFLOW_ENDED_CONTRACT} outputs (up to about 190 KiB each), and a run's output `
+                    + `is at most 256 KiB: the run fails when they add up to more. Keep only what you need from each child; ${fullOutput}`);
             }
         }
     }
