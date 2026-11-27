@@ -2651,8 +2651,9 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
  * message, a list receive's `{ contract, from, payload }`, the payload, or the output itself; under `result` when the
  * receive has carry) into a limit one such output can pass:
  * - a send's or request's message (16 KiB); without `input:` the message is the value as it arrived;
- * - a parallel branch's terminal output, when more than one branch output can be joined (the joined output, 256 KiB);
- * - a root terminal's output that holds two or more of them (the run's output, 256 KiB; one always fits).
+ * - a parallel branch's terminal output, when two or more such branch outputs can be joined (the joined output, 256 KiB):
+ *   every item of a For each, or two or more named branches that carry one;
+ * - a root terminal's output that holds two or more children's (the run's output, 256 KiB; one always fits).
  * The end message arrives at the state a receive's `received` (or `WorkflowEnded@1`) route enters and passes through waits
  * with no `input:` and no carry; `${states.<receive>.output}` holds it for a single-contract receive. Anything else stays
  * silent: a part of the result is mapped down, and a list receive's state output may be another contract's message.
@@ -2660,16 +2661,16 @@ function warnInputMismatches(nodes: Record<string, WorkflowIRNode>, defs: Record
 function warnWholeChildOutputs(nodes: Record<string, WorkflowIRNode>, diagnostics: Diagnostics): void {
     type Segments = ReadonlyArray<string | number>;
     const pathOf = new Map<string, string>();
-    const parallelOf = new Map<string, WorkflowIRParallel>();
+    const parallelOf = new Map<string, { parallel: WorkflowIRParallel; branch: string | null }>();
     for (const node of Object.values(nodes)) {
         if (node.type !== "parallel") continue;
-        const members: Array<[string, string]> = node.branches !== undefined
-            ? node.branches.flatMap(branch => branch.states.map((id): [string, string] => [id, `states.${node.id}.branches.${branch.name}.states.${id}`]))
-            : node.body.states.map((id): [string, string] => [id, `states.${node.id}.body.states.${id}`]);
-        for (const [id, path] of members) { pathOf.set(id, path); parallelOf.set(id, node); }
+        const members: Array<[string, string, string | null]> = node.branches !== undefined
+            ? node.branches.flatMap(branch => branch.states.map((id): [string, string, string] => [id, `states.${node.id}.branches.${branch.name}.states.${id}`, branch.name]))
+            : node.body.states.map((id): [string, string, null] => [id, `states.${node.id}.body.states.${id}`, null]);
+        for (const [id, path, branch] of members) { pathOf.set(id, path); parallelOf.set(id, { parallel: node, branch }); }
     }
-    // Where a child's whole output sits in a state's input when the end message arrives with it.
-    const arriving = new Map<string, Segments[]>();
+    // Where a child's whole output sits in a state's input when the end message arrives with it, and the receive it came from.
+    const arriving = new Map<string, Array<{ where: Segments; from: string }>>();
     const singleEnded = new Set<string>();
     for (const node of Object.values(nodes)) {
         if (node.type !== "messaging" || node.mode !== "receive" || !receiveContractsOf(node).includes(WORKFLOW_ENDED_CONTRACT)) continue;
@@ -2679,7 +2680,7 @@ function warnWholeChildOutputs(nodes: Record<string, WorkflowIRNode>, diagnostic
         const seen = new Set<string>();
         for (let target = node.next[list ? WORKFLOW_ENDED_CONTRACT : RECEIVE_RECEIVED]; target !== undefined && !seen.has(target);) {
             seen.add(target);
-            arriving.set(target, [...(arriving.get(target) ?? []), where]);
+            arriving.set(target, [...(arriving.get(target) ?? []), { where, from: node.id }]);
             const next = nodes[target];
             if (next?.type !== "wait" || next.hasInput || next.carry !== undefined) break;
             target = next.next[WAIT_ELAPSED];
@@ -2687,51 +2688,67 @@ function warnWholeChildOutputs(nodes: Record<string, WorkflowIRNode>, diagnostic
     }
     const within = (segments: Segments, whole: Segments): boolean => segments.length <= whole.length && segments.every((s, i) => s === whole[i]);
     const words = (root: string, segments: Segments): string => "${" + root + segments.map(s => (typeof s === "number" ? `[${s}]` : `.${s}`)).join("") + "}";
-    // How many whole outputs a template carries, and a binding that keeps only the child's outcome instead.
-    const carried = (id: string, template: JsonValue, asArrived: boolean): { count: number; example: string } => {
+    // The receives whose whole output a template carries, and a binding that keeps only the child's outcome instead.
+    const carried = (id: string, template: JsonValue, asArrived: boolean): { children: Set<string>; example: string } => {
         const here = arriving.get(id) ?? [];
-        if (asArrived) return { count: here.length > 0 ? 1 : 0, example: here.length > 0 ? words("input", [...here[0].slice(0, -1), "outcome"]) : "" };
-        let count = 0;
+        if (asArrived) return { children: new Set(here.slice(0, 1).map(item => item.from)), example: here.length > 0 ? words("input", [...here[0].where.slice(0, -1), "outcome"]) : "" };
+        const children = new Set<string>();
         let example = "";
         let expressions: ReturnType<typeof bindingExpressionsOf>;
-        try { expressions = bindingExpressionsOf(template); } catch { return { count, example }; }
+        try { expressions = bindingExpressionsOf(template); } catch { return { children, example }; }
         for (const { expression: { root, segments } } of expressions) {
-            const where = root === "input" ? here.find(whole => within(segments, whole)) : undefined;
-            if (where !== undefined) {
-                count += 1;
-                example ||= words("input", [...where.slice(0, -1), "outcome"]);
+            const match = root === "input" ? here.find(item => within(segments, item.where)) : undefined;
+            if (match !== undefined) {
+                children.add(match.from);
+                example ||= words("input", [...match.where.slice(0, -1), "outcome"]);
             } else if (root === "states" && typeof segments[0] === "string" && singleEnded.has(segments[0]) && segments[1] === "output"
                 && within(segments.slice(2), ["output"])) {
-                count += 1;
+                children.add(segments[0]);
                 example ||= words("states", [segments[0], "output", "outcome"]);
             }
         }
-        return { count, example };
+        return { children, example };
     };
     const thing = `a child's whole ${WORKFLOW_ENDED_CONTRACT} output (up to about 190 KiB)`;
     const fullOutput = "a script reads the whole result with child_workflows read full_output.";
+    const terminals = new Map<string, { children: Set<string>; example: string }>();
+    // The named branches of each parallel state whose terminal carries a whole output.
+    const wholeBranches = new Map<string, Set<string>>();
+    for (const node of Object.values(nodes)) {
+        if (node.type !== "terminal" || !node.hasOutput) continue;
+        const found = carried(node.id, node.output, false);
+        terminals.set(node.id, found);
+        const member = parallelOf.get(node.id);
+        if (found.children.size > 0 && member?.branch != null) {
+            wholeBranches.set(member.parallel.id, new Set([...(wholeBranches.get(member.parallel.id) ?? []), member.branch]));
+        }
+    }
     for (const node of Object.values(nodes)) {
         const at = pathOf.get(node.id) ?? `states.${node.id}`;
         if (node.type === "messaging" && (node.mode === "send" || node.mode === "request")) {
-            const { count, example } = carried(node.id, node.input, !node.hasInput);
-            if (count === 0) continue;
+            const { children, example } = carried(node.id, node.input, !node.hasInput);
+            if (children.size === 0) continue;
             const what = node.mode === "send" ? "message" : "request";
             diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", node.hasInput ? `${at}.input` : at,
                 `this ${what} ${node.hasInput ? "holds" : "is, as it arrived,"} ${thing}, and a ${what} is at most 16 KiB: the state fails invalid_input `
                 + `when the output is larger. Keep only what the recipient needs, for example input: { outcome: "${example}" }; ${fullOutput}`);
-        } else if (node.type === "terminal" && node.hasOutput) {
-            const { count, example } = carried(node.id, node.output, false);
-            const parallel = parallelOf.get(node.id);
-            if (parallel !== undefined) {
-                const items = parallel.branches !== undefined ? parallel.branches.length : Array.isArray(parallel.forEach) ? parallel.forEach.length : Infinity;
-                if (count === 0 || (typeof parallel.join === "object" ? Math.min(parallel.join.first, items) : items) < 2) continue;
+        } else if (node.type === "terminal" && terminals.has(node.id)) {
+            const { children, example } = terminals.get(node.id)!;
+            if (children.size === 0) continue;
+            const member = parallelOf.get(node.id);
+            if (member !== undefined) {
+                const { parallel } = member;
+                // Each item of a For each runs this terminal; named branches count those that carry a whole output.
+                const carrying = parallel.branches !== undefined ? wholeBranches.get(parallel.id)?.size ?? 0
+                    : Array.isArray(parallel.forEach) ? parallel.forEach.length : Infinity;
+                if ((typeof parallel.join === "object" ? Math.min(parallel.join.first, carrying) : carrying) < 2) continue;
                 diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", `${at}.output`,
                     `this branch output holds ${thing}, and parallel state '${parallel.id}' joins its branches' outputs into at most 256 KiB: `
                     + `it fails invalid_output when they add up to more. Keep only what you need from each child, for example `
                     + `output: { outcome: "${example}" }; ${fullOutput}`);
-            } else if (count >= 2) {
+            } else if (children.size >= 2) {
                 diagnostics.warning("WORKFLOW_ENDED_WHOLE_OUTPUT", `${at}.output`,
-                    `this output holds ${count} children's whole ${WORKFLOW_ENDED_CONTRACT} outputs (up to about 190 KiB each), and a run's output `
+                    `this output holds ${children.size} children's whole ${WORKFLOW_ENDED_CONTRACT} outputs (up to about 190 KiB each), and a run's output `
                     + `is at most 256 KiB: the run fails when they add up to more. Keep only what you need from each child; ${fullOutput}`);
             }
         }
