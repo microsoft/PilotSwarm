@@ -761,7 +761,10 @@ and either an `outcome` with an `output` that fits the step's schema, or an
 `error` with code `needs_input` or `execution_failed` and a message. A final
 reply does not finish the step. An output that does not fit is refused
 (`OUTPUT_INVALID`); after 3 such answers the step fails. `ask_user` does not
-work inside an agent step: complete with `needs_input` instead.
+work inside an agent step: complete with `needs_input` instead. Once the
+step's result is recorded, every further tool call in that turn is refused,
+the shell and file tools too: write a short final reply and stop. The turn
+ends by itself, so a `session: continue` step remembers it in its next visit.
 
 An agent state may declare `requiredTools: [lookup, notes-read_note]` (1 to
 16 distinct offered tool names). Before completing with an outcome, its own
