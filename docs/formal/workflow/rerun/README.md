@@ -43,18 +43,19 @@
   - `Inv_PinnedChoice`: models `rerunPin` preservation across claim crash; JSON pin persistence and `replaySessionStart` recovery are verified by Unit 3B `workflow-rerun-start.test.js` (Task 4d).
   - `Inv_NoConsentReuse`: models owner-only gating past answered approvals; `(owner_provider, owner_subject)` matching, owner-change refusal, and fail-closed missing-approval checks are verified by Unit 3B `workflow-rerun-start.test.js` (Task 4d).
 
-## What is checked (batch `rr3`, 60 cases, `CHECK_DEADLOCK TRUE` on all cases)
+## What is checked (batch `rr4`, 92 cases, `CHECK_DEADLOCK TRUE` on all cases)
 
-- **27 design cases** (15 safety + 12 liveness, including strong `Live_ReachesCutOnly` (`<>resumedAtCut`) + `Inv_ValidNeverDiverges` on clean run-again, continue, `fix_chosen`, `StartVars`, catchall, parallel, approval, inbox, gen2, plus `Live_DivergesCleanly` on S1 catchall route mismatch).
-- **15 non-vacuity witnesses** (all 13 required + 2 for S1 copied-coordinate divergence and same-IR hash divergence; each expected violated, exit `12`).
-- **18 deliberate faults** (all 15 required + 3 for copied-coordinate mismatch, same-IR hash bypass, and continue-mode unguarded divergence; 17 invariant violations exit `12` + `rr-df-lock-new-before-owner` TLC deadlock exit `11`).
+- **42 design cases** (24 safety + 18 liveness):
+  - 27 baseline `rr3` cases (15 safety + 12 liveness) plus 15 Unit `3A-Supply` cases covering `Mode = "supply"` (`rr.design-supply-loop`, `rr.design-supply-first` with `0` reused visits, `rr.design-supply-to-terminal`, `rr.design-supply-diverge` [`S2f`], `rr.design-supply-refused-approval`, `rr.design-supply-refused-never`), `G-R1` top-level & parallel-lane spawn cut-back (`rr.design-gr1-top-spawn`, `rr.design-gr1-lane-spawn`), the `R2-M1` observable Sweeper-vs-admission & late-retry race (`rr.design-sweeper-admission-race`, zero `startPhase` oracle guards, `AdvanceClaimGrace` in any pre-admission phase, `SweeperReadBareShell` + `SweeperCollectClaimShell` under `newLock`, losing late retry ending in `refused_workflow_deleted`), plus `Inv_AdmittedNotSwept`, `Prop_SweepRequiresLockAndNoRun`, `Inv_QuiescentNoLive`, and `Live_Quiesces == <>Quiescent` across 6 new liveness cases.
+- **21 non-vacuity witnesses** (15 baseline + 6 Unit `3A-Supply`: `wit.rr-no-supply-downstream-read`, `wit.rr-no-supply-first-visit`, `wit.rr-no-supply-to-terminal`, `wit.rr-no-supply-refused-step-type`, `wit.rr-no-leak-quiescence`, and `wit.rr-no-late-retry-after-sweep`; each expected violated, exit `12`).
+- **29 deliberate faults** (18 baseline + 10 required Unit `3A-Supply` faults + 1 extra lane-spawn `G-R1` fault `rr-df-gr1-lane-skip`: `rr-df-supply-on-approval`, `rr-df-starts-supplied`, `rr-df-supply-undeclared-outcome`, `rr-df-ignores-supply-never`, `rr-df-supply-no-note`, `rr-df-retry-changes-supplied`, `rr-df-gr1-skip`, `rr-df-gr1-lane-skip`, `rr-df-skip-parent-end-cancel`, `rr-df-refused-shell-not-deleted`, and `rr-df-sweeper-deletes-active-claim` [keeps grace enabled and removes only `newLock` / under-lock re-check -> `VIOLATION:Inv_AdmittedNotSwept`]; 28 invariant violations exit `12` + `rr-df-lock-new-before-owner` TLC deadlock exit `11`).
 
 Generate cases with `python3 gen-cases.py`, verify packet integrity with `./check-packet.sh`, and run TLC with `TLA_TOOLS=<dir> ./run-tlc.sh`.
 
-## Results (batch `rr3`, TLC 2.19, `CHECK_DEADLOCK TRUE` on all 60 cases)
+## Results (batch `rr4`, TLC 2.19, `CHECK_DEADLOCK TRUE` on all 92 cases)
 
-- **Design safety & liveness (27 cases):** 27/27 PASS (largest: `rr.design-loop-run-again` and `rr.live-run-again`, 2,732,308 generated / 757,336 distinct states, 0 errors, 0 deadlocks; all 9 clean/exempt liveness cases prove `Live_ReachesCutOnly == <>resumedAtCut` and `Inv_ValidNeverDiverges`).
-- **Non-vacuity witnesses (15 cases):** 15/15 VIOLATED as expected (exit 12).
-- **Deliberate faults (18 cases):** 18/18 VIOLATED / DEADLOCK as expected (17 invariant violations exit 12; `rr-df-lock-new-before-owner` TLC deadlock exit 11).
-- **Total:** 60/60 matched expected, zero timeouts.
+- **Design safety & liveness (42 cases):** 42/42 PASS (largest: `rr.design-loop-run-again` and `rr.live-run-again`, 2,732,308 generated / 757,336 distinct states, 39 s safety / 222 s liveness; largest new supply case: `rr.design-supply-loop`, 1,186,025 generated / 333,702 distinct states, 20 s; `rr.design-gr1-top-spawn`: 45,024 distinct states, 4 s; `rr.design-gr1-lane-spawn`: 17,214 distinct states, 3 s; `rr.design-sweeper-admission-race`: 11,404 distinct states, 2 s; 0 errors, 0 deadlocks).
+- **Non-vacuity witnesses (21 cases):** 21/21 VIOLATED as expected (exit 12).
+- **Deliberate faults (29 cases):** 29/29 VIOLATED / DEADLOCK as expected (28 invariant violations exit 12; `rr-df-lock-new-before-owner` TLC deadlock exit 11).
+- **Total:** 92/92 matched expected, zero timeouts, 395 s total elapsed.
 

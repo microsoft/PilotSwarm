@@ -1,15 +1,21 @@
 ------------------------------- MODULE WorkflowRerun -------------------------------
 (***************************************************************************)
-(* Formal model of Workflow Re-run from a Chosen Visit (I7 v1) for         *)
-(* microsoft/PilotSwarm.                                                   *)
+(* Formal model of Workflow Re-run from a Chosen Visit (I7 v1 + supply)    *)
+(* for microsoft/PilotSwarm.                                               *)
 (*                                                                         *)
 (* Restates the unchanged 1.3.0 controller loop (AdmitExec/AdmitRecord,    *)
 (* CollectExec/CollectRecord, FinishExec/FinishFailExec, PollCommand,      *)
 (* CancelTx) from WorkflowRun.tla starting from an atomically copied       *)
-(* prefix of completed visits, coupled with:                               *)
-(*   - Two-step Start: ClaimRerun (writes rerunPin) + crash/new-rev +      *)
+(* prefix of completed visits (and optional supplied visit V' in supply    *)
+(* mode), coupled with:                                                    *)
+(*   - Two-step Start: ClaimRerun (writes rerunPin incl. supplied digest   *)
+(*     & creates claim shell) + crash/new-rev/retry-payload-change +       *)
 (*     AdmitRerunCopy (owner FOR SHARE -> def FOR SHARE -> #2 FOR SHARE    *)
 (*     -> #3 FOR NO KEY UPDATE in ascending session_id order);             *)
+(*   - Immediate refusal cleanup of claim shell (Inv_RefusedClaimDeleted-  *)
+(*     AtOnce) and Sweeper collection of stale no-run + NotFound claim     *)
+(*     shells after grace on its own without OwnerEnd (10:24 PST,          *)
+(*     SweeperCollectClaimShell, Inv_NoSweepDuringActiveClaim);            *)
 (*   - Three deleters with exact SQL lock modes:                           *)
 (*       * SweeperDirect: blocking FOR NO KEY UPDATE on target #2,         *)
 (*         NOWAIT on descendants (store.ts sweeperSoftDelete);             *)
@@ -19,16 +25,13 @@
 (*         session_workflow_definitions (defLock), then child Workflows    *)
 (*         (#2, #3) in ascending session_id order                          *)
 (*         (migration 0096 workflow_on_owner_session_ended);               *)
-(*   - Compatibility check (FitCheck), cut guard (Guard) for both          *)
-(*     run_again and continue modes, same-IR input/carry hash check        *)
-(*     (skipped when Target="fix_chosen" or StartVars=TRUE), copied-row    *)
-(*     coordinate-mismatch divergence (failRerunDiverged, S1),             *)
-(*     plan budget adjustment (StepLimit - rerun_unwalked), per-step       *)
-(*     MaxVisits, catch-all once across reused + new, approval owner       *)
-(*     consent gate, carried inbox filtering (waiting at cut +             *)
-(*     WorkflowEnded@1 child notices, excluding consumed & late msgs),     *)
-(*     receive totalSeconds anchor reset, and 2-generation COALESCE        *)
-(*     origin flattening (#1 -> #2 -> #3).                                 *)
+(*   - Compatibility check (FitCheck), cut guard (Guard) for run_again,    *)
+(*     continue, and supply modes, supply guardrails (allowed step types,  *)
+(*     supply: never, declared outcomes, non-blank note, never executes    *)
+(*     effect or agent session), G-R1 auto-pick cut-back over top-level    *)
+(*     and lane spawns (Inv_AutoPickNoCancelledReuse) + G-R2 async old-    *)
+(*     child wind-down, carried inbox filtering & TTL expiry, quiescence   *)
+(*     safety (Inv_QuiescentNoLive) and liveness (Live_Quiesces).          *)
 (*                                                                         *)
 (* Lock waits are modeled as disabled actions so any lock cycle surfaces   *)
 (* as a TLC deadlock (CHECK_DEADLOCK TRUE on every case).                  *)
@@ -36,18 +39,18 @@
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS
-    SourceKind,          \* "loop" | "catchall" | "parallel" | "approval" | "inbox"
-    Mode,                \* "run_again" | "continue"
-    Target,              \* "same" | "fix_chosen" | "reroute_taken" | "reroute_onto_copy"
+    SourceKind,          \* "loop" | "catchall" | "parallel" | "approval" | "inbox" | "supply_first" | "spawn" | "spawn_lane"
+    Mode,                \* "run_again" | "continue" | "supply"
+    Target,              \* "same" | "fix_chosen" | "reroute_taken" | "reroute_onto_copy" | "reroute_supply"
     Generations,         \* 1 or 2 (#1 -> #2 -> #3)
     Actor,               \* "owner" | "agent" | "admin"
-    MaxVisits,           \* per-step visit limit for S (1..2)
+    MaxVisits,           \* per-step visit limit for S (1..3)
     StepLimit,           \* run limits.maxNodeExecutions (2..6)
     StartVars,           \* TRUE = Start supplied vars (kvRev = cutKvRev + 1, skips same-IR byte check)
     InputHashMismatch,   \* TRUE = evaluated input/carry hash at cut differs from source's recorded hash
     AllowDeleters,       \* enable SweeperDirect & DeleteWorkflow
     AllowOwnerEnd,       \* enable OwnerEnded specifically (locks owner -> def -> #2 -> #3)
-    AllowClaimCrash,     \* allow crash + new revision saved between Claim and Admit
+    AllowClaimCrash,     \* allow retriable crash + new revision saved between Claim and Admit
     AllowCtrlCmds,       \* allow Pause/Resume, Stop, Cancel during pass-over/run
     AllowRetry,          \* allow AdmitExec retry before AdmitRecord during pass-over
     AllowCan,            \* allow ContinueAsNew during pass-over
@@ -57,7 +60,7 @@ CONSTANTS
     CheckCopyCoord,      \* TRUE = copied-row predecessor/route checked on pass-over hit; FALSE = fault
     PlanBudget,          \* TRUE = plan subtracts rerun_unwalked; FALSE = fault
     FlatOrigin,          \* TRUE = COALESCE(reused_from, id); FALSE = fault
-    AtomicCopy,          \* TRUE = run + copies in one TX; FALSE = fault
+    AtomicCopy,          \* TRUE = run + copies (+ supplied row) in one TX; FALSE = fault
     ApprovalGate,        \* TRUE = owner-only approval reuse; FALSE = fault
     StartsDecided,       \* fault: controller starts effect for completed reused visit
     CopyKeepsIds,        \* fault: copy mutates source rows/IDs
@@ -68,20 +71,45 @@ CONSTANTS
     CopyKeepsDeadline,   \* fault: copied receive visit keeps source total deadline
     DivergeInserts,      \* fault: cut guard inserts pending row before failing
     CarryLateMessage,    \* fault: inbox carry copies post-cut message
-    LockNewBeforeOwner   \* fault: copy locks #2/#3 before owner (deadlocks OwnerEnded)
+    LockNewBeforeOwner,  \* fault: copy locks #2/#3 before owner (deadlocks OwnerEnded)
+    \* ---- Unit 3A-Supply additions (supply mode, G-R1, R2-M1 observable Sweeper-vs-admission race, quiescence) ----
+    SupplyNever,                  \* TRUE = chosen step sets supply: never on S or T
+    SuppliedOutcome,              \* "ok" | "again" | "undeclared"
+    SupplyNotePresent,            \* TRUE = valid non-blank note present
+    AllowRetrySupplyChange,       \* allow retry after claim crash with changed supply payload
+    AutoPicked,                   \* TRUE = execution_id omitted (auto-pick with G-R1)
+    AllowResumeAfterCrash,        \* TRUE = crashed claim can retry; FALSE = unretried crash (S6)
+    AllowShellSweeper,            \* enable SweeperReadBareShell + SweeperCollectClaimShell after grace without OwnerEnd
+    AllowPostSweepStart,          \* allow one fresh Start (new key/opId) after Sweeper collects a stale shell
+    AllowSupplyOnForbiddenStep,   \* fault: allow supply on approval / non-script-agent step
+    StartsSupplied,               \* fault: controller starts effect/agent for supplied visit V'
+    AllowUndeclaredSupplyOutcome, \* fault: admit undeclared supplied outcome
+    IgnoreSupplyNever,            \* fault: ignore supply: never opt-out
+    IgnoreMissingSupplyNote,      \* fault: admit supply without note
+    RepickSuppliedOnRetry,        \* fault: retry admits changed supply payload instead of pinned/conflict
+    SkipGr1CutBack,               \* fault: auto-pick skips G-R1 cut-back over cancelled/noticeless spawn
+    SkipParentEndCancel,          \* fault: #2's end fails to cancel old spawn child (leaks at quiescence)
+    SkipImmediateRefusalCleanup,  \* fault: post-claim refusal leaves claim shell live_unadmitted
+    SweeperSkipsNewLockOrRecheck  \* fault (R2-M1): keeps grace, removes ONLY newLock / under-lock no-run re-check
 
-ASSUME SourceKind \in {"loop", "catchall", "parallel", "approval", "inbox"}
-ASSUME Mode \in {"run_again", "continue"}
-ASSUME Target \in {"same", "fix_chosen", "reroute_taken", "reroute_onto_copy"}
+ASSUME SourceKind \in {"loop", "catchall", "parallel", "approval", "inbox", "supply_first", "spawn", "spawn_lane"}
+ASSUME Mode \in {"run_again", "continue", "supply"}
+ASSUME Target \in {"same", "fix_chosen", "reroute_taken", "reroute_onto_copy", "reroute_supply"}
 ASSUME Generations \in {1, 2}
 ASSUME Actor \in {"owner", "agent", "admin"}
-ASSUME MaxVisits \in 1..2
+ASSUME MaxVisits \in 1..3
 ASSUME StepLimit \in 2..6
+ASSUME SuppliedOutcome \in {"ok", "again", "undeclared"}
 ASSUME {StartVars, InputHashMismatch, AllowDeleters, AllowOwnerEnd, AllowClaimCrash, AllowCtrlCmds,
         AllowRetry, AllowCan, FitCheck, Guard, CheckInputHash, CheckCopyCoord, PlanBudget,
         FlatOrigin, AtomicCopy, ApprovalGate, StartsDecided, CopyKeepsIds, OrdinalsRestart,
         DropsCatchAll, NoSourceLock, RepickOnResume, CopyKeepsDeadline, DivergeInserts,
-        CarryLateMessage, LockNewBeforeOwner} \subseteq BOOLEAN
+        CarryLateMessage, LockNewBeforeOwner,
+        SupplyNever, SupplyNotePresent, AllowRetrySupplyChange, AutoPicked, AllowResumeAfterCrash,
+        AllowShellSweeper, AllowPostSweepStart, AllowSupplyOnForbiddenStep, StartsSupplied,
+        AllowUndeclaredSupplyOutcome, IgnoreSupplyNever, IgnoreMissingSupplyNote,
+        RepickSuppliedOnRetry, SkipGr1CutBack, SkipParentEndCancel, SkipImmediateRefusalCleanup,
+        SweeperSkipsNewLockOrRecheck} \subseteq BOOLEAN
 
 -----------------------------------------------------------------------------
 (* Node universe and static source run definition                          *)
@@ -90,15 +118,38 @@ NoNode == <<"none", 0>>
 SNode(i) == <<"S", i>>
 ANode == <<"A", 1>>
 PNode == <<"P", 1>>
-LNode == <<"L", 1>>     \* Unwalked lane visit inside P (scope "P#0")
+LNode == <<"L", 1>>       \* Unwalked lane visit inside P (scope "P#0")
+SPNode == <<"SP", 1>>     \* Top-level spawn step whose child was cancelled by #2's end
+LSPNode == <<"LSP", 1>>   \* Lane spawn step inside P whose child was cancelled by #2's end
 RNode(i) == <<"R", i>>
 HNode(i) == <<"H", i>>
 TNode == <<"T", 1>>
 
-TopNodes == {SNode(1), SNode(2), SNode(3), ANode, PNode, RNode(1), RNode(2), HNode(1), HNode(2), TNode}
-LaneNodes == {LNode}
+TopNodes == {SNode(1), SNode(2), SNode(3), ANode, PNode, SPNode, RNode(1), RNode(2), HNode(1), HNode(2), TNode}
+LaneNodes == {LNode, LSPNode}
 AllNodes == TopNodes \cup LaneNodes
 WorkNodes == AllNodes \ {TNode}
+
+DeclaredOutcomes == {"ok", "again"}
+
+NodeKindOf(x) ==
+    CASE x[1] = "S"   -> "script_or_agent"
+      [] x[1] = "H"   -> "script_or_agent"
+      [] x = ANode    -> "approval"
+      [] x = PNode    -> "parallel"
+      [] x = SPNode   -> "spawn"
+      [] x = LNode    -> "lane"
+      [] x = LSPNode  -> "lane_spawn"
+      [] x[1] = "R"   -> "receive"
+      [] x = TNode    -> "terminal"
+      [] OTHER        -> "unknown"
+
+\* G-R1: whether a visit in #2 is a spawn (top-level or parallel lane) whose child was cancelled by #2's end or lacks a notice
+IsCancelledOrNoticelessSpawn(x) ==
+    (SourceKind = "spawn" /\ x = SPNode) \/ (SourceKind = "spawn_lane" /\ x = LSPNode)
+
+Gr1Active ==
+    AutoPicked /\ ~SkipGr1CutBack /\ SourceKind \in {"spawn", "spawn_lane"}
 
 \* Inbox message model (m0 consumed by reused visit, m1 waiting at cut, m2 late post-cut, m_child WorkflowEnded@1 for reused spawn)
 InboxMsgs == {"m0", "m1", "m2", "m_child"}
@@ -112,31 +163,67 @@ WaitingAtCut == {m \in InboxMsgs : EligibleCarry(m)}
 
 Active == {"admitted", "running", "paused"}
 Terminal == {"completed", "failed", "cancelled", "stopped"}
-Refused == {"refused_source_gone", "refused_owner_ended", "refused_incompatible", "refused_approval"}
+Refused == {
+    "refused_source_gone",
+    "refused_owner_ended",
+    "refused_incompatible",
+    "refused_approval",
+    "refused_supply_not_allowed",
+    "refused_supplied_invalid",
+    "refused_conflict",
+    "refused_workflow_deleted"
+}
+
+\* Chosen visit V' in supply mode
+ChosenSupplyNode ==
+    CASE Mode # "supply"           -> NoNode
+      [] SourceKind = "supply_first" -> SNode(1)
+      [] SourceKind = "loop"       -> SNode(2)
+      [] SourceKind = "approval"   -> ANode
+      [] OTHER                     -> SNode(2)
+
+ExpectedSupplied == IF Mode = "supply" /\ ChosenSupplyNode # NoNode THEN {ChosenSupplyNode} ELSE {}
 
 \* Source reused top-level chain
 SrcReusedTop ==
-    CASE SourceKind = "loop" /\ Mode = "run_again" -> <<SNode(1)>>
-      [] SourceKind = "loop" /\ Mode = "continue"  -> <<SNode(1), SNode(2)>>
-      [] SourceKind = "catchall"                   -> <<SNode(1), HNode(1)>>
-      [] SourceKind = "parallel"                   -> <<PNode>>
-      [] SourceKind = "approval"                   -> <<ANode>>
-      [] SourceKind = "inbox"                      -> <<RNode(1)>>
+    CASE SourceKind = "supply_first"                       -> <<>>
+      [] SourceKind = "approval" /\ Mode = "supply"        -> <<>>
+      [] SourceKind = "loop" /\ Mode = "run_again"         -> <<SNode(1)>>
+      [] SourceKind = "loop" /\ Mode = "supply"            -> <<SNode(1)>>
+      [] SourceKind = "loop" /\ Mode = "continue"          -> <<SNode(1), SNode(2)>>
+      [] SourceKind = "catchall"                           -> <<SNode(1), HNode(1)>>
+      [] SourceKind = "parallel"                           -> <<PNode>>
+      [] SourceKind = "approval"                           -> <<ANode>>
+      [] SourceKind = "inbox"                              -> <<RNode(1)>>
+      [] SourceKind = "spawn" /\ Gr1Active                 -> <<SNode(1)>>
+      [] SourceKind = "spawn" /\ ~Gr1Active                -> <<SNode(1), SPNode>>
+      [] SourceKind = "spawn_lane" /\ Gr1Active            -> <<SNode(1)>>
+      [] SourceKind = "spawn_lane" /\ ~Gr1Active           -> <<SNode(1), PNode>>
 
-SrcReusedLanes == IF SourceKind = "parallel" THEN {LNode} ELSE {}
+SrcReusedLanes ==
+    CASE SourceKind = "parallel"                  -> {LNode}
+      [] SourceKind = "spawn_lane" /\ ~Gr1Active  -> {LSPNode}
+      [] OTHER                                    -> {}
+
 ExpectedReused == {SrcReusedTop[i] : i \in 1..Len(SrcReusedTop)} \cup SrcReusedLanes
 UnwalkedCount == Cardinality(SrcReusedLanes)
 HasApproval == ANode \in ExpectedReused
 
 InitSrcOutcome(x) ==
-    CASE SourceKind = "loop" /\ x = SNode(1)     -> "again"
-      [] SourceKind = "loop" /\ x = SNode(2)     -> "again"
-      [] SourceKind = "catchall" /\ x = SNode(1) -> "error"
-      [] SourceKind = "catchall" /\ x = HNode(1) -> "ok"
-      [] SourceKind = "parallel" /\ x = PNode    -> "ok"
-      [] SourceKind = "parallel" /\ x = LNode    -> "ok"
-      [] SourceKind = "approval" /\ x = ANode    -> "approved"
-      [] SourceKind = "inbox" /\ x = RNode(1)    -> "again"
+    CASE SourceKind = "loop" /\ x = SNode(1)        -> "again"
+      [] SourceKind = "loop" /\ x = SNode(2)        -> "again"
+      [] SourceKind = "supply_first" /\ x = SNode(1) -> "error"
+      [] SourceKind = "catchall" /\ x = SNode(1)    -> "error"
+      [] SourceKind = "catchall" /\ x = HNode(1)    -> "ok"
+      [] SourceKind = "parallel" /\ x = PNode       -> "ok"
+      [] SourceKind = "parallel" /\ x = LNode       -> "ok"
+      [] SourceKind = "approval" /\ x = ANode       -> "approved"
+      [] SourceKind = "inbox" /\ x = RNode(1)       -> "again"
+      [] SourceKind = "spawn" /\ x = SNode(1)       -> "again"
+      [] SourceKind = "spawn" /\ x = SPNode         -> "started"
+      [] SourceKind = "spawn_lane" /\ x = SNode(1)  -> "again"
+      [] SourceKind = "spawn_lane" /\ x = PNode     -> "ok"
+      [] SourceKind = "spawn_lane" /\ x = LSPNode   -> "started"
       [] OTHER -> "none"
 
 InitSrcKind(x) ==
@@ -144,17 +231,23 @@ InitSrcKind(x) ==
       [] InitSrcOutcome(x) = "none"  -> "none"
       [] OTHER -> "business"
 
-\* Recorded predecessor and arrival route of each copied source visit
+\* Recorded predecessor and arrival route of each copied or supplied source visit
 SrcPred(x) ==
-    CASE SourceKind = "loop" /\ Mode = "continue" /\ x = SNode(2) -> SNode(1)
-      [] SourceKind = "catchall" /\ x = HNode(1)                  -> SNode(1)
-      [] SourceKind = "parallel" /\ x = LNode                     -> PNode
+    CASE SourceKind = "loop" /\ Mode \in {"continue", "supply"} /\ x = SNode(2) -> SNode(1)
+      [] SourceKind = "catchall" /\ x = HNode(1)                                -> SNode(1)
+      [] SourceKind = "parallel" /\ x = LNode                                   -> PNode
+      [] SourceKind = "spawn" /\ x = SPNode                                     -> SNode(1)
+      [] SourceKind = "spawn_lane" /\ x = PNode                                 -> SNode(1)
+      [] SourceKind = "spawn_lane" /\ x = LSPNode                               -> PNode
       [] OTHER -> NoNode
 
 SrcRoute(x) ==
-    CASE SourceKind = "loop" /\ Mode = "continue" /\ x = SNode(2) -> "again"
-      [] SourceKind = "catchall" /\ x = HNode(1)                  -> "catchAll"
-      [] SourceKind = "parallel" /\ x = LNode                     -> "branch"
+    CASE SourceKind = "loop" /\ Mode \in {"continue", "supply"} /\ x = SNode(2) -> "again"
+      [] SourceKind = "catchall" /\ x = HNode(1)                                -> "catchAll"
+      [] SourceKind = "parallel" /\ x = LNode                                   -> "branch"
+      [] SourceKind = "spawn" /\ x = SPNode                                     -> "again"
+      [] SourceKind = "spawn_lane" /\ x = PNode                                 -> "again"
+      [] SourceKind = "spawn_lane" /\ x = LSPNode                               -> "branch"
       [] OTHER -> "initial"
 
 InitSrcNodes == [x \in AllNodes |-> [outcome |-> InitSrcOutcome(x), kind |-> InitSrcKind(x)]]
@@ -171,28 +264,43 @@ InitialStep ==
       [] OTHER -> SNode(1)
 
 ExpectedCutNode ==
-    CASE SourceKind = "loop" /\ Mode = "run_again" -> SNode(2)
-      [] SourceKind = "loop" /\ Mode = "continue"  -> SNode(3)
-      [] SourceKind = "catchall"                   -> SNode(2)
-      [] SourceKind = "parallel"                   -> SNode(1)
-      [] SourceKind = "approval"                   -> SNode(1)
-      [] SourceKind = "inbox"                      -> RNode(2)
+    CASE Mode = "supply" /\ SourceKind = "supply_first" /\ SuppliedOutcome = "again" -> SNode(2)
+      [] Mode = "supply" /\ SourceKind = "supply_first" /\ SuppliedOutcome = "ok"    -> TNode
+      [] Mode = "supply" /\ SourceKind = "loop" /\ SuppliedOutcome = "again"         -> SNode(3)
+      [] Mode = "supply" /\ SourceKind = "loop" /\ SuppliedOutcome = "ok"            -> TNode
+      [] Mode = "supply"                                                             -> TNode
+      [] SourceKind = "loop" /\ Mode = "run_again"                                   -> SNode(2)
+      [] SourceKind = "loop" /\ Mode = "continue"                                    -> SNode(3)
+      [] SourceKind = "catchall"                                                     -> SNode(2)
+      [] SourceKind = "parallel"                                                     -> SNode(1)
+      [] SourceKind = "approval"                                                     -> SNode(1)
+      [] SourceKind = "inbox"                                                        -> RNode(2)
+      [] SourceKind = "spawn" /\ Gr1Active                                           -> SPNode
+      [] SourceKind = "spawn" /\ ~Gr1Active                                          -> SNode(2)
+      [] SourceKind = "spawn_lane" /\ Gr1Active                                      -> PNode
+      [] SourceKind = "spawn_lane" /\ ~Gr1Active                                     -> SNode(2)
 
 ExpectedCutRoute ==
-    CASE SourceKind = "loop" /\ Mode = "run_again" -> "again"
+    CASE Mode = "supply"                           -> SuppliedOutcome
+      [] SourceKind = "loop" /\ Mode = "run_again" -> "again"
       [] SourceKind = "catchall"                   -> "ok"
       [] SourceKind = "parallel"                   -> "ok"
       [] SourceKind = "approval"                   -> "approved"
       [] SourceKind = "inbox"                      -> "again"
+      [] SourceKind = "spawn" /\ Gr1Active         -> "again"
+      [] SourceKind = "spawn" /\ ~Gr1Active        -> "started"
+      [] SourceKind = "spawn_lane" /\ Gr1Active    -> "again"
+      [] SourceKind = "spawn_lane" /\ ~Gr1Active   -> "ok"
       [] OTHER -> "none"
 
-LastReusedTop == SrcReusedTop[Len(SrcReusedTop)]
+LastReusedTop == IF Len(SrcReusedTop) > 0 THEN SrcReusedTop[Len(SrcReusedTop)] ELSE NoNode
 SameIr == (Target = "same")
 CutKvRev == 1
 RunKvRev == IF StartVars THEN CutKvRev + 1 ELSE CutKvRev
 
 \* Target routing:
 \*   - reroute_taken: S1 "again" routes to TNode (misses S2 in both run_again and continue)
+\*   - reroute_supply: ChosenSupplyNode SuppliedOutcome routes to TNode instead of SNode(3)/SNode(2)
 \*   - reroute_onto_copy:
 \*       * SourceKind="catchall": T adds explicit "error" failure route from S1 to H1, so controller arrives
 \*         at existing copied H1 with route "error" != recorded "catchAll" (100% reachable S1 controller race).
@@ -200,9 +308,15 @@ RunKvRev == IF StartVars THEN CutKvRev + 1 ELSE CutKvRev
 RouteTarget(x, o, caught, h1Present) ==
     IF Target = "reroute_taken" /\ x = SNode(1) /\ o = "again"
       THEN TNode
+    ELSE IF Target = "reroute_supply" /\ Mode = "supply" /\ x = ChosenSupplyNode /\ o = SuppliedOutcome
+      THEN TNode
     ELSE IF Target = "reroute_onto_copy" /\ SourceKind = "loop" /\ x = SNode(1) /\ o = "again"
       THEN SNode(1)
-    ELSE CASE x[1] = "S" /\ o = "again"     -> SNode(x[2] + 1)
+    ELSE IF SourceKind = "spawn" /\ x = SNode(1) /\ o = "again"
+      THEN SPNode
+    ELSE IF SourceKind = "spawn_lane" /\ x = SNode(1) /\ o = "again"
+      THEN PNode
+    ELSE CASE x[1] = "S" /\ o = "again"     -> IF x[2] < 3 THEN SNode(x[2] + 1) ELSE TNode
            [] x[1] = "S" /\ o = "ok"        -> TNode
            [] x[1] = "S" /\ o = "exhausted" -> TNode
            [] x[1] = "S" /\ o = "error"     -> IF ~caught
@@ -210,7 +324,8 @@ RouteTarget(x, o, caught, h1Present) ==
                                                  ELSE NoNode
            [] x[1] = "H" /\ o = "ok"        -> IF SourceKind = "catchall" THEN SNode(2) ELSE TNode
            [] x[1] = "H" /\ o = "error"     -> NoNode
-           [] x[1] = "P" /\ o = "ok"        -> SNode(1)
+           [] x[1] = "P" /\ o = "ok"        -> IF SourceKind = "spawn_lane" THEN SNode(2) ELSE SNode(1)
+           [] x[1] = "SP" /\ o = "started"  -> SNode(2)
            [] x[1] = "A" /\ o = "approved"  -> SNode(1)
            [] x[1] = "R" /\ o = "again"     -> RNode(x[2] + 1)
            [] x[1] = "R" /\ o = "msg"       -> TNode
@@ -222,12 +337,16 @@ RouteLabelOf(x, o, caught) ==
     ELSE IF x[1] = "S" /\ o = "error" /\ ~caught THEN "catchAll" ELSE o
 
 NewWorkOutcomes(x) ==
-    CASE x[1] = "S" -> IF SourceKind = "catchall" THEN {"error", "ok"}
+    CASE x = SNode(3) -> {"ok"}
+      [] x[1] = "S" -> IF SourceKind = "catchall" THEN {"error", "ok"}
                        ELSE IF SourceKind = "parallel" THEN {"ok", "again"}
-                       ELSE IF SourceKind = "approval" THEN {"ok"}
+                       ELSE IF SourceKind \in {"approval", "spawn", "spawn_lane"} THEN {"ok"}
+                       ELSE IF Mode = "supply" THEN {"ok"}
                        ELSE {"again", "ok", "error"}
-      [] x[1] = "H" -> {"ok"}
-      [] x[1] = "R" -> {"msg"}
+      [] x[1] = "H"  -> {"ok"}
+      [] x[1] = "R"  -> {"msg"}
+      [] x = SPNode  -> {"started"}
+      [] x = PNode   -> {"ok"}
       [] OTHER -> {"ok"}
 
 MaxReusedOrd(st) ==
@@ -248,13 +367,24 @@ VARIABLES
     srcLock,            \* "free" | "copy_share" | "sweeper_excl" | "delwf_excl" | "owner_ended_excl"
     newLock,            \* "free" | "copy_excl" | "owner_ended_excl"
 
-    \* Start & claim state
+    \* Start & claim state (3A's exact startPhase values; zero invented phases)
     startPhase,         \* "idle" | "claimed" | "crashed" | "lock_step1" | "lock_src" | "lock_step2" | "partial_run" | "admitted" | Refused
-    rerunPin,           \* [rev |-> 0..2, mode |-> "none" | Mode]
+    rerunPin,           \* [rev |-> 0..2, mode |-> "none" | Mode, supplied |-> [outcome |-> Outcomes, payloadVer |-> 0..2]]
     admittedRev,        \* 0 | 1 | 2
+    admittedSupplied,   \* [outcome |-> Outcomes, payloadVer |-> 0..2]
+    retrySupplyVer,     \* 1 | 2 (2 when retry mutates supplied payload under same operationId)
     copySawSrcLive,     \* used only by NoSourceLock fault
     copiedFromLive,     \* whether srcLive was TRUE when Copy committed
     pinnedResumed,      \* witness tracker: Start resumed from claim crash
+
+    \* Claim shell & Sweeper bare-shell race state (R2-M1, 10:24 PST, S6)
+    claimShellState,      \* "none" | "live_unadmitted" | "admitted" | "soft_deleted"
+    sessionVersion,       \* 0 | 1 (claimed) | 2 (admitted) — models sessions row xmin/version
+    sweeperSnapVersion,   \* 0 (none) | 1..2 (version snapshotted by SweeperReadBareShell before locking newLock)
+    claimGraceElapsed,    \* TRUE once sessions.updated_at age exceeds grace (can fire in any pre-admission phase)
+    everSweptShell,       \* witness tracker: Sweeper collected a stale bare claim shell (without OwnerEnd)
+    ownerEndedNew,        \* TRUE if OwnerEnd soft-deleted an admitted #3
+    freshStartAfterSweep, \* bounds fresh Start (new key/opId) after sweep to at most 1
 
     \* Re-run #3 store state
     runStatus,          \* "none" | Active | Terminal
@@ -262,24 +392,27 @@ VARIABLES
     nState,             \* [AllNodes -> "absent" | "pending" | "completed"]
     nPred,              \* [AllNodes -> AllNodes \cup {NoNode}]
     nRoute,             \* [AllNodes -> Routes]
-    nWinner,            \* [AllNodes -> "none" | "reused" | "effect" | "cancel" | "controller" | "delete"]
+    nWinner,            \* [AllNodes -> "none" | "reused" | "supplied" | "effect" | "cancel" | "controller" | "delete"]
     nOutcome,           \* [AllNodes -> Outcomes]
     nResultKind,        \* [AllNodes -> "none" | "business" | "runtime_error"]
     nOrigin,            \* [AllNodes -> "none" | "wf1" | "wf2" | "wf3"]
     nDeadline,          \* [AllNodes -> "none" | "source" | "new"]
     reusedSet,          \* subset of AllNodes that are reused copies
-    newVisits,          \* subset of AllNodes admitted fresh (not reused)
+    suppliedSet,        \* subset of AllNodes that are supplied visits (V')
+    newVisits,          \* subset of AllNodes admitted fresh (not reused, not supplied)
     resumedAtCut,       \* rerun_resumed_at IS NOT NULL
-    firstNew,           \* first non-reused node admitted
-    firstNewPred,       \* predecessor of first non-reused node
-    firstNewRoute,      \* arrival route of first non-reused node
+    firstNew,           \* first non-reused, non-supplied node admitted
+    firstNewPred,       \* predecessor of first new node
+    firstNewRoute,      \* arrival route of first new node
     firstNewHashOk,     \* whether first new admission satisfied same-IR byte check
     copyHitMismatch,    \* whether pass-over silently accepted a copied row with mismatched predecessor/route
+    downstreamReadSupplied, \* witness tracker: downstream step read supplied output
     events,             \* event counters for Inv_EventsOnce
 
     \* Carried inbox state for #3
-    carriedInbox,       \* subset of InboxMsgs copied into #3
-    inboxTaken,         \* [InboxMsgs -> 0..2]
+    carriedInbox,          \* subset of InboxMsgs copied into #3
+    unexpiredCarriedInbox, \* carried messages not yet consumed or expired by TTL
+    inboxTaken,            \* [InboxMsgs -> 0..2]
 
     \* Controller state (1.3.0) for #3
     pc,                 \* "idle" | "begin" | "poll" | "admit" | "start" | "collect" | "wait" | "finish" | "finishFail" | "cancel" | "done"
@@ -294,12 +427,15 @@ VARIABLES
     retriedInPassOver,  \* witness tracker
     canInPassOver,      \* witness tracker
 
-    \* Effects & commands
-    eff,                \* [WorkNodes -> "absent" | "started" | "done"]
-    q,                  \* controller command queue ("cancel")
-    pauseUsed,          \* bound pause/resume to 1
-    stopRequested,      \* stop requested flag
-    cancelSent,         \* cancel sent flag
+    \* Effects, agent sessions, spawn children & commands
+    eff,                 \* [WorkNodes -> "absent" | "started" | "done"]
+    agentSession,        \* [WorkNodes -> "absent" | "live" | "ended"]
+    oldChildStatus,      \* "absent" | "active" | "cancelling" | "cancelled" (#2's dropped/cancelled spawn child, G-R2)
+    newSpawnChildStatus, \* "absent" | "active" | "completed" | "cancelled" (#3's new spawn child)
+    q,                   \* controller command queue ("cancel")
+    pauseUsed,           \* bound pause/resume to 1
+    stopRequested,       \* stop requested flag
+    cancelSent,          \* cancel sent flag
 
     \* Deleter state machines
     sweeperPc,          \* "idle" | "locked_target" | "done" | "busy"
@@ -308,22 +444,24 @@ VARIABLES
 
 lockVars == <<ownerLock, defLock, srcLock, newLock>>
 sessionVars == <<ownerLive, srcLive, srcNodes, deleterWaitedOnCopy, srcDeletedAfterCopy, latestRev>>
-startVars == <<startPhase, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed>>
+startVars == <<startPhase, rerunPin, admittedRev, admittedSupplied, retrySupplyVer, copySawSrcLive, copiedFromLive, pinnedResumed>>
+shellVars == <<claimShellState, sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep>>
 runVars == <<runStatus, failCode, nState, nPred, nRoute, nWinner, nOutcome, nResultKind, nOrigin, nDeadline,
-             reusedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
-             copyHitMismatch, events>>
-inboxVars == <<carriedInbox, inboxTaken>>
+             reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
+             copyHitMismatch, downstreamReadSupplied, events>>
+inboxVars == <<carriedInbox, unexpiredCarriedInbox, inboxTaken>>
 ctrlVars == <<pc, curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
               retriedInPassOver, canInPassOver>>
-effCmdVars == <<eff, q, pauseUsed, stopRequested, cancelSent>>
+effCmdVars == <<eff, agentSession, oldChildStatus, newSpawnChildStatus, q, pauseUsed, stopRequested, cancelSent>>
 delVars == <<sweeperPc, delWfPc, ownerEndPc>>
-vars == <<lockVars, sessionVars, startVars, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+vars == <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 -----------------------------------------------------------------------------
 (* Type invariant                                                          *)
 
-Outcomes == {"none", "again", "ok", "error", "approved", "msg", "exhausted", "cancelled", "succeeded"}
-Routes == {"none", "initial", "again", "ok", "error", "approved", "msg", "exhausted", "catchAll", "branch"}
+Outcomes == {"none", "again", "ok", "error", "approved", "msg", "exhausted", "cancelled", "succeeded", "started", "undeclared"}
+Routes == {"none", "initial", "again", "ok", "error", "approved", "msg", "exhausted", "catchAll", "branch", "started", "undeclared"}
+SuppliedPinDomain == [outcome: Outcomes, payloadVer: 0..2]
 
 TypeOK ==
     /\ ownerLive \in BOOLEAN /\ srcLive \in BOOLEAN
@@ -335,30 +473,38 @@ TypeOK ==
     /\ srcLock \in {"free", "copy_share", "sweeper_excl", "delwf_excl", "owner_ended_excl"}
     /\ newLock \in {"free", "copy_excl", "owner_ended_excl"}
     /\ startPhase \in {"idle", "claimed", "crashed", "lock_step1", "lock_src", "lock_step2", "partial_run", "admitted"} \cup Refused
-    /\ rerunPin \in [rev: 0..2, mode: {"none", "run_again", "continue"}]
+    /\ rerunPin \in [rev: 0..2, mode: {"none", "run_again", "continue", "supply"}, supplied: SuppliedPinDomain]
     /\ admittedRev \in 0..2
+    /\ admittedSupplied \in SuppliedPinDomain
+    /\ retrySupplyVer \in 1..2
     /\ copySawSrcLive \in BOOLEAN /\ copiedFromLive \in BOOLEAN /\ pinnedResumed \in BOOLEAN
+    /\ claimShellState \in {"none", "live_unadmitted", "admitted", "soft_deleted"}
+    /\ sessionVersion \in 0..2 /\ sweeperSnapVersion \in 0..2
+    /\ claimGraceElapsed \in BOOLEAN
+    /\ everSweptShell \in BOOLEAN /\ ownerEndedNew \in BOOLEAN /\ freshStartAfterSweep \in BOOLEAN
     /\ runStatus \in {"none"} \cup Active \cup Terminal
     /\ failCode \in {"none", "rerun_diverged", "unhandled_error", "limit_exceeded"}
     /\ nState \in [AllNodes -> {"absent", "pending", "completed"}]
     /\ nPred \in [AllNodes -> AllNodes \cup {NoNode}]
     /\ nRoute \in [AllNodes -> Routes]
-    /\ nWinner \in [AllNodes -> {"none", "reused", "effect", "cancel", "controller", "delete"}]
+    /\ nWinner \in [AllNodes -> {"none", "reused", "supplied", "effect", "cancel", "controller", "delete"}]
     /\ nOutcome \in [AllNodes -> Outcomes]
     /\ nResultKind \in [AllNodes -> {"none", "business", "runtime_error"}]
     /\ nOrigin \in [AllNodes -> {"none", "wf1", "wf2", "wf3"}]
     /\ nDeadline \in [AllNodes -> {"none", "source", "new"}]
-    /\ reusedSet \subseteq AllNodes /\ newVisits \subseteq AllNodes
+    /\ reusedSet \subseteq AllNodes /\ suppliedSet \subseteq AllNodes /\ newVisits \subseteq AllNodes
     /\ resumedAtCut \in BOOLEAN
     /\ firstNew \in AllNodes \cup {NoNode}
     /\ firstNewPred \in AllNodes \cup {NoNode}
     /\ firstNewRoute \in Routes
     /\ firstNewHashOk \in BOOLEAN
     /\ copyHitMismatch \in BOOLEAN
+    /\ downstreamReadSupplied \in BOOLEAN
     /\ events.started \in 0..2 /\ events.ended \in 0..2
     /\ events.stateStarted \in [AllNodes -> 0..2]
     /\ events.stateCompleted \in [AllNodes -> 0..2]
     /\ carriedInbox \subseteq InboxMsgs
+    /\ unexpiredCarriedInbox \subseteq InboxMsgs
     /\ inboxTaken \in [InboxMsgs -> 0..2]
     /\ pc \in {"idle", "begin", "poll", "admit", "start", "collect", "wait", "finish", "finishFail", "cancel", "done"}
     /\ curNode \in TopNodes \cup {NoNode}
@@ -371,6 +517,9 @@ TypeOK ==
     /\ actRes \in {"none", "pending", "completed", "paused", "notAdmitted", "nothing", "ended"} \cup Outcomes
     /\ retriedInPassOver \in BOOLEAN /\ canInPassOver \in BOOLEAN
     /\ eff \in [WorkNodes -> {"absent", "started", "done"}]
+    /\ agentSession \in [WorkNodes -> {"absent", "live", "ended"}]
+    /\ oldChildStatus \in {"absent", "active", "cancelling", "cancelled"}
+    /\ newSpawnChildStatus \in {"absent", "active", "completed", "cancelled"}
     /\ q \in Seq({"cancel"})
     /\ pauseUsed \in BOOLEAN /\ stopRequested \in BOOLEAN /\ cancelSent \in BOOLEAN
     /\ sweeperPc \in {"idle", "locked_target", "done", "busy"}
@@ -379,6 +528,8 @@ TypeOK ==
 
 -----------------------------------------------------------------------------
 (* Initial state                                                           *)
+
+EmptySuppliedPin == [outcome |-> "none", payloadVer |-> 0]
 
 Init ==
     /\ ownerLive = TRUE
@@ -389,11 +540,20 @@ Init ==
     /\ latestRev = 1
     /\ ownerLock = "free" /\ defLock = "free" /\ srcLock = "free" /\ newLock = "free"
     /\ startPhase = "idle"
-    /\ rerunPin = [rev |-> 0, mode |-> "none"]
+    /\ rerunPin = [rev |-> 0, mode |-> "none", supplied |-> EmptySuppliedPin]
     /\ admittedRev = 0
+    /\ admittedSupplied = EmptySuppliedPin
+    /\ retrySupplyVer = 1
     /\ copySawSrcLive = FALSE
     /\ copiedFromLive = FALSE
     /\ pinnedResumed = FALSE
+    /\ claimShellState = "none"
+    /\ sessionVersion = 0
+    /\ sweeperSnapVersion = 0
+    /\ claimGraceElapsed = FALSE
+    /\ everSweptShell = FALSE
+    /\ ownerEndedNew = FALSE
+    /\ freshStartAfterSweep = FALSE
     /\ runStatus = "none"
     /\ failCode = "none"
     /\ nState = [x \in AllNodes |-> "absent"]
@@ -405,6 +565,7 @@ Init ==
     /\ nOrigin = [x \in AllNodes |-> "none"]
     /\ nDeadline = [x \in AllNodes |-> "none"]
     /\ reusedSet = {}
+    /\ suppliedSet = {}
     /\ newVisits = {}
     /\ resumedAtCut = FALSE
     /\ firstNew = NoNode
@@ -412,10 +573,12 @@ Init ==
     /\ firstNewRoute = "none"
     /\ firstNewHashOk = TRUE
     /\ copyHitMismatch = FALSE
+    /\ downstreamReadSupplied = FALSE
     /\ events = [started |-> 0, ended |-> 0,
                  stateStarted |-> [x \in AllNodes |-> 0],
                  stateCompleted |-> [x \in AllNodes |-> 0]]
     /\ carriedInbox = {}
+    /\ unexpiredCarriedInbox = {}
     /\ inboxTaken = [m \in InboxMsgs |-> 0]
     /\ pc = "idle"
     /\ curNode = InitialStep
@@ -429,6 +592,9 @@ Init ==
     /\ retriedInPassOver = FALSE
     /\ canInPassOver = FALSE
     /\ eff = [x \in WorkNodes |-> "absent"]
+    /\ agentSession = [x \in WorkNodes |-> "absent"]
+    /\ oldChildStatus = IF SourceKind \in {"spawn", "spawn_lane"} THEN "active" ELSE "absent"
+    /\ newSpawnChildStatus = "absent"
     /\ q = <<>>
     /\ pauseUsed = FALSE
     /\ stopRequested = FALSE
@@ -460,7 +626,12 @@ TargetInbox ==
       THEN IF CarryLateMessage
              THEN {m \in InboxMsgs : ~MsgConsumedByReused(m)}
              ELSE {m \in InboxMsgs : EligibleCarry(m)}
-      ELSE {}
+    ELSE IF SourceKind = "spawn"
+      THEN {"m1"}
+    ELSE {}
+
+RefusalShellState ==
+    IF SkipImmediateRefusalCleanup THEN "live_unadmitted" ELSE "soft_deleted"
 
 ReleaseCopyLocks ==
     /\ ownerLock' = IF ownerLock = "copy_share" THEN "free" ELSE ownerLock
@@ -472,13 +643,25 @@ ReleaseCopyLocks ==
 (* Phase 1: Two-step Start (ClaimRerun + Crash/NewRev + AdmitRerunCopy)    *)
 
 ClaimRerun ==
-    /\ startPhase = "idle"
-    /\ IF ownerLive
+    /\ \/ startPhase = "idle"
+       \/ (AllowPostSweepStart /\ ~freshStartAfterSweep
+           /\ (startPhase = "crashed" \/ startPhase = "refused_workflow_deleted")
+           /\ claimShellState = "soft_deleted" /\ sweeperSnapVersion = 0)
+    /\ LET isPostSweep == (startPhase # "idle")
+           supPin == IF Mode = "supply" THEN [outcome |-> SuppliedOutcome, payloadVer |-> 1] ELSE EmptySuppliedPin
+       IN
+       IF ownerLive
          THEN /\ startPhase' = "claimed"
-              /\ rerunPin' = [rev |-> latestRev, mode |-> Mode]
+              /\ rerunPin' = [rev |-> latestRev, mode |-> Mode, supplied |-> supPin]
+              /\ claimShellState' = "live_unadmitted"
+              /\ sessionVersion' = 1
+              /\ sweeperSnapVersion' = 0
+              /\ claimGraceElapsed' = FALSE
+              /\ freshStartAfterSweep' = IF isPostSweep THEN TRUE ELSE freshStartAfterSweep
          ELSE /\ startPhase' = "refused_owner_ended"
-              /\ UNCHANGED rerunPin
-    /\ UNCHANGED <<lockVars, sessionVars, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+              /\ UNCHANGED <<rerunPin, claimShellState, sessionVersion, sweeperSnapVersion, claimGraceElapsed, freshStartAfterSweep>>
+    /\ UNCHANGED <<lockVars, sessionVars, admittedRev, admittedSupplied, retrySupplyVer,
+                   copySawSrcLive, copiedFromLive, pinnedResumed, everSweptShell, ownerEndedNew,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 SaveNewRevision ==
@@ -487,29 +670,79 @@ SaveNewRevision ==
     /\ latestRev = 1
     /\ latestRev' = 2
     /\ UNCHANGED <<lockVars, ownerLive, srcLive, srcNodes, deleterWaitedOnCopy, srcDeletedAfterCopy,
-                   startVars, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+                   startVars, shellVars, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+
+MutateRetrySupply ==
+    /\ AllowRetrySupplyChange
+    /\ Mode = "supply"
+    /\ startPhase \in {"claimed", "crashed"}
+    /\ retrySupplyVer = 1
+    /\ retrySupplyVer' = 2
+    /\ UNCHANGED <<lockVars, sessionVars, startPhase, rerunPin, admittedRev, admittedSupplied,
+                   copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
+                   runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 ClaimCrash ==
     /\ AllowClaimCrash
     /\ startPhase = "claimed"
     /\ ~pinnedResumed
+    /\ ~freshStartAfterSweep
     /\ startPhase' = "crashed"
-    /\ UNCHANGED <<lockVars, sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+    /\ UNCHANGED <<lockVars, sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                   copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 ResumeAfterClaimCrash ==
+    /\ AllowResumeAfterCrash
     /\ startPhase = "crashed"
     /\ startPhase' = "claimed"
     /\ pinnedResumed' = TRUE
-    /\ UNCHANGED <<lockVars, sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive,
+    /\ UNCHANGED <<lockVars, sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                   copySawSrcLive, copiedFromLive, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
-\* Normal lock acquisition order:
-\*   Step 1: owner FOR SHARE -> def FOR SHARE (requireSessionStartLocked)
-\*   Step 2a: #2 FOR SHARE (first of lockSessionPair in session_id ASC order)
-\*   Step 2b: #3 FOR NO KEY UPDATE (second of lockSessionPair in session_id ASC order)
-\* Fault LockNewBeforeOwner reverses Step 1 and Step 2, deadlocking with OwnerEnded.
-\* Fault NoSourceLock skips locking #2 (srcLock) and reads srcLive unlocked in Step 1.
+\* R2-M1: wall-clock grace (sessions.updated_at age) can elapse in ANY pre-admission phase (claimed, crashed, lock_*).
+AdvanceClaimGrace ==
+    /\ AllowShellSweeper
+    /\ startPhase \in {"claimed", "crashed", "lock_step1", "lock_src", "lock_step2"}
+    /\ claimShellState = "live_unadmitted"
+    /\ ~claimGraceElapsed
+    /\ claimGraceElapsed' = TRUE
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, claimShellState, sessionVersion, sweeperSnapVersion,
+                   everSweptShell, ownerEndedNew, freshStartAfterSweep,
+                   runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+
+\* R2-M1 step 1 (sweeper-tools.ts): unlocked candidate read observes bare shell older than grace (NO startPhase oracle).
+SweeperReadBareShell ==
+    /\ AllowShellSweeper
+    /\ claimShellState = "live_unadmitted"
+    /\ runStatus = "none"
+    /\ claimGraceElapsed
+    /\ sweeperSnapVersion = 0
+    /\ sweeperSnapVersion' = sessionVersion
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, claimShellState, sessionVersion, claimGraceElapsed,
+                   everSweptShell, ownerEndedNew, freshStartAfterSweep,
+                   runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+
+\* R2-M1 step 2 (store.ts sweeperSoftDelete): acquires newLock (FOR NO KEY UPDATE), re-checks version & no run under lock,
+\* and soft-deletes the bare shell without OwnerEnd. Fault SweeperSkipsNewLockOrRecheck keeps grace enabled and removes ONLY
+\* newLock / the under-lock version & no-run re-check.
+SweeperCollectClaimShell ==
+    /\ AllowShellSweeper
+    /\ sweeperSnapVersion > 0
+    /\ IF SweeperSkipsNewLockOrRecheck
+         THEN /\ claimShellState \in {"live_unadmitted", "admitted"}
+              /\ claimShellState' = "soft_deleted"
+              /\ sweeperSnapVersion' = 0
+              /\ everSweptShell' = TRUE
+         ELSE /\ newLock = "free"
+              /\ sweeperSnapVersion' = 0
+              /\ IF claimShellState = "live_unadmitted" /\ runStatus = "none" /\ sessionVersion = sweeperSnapVersion
+                   THEN /\ claimShellState' = "soft_deleted"
+                        /\ everSweptShell' = TRUE
+                   ELSE UNCHANGED <<claimShellState, everSweptShell>>
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, sessionVersion, claimGraceElapsed, ownerEndedNew, freshStartAfterSweep,
+                   runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 CopyLockStep1 ==
     /\ startPhase = "claimed"
@@ -523,7 +756,8 @@ CopyLockStep1 ==
               /\ copySawSrcLive' = IF NoSourceLock THEN srcLive ELSE copySawSrcLive
               /\ UNCHANGED <<srcLock, newLock>>
               /\ startPhase' = "lock_step1"
-    /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, copiedFromLive, pinnedResumed,
+    /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                   copiedFromLive, pinnedResumed, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 CopyLockSrc ==
@@ -536,7 +770,8 @@ CopyLockSrc ==
               /\ srcLock' = "copy_share"
               /\ startPhase' = "lock_src"
               /\ UNCHANGED <<ownerLock, defLock, newLock>>
-    /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+    /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                   copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 CopyLockStep2 ==
@@ -549,91 +784,189 @@ CopyLockStep2 ==
               /\ newLock' = "copy_excl"
               /\ UNCHANGED <<ownerLock, defLock, srcLock>>
     /\ startPhase' = "lock_step2"
-    /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+    /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                   copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 CopyCommit ==
     /\ startPhase = "lock_step2"
     /\ LET effectiveSrcLive == IF NoSourceLock THEN copySawSrcLive ELSE srcLive
            chosenRev == IF RepickOnResume /\ pinnedResumed THEN latestRev ELSE rerunPin.rev
-           incompatible == Target \in {"reroute_taken", "reroute_onto_copy"}
+           chosenSupplied == IF Mode = "supply"
+                               THEN [outcome |-> SuppliedOutcome,
+                                     payloadVer |-> IF RepickSuppliedOnRetry THEN retrySupplyVer ELSE rerunPin.supplied.payloadVer]
+                               ELSE EmptySuppliedPin
+           incompatible == Target \in {"reroute_taken", "reroute_onto_copy", "reroute_supply"}
+           supplyStepBad == Mode = "supply" /\ NodeKindOf(ChosenSupplyNode) # "script_or_agent" /\ ~AllowSupplyOnForbiddenStep
+           supplyNeverBad == Mode = "supply" /\ SupplyNever /\ ~IgnoreSupplyNever
+           supplyOutcomeBad == Mode = "supply" /\ SuppliedOutcome \notin DeclaredOutcomes /\ ~AllowUndeclaredSupplyOutcome
+           supplyNoteBad == Mode = "supply" /\ ~SupplyNotePresent /\ ~IgnoreMissingSupplyNote
+           supplyRetryConflict == Mode = "supply" /\ AllowRetrySupplyChange /\ retrySupplyVer # rerunPin.supplied.payloadVer /\ ~RepickSuppliedOnRetry
+           allCopied == ExpectedReused \cup ExpectedSupplied
        IN
-       IF ~ownerLive
-         THEN /\ startPhase' = "refused_owner_ended"
+       IF claimShellState = "soft_deleted"
+         THEN /\ startPhase' = "refused_workflow_deleted"
               /\ ReleaseCopyLocks
-              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                             copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
+                             runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+       ELSE IF ~ownerLive
+         THEN /\ startPhase' = "refused_owner_ended"
+              /\ claimShellState' = RefusalShellState
+              /\ ReleaseCopyLocks
+              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                             copySawSrcLive, copiedFromLive, pinnedResumed,
+                             sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF ~effectiveSrcLive
          THEN /\ startPhase' = "refused_source_gone"
+              /\ claimShellState' = RefusalShellState
               /\ ReleaseCopyLocks
-              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                             copySawSrcLive, copiedFromLive, pinnedResumed,
+                             sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
+                             runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+       ELSE IF supplyRetryConflict
+         THEN /\ startPhase' = "refused_conflict"
+              /\ claimShellState' = RefusalShellState
+              /\ ReleaseCopyLocks
+              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                             copySawSrcLive, copiedFromLive, pinnedResumed,
+                             sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
+                             runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+       ELSE IF supplyStepBad \/ supplyNeverBad
+         THEN /\ startPhase' = "refused_supply_not_allowed"
+              /\ claimShellState' = RefusalShellState
+              /\ ReleaseCopyLocks
+              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                             copySawSrcLive, copiedFromLive, pinnedResumed,
+                             sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
+                             runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+       ELSE IF supplyOutcomeBad \/ supplyNoteBad
+         THEN /\ startPhase' = "refused_supplied_invalid"
+              /\ claimShellState' = RefusalShellState
+              /\ ReleaseCopyLocks
+              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                             copySawSrcLive, copiedFromLive, pinnedResumed,
+                             sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF FitCheck /\ incompatible
          THEN /\ startPhase' = "refused_incompatible"
+              /\ claimShellState' = RefusalShellState
               /\ ReleaseCopyLocks
-              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                             copySawSrcLive, copiedFromLive, pinnedResumed,
+                             sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF ApprovalGate /\ HasApproval /\ Actor # "owner"
          THEN /\ startPhase' = "refused_approval"
+              /\ claimShellState' = RefusalShellState
               /\ ReleaseCopyLocks
-              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+              /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                             copySawSrcLive, copiedFromLive, pinnedResumed,
+                             sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF ~AtomicCopy
          \* Fault rr-df-copy-not-atomic: run row commits before copies exist
          THEN /\ startPhase' = "partial_run"
+              /\ claimShellState' = "admitted"
+              /\ sessionVersion' = 2
               /\ admittedRev' = chosenRev
+              /\ admittedSupplied' = chosenSupplied
               /\ copiedFromLive' = srcLive
               /\ runStatus' = "admitted"
               /\ ReleaseCopyLocks
-              /\ UNCHANGED <<sessionVars, rerunPin, copySawSrcLive, pinnedResumed,
+              /\ UNCHANGED <<sessionVars, rerunPin, retrySupplyVer, copySawSrcLive, pinnedResumed,
+                             sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
                              failCode, nState, nPred, nRoute, nWinner, nOutcome, nResultKind, nOrigin, nDeadline,
-                             reusedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
-                             firstNewHashOk, copyHitMismatch, events, inboxVars, ctrlVars, effCmdVars, delVars>>
-       ELSE \* Normal atomic commit of run row + copied prefix + carried inbox
+                             reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
+                             firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events, inboxVars, ctrlVars, effCmdVars, delVars>>
+       ELSE \* Normal atomic commit of run row + copied prefix (+ optional supplied visit V') + carried inbox
             /\ startPhase' = "admitted"
+            /\ claimShellState' = "admitted"
+            /\ sessionVersion' = 2
             /\ admittedRev' = chosenRev
+            /\ admittedSupplied' = chosenSupplied
             /\ copiedFromLive' = srcLive
             /\ runStatus' = "admitted"
-            /\ nState' = [x \in AllNodes |-> IF x \in ExpectedReused THEN "completed" ELSE "absent"]
-            /\ nPred' = [x \in AllNodes |-> IF x \in ExpectedReused THEN SrcPred(x) ELSE NoNode]
-            /\ nRoute' = [x \in AllNodes |-> IF x \in ExpectedReused THEN SrcRoute(x) ELSE "none"]
-            /\ nWinner' = [x \in AllNodes |-> IF x \in ExpectedReused THEN "reused" ELSE "none"]
-            /\ nOutcome' = [x \in AllNodes |-> IF x \in ExpectedReused THEN srcNodes[x].outcome ELSE "none"]
-            /\ nResultKind' = [x \in AllNodes |-> IF x \in ExpectedReused THEN srcNodes[x].kind ELSE "none"]
-            /\ nOrigin' = [x \in AllNodes |-> IF x \in ExpectedReused THEN CopyOriginOf(x) ELSE "none"]
-            /\ nDeadline' = [x \in AllNodes |-> IF x \in ExpectedReused THEN CopyDeadlineOf(x) ELSE "none"]
+            /\ nState' = [x \in AllNodes |-> IF x \in allCopied THEN "completed" ELSE "absent"]
+            /\ nPred' = [x \in AllNodes |-> IF x \in allCopied THEN SrcPred(x) ELSE NoNode]
+            /\ nRoute' = [x \in AllNodes |-> IF x \in allCopied THEN SrcRoute(x) ELSE "none"]
+            /\ nWinner' = [x \in AllNodes |->
+                  IF x \in ExpectedSupplied THEN "supplied"
+                  ELSE IF x \in ExpectedReused THEN "reused"
+                  ELSE "none"]
+            /\ nOutcome' = [x \in AllNodes |->
+                  IF x \in ExpectedSupplied THEN SuppliedOutcome
+                  ELSE IF x \in ExpectedReused THEN srcNodes[x].outcome
+                  ELSE "none"]
+            /\ nResultKind' = [x \in AllNodes |->
+                  IF x \in ExpectedSupplied THEN "business"
+                  ELSE IF x \in ExpectedReused THEN srcNodes[x].kind
+                  ELSE "none"]
+            /\ nOrigin' = [x \in AllNodes |->
+                  IF x \in ExpectedSupplied THEN "wf3"
+                  ELSE IF x \in ExpectedReused THEN CopyOriginOf(x)
+                  ELSE "none"]
+            /\ nDeadline' = [x \in AllNodes |->
+                  IF x \in ExpectedSupplied THEN "none"
+                  ELSE IF x \in ExpectedReused THEN CopyDeadlineOf(x)
+                  ELSE "none"]
             /\ reusedSet' = ExpectedReused
+            /\ suppliedSet' = ExpectedSupplied
             /\ carriedInbox' = TargetInbox
-            /\ srcNodes' = IF CopyKeepsIds
+            /\ unexpiredCarriedInbox' = TargetInbox
+            /\ srcNodes' = IF CopyKeepsIds /\ LastReusedTop # NoNode
                              THEN [srcNodes EXCEPT ![LastReusedTop].outcome = "cancelled"]
                              ELSE srcNodes
             /\ pc' = "begin"
             /\ ReleaseCopyLocks
             /\ UNCHANGED <<ownerLive, srcLive, deleterWaitedOnCopy, srcDeletedAfterCopy, latestRev,
-                           rerunPin, copySawSrcLive, pinnedResumed, failCode, newVisits, resumedAtCut,
-                           firstNew, firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch, events,
+                           rerunPin, retrySupplyVer, copySawSrcLive, pinnedResumed,
+                           sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
+                           failCode, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
+                           firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events,
                            inboxTaken, curNode, curPred, curRoute, curPending, curCaught, curSteps,
                            planMaxSteps, actRes, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
 CopyFinishPartial ==
     /\ startPhase = "partial_run"
-    /\ startPhase' = "admitted"
-    /\ nState' = [x \in AllNodes |-> IF x \in ExpectedReused THEN "completed" ELSE "absent"]
-    /\ nPred' = [x \in AllNodes |-> IF x \in ExpectedReused THEN SrcPred(x) ELSE NoNode]
-    /\ nRoute' = [x \in AllNodes |-> IF x \in ExpectedReused THEN SrcRoute(x) ELSE "none"]
-    /\ nWinner' = [x \in AllNodes |-> IF x \in ExpectedReused THEN "reused" ELSE "none"]
-    /\ nOutcome' = [x \in AllNodes |-> IF x \in ExpectedReused THEN srcNodes[x].outcome ELSE "none"]
-    /\ nResultKind' = [x \in AllNodes |-> IF x \in ExpectedReused THEN srcNodes[x].kind ELSE "none"]
-    /\ nOrigin' = [x \in AllNodes |-> IF x \in ExpectedReused THEN CopyOriginOf(x) ELSE "none"]
-    /\ nDeadline' = [x \in AllNodes |-> IF x \in ExpectedReused THEN CopyDeadlineOf(x) ELSE "none"]
-    /\ reusedSet' = ExpectedReused
-    /\ carriedInbox' = TargetInbox
-    /\ pc' = "begin"
-    /\ UNCHANGED <<lockVars, sessionVars, rerunPin, admittedRev, copySawSrcLive, copiedFromLive, pinnedResumed,
+    /\ LET allCopied == ExpectedReused \cup ExpectedSupplied IN
+       /\ startPhase' = "admitted"
+       /\ nState' = [x \in AllNodes |-> IF x \in allCopied THEN "completed" ELSE "absent"]
+       /\ nPred' = [x \in AllNodes |-> IF x \in allCopied THEN SrcPred(x) ELSE NoNode]
+       /\ nRoute' = [x \in AllNodes |-> IF x \in allCopied THEN SrcRoute(x) ELSE "none"]
+       /\ nWinner' = [x \in AllNodes |->
+             IF x \in ExpectedSupplied THEN "supplied"
+             ELSE IF x \in ExpectedReused THEN "reused"
+             ELSE "none"]
+       /\ nOutcome' = [x \in AllNodes |->
+             IF x \in ExpectedSupplied THEN SuppliedOutcome
+             ELSE IF x \in ExpectedReused THEN srcNodes[x].outcome
+             ELSE "none"]
+       /\ nResultKind' = [x \in AllNodes |->
+             IF x \in ExpectedSupplied THEN "business"
+             ELSE IF x \in ExpectedReused THEN srcNodes[x].kind
+             ELSE "none"]
+       /\ nOrigin' = [x \in AllNodes |->
+             IF x \in ExpectedSupplied THEN "wf3"
+             ELSE IF x \in ExpectedReused THEN CopyOriginOf(x)
+             ELSE "none"]
+       /\ nDeadline' = [x \in AllNodes |->
+             IF x \in ExpectedSupplied THEN "none"
+             ELSE IF x \in ExpectedReused THEN CopyDeadlineOf(x)
+             ELSE "none"]
+       /\ reusedSet' = ExpectedReused
+       /\ suppliedSet' = ExpectedSupplied
+       /\ carriedInbox' = TargetInbox
+       /\ unexpiredCarriedInbox' = TargetInbox
+       /\ pc' = "begin"
+    /\ UNCHANGED <<lockVars, sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
+                   copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
                    runStatus, failCode, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
-                   firstNewHashOk, copyHitMismatch, events, inboxTaken, curNode, curPred, curRoute,
-                   curPending, curCaught, curSteps, planMaxSteps, actRes, retriedInPassOver, canInPassOver,
-                   effCmdVars, delVars>>
+                   firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events, inboxTaken,
+                   curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
+                   retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
 -----------------------------------------------------------------------------
 (* Phase 2: Three Deleters (SweeperDirect, DeleteWorkflow, OwnerEnded)     *)
@@ -647,7 +980,7 @@ DeleterObservesCopyLock ==
     /\ (sweeperPc = "idle" \/ delWfPc = "idle")
     /\ deleterWaitedOnCopy' = TRUE
     /\ UNCHANGED <<lockVars, ownerLive, srcLive, srcNodes, srcDeletedAfterCopy, latestRev,
-                   startVars, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+                   startVars, shellVars, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 \* 1. SweeperDirect: blocking FOR NO KEY UPDATE on target #2, NOWAIT on descendants
 SweeperLockTarget ==
@@ -657,7 +990,7 @@ SweeperLockTarget ==
     /\ srcLock = "free"
     /\ srcLock' = "sweeper_excl"
     /\ sweeperPc' = "locked_target"
-    /\ UNCHANGED <<ownerLock, defLock, newLock, sessionVars, startVars,
+    /\ UNCHANGED <<ownerLock, defLock, newLock, sessionVars, startVars, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delWfPc, ownerEndPc>>
 
 SweeperCommit ==
@@ -670,7 +1003,7 @@ SweeperCommit ==
           /\ srcLive' = FALSE
           /\ srcDeletedAfterCopy' = (startPhase = "admitted")
     /\ UNCHANGED <<ownerLock, defLock, newLock, ownerLive, srcNodes, deleterWaitedOnCopy, latestRev,
-                   startVars, runVars, inboxVars, ctrlVars, effCmdVars, delWfPc, ownerEndPc>>
+                   startVars, shellVars, runVars, inboxVars, ctrlVars, effCmdVars, delWfPc, ownerEndPc>>
 
 \* 2. DeleteWorkflow (explicit delete via cms_soft_delete_session): blocking UPDATE on #2
 DelWfLock ==
@@ -680,7 +1013,7 @@ DelWfLock ==
     /\ srcLock = "free"
     /\ srcLock' = "delwf_excl"
     /\ delWfPc' = "locked_src"
-    /\ UNCHANGED <<ownerLock, defLock, newLock, sessionVars, startVars,
+    /\ UNCHANGED <<ownerLock, defLock, newLock, sessionVars, startVars, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, sweeperPc, ownerEndPc>>
 
 DelWfCommit ==
@@ -690,7 +1023,7 @@ DelWfCommit ==
     /\ srcLive' = FALSE
     /\ srcDeletedAfterCopy' = (startPhase = "admitted")
     /\ UNCHANGED <<ownerLock, defLock, newLock, ownerLive, srcNodes, deleterWaitedOnCopy, latestRev,
-                   startVars, runVars, inboxVars, ctrlVars, effCmdVars, sweeperPc, ownerEndPc>>
+                   startVars, shellVars, runVars, inboxVars, ctrlVars, effCmdVars, sweeperPc, ownerEndPc>>
 
 \* 3. OwnerEnded (migration 0096 workflow_on_owner_session_ended):
 \*    owner-deleted branch locks owner -> updates session_workflow_definitions (defLock) -> locks child Workflows (#2, #3) ASC
@@ -701,7 +1034,7 @@ OwnerEndLockOwner ==
     /\ ownerLock = "free"
     /\ ownerLock' = "owner_ended_excl"
     /\ ownerEndPc' = "locked_owner"
-    /\ UNCHANGED <<defLock, srcLock, newLock, sessionVars, startVars,
+    /\ UNCHANGED <<defLock, srcLock, newLock, sessionVars, startVars, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, sweeperPc, delWfPc>>
 
 OwnerEndLockDef ==
@@ -709,7 +1042,7 @@ OwnerEndLockDef ==
     /\ defLock = "free"
     /\ defLock' = "owner_ended_excl"
     /\ ownerEndPc' = "locked_def"
-    /\ UNCHANGED <<ownerLock, srcLock, newLock, sessionVars, startVars,
+    /\ UNCHANGED <<ownerLock, srcLock, newLock, sessionVars, startVars, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, sweeperPc, delWfPc>>
 
 OwnerEndCommit ==
@@ -721,14 +1054,17 @@ OwnerEndCommit ==
     /\ ownerEndPc' = "done"
     /\ ownerLive' = FALSE
     /\ srcLive' = FALSE
+    /\ claimShellState' = IF claimShellState \in {"live_unadmitted", "admitted"} THEN "soft_deleted" ELSE claimShellState
+    /\ ownerEndedNew' = (ownerEndedNew \/ claimShellState = "admitted")
     /\ IF runStatus \in Active
          THEN /\ runStatus' = "cancelled"
               /\ EndPendingNodes("delete")
          ELSE UNCHANGED <<runStatus, nState, nWinner, nOutcome, nResultKind>>
     /\ UNCHANGED <<srcLock, newLock, srcNodes, deleterWaitedOnCopy, srcDeletedAfterCopy, latestRev,
-                   startVars, failCode, nPred, nRoute, nOrigin, nDeadline, reusedSet, newVisits,
+                   startVars, sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, freshStartAfterSweep,
+                   failCode, nPred, nRoute, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits,
                    resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch,
-                   events, inboxVars, ctrlVars, effCmdVars, sweeperPc, delWfPc>>
+                   downstreamReadSupplied, events, inboxVars, ctrlVars, effCmdVars, sweeperPc, delWfPc>>
 
 -----------------------------------------------------------------------------
 (* Phase 3: Unchanged 1.3.0 Controller Pass-Over & Live Execution          *)
@@ -742,9 +1078,9 @@ BeginExec ==
               /\ pc' = "poll"
          ELSE /\ pc' = "done"
               /\ UNCHANGED <<runStatus, events, planMaxSteps>>
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, failCode, nState, nPred, nRoute, nWinner, nOutcome,
-                   nResultKind, nOrigin, nDeadline, reusedSet, newVisits, resumedAtCut, firstNew,
-                   firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch, inboxVars,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, failCode, nState, nPred, nRoute, nWinner, nOutcome,
+                   nResultKind, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew,
+                   firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch, downstreamReadSupplied, inboxVars,
                    curNode, curPred, curRoute, curPending, curCaught, curSteps, actRes,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
@@ -760,10 +1096,10 @@ PollCommand ==
               /\ EndPendingNodes("controller")
               /\ events' = [events EXCEPT !.ended = @ + 1]
               /\ pc' = "done"
-              /\ UNCHANGED <<q, failCode, nPred, nRoute, nOrigin, nDeadline, reusedSet, newVisits,
+              /\ UNCHANGED <<q, failCode, nPred, nRoute, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits,
                              resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
-                             copyHitMismatch, curNode, curPred, curRoute, curPending, curCaught, curSteps,
-                             planMaxSteps, actRes, retriedInPassOver, canInPassOver>>
+                             copyHitMismatch, downstreamReadSupplied, curNode, curPred, curRoute, curPending,
+                             curCaught, curSteps, planMaxSteps, actRes, retriedInPassOver, canInPassOver>>
        ELSE IF runStatus = "paused"
          THEN FALSE
        ELSE IF runStatus \in Terminal
@@ -776,14 +1112,15 @@ PollCommand ==
               /\ EndPendingNodes("controller")
               /\ events' = [events EXCEPT !.ended = @ + 1]
               /\ pc' = "done"
-              /\ UNCHANGED <<q, nPred, nRoute, nOrigin, nDeadline, reusedSet, newVisits, resumedAtCut,
+              /\ UNCHANGED <<q, nPred, nRoute, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits, resumedAtCut,
                              firstNew, firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch,
-                             curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps,
-                             actRes, retriedInPassOver, canInPassOver>>
+                             downstreamReadSupplied, curNode, curPred, curRoute, curPending, curCaught, curSteps,
+                             planMaxSteps, actRes, retriedInPassOver, canInPassOver>>
        ELSE /\ pc' = "admit"
             /\ UNCHANGED <<runVars, q, curNode, curPred, curRoute, curPending, curCaught, curSteps,
                            planMaxSteps, actRes, retriedInPassOver, canInPassOver>>
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, inboxVars, eff, pauseUsed, stopRequested, cancelSent, delVars>>
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, inboxVars, eff, agentSession,
+                   oldChildStatus, newSpawnChildStatus, pauseUsed, stopRequested, cancelSent, delVars>>
 
 ControllerCan ==
     /\ AllowCan
@@ -793,7 +1130,7 @@ ControllerCan ==
     /\ ~resumedAtCut
     /\ ~canInPassOver
     /\ canInPassOver' = TRUE
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars,
                    pc, curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
                    retriedInPassOver, effCmdVars, delVars>>
 
@@ -804,10 +1141,13 @@ ByteCheckOk == (~ByteCheckRequired) \/ (~InputHashMismatch)
 
 \* Cut guard check (Design §5.2):
 \*   run_again: curNode = ExpectedCutNode /\ curPred = LastReusedTop /\ curRoute = ExpectedCutRoute /\ (sameIr & sameKV => byte check)
+\*   supply:    curNode = ExpectedCutNode /\ curPred = ChosenSupplyNode /\ curRoute = ExpectedCutRoute
 \*   continue:  curPred = LastReusedTop
 CutCoordMatches(x, pred, route) ==
     IF Mode = "run_again"
       THEN x = ExpectedCutNode /\ pred = LastReusedTop /\ route = ExpectedCutRoute
+    ELSE IF Mode = "supply"
+      THEN x = ExpectedCutNode /\ pred = ChosenSupplyNode /\ route = ExpectedCutRoute
       ELSE pred = LastReusedTop
 
 CutGuardMatches(x, pred, route) ==
@@ -826,7 +1166,7 @@ AdmitExec ==
     /\ actRes = "none"
     /\ LET x == AdmitCoord IN
        IF nState[x] # "absent" /\ ~(OrdinalsRestart /\ x = SNode(1) /\ curNode = SNode(2))
-         \* Pass-over hit on an existing copied row: verify predecessor & arrival route (Design §5.2 item 2 / S1)
+         \* Pass-over hit on an existing copied or supplied row: verify predecessor & arrival route (Design §5.2 item 2 / S1)
          THEN IF (curPred # nPred[x] \/ curRoute # nRoute[x])
                 THEN IF CheckCopyCoord /\ Guard /\ ~resumedAtCut
                        THEN \* failRerunDiverged: end run failed without retrying NONDETERMINISTIC_ADMISSION
@@ -836,17 +1176,18 @@ AdmitExec ==
                                    /\ EndPendingNodes("controller")
                                    /\ events' = [events EXCEPT !.ended = @ + 1]
                                    /\ actRes' = "notAdmitted"
-                                   /\ UNCHANGED <<nPred, nRoute, nOrigin, nDeadline, reusedSet, newVisits,
+                                   /\ UNCHANGED <<nPred, nRoute, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits,
                                                   resumedAtCut, firstNew, firstNewPred, firstNewRoute,
-                                                  firstNewHashOk, copyHitMismatch, inboxVars>>
+                                                  firstNewHashOk, copyHitMismatch, downstreamReadSupplied, inboxVars>>
                               ELSE /\ actRes' = IF runStatus = "paused" THEN "paused" ELSE "notAdmitted"
                                    /\ UNCHANGED <<runVars, inboxVars>>
-                       ELSE \* Fault rr-df-copy-hit-ignores-pred (unreachable post-cut in valid configs; real code throws NONDETERMINISTIC_ADMISSION post-cut)
+                       ELSE \* Fault rr-df-copy-hit-ignores-pred
                             /\ copyHitMismatch' = TRUE
                             /\ actRes' = nState[x]
                             /\ UNCHANGED <<runStatus, failCode, nState, nPred, nRoute, nWinner, nOutcome,
-                                           nResultKind, nOrigin, nDeadline, reusedSet, newVisits, resumedAtCut,
-                                           firstNew, firstNewPred, firstNewRoute, firstNewHashOk, events, inboxVars>>
+                                           nResultKind, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits,
+                                           resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
+                                           downstreamReadSupplied, events, inboxVars>>
                 ELSE /\ actRes' = nState[x]
                      /\ UNCHANGED <<runVars, inboxVars>>
        ELSE IF runStatus = "paused"
@@ -867,16 +1208,17 @@ AdmitExec ==
                      /\ failCode' = "rerun_diverged"
                      /\ events' = [events EXCEPT !.ended = @ + 1]
                      /\ actRes' = "notAdmitted"
-                     /\ UNCHANGED <<nWinner, nOutcome, nResultKind, nOrigin, nDeadline, reusedSet,
+                     /\ UNCHANGED <<nWinner, nOutcome, nResultKind, nOrigin, nDeadline, reusedSet, suppliedSet,
                                     resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
-                                    copyHitMismatch, inboxVars>>
+                                    copyHitMismatch, downstreamReadSupplied, inboxVars>>
                 ELSE /\ runStatus' = "failed"
                      /\ failCode' = "rerun_diverged"
                      /\ EndPendingNodes("controller")
                      /\ events' = [events EXCEPT !.ended = @ + 1]
                      /\ actRes' = "notAdmitted"
-                     /\ UNCHANGED <<nPred, nRoute, nOrigin, nDeadline, reusedSet, newVisits, resumedAtCut,
-                                    firstNew, firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch, inboxVars>>
+                     /\ UNCHANGED <<nPred, nRoute, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits, resumedAtCut,
+                                    firstNew, firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch,
+                                    downstreamReadSupplied, inboxVars>>
        ELSE \* Normal new admission (stamps rerun_resumed_at if first new visit)
             LET isExhausted == (x[1] = "S" /\ x[2] > MaxVisits)
                 canTakeCarried == (x[1] = "R" /\ \E m \in carriedInbox : inboxTaken[m] = 0)
@@ -903,11 +1245,12 @@ AdmitExec ==
             /\ events' = [events EXCEPT !.stateStarted[x] = @ + 1]
             /\ IF canTakeCarried
                  THEN LET m == CHOOSE msg \in carriedInbox : inboxTaken[msg] = 0
-                      IN inboxTaken' = [inboxTaken EXCEPT ![m] = @ + 1]
-                 ELSE UNCHANGED inboxTaken
+                      IN /\ inboxTaken' = [inboxTaken EXCEPT ![m] = @ + 1]
+                         /\ unexpiredCarriedInbox' = unexpiredCarriedInbox \ {m}
+                 ELSE UNCHANGED <<inboxTaken, unexpiredCarriedInbox>>
             /\ actRes' = st
-            /\ UNCHANGED <<runStatus, failCode, reusedSet, copyHitMismatch, carriedInbox>>
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, pc, curNode, curPred, curRoute, curPending, curCaught,
+            /\ UNCHANGED <<runStatus, failCode, reusedSet, suppliedSet, copyHitMismatch, downstreamReadSupplied, carriedInbox>>
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, pc, curNode, curPred, curRoute, curPending, curCaught,
                    curSteps, planMaxSteps, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
 AdmitRetry ==
@@ -918,7 +1261,7 @@ AdmitRetry ==
     /\ ~retriedInPassOver
     /\ actRes' = "none"
     /\ retriedInPassOver' = TRUE
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars,
                    pc, curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps,
                    canInPassOver, effCmdVars, delVars>>
 
@@ -939,22 +1282,31 @@ AdmitRecord ==
        ELSE /\ curSteps' = curSteps + 1
             /\ curPending' = curNode
             /\ curCaught' = (curCaught \/ (curNode[1] = "H" /\ ~(DropsCatchAll /\ curNode \in reusedSet)))
-            /\ pc' = IF actRes = "pending" \/ (StartsDecided /\ curNode \in reusedSet)
+            /\ pc' = IF actRes = "pending"
+                       \/ (StartsDecided /\ curNode \in reusedSet)
+                       \/ (StartsSupplied /\ curNode \in suppliedSet)
                        THEN "start"
                        ELSE "collect"
             /\ UNCHANGED <<curNode, curPred, curRoute>>
     /\ actRes' = "none"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars, planMaxSteps,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, planMaxSteps,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
 StartEffect ==
     /\ pc = "start"
     /\ curPending \in WorkNodes
     /\ eff' = [eff EXCEPT ![curPending] = IF @ = "absent" THEN "started" ELSE @]
+    /\ agentSession' = [agentSession EXCEPT ![curPending] =
+          IF NodeKindOf(curPending) = "script_or_agent" /\ @ = "absent" THEN "live" ELSE @]
+    /\ newSpawnChildStatus' =
+          IF (curPending = SPNode \/ (SourceKind = "spawn_lane" /\ curPending = PNode))
+             /\ newSpawnChildStatus = "absent"
+            THEN "active"
+            ELSE newSpawnChildStatus
     /\ pc' = "collect"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars,
                    curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
-                   retriedInPassOver, canInPassOver, q, pauseUsed, stopRequested, cancelSent, delVars>>
+                   retriedInPassOver, canInPassOver, oldChildStatus, q, pauseUsed, stopRequested, cancelSent, delVars>>
 
 CollectExec ==
     /\ pc = "collect"
@@ -962,7 +1314,7 @@ CollectExec ==
     /\ IF nState[curPending] = "completed"
          THEN actRes' = nOutcome[curPending]
          ELSE actRes' = "nothing"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars,
                    pc, curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
@@ -986,7 +1338,7 @@ CollectRecord ==
                    /\ curPending' = NoNode
                    /\ curCaught' = curCaught
     /\ actRes' = "none"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars, curSteps, planMaxSteps,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, curSteps, planMaxSteps,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
 WaitStep ==
@@ -997,9 +1349,10 @@ WaitStep ==
          ELSE /\ nState[curPending] = "completed"
               /\ pc' = "collect"
               /\ q' = q
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars,
                    curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
-                   retriedInPassOver, canInPassOver, eff, pauseUsed, stopRequested, cancelSent, delVars>>
+                   retriedInPassOver, canInPassOver, eff, agentSession, oldChildStatus, newSpawnChildStatus,
+                   pauseUsed, stopRequested, cancelSent, delVars>>
 
 FinishExec ==
     /\ pc = "finish"
@@ -1012,10 +1365,10 @@ FinishExec ==
               /\ events' = [events EXCEPT !.ended = @ + 1]
          ELSE UNCHANGED <<runStatus, nState, nWinner, nOutcome, nResultKind, events>>
     /\ pc' = "done"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, failCode, nPred, nRoute, nOrigin, nDeadline,
-                   reusedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
-                   firstNewHashOk, copyHitMismatch, inboxVars, curNode, curPred, curRoute, curPending,
-                   curCaught, curSteps, planMaxSteps, actRes, retriedInPassOver, canInPassOver,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, failCode, nPred, nRoute, nOrigin, nDeadline,
+                   reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
+                   firstNewHashOk, copyHitMismatch, downstreamReadSupplied, inboxVars, curNode, curPred, curRoute,
+                   curPending, curCaught, curSteps, planMaxSteps, actRes, retriedInPassOver, canInPassOver,
                    effCmdVars, delVars>>
 
 FinishFailExec ==
@@ -1027,10 +1380,11 @@ FinishFailExec ==
               /\ events' = [events EXCEPT !.ended = @ + 1]
          ELSE UNCHANGED <<runStatus, failCode, nState, nWinner, nOutcome, nResultKind, events>>
     /\ pc' = "done"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, nPred, nRoute, nOrigin, nDeadline, reusedSet,
-                   newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
-                   copyHitMismatch, inboxVars, curNode, curPred, curRoute, curPending, curCaught,
-                   curSteps, planMaxSteps, actRes, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, nPred, nRoute, nOrigin, nDeadline, reusedSet,
+                   suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
+                   copyHitMismatch, downstreamReadSupplied, inboxVars, curNode, curPred, curRoute, curPending,
+                   curCaught, curSteps, planMaxSteps, actRes, retriedInPassOver, canInPassOver,
+                   effCmdVars, delVars>>
 
 CancelTx ==
     /\ pc = "cancel"
@@ -1040,10 +1394,10 @@ CancelTx ==
               /\ events' = [events EXCEPT !.ended = @ + 1]
          ELSE UNCHANGED <<runStatus, nState, nWinner, nOutcome, nResultKind, events>>
     /\ pc' = "done"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, failCode, nPred, nRoute, nOrigin, nDeadline,
-                   reusedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
-                   firstNewHashOk, copyHitMismatch, inboxVars, curNode, curPred, curRoute, curPending,
-                   curCaught, curSteps, planMaxSteps, actRes, retriedInPassOver, canInPassOver,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, failCode, nPred, nRoute, nOrigin, nDeadline,
+                   reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
+                   firstNewHashOk, copyHitMismatch, downstreamReadSupplied, inboxVars, curNode, curPred, curRoute,
+                   curPending, curCaught, curSteps, planMaxSteps, actRes, retriedInPassOver, canInPassOver,
                    effCmdVars, delVars>>
 
 EffFinish(x) ==
@@ -1056,12 +1410,38 @@ EffFinish(x) ==
                 /\ nOutcome' = [nOutcome EXCEPT ![x] = o]
                 /\ nResultKind' = [nResultKind EXCEPT ![x] = IF o = "error" THEN "runtime_error" ELSE "business"]
                 /\ events' = [events EXCEPT !.stateCompleted[x] = @ + 1]
-           ELSE UNCHANGED <<nState, nWinner, nOutcome, nResultKind, events>>
+                /\ downstreamReadSupplied' = (downstreamReadSupplied \/ (suppliedSet # {} /\ x \in newVisits))
+           ELSE UNCHANGED <<nState, nWinner, nOutcome, nResultKind, events, downstreamReadSupplied>>
     /\ eff' = [eff EXCEPT ![x] = "done"]
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runStatus, failCode, nPred, nRoute, nOrigin,
-                   nDeadline, reusedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
-                   firstNewHashOk, copyHitMismatch, inboxVars, ctrlVars, q, pauseUsed, stopRequested,
-                   cancelSent, delVars>>
+    /\ agentSession' = [agentSession EXCEPT ![x] = IF @ = "live" THEN "ended" ELSE @]
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runStatus, failCode, nPred, nRoute, nOrigin,
+                   nDeadline, reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
+                   firstNewHashOk, copyHitMismatch, inboxVars, ctrlVars, oldChildStatus, newSpawnChildStatus,
+                   q, pauseUsed, stopRequested, cancelSent, delVars>>
+
+\* G-R2: #2's old spawn child winds down asynchronously via parent-end cancel (disabled by SkipParentEndCancel fault)
+OldChildWindDown ==
+    /\ ~SkipParentEndCancel
+    /\ oldChildStatus \in {"active", "cancelling"}
+    /\ oldChildStatus' = IF oldChildStatus = "active" THEN "cancelling" ELSE "cancelled"
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, ctrlVars,
+                   eff, agentSession, newSpawnChildStatus, q, pauseUsed, stopRequested, cancelSent, delVars>>
+
+\* #3's newly spawned child settles to completed or cancelled
+NewChildSettle ==
+    /\ newSpawnChildStatus = "active"
+    /\ newSpawnChildStatus' = IF runStatus \in {"cancelled", "stopped", "failed"} THEN "cancelled" ELSE "completed"
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, ctrlVars,
+                   eff, agentSession, oldChildStatus, q, pauseUsed, stopRequested, cancelSent, delVars>>
+
+\* Unconsumed carried inbox messages in #3 expire by TTL once #3 finishes (S15)
+ExpireCarriedInbox ==
+    /\ unexpiredCarriedInbox # {}
+    /\ (pc = "done" \/ runStatus \in Terminal \/ startPhase \in Refused)
+    /\ \E m \in unexpiredCarriedInbox :
+         unexpiredCarriedInbox' = unexpiredCarriedInbox \ {m}
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, carriedInbox, inboxTaken,
+                   ctrlVars, effCmdVars, delVars>>
 
 PauseRun ==
     /\ AllowCtrlCmds
@@ -1069,27 +1449,28 @@ PauseRun ==
     /\ runStatus = "running"
     /\ runStatus' = "paused"
     /\ pauseUsed' = TRUE
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, failCode, nState, nPred, nRoute, nWinner, nOutcome,
-                   nResultKind, nOrigin, nDeadline, reusedSet, newVisits, resumedAtCut, firstNew,
-                   firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch, events, inboxVars,
-                   ctrlVars, eff, q, stopRequested, cancelSent, delVars>>
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, failCode, nState, nPred, nRoute, nWinner, nOutcome,
+                   nResultKind, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew,
+                   firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events,
+                   inboxVars, ctrlVars, eff, agentSession, oldChildStatus, newSpawnChildStatus, q,
+                   stopRequested, cancelSent, delVars>>
 
 ResumeRun ==
     /\ AllowCtrlCmds
     /\ runStatus = "paused"
     /\ runStatus' = "running"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, failCode, nState, nPred, nRoute, nWinner, nOutcome,
-                   nResultKind, nOrigin, nDeadline, reusedSet, newVisits, resumedAtCut, firstNew,
-                   firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch, events, inboxVars,
-                   ctrlVars, effCmdVars, delVars>>
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, failCode, nState, nPred, nRoute, nWinner, nOutcome,
+                   nResultKind, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew,
+                   firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events,
+                   inboxVars, ctrlVars, effCmdVars, delVars>>
 
 RequestStop ==
     /\ AllowCtrlCmds
     /\ ~stopRequested
     /\ runStatus = "running"
     /\ stopRequested' = TRUE
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars, ctrlVars,
-                   eff, q, pauseUsed, cancelSent, delVars>>
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, ctrlVars,
+                   eff, agentSession, oldChildStatus, newSpawnChildStatus, q, pauseUsed, cancelSent, delVars>>
 
 SendCancel ==
     /\ AllowCtrlCmds
@@ -1097,16 +1478,32 @@ SendCancel ==
     /\ runStatus \in Active
     /\ cancelSent' = TRUE
     /\ q' = Append(q, "cancel")
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, runVars, inboxVars, ctrlVars,
-                   eff, pauseUsed, stopRequested, delVars>>
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, ctrlVars,
+                   eff, agentSession, oldChildStatus, newSpawnChildStatus, pauseUsed, stopRequested, delVars>>
 
-Done ==
-    /\ ownerLock = "free" /\ defLock = "free" /\ srcLock = "free" /\ newLock = "free"
+SweeperSettled ==
     /\ sweeperPc \in {"idle", "done", "busy"}
+    /\ sweeperSnapVersion = 0
+    /\ ((startPhase = "crashed" /\ ~AllowResumeAfterCrash /\ AllowShellSweeper) => claimShellState = "soft_deleted")
+
+InboxSettled ==
+    unexpiredCarriedInbox = {}
+
+Quiescent ==
+    /\ ownerLock = "free" /\ defLock = "free" /\ srcLock = "free" /\ newLock = "free"
+    /\ SweeperSettled
     /\ delWfPc \in {"idle", "done"}
     /\ ownerEndPc \in {"idle", "done"}
-    /\ (startPhase \in Refused \/ (startPhase = "admitted" /\ pc = "done"))
+    /\ (startPhase \in Refused
+        \/ (startPhase = "crashed" /\ ~AllowResumeAfterCrash /\ claimShellState = "soft_deleted")
+        \/ (startPhase = "admitted" /\ pc = "done"))
     /\ \A x \in WorkNodes : eff[x] \in {"absent", "done"}
+    /\ InboxSettled
+    /\ newSpawnChildStatus \in {"absent", "completed", "cancelled"}
+    /\ (~SkipParentEndCancel => oldChildStatus \in {"absent", "cancelled"})
+
+Done ==
+    /\ Quiescent
     /\ UNCHANGED vars
 
 -----------------------------------------------------------------------------
@@ -1124,13 +1521,18 @@ CtrlProgress ==
     \/ CollectExec \/ CollectRecord \/ WaitStep \/ FinishExec \/ FinishFailExec \/ CancelTx
     \/ ResumeRun
 
+LifecycleProgress ==
+    \/ AdvanceClaimGrace \/ SweeperReadBareShell \/ SweeperCollectClaimShell
+    \/ OldChildWindDown \/ NewChildSettle \/ ExpireCarriedInbox
+
 EffProgress == \E x \in WorkNodes : EffFinish(x)
 
 Next ==
     \/ StartProgress
-    \/ SaveNewRevision \/ ClaimCrash
+    \/ SaveNewRevision \/ MutateRetrySupply \/ ClaimCrash
     \/ DeleterObservesCopyLock \/ SweeperLockTarget \/ DelWfLock \/ OwnerEndLockOwner \/ DeleterCommit
     \/ CtrlProgress \/ ControllerCan \/ AdmitRetry \/ EffProgress
+    \/ LifecycleProgress
     \/ PauseRun \/ RequestStop \/ SendCancel
     \/ Done
 
@@ -1138,6 +1540,7 @@ Fairness ==
     /\ WF_vars(StartProgress)
     /\ WF_vars(DeleterCommit)
     /\ WF_vars(CtrlProgress)
+    /\ WF_vars(LifecycleProgress)
     /\ \A x \in WorkNodes : WF_vars(EffFinish(x))
 
 Spec == Init /\ [][Next]_vars
@@ -1147,7 +1550,58 @@ LiveSpec == Init /\ [][Next]_vars /\ Fairness
 (* Safety Invariants & Properties                                          *)
 
 Inv_ReusedNeverRuns ==
-    \A x \in reusedSet \cap WorkNodes : eff[x] = "absent"
+    \A x \in reusedSet \cap WorkNodes : eff[x] = "absent" /\ agentSession[x] = "absent"
+
+Inv_SuppliedNeverRuns ==
+    \A x \in suppliedSet \cap WorkNodes : eff[x] = "absent" /\ agentSession[x] = "absent"
+
+Inv_SuppliedSingleton ==
+    /\ ((Mode = "supply" /\ startPhase = "admitted") =>
+          (Cardinality(suppliedSet) = 1 /\ suppliedSet \cap reusedSet = {}))
+    /\ ((Mode # "supply") => suppliedSet = {})
+
+Inv_SupplyAllowedStepOnly ==
+    \A x \in suppliedSet : NodeKindOf(x) = "script_or_agent" /\ ~SupplyNever
+
+Inv_SuppliedOutcomeDeclared ==
+    \A x \in suppliedSet :
+        /\ nState[x] = "completed"
+        /\ nResultKind[x] = "business"
+        /\ nWinner[x] = "supplied"
+        /\ nOutcome[x] \in DeclaredOutcomes
+        /\ SupplyNotePresent
+
+Inv_AutoPickNoCancelledReuse ==
+    (AutoPicked /\ startPhase = "admitted") =>
+        \A x \in reusedSet : ~IsCancelledOrNoticelessSpawn(x)
+
+Inv_RefusedClaimDeletedAtOnce ==
+    (startPhase \in Refused) => (claimShellState # "live_unadmitted")
+
+\* R2-M1 safety invariant: a run is never admitted onto a swept shell, and an admitted shell is never swept
+\* while owner is alive (replaces sticky-flag check so legal crash -> grace -> sweep -> late retry -> refused_workflow_deleted passes).
+Inv_AdmittedNotSwept ==
+    /\ ((startPhase = "admitted" /\ ~ownerEndedNew) => (claimShellState = "admitted"))
+    /\ ((runStatus # "none" /\ ~ownerEndedNew) => (claimShellState = "admitted"))
+
+\* R2-M1 step property: Sweeper deletes a bare shell only when grace elapsed, newLock was free, and no run exists;
+\* and never deletes an admitted shell.
+Prop_SweepRequiresLockAndNoRun ==
+    [][
+        /\ ((claimShellState = "live_unadmitted" /\ claimShellState' = "soft_deleted"
+             /\ ownerEndPc # "locked_def" /\ startPhase' \notin Refused) =>
+                (claimGraceElapsed /\ newLock = "free" /\ runStatus = "none"))
+        /\ ((claimShellState = "admitted" /\ claimShellState' = "soft_deleted"
+             /\ ownerEndPc # "locked_def") => FALSE)
+    ]_vars
+
+Inv_QuiescentNoLive ==
+    Quiescent =>
+        /\ oldChildStatus # "active"
+        /\ newSpawnChildStatus # "active"
+        /\ (\A x \in WorkNodes : agentSession[x] # "live")
+        /\ claimShellState # "live_unadmitted"
+        /\ unexpiredCarriedInbox = {}
 
 Inv_ReusedImmutable ==
     \A x \in reusedSet :
@@ -1159,7 +1613,7 @@ Inv_SourceUntouched ==
     srcNodes = InitSrcNodes
 
 Inv_CopyAtomic ==
-    (runStatus # "none") <=> (\A x \in ExpectedReused : nState[x] = "completed")
+    (runStatus # "none") <=> (\A x \in ExpectedReused \cup ExpectedSupplied : nState[x] = "completed")
 
 Inv_OriginRan ==
     \A x \in reusedSet : nOrigin[x] = ActualOrigin(x)
@@ -1168,7 +1622,10 @@ Inv_NoCopyFromDeleted ==
     (startPhase = "admitted") => copiedFromLive
 
 Inv_PinnedChoice ==
-    (startPhase = "admitted") => (rerunPin.rev > 0 /\ admittedRev = rerunPin.rev)
+    (startPhase = "admitted") =>
+        /\ rerunPin.rev > 0
+        /\ admittedRev = rerunPin.rev
+        /\ (Mode = "supply" => admittedSupplied = rerunPin.supplied)
 
 Inv_NoConsentReuse ==
     (HasApproval /\ startPhase = "admitted") => (Actor = "owner")
@@ -1181,8 +1638,8 @@ Inv_PassOverOnChain ==
 
 Inv_NoWorkOnDiverge ==
     (runStatus = "failed" /\ failCode = "rerun_diverged") =>
-        /\ \A x \in AllNodes \ reusedSet : nState[x] = "absent"
-        /\ \A x \in WorkNodes : eff[x] = "absent"
+        /\ \A x \in AllNodes \ (reusedSet \cup suppliedSet) : nState[x] = "absent"
+        /\ \A x \in WorkNodes : eff[x] = "absent" /\ agentSession[x] = "absent"
 
 \* Permissive guard safety: a valid or byte-check-exempt re-run never triggers rerun_diverged.
 Inv_ValidNeverDiverges ==
@@ -1190,8 +1647,8 @@ Inv_ValidNeverDiverges ==
         ~(runStatus = "failed" /\ failCode = "rerun_diverged")
 
 Inv_OrdinalsContinue ==
-    /\ \A x \in newVisits : x \notin reusedSet
-    /\ \A x \in newVisits : \A y \in reusedSet : x[1] = y[1] => x[2] > y[2]
+    /\ \A x \in newVisits : x \notin (reusedSet \cup suppliedSet)
+    /\ \A x \in newVisits : \A y \in (reusedSet \cup suppliedSet) : x[1] = y[1] => x[2] > y[2]
     /\ \A i \in 2..3 : nState[SNode(i)] # "absent" => nState[SNode(i - 1)] # "absent"
     /\ nState[RNode(2)] # "absent" => nState[RNode(1)] # "absent"
     /\ nState[HNode(2)] # "absent" => nState[HNode(1)] # "absent"
@@ -1200,8 +1657,9 @@ Inv_CatchAllOnce ==
     nState[HNode(2)] = "absent"
 
 Inv_VisitLimit ==
-    /\ eff[SNode(MaxVisits + 1)] = "absent"
-    /\ (nState[SNode(MaxVisits + 1)] = "completed" => nOutcome[SNode(MaxVisits + 1)] \in {"exhausted", "cancelled"})
+    MaxVisits < 3 =>
+        /\ eff[SNode(MaxVisits + 1)] = "absent"
+        /\ (nState[SNode(MaxVisits + 1)] = "completed" => nOutcome[SNode(MaxVisits + 1)] \in {"exhausted", "cancelled"})
 
 Inv_StepLimit ==
     Cardinality({x \in AllNodes : nState[x] # "absent"}) <= StepLimit
@@ -1223,7 +1681,7 @@ Inv_EventsOnce ==
 Inv_AdmissionOrder ==
     /\ \A i \in 2..3 : (SNode(i) \in newVisits) => (nState[SNode(i - 1)] = "completed")
     /\ (TNode \in newVisits) =>
-         \E x \in WorkNodes : nState[x] = "completed" /\ nOutcome[x] \in {"ok", "exhausted", "msg", "again"}
+         \E x \in WorkNodes : nState[x] = "completed" /\ nOutcome[x] \in {"ok", "exhausted", "msg", "again", "started"}
 
 Inv_CatchAllAfterUnhandled ==
     (nState[HNode(1)] # "absent") => (nState[SNode(1)] = "completed" /\ nOutcome[SNode(1)] = "error")
@@ -1256,9 +1714,10 @@ Prop_NoAdmissionAfterTerminal ==
 -----------------------------------------------------------------------------
 (* Liveness Properties                                                     *)
 
-\* General liveness under deleters/commands
-Live_ReachesCut == <>(startPhase \in Refused \/ resumedAtCut \/ runStatus \in Terminal)
-Live_Terminates == <>(startPhase \in Refused \/ runStatus \in Terminal)
+\* General liveness under deleters/commands/unretried crash
+Live_ReachesCut == <>(startPhase \in Refused \/ (startPhase = "crashed" /\ ~AllowResumeAfterCrash /\ claimShellState = "soft_deleted") \/ resumedAtCut \/ runStatus \in Terminal)
+Live_Terminates == <>(startPhase \in Refused \/ (startPhase = "crashed" /\ ~AllowResumeAfterCrash /\ claimShellState = "soft_deleted") \/ runStatus \in Terminal)
+Live_Quiesces == <>Quiescent
 
 \* Strong liveness for valid/exempt re-runs (no deleters, no cancel/stop): MUST reach resumedAtCut (never rerun_diverged).
 Live_ReachesCutOnly == <>resumedAtCut
@@ -1282,5 +1741,26 @@ Wit_NoDeleteAfterCopy == ~(deleterWaitedOnCopy /\ srcDeletedAfterCopy /\ runStat
 Wit_NoApprovalRefusal == ~(startPhase = "refused_approval")
 Wit_NoCarriedTake == ~(\E m \in WaitingAtCut : inboxTaken[m] = 1)
 Wit_NoPinnedResume == ~(pinnedResumed /\ startPhase = "admitted" /\ admittedRev = rerunPin.rev /\ latestRev > rerunPin.rev)
+
+\* Unit 3A-Supply witnesses (6 required, incl. R2-M1 wit.rr-no-late-retry-after-sweep)
+Wit_NoSupplyDownstreamRead ==
+    ~(Mode = "supply" /\ SNode(2) \in suppliedSet /\ downstreamReadSupplied /\ runStatus = "completed")
+
+Wit_NoSupplyFirstVisit ==
+    ~(Mode = "supply" /\ SourceKind = "supply_first" /\ reusedSet = {} /\ SNode(1) \in suppliedSet /\ runStatus = "completed")
+
+Wit_NoSupplyToTerminal ==
+    ~(Mode = "supply" /\ resumedAtCut /\ firstNew = TNode /\ runStatus = "completed")
+
+Wit_NoSupplyRefusedStepType ==
+    ~(Mode = "supply" /\ startPhase = "refused_supply_not_allowed")
+
+Wit_NoLeakQuiescence ==
+    ~(Quiescent /\ ~AllowOwnerEnd /\ everSweptShell /\ Gr1Active /\ oldChildStatus = "cancelled"
+      /\ newSpawnChildStatus = "completed" /\ carriedInbox # {} /\ Inv_QuiescentNoLive)
+
+Wit_NoLateRetryAfterSweep ==
+    ~(pinnedResumed /\ everSweptShell /\ startPhase = "refused_workflow_deleted"
+      /\ runStatus = "none" /\ claimShellState = "soft_deleted")
 
 =============================================================================
