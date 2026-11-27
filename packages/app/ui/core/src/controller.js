@@ -6758,6 +6758,9 @@ export class PilotSwarmUiController {
         if (Number.isFinite(createdAt) && Date.now() - createdAt > PRESENTED_ARTIFACT_FRESHNESS_MS) {
             return false;
         }
+        const revealKey = event?.seq != null ? `${sessionId}:${event.seq}` : null;
+        if (revealKey && this.revealedPresentedArtifacts?.has(revealKey)) return false;
+        if (revealKey) (this.revealedPresentedArtifacts ||= new Set()).add(revealKey);
 
         // Same destination a user click reaches: desktop gets the reader column
         // (unless fullscreen was explicitly requested), while a phone always

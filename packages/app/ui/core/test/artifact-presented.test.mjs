@@ -125,3 +125,11 @@ test("the live merge path routes the event; a bulk history load does not", () =>
     controller.mergeSessionEvent("s1", presentedEvent({ seq: 42 }));
     assert.equal(calls.length, 1, "an already-seen seq must not reveal twice");
 });
+
+test("the same fresh presentation event delivered twice only opens the preview once", () => {
+    const { controller, calls } = controllerWithSessions("s1");
+    const evt = presentedEvent({ seq: 25 });
+    assert.equal(controller.maybeRevealPresentedArtifact("s1", evt), true);
+    assert.equal(controller.maybeRevealPresentedArtifact("s1", evt), false);
+    assert.equal(calls.length, 1);
+});
