@@ -248,8 +248,17 @@ export async function census({
                  WHERE r.workflow_session_id = ANY($1::text[])
                    AND NOT (r.status = ANY($2::text[]))
                    AND n.state = 'pending'
-                   AND NOT EXISTS (SELECT 1 FROM ${s}.workflow_requests req WHERE req.exchange_id = n.node_execution_id)
-                   AND NOT EXISTS (SELECT 1 FROM ${s}.workflow_approvals a WHERE a.node_execution_id = n.node_execution_id)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ${s}.workflow_requests req
+                         LEFT JOIN ${s}.workflow_request_responses resp ON resp.exchange_id = req.exchange_id
+                        WHERE req.exchange_id = n.node_execution_id
+                          AND resp.exchange_id IS NULL
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ${s}.workflow_approvals a
+                        WHERE a.node_execution_id = n.node_execution_id
+                          AND a.decision IS NULL
+                   )
                 UNION ALL
                 SELECT 'interception:' || ti.interception_id AS id
                   FROM ${s}.workflow_test_interceptions ti

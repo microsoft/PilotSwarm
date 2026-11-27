@@ -6,7 +6,7 @@
  * terminal runs, pending inbox rows on terminal runs, and unswept sessions after owner end +
  * Sweeper + prune_orchestrations).
  *
- * Known baseline leak (kept active as `it.fails` pending owner design decision for I7):
+ * Known baseline leak (pinned by exact message_id in B10b / B10c pending owner design decision for I7):
  *   - B10b / B10c: unconsumed default-TTL `workflow_inbox` rows (both direct `sendTypedWorkflowInput`
  *     and fire-and-forget child `WorkflowEnded@1` notices) remain unexpired after the target run ends
  *     and are still surfaced by `WorkflowStore.listOpenInbox()`.
@@ -20,17 +20,17 @@
  *   B5   Three levels: grandparent -> child -> grandchild (4-resource), grandparent fails.
  *   B6   Real PilotSwarmWorker + scripted model: (a) continued agent session (`session: continue`)
  *        live when parent ends; (b) plain agent step (`session: new`) actively stopped mid-turn
- *        (held HTTP request never released before stop; asserts `user.stop` for `workflow-cycle-stop:<nx>`
- *        and `wfa-` Completed).
+ *        (held HTTP request never released before stop; asserts `user.stop` for `workflow-cycle-stop:<nx>`,
+ *        `session.turn_stopped`, client HTTP abort `record.aborted === true`, and `wfa-` Completed).
  *   B7   Parallel step with two named lanes, each spawning a child; parent fails in one lane.
  *   B8   Fault injection: parent-end cancel of child fails once; controller retries and child ends.
  *   B9   Owner session ends while top-level Workflow and its child run (real owner-ended DB trigger),
  *        including a run with a pending outbox delivery when the owner ends.
  *   B10a Messages sent to a run that then ends: consumed before end, short-TTL expired, and post-end
  *        send refused with RUN_ENDED (zero inbox rows inserted).
- *   B10b (`it.fails`) Unconsumed default-TTL inbox message stays unexpired on a terminal run.
- *   B10c (`it.fails`) Fire-and-forget child completes before parent ends; unconsumed WorkflowEnded@1
- *        stays unexpired on the terminal parent run.
+ *   B10b (KNOWN LEAK) Unconsumed default-TTL inbox message stays unexpired on a terminal run (pinned to exact message_id).
+ *   B10c (KNOWN LEAK) Fire-and-forget child completes before parent ends; unconsumed WorkflowEnded@1
+ *        stays unexpired on the terminal parent run (pinned to exact message_id).
  *   B11  Claim-shell lifecycle + test-mode (`wft-`) bench: bare claim shell is reported in category 5,
  *        skipped by standalone Sweeper scan (`noRun`), removed immediately on parent delete, and removed
  *        by ancestor cascade when owner ends + Sweeper runs; test bench `wft-` is observed Completed and
@@ -446,7 +446,7 @@ async function sweepOwnerTree({ store, catalog, duroxideClient, q, ownerId, reas
     const cleanup = tools.find(t => t.name === "cleanup_session");
     const prune = tools.find(t => t.name === "prune_orchestrations");
 
-    for (let pass = 0; pass < 4; pass += 1) {
+    for (let pass = 0; pass < 6; pass += 1) {
         await pause(50);
         const scanned = await scan.handler({ graceMinutes: 0 });
         expect(scanned.error, `scan_completed_sessions error: ${JSON.stringify(scanned)}`).toBeUndefined();
@@ -468,23 +468,26 @@ async function sweepOwnerTree({ store, catalog, duroxideClient, q, ownerId, reas
         }
         const cleaned = await cleanup.handler({ sessionIds: targets, graceMinutes: 0, reason });
         expect(cleaned.ok, `cleanup_session failed: ${JSON.stringify(cleaned)}`).toBe(true);
-        expect(cleaned.refusedCount, `cleanup_session refused targets: ${JSON.stringify(cleaned)}`).toBe(0);
+        // Transient NOWAIT lock contention ("Busy") retries on the next pass; any other refusal is a test failure.
+        const nonBusyRefusals = (cleaned.results ?? []).filter(r => r.refused && r.status !== "Busy");
+        expect(nonBusyRefusals, `cleanup_session unexpected refusals: ${JSON.stringify(cleaned)}`).toEqual([]);
         // Batch cleanup cascade-deletes descendants when an ancestor is cleaned first, so later
         // descendants in the same batch return "Session not found"; any other failure is unexpected.
-        const unexpectedFailures = (cleaned.results ?? []).filter(r => !r.ok && r.error !== "Session not found");
+        const unexpectedFailures = (cleaned.results ?? []).filter(r => !r.ok && !r.refused && r.error !== "Session not found");
         expect(unexpectedFailures, `cleanup_session unexpected failures: ${JSON.stringify(cleaned)}`).toEqual([]);
     }
 
     // Prune terminal Duroxide orchestration histories (wfx/wfs/wfr/wfa/wfn/wfc/wft/session) as the Sweeper does.
-    const pruned = await prune.handler({ deleteTerminalOlderThanMinutes: 0, keepExecutions: 1 });
-    expect(pruned.ok, `prune_orchestrations failed: ${JSON.stringify(pruned)}`).toBe(true);
-
-    const finalCensus = await census({ store, catalog, duroxideClient, rootSessionIds: [ownerId], graceMs: 0 });
+    // Use deleteTerminalOlderThanMinutes: -1 (cutoff = now + 60s) and poll until() so remote DB clock lead
+    // (HorizonDB) never skips just-completed instances.
+    const finalCensus = await until(`prune_orchestrations clears all terminal instances for ${ownerId}`, async () => {
+        const pruned = await prune.handler({ deleteTerminalOlderThanMinutes: -1, keepExecutions: 1 });
+        expect(pruned.ok, `prune_orchestrations failed: ${JSON.stringify(pruned)}`).toBe(true);
+        const snap = await census({ store, catalog, duroxideClient, rootSessionIds: [ownerId], graceMs: 0 });
+        const unpruned = Object.entries(snap.orchestrationStatuses).filter(([, status]) => status !== "NotFound");
+        return unpruned.length === 0 ? snap : null;
+    }, 30_000);
     assertNoLeaks(finalCensus, { allow: [] });
-    // Verify terminal orchestration histories in this tree were actually garbage-collected by prune.
-    const unpruned = Object.entries(finalCensus.orchestrationStatuses)
-        .filter(([, status]) => status !== "NotFound");
-    expect(unpruned, `expected all pruned orchestrations to be NotFound, remaining: ${JSON.stringify(unpruned)}`).toEqual([]);
     return finalCensus;
 }
 
@@ -791,7 +794,7 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
 
     it("B6: real worker agent steps — continued session live on parent end and plain agent step actively stopped mid-turn (3x each)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        const midTurnState = { hold: false, inFlightResolvers: [], arrivedCount: 0, lastNx: null, waitForArrival: null };
+        const midTurnState = { hold: false, inFlightResolvers: [], arrivedCount: 0, lastNx: null, lastRecord: null, waitForArrival: null };
         const visitOf = pos => /"nodeExecutionId":"(nx-[0-9a-f]+)"/.exec(pos.lastUserText)?.[1] ?? null;
         const isStepRequest = body => (body.tools ?? []).some(t => t.function?.name === "complete_workflow_node");
         let model = null;
@@ -801,12 +804,13 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
         let pool = null;
         try {
             model = await startScriptedModel({
-                respond: async (body, position) => {
+                respond: async (body, position, record) => {
                     if (!isStepRequest(body)) return { content: "ok" };
                     const nx = visitOf(position);
                     if (midTurnState.hold) {
                         midTurnState.arrivedCount += 1;
                         midTurnState.lastNx = nx;
+                        midTurnState.lastRecord = record;
                         midTurnState.waitForArrival?.();
                         midTurnState.waitForArrival = null;
                         // Hold indefinitely until finally: proves the runtime actively stops the turn mid-flight
@@ -922,13 +926,16 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
                     return midTurnState.arrivedCount > beforeCount;
                 }, 60_000);
                 const nx = midTurnState.lastNx;
+                const heldRecord = midTurnState.lastRecord;
                 expect(nx).toBeTruthy();
+                expect(heldRecord).toBeTruthy();
                 const inv = await store.readAgentInvocation(nx);
                 expect(inv).toBeTruthy();
                 await controlWorkflowRun({ catalog, store, duroxideClient: duroxide }, wfId,
                     { operation: "cancel", reason: "cancel mid-turn" },
                     { actor: { kind: "agent", sessionId: ownerId }, operationId: `b6b-cancel-${i}` });
-                // Do NOT release the held model HTTP call here — the runtime MUST actively stop the turn.
+                // Do NOT release the held model HTTP call here — the runtime MUST actively stop the turn
+                // and abort the client HTTP request before finally ever runs.
                 const settled = await until(`b6b-${i} census settled while model call still held`, async () => {
                     const c = await census({ store, catalog, duroxideClient: duroxide, rootSessionIds: [ownerId], graceMs: 0 });
                     return c.categories.orchestrations_live.count === 0
@@ -936,12 +943,17 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
                         && c.categories.agent_sessions_live.count === 0 ? c : null;
                 }, 60_000);
                 assertNoLeaks(settled, { allow: ["sessions_not_swept"] });
-                // Verify the turn-control stop was genuinely recorded for this exact visit.
-                const stopEvents = await catalog.getSessionEvents(inv.childSessionId, 0, 200, ["user.stop"]);
+                // Verify the turn-control stop was requested AND applied, and the held HTTP call was aborted by the worker.
+                const stopEvents = await catalog.getSessionEvents(inv.childSessionId, 0, 200, ["user.stop", "session.turn_stopped"]);
                 expect(
-                    stopEvents.some(ev => String(ev.data?.requestId ?? "") === `workflow-cycle-stop:${nx}`),
+                    stopEvents.some(ev => ev.eventType === "user.stop" && String(ev.data?.requestId ?? "") === `workflow-cycle-stop:${nx}`),
                     `expected user.stop for workflow-cycle-stop:${nx}, got ${JSON.stringify(stopEvents)}`,
                 ).toBe(true);
+                expect(
+                    stopEvents.some(ev => ev.eventType === "session.turn_stopped"),
+                    `expected session.turn_stopped proving stop was applied, got ${JSON.stringify(stopEvents)}`,
+                ).toBe(true);
+                await until(`b6b-${i} held HTTP request aborted by client`, async () => heldRecord.aborted === true, 15_000);
                 expect(settled.orchestrationStatuses[`wfa-${nx}`]).toBe("Completed");
                 expect(settled.orchestrationStatuses[`session-${inv.childSessionId}`]).toBe("Completed");
             }
@@ -1173,12 +1185,13 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
         }
     });
 
-    // KNOWN LEAK (expected failure via `it.fails` until owner chooses I7 design):
+    // KNOWN LEAK (pinned to exact message_id until owner chooses I7 design):
     // Unconsumed default-TTL (24h) workflow_inbox rows stay unexpired when the target run ends
     // (endRunIn, finishStoppedRun, expireRun, cancelBeforeBegin, workflow_on_session_deleted,
     // workflow_on_owner_session_ended never close/expire inbox rows; listOpenInbox() still surfaces
-    // them on terminal runs). Kept live with `it.fails` so CI proves the leak exists and flags when fixed.
-    it.fails("B10b (KNOWN LEAK): unconsumed default-TTL inbox message stays unexpired on terminal run", { timeout: TIMEOUT }, async () => {
+    // them on terminal runs). Asserts the exact leaked message_id so setup errors cannot pass
+    // silently and fixing the leak flips this test red immediately.
+    it("B10b (KNOWN LEAK): unconsumed default-TTL inbox message stays unexpired on terminal run", { timeout: TIMEOUT }, async () => {
         const h = await startRuntimeHarness(getEnv());
         try {
             const ownerId = await h.createLiveOwner();
@@ -1188,27 +1201,31 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
                 actor: ENGINE, operationId: "b10b-u-1", owner: OWNER,
             });
             await h.waitRunStatus(wUnconsumed.runId, ["running"]);
-            await sendTypedWorkflowInput(h.host, {
+            const sent = await sendTypedWorkflowInput(h.host, {
                 workflowSessionId: wUnconsumed.workflowId, senderSessionId: ownerId, contract: "Ping@1",
                 payload: { unconsumed: true }, operationId: "b10b-u-msg-1",
             });
+            const leakedMessageId = sent.receipt.messageId;
+            expect(leakedMessageId).toBeTruthy();
             await sendTypedWorkflowInput(h.host, {
                 workflowSessionId: wUnconsumed.workflowId, senderSessionId: ownerId, contract: "Go@1",
                 payload: { go: true }, operationId: "b10b-u-go-1",
             });
             expect((await h.waitRunStatus(wUnconsumed.runId, ["completed"])).status).toBe("completed");
             const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
-            assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            expect(c.categories.inbox_pending_on_terminal_runs.ids).toEqual([leakedMessageId]);
+            assertNoLeaks(c, { allow: ["sessions_not_swept", "inbox_pending_on_terminal_runs"] });
+            expect(() => assertNoLeaks(c, { allow: ["sessions_not_swept"] })).toThrow(/inbox_pending_on_terminal_runs/);
         } finally {
             await h.stop();
         }
     });
 
-    // KNOWN LEAK (expected failure via `it.fails` until owner chooses I7 design):
+    // KNOWN LEAK (pinned to exact message_id until owner chooses I7 design):
     // Fire-and-forget child Workflow completes before its parent ends -> writes WorkflowEnded@1 (24h TTL)
     // into parent's workflow_inbox (`runtime.ts:3036-3048`). When the parent ends without receiving it,
     // the WorkflowEnded@1 row stays unconsumed and unexpired on the terminal parent run.
-    it.fails("B10c (KNOWN LEAK): fire-and-forget child WorkflowEnded@1 stays unexpired on terminal parent run", { timeout: TIMEOUT }, async () => {
+    it("B10c (KNOWN LEAK): fire-and-forget child WorkflowEnded@1 stays unexpired on terminal parent run", { timeout: TIMEOUT }, async () => {
         const h = await startRuntimeHarness(getEnv());
         try {
             const ownerId = await h.createLiveOwner();
@@ -1223,10 +1240,14 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             const [child] = await h.waitChildren(parent.workflowId, 1);
             expect((await h.waitRunStatus(child.runId, ["completed"])).status).toBe("completed");
             // Wait until the child's WorkflowEnded@1 notice has landed in the parent's inbox.
-            await until("WorkflowEnded@1 landed in parent inbox", async () => {
-                const rows = await h.q("SELECT message_id FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND contract = 'WorkflowEnded@1'", [parent.runId]);
-                return rows.length === 1;
+            const endedNotice = await until("WorkflowEnded@1 landed in parent inbox", async () => {
+                const rows = await h.q(
+                    "SELECT message_id, operation_id FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND contract = 'WorkflowEnded@1'",
+                    [parent.runId],
+                );
+                return rows.length === 1 ? rows[0] : null;
             }, 20_000);
+            expect(endedNotice.operation_id).toBe(`ended:${child.runId}`);
             // Parent completes without ever receiving WorkflowEnded@1.
             await sendTypedWorkflowInput(h.host, {
                 workflowSessionId: parent.workflowId, senderSessionId: ownerId, contract: "Go@1",
@@ -1234,7 +1255,9 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             });
             expect((await h.waitRunStatus(parent.runId, ["completed"])).status).toBe("completed");
             const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
-            assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            expect(c.categories.inbox_pending_on_terminal_runs.ids).toEqual([endedNotice.message_id]);
+            assertNoLeaks(c, { allow: ["sessions_not_swept", "inbox_pending_on_terminal_runs"] });
+            expect(() => assertNoLeaks(c, { allow: ["sessions_not_swept"] })).toThrow(/inbox_pending_on_terminal_runs/);
         } finally {
             await h.stop();
         }
