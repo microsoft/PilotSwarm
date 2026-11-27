@@ -306,6 +306,7 @@ function encodeSenderPart(value: string, label: string): string {
 }
 
 export const PERSON_SENDER_PREFIX = "person:";
+const MAX_PERSON_SENDER_ID_CHARS = 512;
 
 /** Canonical unforgeable inbox senderSessionId for a person or host-system caller. */
 export function personSenderId(actor: WorkflowActor): string {
@@ -313,10 +314,14 @@ export function personSenderId(actor: WorkflowActor): string {
         throw new WorkflowStoreError("FORBIDDEN",
             "Agent sessions must send typed Workflow input with their native send_workflow_input tool so session sender identity is preserved.");
     }
-    if (actor.kind === "user") {
-        return `${PERSON_SENDER_PREFIX}user:${encodeSenderPart(actor.provider, "actor.provider")}:${encodeSenderPart(actor.subject, "actor.subject")}`;
+    const id = actor.kind === "user"
+        ? `${PERSON_SENDER_PREFIX}user:${encodeSenderPart(actor.provider, "actor.provider")}:${encodeSenderPart(actor.subject, "actor.subject")}`
+        : `${PERSON_SENDER_PREFIX}system:${encodeSenderPart(actor.name, "actor.name")}`;
+    if (id.length > MAX_PERSON_SENDER_ID_CHARS) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+            `Encoded person sender identity exceeds ${MAX_PERSON_SENDER_ID_CHARS} characters.`);
     }
-    return `${PERSON_SENDER_PREFIX}system:${encodeSenderPart(actor.name, "actor.name")}`;
+    return id;
 }
 
 export interface ParsedPersonWorkflowInput {

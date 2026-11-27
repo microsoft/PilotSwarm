@@ -635,7 +635,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "(receive steps with `from:` bound to a session are refused with 409 UNSUPPORTED_CONTRACT). "
                 + "Accepts workflow_id (canonical) or session_id (alias); if both are given they must match. "
                 + "Idempotent per (workflow, caller, operation_id): reuse operation_id unchanged only to retry the same message. "
-                + "Refused for agent-originated MCP calls (403 FORBIDDEN; agents use their native send_workflow_input tool) and agent-controlled child Workflows (403 WORKFLOW_HUMAN_INPUT_DENIED). "
+                + "Refused for calls that declare an originating session via originating_session_id or PILOTSWARM_ORIGINATING_SESSION_ID (403 FORBIDDEN; agents use their native send_workflow_input tool) and agent-controlled child Workflows (403 WORKFLOW_HUMAN_INPUT_DENIED). "
                 + "Returns the stored receipt including claimedBy ({ nodeExecutionId, stateId } | null); poll read_workflow to observe completion.",
             inputSchema: {
                 workflow_id: sessionIdShape().optional()
@@ -645,7 +645,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 contract: z.string().min(1)
                     .describe("Message contract name declared under contracts: in the Workflow YAML (e.g. DeploySignal@1)"),
                 payload: z.unknown()
-                    .describe("JSON value validated against the contract schema (<= 256 KiB)"),
+                    .describe("JSON value validated against the contract schema (<= 256 KiB, max nesting depth 64)"),
                 correlation: z.record(z.string(), z.unknown()).optional()
                     .describe("Optional correlation key-value object matching the receive step's correlate values (<= 4 KiB, default {})"),
                 operation_id: z.string().min(1).max(256)

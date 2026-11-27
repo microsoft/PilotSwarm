@@ -282,8 +282,12 @@ export class HttpApiTransport {
     }
 
     /** Workflow: deliver a typed message to a workflow session waiting at an open receive step (sendWorkflowInput, session:manage). */
-    async sendWorkflowInput(sessionId, input = {}) {
-        return this.api.call("sendWorkflowInput", { ...(input && typeof input === "object" ? input : {}), sessionId });
+    async sendWorkflowInput(sessionId, input = {}, options = {}) {
+        return this.api.call("sendWorkflowInput", {
+            ...(input && typeof input === "object" ? input : {}),
+            sessionId,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /** Stage 2.1: a session's Workflow Definitions (listSessionWorkflowDefinitions, session:read). */

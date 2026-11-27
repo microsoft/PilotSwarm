@@ -100,13 +100,15 @@ Outcome: `elapsed` (route required). Output: its input.
 | Field | Rule |
 |---|---|
 | `contract` | Required. One root contract (or `WorkflowEnded@1`), or a list of 2–8 distinct names. |
-| `from` | Optional: `{ parent: true }`, session id, or `{ sessionId }` (binding ok); default any permitted sender. |
+| `from` | Optional: `{ parent: true }`, session id, or `{ sessionId }` (binding ok); default any permitted sender (including people over SDK, Web API, or MCP). Receives with `from:` never accept person input (`409 UNSUPPORTED_CONTRACT`). |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
 | `wait` | Optional `{ seconds }` (per visit) or `{ totalSeconds }` (never resets in a run/branch execution; binding read once on first start; use `seconds` in outer loops), 1–86,400; never both. |
 | `input` | Optional template. |
 
 One name: `received` (payload). List: each contract is an outcome (no `received`),
-output `{ contract, from, payload }`, earliest match. With `wait`, `elapsed`
+output `{ contract, from, payload }`, earliest match (for person input, `from` is
+`person:user:<provider>:<subject>` or `person:system:<name>`, not a session id —
+do not pass it to `from:` or `send.recipient`). With `wait`, `elapsed`
 (input) is required; spent `totalSeconds` fires `elapsed` at entry.
 
 ### messaging, mode send

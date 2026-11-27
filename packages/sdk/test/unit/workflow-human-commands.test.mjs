@@ -25,7 +25,8 @@ import {
     WORKFLOW_HUMAN_MILESTONE_OPERATIONS, WORKFLOW_HUMAN_OPERATIONS,
 } from "../../dist/workflow/human-commands.js";
 import {
-    WORKFLOW_DEFINITION_MCP_TOOLS, WORKFLOW_HUMAN_INPUT_DENIED, workflowDefinitionMcpPermission,
+    WORKFLOW_DEFINITION_MCP_TOOLS, WORKFLOW_DEFINITION_TOOLS, WORKFLOW_HUMAN_INPUT_DENIED,
+    workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters,
 } from "../../dist/workflow/input-policy.js";
 import { WORKFLOW_API_VERSION } from "../../dist/workflow/compiler.js";
 import { WORKFLOW_CONTROLLER_VERSION } from "../../dist/workflow/runtime.js";
@@ -199,6 +200,8 @@ test("personSenderId encodes user and system actors collision-free and rejects i
         err => err.code === "WORKFLOW_COMMAND_INVALID");
     assert.throws(() => personSenderId({ kind: "system", name: "bad\uD800" }),
         err => err.code === "WORKFLOW_COMMAND_INVALID");
+    assert.throws(() => personSenderId({ kind: "user", provider: "entra", subject: "x".repeat(520) }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
 });
 
 test("parsePersonWorkflowInput validates camelCase fields, preserves falsy payloads and untrimmed operationId", () => {
@@ -240,12 +243,18 @@ test("parsePersonWorkflowInput validates camelCase fields, preserves falsy paylo
     });
 });
 
-test("send_workflow_input is in WORKFLOW_DEFINITION_MCP_TOOLS and rejected for sessions inside a Workflow", () => {
+test("send_workflow_input is in WORKFLOW_DEFINITION_MCP_TOOLS and rejected for sessions inside a Workflow without blocking the native tool", () => {
     assert.ok(WORKFLOW_DEFINITION_MCP_TOOLS.includes("send_workflow_input"));
+    assert.equal(WORKFLOW_DEFINITION_TOOLS.includes("send_workflow_input"), false);
     const check = workflowDefinitionMcpPermission(() => ({ kind: "allow" }));
     const denied = check({ kind: "mcp", toolName: "send_workflow_input" });
     assert.equal(denied.kind, "reject");
+    assert.equal(check({ kind: "custom-tool", toolName: "send_workflow_input" }).kind, "allow");
     assert.equal(check({ kind: "mcp", toolName: "read_workflow" }).kind, "allow");
+    const filters = workflowDefinitionMcpToolFilters(["pilotswarm"]);
+    assert.ok(filters.includes("mcp:pilotswarm-send_workflow_input"));
+    assert.ok(filters.includes("pilotswarm-send_workflow_input"));
+    assert.equal(filters.includes("send_workflow_input"), false);
 });
 
 test("PilotSwarmManagementClient.sendWorkflowInput refuses with 501 WORKFLOW_COMMANDS_UNAVAILABLE when workflowCommands is null", async () => {

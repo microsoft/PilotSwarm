@@ -1586,7 +1586,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Deliver a typed message to a durable Workflow session waiting at an open receive step (501 WORKFLOW_COMMANDS_UNAVAILABLE only when workflow commands are disabled). Owner or admin only, enforced even while the ownership switch is off. Refuses agent-controlled Workflow subtrees (403 WORKFLOW_HUMAN_INPUT_DENIED), agent-originated calls with originatingSessionId (403 FORBIDDEN), and contracts accepted only by from:-bound receive steps (409 UNSUPPORTED_CONTRACT). Idempotent by (workflowId, sender, operationId); returns WorkflowInputSendReceipt.
+     * Deliver a typed message (payload <= 256 KiB, max depth 64; correlation <= 4 KiB) to a durable Workflow session waiting at an open receive step (501 WORKFLOW_COMMANDS_UNAVAILABLE only when workflow commands are disabled). Owner or admin only, enforced even while the ownership switch is off. Refuses agent-controlled Workflow subtrees (403 WORKFLOW_HUMAN_INPUT_DENIED), calls that declare an originating session via originatingSessionId (403 FORBIDDEN), and contracts accepted only by from:-bound receive steps (409 UNSUPPORTED_CONTRACT). Idempotent by (workflowId, sender, operationId); returns WorkflowInputSendReceipt.
      * @remarks `POST /sessions/:sessionId/workflow/inputs` — access: `session:manage`
      */
     sendWorkflowInput(params: {
