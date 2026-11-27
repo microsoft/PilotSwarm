@@ -55,11 +55,13 @@ function sameOwner(a: Pick<Link, "isSystem" | "owner">, b: Pick<Link, "isSystem"
 }
 
 /**
- * A session and the sessions above it, nearest first, until a root, a missing row or a repeat. The store's read includes
- * deleted rows (a deleted link is seen as deleted); a catalog without it (a test double) shows only live rows, so a deleted
- * link ends the chain there, which refuses the same callers.
+ * A session and the sessions above it, nearest first, up to its root; null when that chain is not whole: a cycle, a missing
+ * row, or a root further than WORKFLOW_LINEAGE_MAX_DEPTH sessions up. The rule refuses on null, so stored links that loop can
+ * never make a session below a Workflow look like one above it. The store's read includes deleted rows (a deleted link is
+ * seen as deleted); a catalog without it (a test double) shows only live rows, so a deleted link makes the chain not whole,
+ * which refuses the same callers.
  */
-async function chainFrom(host: AccessHost, sessionId: string): Promise<Link[]> {
+async function chainFrom(host: AccessHost, sessionId: string): Promise<Link[] | null> {
     let rows: Link[];
     if (typeof host.store.readSessionAncestry === "function") {
         rows = await host.store.readSessionAncestry(sessionId);
@@ -76,13 +78,15 @@ async function chainFrom(host: AccessHost, sessionId: string): Promise<Link[]> {
     }
     const seen = new Set<string>();
     const chain: Link[] = [];
+    let expected: string = sessionId;
     for (const row of rows) {
-        if (seen.has(row.sessionId)) break;
+        if (row.sessionId !== expected || seen.has(row.sessionId)) return null;
         seen.add(row.sessionId);
         chain.push(row);
-        if (row.parentSessionId === null) break;
+        if (row.parentSessionId === null) return chain;
+        expected = row.parentSessionId;
     }
-    return chain;
+    return null;
 }
 
 /** Whether a stretch of a chain is live and all of `owner`'s owner; the reason it is not, else null. */
@@ -106,8 +110,8 @@ export async function decideWorkflowAccess(host: AccessHost, workflowSessionId: 
     // An ancestor: the caller is above the Workflow's trusted parent (its session row and its definition agree on it).
     if (parentSessionId !== null && parentSessionId !== callerSessionId && definition.parentSessionId === parentSessionId) {
         const chain = await chainFrom(host, workflowSessionId);
-        const at = chain.findIndex(link => link.sessionId === callerSessionId);
-        if (chain[0]?.sessionId === workflowSessionId && chain[1]?.sessionId === parentSessionId && at >= 2) {
+        const at = chain ? chain.findIndex(link => link.sessionId === callerSessionId) : -1;
+        if (chain && chain[1]?.sessionId === parentSessionId && at >= 2) {
             const broken = brokenLink(chain.slice(1, at + 1), chain[0]);
             return broken ? { allowed: false, reason: broken } : { allowed: true, relation: "ancestor" };
         }
@@ -115,10 +119,10 @@ export async function decideWorkflowAccess(host: AccessHost, workflowSessionId: 
     // The Workflow's own agent step, or a session under one: the nearest agent state at or above the caller (its invocation
     // record) is this Workflow's, and the caller's chain reaches the Workflow right above that step, live and of its owner.
     const lineage = typeof host.store.readWorkflowLineage === "function" ? await host.store.readWorkflowLineage(callerSessionId) : null;
-    if (lineage && !lineage.deleted && lineage.agentRoot?.workflowSessionId === workflowSessionId) {
+    if (lineage && !lineage.deleted && lineage.level !== null && lineage.agentRoot?.workflowSessionId === workflowSessionId) {
         const chain = await chainFrom(host, callerSessionId);
         const at = lineage.agentRoot.distance + 1;
-        if (chain[at]?.sessionId === workflowSessionId && chain[at - 1]?.sessionId === lineage.agentRoot.childSessionId) {
+        if (chain && chain[at]?.sessionId === workflowSessionId && chain[at - 1]?.sessionId === lineage.agentRoot.childSessionId) {
             const broken = brokenLink(chain.slice(0, at), chain[at]);
             return broken ? { allowed: false, reason: broken } : { allowed: true, relation: "agent_step" };
         }
@@ -153,6 +157,6 @@ export async function authorizeWorkflowAccess(host: AccessHost, workflowSessionI
 export async function mayReadRetainedWorkflow(host: AccessHost, retainedParentSessionId: string, callerSessionId: string): Promise<boolean> {
     if (retainedParentSessionId === callerSessionId) return true;
     const chain = await chainFrom(host, retainedParentSessionId);
-    const at = chain.findIndex(link => link.sessionId === callerSessionId);
-    return at >= 1 && brokenLink(chain.slice(0, at + 1), chain[0]) === null;
+    const at = chain ? chain.findIndex(link => link.sessionId === callerSessionId) : -1;
+    return chain !== null && at >= 1 && brokenLink(chain.slice(0, at + 1), chain[0]) === null;
 }

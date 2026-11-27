@@ -253,7 +253,7 @@ Only direct child Workflows of the calling Workflow are visible; any other id re
 | Operation | Arguments | Response |
 |---|---|---|
 | `list` | `status`: `active` (default), `ended`, or `all`; `definition` (optional); `limit` (1–100, default 50); `cursor` | `{ children: [...], nextCursor }`, newest first (filtered and paginated in SQL) |
-| `read` | `workflow_id`; `full_output` (optional) | Same shape as `read_workflow`. `run.output` is a 2,000-character preview, or with `full_output: true` the child's whole output as canonical JSON text. A cleaned-up child is read through the outcome kept with this Workflow. |
+| `read` | `workflow_id`; `full_output` (optional) | Same shape as `read_workflow`, with `run.output` a 2,000-character preview. With `full_output: true`, only the child's result: `{ workflowId, deleted?, run: { runId, status, outcome, terminalState, output, error } }`, `run.output` the whole stored canonical JSON text (`"null"` for JSON null, `null` for none). A child that is gone (cleaned up) is read through the outcome kept with this Workflow; a live Workflow that is not this Workflow's child (both parent records) is `WORKFLOW_NOT_FOUND`. |
 | `stop` | `workflow_id`, `operation_id`, `grace_seconds` (0–3600, default 60), `reason` | Same as `update_workflow` `stop` |
 | `cancel` | `workflow_id`, `operation_id`, `reason` | Same as `update_workflow` `cancel` |
 
@@ -450,7 +450,7 @@ See [`workflow-child-workflows/formal/README.md`](workflow-child-workflows/forma
 | T1–T2 | Level rule | All 6 nesting chains and level-1 agent step spawning level-2 sub-agent |
 | T3–T4 | Compiler | `spawn` fields/errors, `WorkflowEnded@1` built-in receive / rejected send & legacy runtime guard |
 | T5–T7 | Store & Start | Parentage, budget count, idempotent replay & `OPERATION_CONFLICT`, budget/level/input refusals, package definitions, true claim-vs-cancel race, delete barrier |
-| T8–T10 | Inbox & notice | Pending-receive vs queued FIFO delivery, duplicate notifier idempotency, 100-message cap bypass, 16 KB truncation & unwrappable fallback |
+| T8–T10 | Inbox & notice | Pending-receive vs queued FIFO delivery, duplicate notifier idempotency, 100-message cap bypass, whole output within the notice limit (`runId` added), omission beyond it & unwrappable fallback, an older-form notice stored before an upgrade answering the newer retry |
 | T11–T18 | Runtime & faults | Out-of-order (2, 3, 1), poll loop schedule with concurrent child, failed/timed_out/pre-begin tool-cancelled child notices, all 6 parent end modes (complete, fail, cancel, stop, timeout, delete), real chat-end cascade, transient spawn retry, controller 1.2.0 → 1.3.0 handoff |
 | T19–T21 | `child_workflows` tool | `list`/`read`/`stop`/`cancel` from script and agent step, coded `WORKFLOW_NOT_FOUND` outside own children, unavailable to chat/sub-agents |
 | T22 | Test mode | Held `spawn` interception + `WorkflowEnded@1` fixture |

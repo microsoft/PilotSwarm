@@ -737,11 +737,14 @@ read, pause or cancel each of the three.
 | The Workflow's own agent step, and the sub-agents of that step | Yes | No | No |
 | Any other session | No | No | No |
 
-A session above a deleted session is refused: the chain is broken there.
-Each refusal is `FORBIDDEN` and its message names the rule. The outcome of a
-Workflow that was cleaned up stays readable through `read_workflow` for the
-same sessions. `send_workflow_input` has its own rule: the session that
-started the Workflow, or any session of the same user.
+A session above a deleted session is refused: the chain is broken there. A
+session inside a Workflow (an agent step or one of its sub-agents) has no
+`update_workflow` at all. A refusal of a live Workflow is `FORBIDDEN`, and its
+message names the rule. After a Workflow is cleaned up, the session that
+started it and the sessions above that one still read its outcome with
+`read_workflow`; anyone else gets `WORKFLOW_NOT_FOUND`. `send_workflow_input`
+has its own rule: the session that started the Workflow, or any session of
+the same user.
 
 ### `update_workflow`
 
@@ -869,13 +872,17 @@ saving it gives the warning `WORKFLOW_ENDED_CORRELATE`.
 | `outputTruncated` | `true` only when `output` was left out. |
 | `error` | `{ code, message }` for a failed or cancelled run, else `null`. |
 
-The output is left out only when the next step could not take it whole:
-above about 190 KiB (195,584 bytes, measured as a list `receive` inside a
-`carry` would pass it on). A run's output is at most 256 KiB. Then a script
-step reads it whole with
-`callTool("child_workflows", { operation: "read", workflow_id, full_output: true })`:
-`run.output` is the whole output as JSON text. This also works after the
-child Workflow was cleaned up.
+The child keeps the output in the message when it fits a worst-case budget:
+195,584 bytes (about 190 KiB) and the JSON nesting limit, measured as a list
+`receive` inside a `carry` would pass it on. Within that budget the next step
+always takes the message whole. A run's output is at most 256 KiB, so only
+outputs near that size are left out. Then a script step reads it whole with
+`callTool("child_workflows", { operation: "read", workflow_id, full_output: true })`.
+With `full_output`, the answer holds only the child's result:
+`{ workflowId, run: { runId, status, outcome, terminalState, output, error } }`,
+where `run.output` is the whole output as JSON text (`"null"` for a JSON null,
+`null` when the run has none). This also works after the child Workflow was
+cleaned up; the answer then has `deleted: true`.
 
 ### What a script may call
 

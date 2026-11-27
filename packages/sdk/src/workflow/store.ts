@@ -3586,6 +3586,8 @@ export class WorkflowStore {
         limit?: number | null;
         offset?: number;
         includeDeleted?: boolean;
+        /** Only children whose definition also names this parent (child_workflows; I2 review r1). */
+        requireDefinitionParent?: boolean;
     } = {}): Promise<Array<{
         workflowSessionId: string;
         deletedAt: Date | null;
@@ -3605,6 +3607,7 @@ export class WorkflowStore {
         const params: unknown[] = [parentWorkflowSessionId];
         const where: string[] = ["s.parent_session_id = $1", "s.session_kind = 'workflow'"];
         if (options.includeDeleted === false) where.push("s.deleted_at IS NULL");
+        if (options.requireDefinitionParent === true) where.push("d.parent_session_id = $1");
         if (options.status === "active") {
             params.push(ACTIVE_RUN_STATUSES);
             where.push(`r.status = ANY($${params.length}::text[])`);
@@ -4864,11 +4867,17 @@ export class WorkflowStore {
             const decided = await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
             if (!decided.live) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             const { rows: priorRows } = await client.query(
-                `SELECT run_id, request_sha256, receipt FROM ${this.t.inbox}
+                `SELECT run_id, request_sha256, receipt, contract FROM ${this.t.inbox}
                   WHERE workflow_session_id = $1 AND sender_session_id = $2 AND operation_id = $3`,
                 [input.workflowSessionId, input.senderSessionId, input.operationId]);
             if (priorRows[0]) {
-                if (str(priorRows[0], "request_sha256") !== input.requestSha256) {
+                // I6: a child's end notice is one message per child run, whatever its form. A retry by a newer runtime may build
+                // it in a newer form (runId, a whole output) than the one an older runtime already stored under the same
+                // operation id; it is the same notice from the same child to the same parent, so the stored one is its receipt.
+                const sameEndNotice = input.bypassInboxLimits === true && input.contract === WORKFLOW_ENDED_CONTRACT
+                    && input.operationId.startsWith("ended:") && str(priorRows[0], "contract") === WORKFLOW_ENDED_CONTRACT
+                    && decided.senderParentSessionId === input.workflowSessionId;
+                if (str(priorRows[0], "request_sha256") !== input.requestSha256 && !sameEndNotice) {
                     throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${input.operationId} was already used for a different input.`,
                         { operationId: input.operationId });
                 }
@@ -6629,6 +6638,15 @@ export class WorkflowStore {
             isAgentStep: strOrNull(row, "node_execution_id") !== null,
         })));
         return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
+    }
+
+    /**
+     * I6: a run's terminal output as its stored canonical JSON text, exactly: "null" for a JSON null output, null when the
+     * run has none (readRun parses both to null).
+     */
+    async readRunOutputText(runId: string): Promise<string | null> {
+        const { rows } = await this.pool.query(`SELECT terminal_output FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
+        return rows[0] ? strOrNull(rows[0], "terminal_output") : null;
     }
 
     /**
