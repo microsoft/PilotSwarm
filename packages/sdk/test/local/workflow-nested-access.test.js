@@ -17,9 +17,9 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
-import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
+import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
-import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
+import { childWorkflowsFromTool, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -63,7 +63,7 @@ states:
 `;
 
 /** A started Workflow under `parent`, as a Start or a spawn state creates one: its session row, definition and live run. */
-async function workflowOf(h, parent, owner, yaml = RECEIVER_YAML) {
+async function workflowOf(h, parent, owner, yaml = RECEIVER_YAML, { draft = false } = {}) {
     const compiled = compileWorkflow(yaml);
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     const workflowSessionId = randomUUID();
@@ -72,11 +72,11 @@ async function workflowOf(h, parent, owner, yaml = RECEIVER_YAML) {
         creationConfig: { workflow: { requestSha256: "nested-access" } } })).toEqual({ created: true });
     await h.store.createDefinition({
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor: ACTOR,
-        operationId: "create", requestSha256: "nested-access", publish: true, title: `Workflow: ${compiled.name}`,
-        start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
+        operationId: "create", requestSha256: "nested-access", publish: !draft, title: `Workflow: ${compiled.name}`,
+        start: draft ? null : { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
             inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_CONTROLLER_VERSION },
     });
-    return { workflowSessionId, runId };
+    return { workflowSessionId, runId: draft ? null : runId, compiled };
 }
 
 /** The agent step of `workflow` (an agent-state Workflow): its pending visit's invocation record and its session. */
@@ -192,21 +192,32 @@ describe("I2: nested Workflows are read and controlled by every session above th
                 }
             }
 
-            // Stop and cancel by the great-grandparent end the grandchild Workflow; the cancel names who cancelled it.
+            // send_workflow_input keeps its rule: the grandparent (not W2's parent, the same user) may send to W2; another user's
+            // session may not.
+            const sent = JSON.parse(await sendWorkflowInputFromTool({ workflow_id: w2.workflowSessionId, contract: "Ping@1", payload: { n: 1 },
+                operation_id: "ping-from-top" }, { callerSessionId: top, host }));
+            expect(sent.ok, JSON.stringify(sent.error)).toBe(true);
+            expect([sent.workflowId, sent.runId, sent.senderSessionId]).toEqual([w2.workflowSessionId, w2.runId, top]);
+            const foreign = JSON.parse(await sendWorkflowInputFromTool({ workflow_id: w2.workflowSessionId, contract: "Ping@1", payload: { n: 2 },
+                operation_id: "ping-from-stranger" }, { callerSessionId: stranger, host }));
+            expect([foreign.ok, foreign.error?.code]).toEqual([false, "FORBIDDEN"]);
+
+            // Stop by the great-grandparent is stored on the grandchild's run; a cancel by the grandparent says who cancelled it.
             const stopped = await update(top, w3.workflowSessionId, { operation: "stop", operation_id: "stop-w3", grace_seconds: 0 });
             expect(stopped.ok, JSON.stringify(stopped.error)).toBe(true);
+            const w3Stop = (await read(top, w3.workflowSessionId)).run;
+            expect(w3Stop.stop?.graceSeconds, JSON.stringify(w3Stop)).toBe(0);
+            expect(w3Stop.lastControl).toMatchObject({ operation: "stop", by: "this session" });
             const cancelled = await update(top, w2.workflowSessionId, { operation: "cancel", operation_id: "cancel-w2" });
             expect(cancelled.ok, JSON.stringify(cancelled.error)).toBe(true);
             const w2Run = await h.store.readRun(w2.runId);
             expect(w2Run.status).toBe("cancelled");
-
-            // send_workflow_input keeps its rule: an ancestor of the same user may send; another user's session may not.
-            const sent = JSON.parse(await sendWorkflowInputFromTool({ workflow_id: w1.workflowSessionId, contract: "Ping@1", payload: { n: 1 },
-                operation_id: "ping-from-top" }, { callerSessionId: top, host }));
-            expect(sent.ok, JSON.stringify(sent.error)).toBe(true);
-            const foreign = JSON.parse(await sendWorkflowInputFromTool({ workflow_id: w1.workflowSessionId, contract: "Ping@1", payload: { n: 2 },
-                operation_id: "ping-from-stranger" }, { callerSessionId: stranger, host }));
-            expect([foreign.ok, foreign.error?.code]).toEqual([false, "FORBIDDEN"]);
+            expect((await read(top, w2.workflowSessionId)).run.lastControl)
+                .toMatchObject({ operation: "cancel", by: "this session", reason: "Cancelled by a session above it" });
+            // The parent's own cancel keeps its words.
+            const w1Cancel = await update(top, w1.workflowSessionId, { operation: "cancel", operation_id: "cancel-w1" });
+            expect(w1Cancel.ok, JSON.stringify(w1Cancel.error)).toBe(true);
+            expect((await read(top, w1.workflowSessionId)).run.lastControl).toMatchObject({ operation: "cancel", reason: "Cancelled by its parent" });
         } finally {
             await h.stop();
         }
@@ -277,6 +288,100 @@ describe("I2: nested Workflows are read and controlled by every session above th
             expect(kept.run).toMatchObject({ runId: w2.runId, status: "completed", outcome: "succeeded", output: '{"summary":"kept"}' });
             const refused = await read(stranger, w2.workflowSessionId);
             expect([refused.ok, refused.error?.code]).toEqual([false, "WORKFLOW_NOT_FOUND"]);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("stored parent links that loop never make an agent step an ancestor (fail closed)", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const host = hostOf(h);
+            const update = async (caller, workflowId, args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowId, ...args },
+                { callerSessionId: caller, host }));
+            const read = async (caller, workflowId) => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: caller, host }));
+            const top = randomUUID();
+            await h.catalog.createSession(top, { owner: OWNER_A });
+            const w = await workflowOf(h, top, OWNER_A, AGENT_YAML);
+            const step = await agentStepOf(h, w, top, OWNER_A);
+            expect((await read(step, w.workflowSessionId)).ok, "the step reads its Workflow").toBe(true);
+            // Corrupt the links into a loop: top's parent is the step, so the Workflow's chain reads W → top → step → W.
+            await h.q("UPDATE SCHEMA.sessions SET parent_session_id = $2 WHERE session_id = $1", [top, step]);
+            const paused = await update(step, w.workflowSessionId, { operation: "pause", operation_id: "pause-by-step-in-loop" });
+            expect([paused.ok, paused.error?.code], JSON.stringify(paused)).toEqual([false, "FORBIDDEN"]);
+            const looped = await read(step, w.workflowSessionId);
+            expect([looped.ok, looped.error?.code], "a looping lineage reads nothing either").toEqual([false, "FORBIDDEN"]);
+            // The parent relation does not read the chain: the Workflow's own parent keeps it.
+            expect((await update(top, w.workflowSessionId, { operation: "pause", operation_id: "pause-by-parent" })).ok).toBe(true);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("a test run is controlled by the parent only; an ancestor naming one is refused", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const host = hostOf(h);
+            const update = async (caller, workflowId, args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowId, ...args },
+                { callerSessionId: caller, host }));
+            const top = randomUUID();
+            await h.catalog.createSession(top, { owner: OWNER_A });
+            const sub = randomUUID();
+            await h.catalog.createSession(sub, { parentSessionId: top, owner: OWNER_A });
+            const w = await workflowOf(h, sub, OWNER_A, RECEIVER_YAML, { draft: true });
+            const testRunId = randomUUID();
+            await h.store.startTest({
+                workflowSessionId: w.workflowSessionId, expectedRevision: 1, definitionHash: w.compiled.yamlSha256, operationId: "test-1",
+                requestSha256: "nested-access-test",
+                start: { runId: testRunId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(testRunId), inputsText: "{}",
+                    kvText: "{}", testAgentMode: "mocked", controllerVersion: WORKFLOW_CONTROLLER_VERSION, fixturesText: "[]" },
+            });
+            for (const operation of ["pause", "cancel", "recover"]) {
+                const refused = await update(top, w.workflowSessionId, { operation, operation_id: `ancestor-${operation}`, run_id: testRunId });
+                expect([refused.ok, refused.error?.code], `${operation}: ${JSON.stringify(refused)}`).toEqual([false, "FORBIDDEN"]);
+                expect(refused.error.message).toMatch(/^Only the session that started this Workflow/);
+            }
+            // The parent controls the test run.
+            const parentPause = await update(sub, w.workflowSessionId, { operation: "pause", operation_id: "parent-test-pause", run_id: testRunId });
+            expect(parentPause.ok, JSON.stringify(parentPause.error)).toBe(true);
+            expect(parentPause.runId).toBe(testRunId);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("child_workflows needs both parent records, and reads a kept outcome only for a Workflow that is gone", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const host = hostOf(h);
+            const child = async (callerWorkflowSessionId, args) => JSON.parse(await childWorkflowsFromTool(args, { callerWorkflowSessionId, host }));
+            const top = randomUUID();
+            await h.catalog.createSession(top, { owner: OWNER_A });
+            const parentA = await workflowOf(h, top, OWNER_A);
+            const parentB = await workflowOf(h, top, OWNER_A);
+            // A child whose session row names parent A but whose definition names parent B (inconsistent records).
+            const mixed = await workflowOf(h, parentA.workflowSessionId, OWNER_A);
+            await h.q("UPDATE SCHEMA.workflow_definitions SET parent_session_id = $2 WHERE workflow_session_id = $1",
+                [mixed.workflowSessionId, parentB.workflowSessionId]);
+            await h.q(`UPDATE SCHEMA.workflow_runs SET status = 'completed', terminal_outcome = 'succeeded', terminal_node_id = 'done',
+                terminal_output = '{"secret":"kept"}', finished_at = now() WHERE run_id = $1`, [mixed.runId]);
+            // Retention keeps the outcome with the definition's parent (B).
+            await h.q("SELECT SCHEMA.workflow_record_terminal_outcome($1)", [mixed.runId]);
+            const good = await workflowOf(h, parentA.workflowSessionId, OWNER_A);
+
+            const listed = await child(parentA.workflowSessionId, { operation: "list", status: "all" });
+            expect(listed.ok, JSON.stringify(listed.error)).toBe(true);
+            expect(listed.children.map(item => item.workflowId)).toEqual([good.workflowSessionId]);
+            expect((await child(parentB.workflowSessionId, { operation: "list", status: "all" })).children).toEqual([]);
+            for (const [label, caller] of [["session parent", parentA], ["definition parent", parentB]]) {
+                for (const args of [{ operation: "read", workflow_id: mixed.workflowSessionId },
+                    { operation: "read", workflow_id: mixed.workflowSessionId, full_output: true }]) {
+                    const refused = await child(caller.workflowSessionId, args);
+                    expect([refused.ok, refused.error?.code], `${label} ${JSON.stringify(args)}: ${JSON.stringify(refused)}`)
+                        .toEqual([false, "WORKFLOW_NOT_FOUND"]);
+                }
+            }
+            expect((await child(parentA.workflowSessionId, { operation: "read", workflow_id: good.workflowSessionId })).ok).toBe(true);
         } finally {
             await h.stop();
         }

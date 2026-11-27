@@ -155,6 +155,27 @@ describe("Child Workflows WorkflowEnded@1 inbox delivery, A6, A7 & T9/T17", () =
             expect(Object.hasOwn(hugeMsg, "output")).toBe(false);
             expect(hugeMsg.runId).toBe(childHuge.runId);
 
+            // A7d (I6, upgrade): an older runtime stored the notice in the older form (no runId, output over 16 KiB left out) and
+            // stopped before recording that it told the parent. This runtime's retry builds the newer form under the same
+            // operation id: the stored notice is its receipt (one row, no OPERATION_CONFLICT), and the retry records the notice.
+            const childOld = await spawnChildDirect(6);
+            await h.q("UPDATE SCHEMA.workflow_runs SET status = 'completed', terminal_outcome = 'succeeded', terminal_node_id = 'done', terminal_output = $2, finished_at = now() WHERE run_id = $1", [childOld.runId, bigOutput]);
+            const olderText = canonicalJson({ workflowId: childOld.workflowId, definition: "child-job", revision: 1, spawnedBy: null, status: "completed",
+                outcome: "succeeded", stateId: "done", outputTruncated: true, error: null });
+            await h.store.acceptInput({
+                workflowSessionId: parent.workflowId, runId: parent.runId, messageId: `ended:${childOld.runId}`, senderSessionId: childOld.workflowId,
+                operationId: `ended:${childOld.runId}`, contract: WORKFLOW_ENDED_CONTRACT, correlationText: "{}", payloadText: olderText,
+                requestSha256: typedInputRequestSha256({ runId: parent.runId, contract: WORKFLOW_ENDED_CONTRACT, correlationText: "{}",
+                    payloadText: olderText, ttlSeconds: WORKFLOW_INPUT_TTL_SECONDS }),
+                ttlSeconds: WORKFLOW_INPUT_TTL_SECONDS, limits: WORKFLOW_INBOX_LIMITS, bypassInboxLimits: true,
+            });
+            await notifyParent(actx, { runId: childOld.runId });
+            const oldRows = await h.q("SELECT payload FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND operation_id = $2", [parent.runId, `ended:${childOld.runId}`]);
+            expect(oldRows).toHaveLength(1);
+            expect(JSON.parse(oldRows[0].payload)).not.toHaveProperty("runId");
+            expect((await h.q("SELECT count(*)::int AS c FROM SCHEMA.session_events WHERE session_id = $1 AND event_type = 'workflow.parent_notified'",
+                [childOld.workflowId]))[0].c).toBe(1);
+
             // A7b: Output at max JSON nesting depth (cannot be wrapped inside payload) -> falls back to metadata-only notice, never throws!
             let deep = "leaf";
             for (let i = 0; i < 64; i += 1) deep = { a: deep };
