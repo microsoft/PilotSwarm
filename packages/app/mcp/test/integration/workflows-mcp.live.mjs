@@ -373,7 +373,7 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
         assert.equal(delSpawnLeafAfter.operation, "delete");
         assert.equal(delSpawnLeafAfter.name, "spawn-leaf");
 
-        // 7. Save & start sum-pair (script state) -> WORKFLOW_PERSON_START_NO_TOOL_BINDING -> poll read_workflow -> sum: 12
+        // 7. Save & start sum-pair (pure script, no callTool -> no WORKFLOW_PERSON_START_NO_TOOL_BINDING) -> poll read_workflow -> sum: 12
         const savedSum = parse(await client.callTool({
             name: "workflow_definition",
             arguments: { operation: "save", owner_session_id: owner.session_id, name: "sum-pair", yaml: SUM_YAML, operation_id: "save-sum-1" },
@@ -393,9 +393,41 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
         }));
         assert.ok(startedSum.workflowId);
         sessionsToClean.push(startedSum.workflowId);
+        assert.equal(
+            Boolean(startedSum.warnings?.some((w) => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")),
+            false,
+            `${modeLabel}: pure script without callTool must not emit WORKFLOW_PERSON_START_NO_TOOL_BINDING`,
+        );
+
+        // Script with a callTool call still emits WORKFLOW_PERSON_START_NO_TOOL_BINDING
+        const toolScriptYaml = [
+            "apiVersion: pilotswarm.dev/v1",
+            "kind: Workflow",
+            'metadata: { name: tool-warn, version: "1.0.0" }',
+            "initial: run",
+            "states:",
+            "  run:",
+            "    type: script",
+            "    outcomes: [ok]",
+            "    source: |",
+            "      if (false) await callTool(context.inputs.toolName, {});",
+            '      await setResult("ok", { done: true });',
+            "    transition: { next: { ok: done, failure: done } }",
+            "  done: { type: terminal, outcome: succeeded }",
+        ].join("\n");
+        await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "save", owner_session_id: owner.session_id, name: "tool-warn", yaml: toolScriptYaml, operation_id: "save-tool-warn-1" },
+        });
+        const startedToolWarn = parse(await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "start", owner_session_id: owner.session_id, name: "tool-warn", workspace: "none", operation_id: "start-tool-warn-1" },
+        }));
+        assert.ok(startedToolWarn.workflowId);
+        sessionsToClean.push(startedToolWarn.workflowId);
         assert.ok(
-            startedSum.warnings?.some((w) => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING"),
-            `${modeLabel}: script start must include WORKFLOW_PERSON_START_NO_TOOL_BINDING`,
+            startedToolWarn.warnings?.some((w) => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING"),
+            `${modeLabel}: script calling callTool must include WORKFLOW_PERSON_START_NO_TOOL_BINDING`,
         );
 
         // list_sessions shows child Workflow with session_kind: "workflow"

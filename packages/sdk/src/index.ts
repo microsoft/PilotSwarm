@@ -91,6 +91,7 @@ export { workflowReaderView } from "./workflow/tools.js";
 // Workflow: pure compilation and no-write validation (Phase 4).
 export { compileWorkflow } from "./workflow/compiler.js";
 export type { WorkflowCompileResult, WorkflowDiagnostic, WorkflowIR } from "./workflow/compiler.js";
+export { scriptToolRequirements } from "./workflow/script-analysis.js";
 export { validateWorkflowYaml } from "./workflow/validation.js";
 export type { WorkflowValidationDiagnostic, WorkflowValidationResult } from "./workflow/validation.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";

@@ -480,7 +480,18 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
             if (ref.name === "unattached/pkg") throw Object.assign(new Error("missing"), { code: "DEFINITION_NOT_FOUND", status: 404 });
             if (ref.name === "own-wf") return { definitionId: "d-own", name: "own-wf", locked: false, graph: { states: [{ id: "w", type: "wait" }] } };
             if (ref.definitionId === "d-script" || ref.name === "script-wf") {
-                return { definitionId: "d-script", name: "script-wf", locked: false, graph: { states: [{ id: "compute", type: "script" }] } };
+                return {
+                    definitionId: "d-script", name: "script-wf", locked: false,
+                    revision: { yaml: 'apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: script-wf, version: "1.0.0" }\ninitial: compute\nstates:\n  compute:\n    type: script\n    outcomes: [ok]\n    source: |\n      await callTool(context.inputs.tool, {});\n      await setResult("ok", {});\n    transition: { next: { ok: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n' },
+                    graph: { states: [{ id: "compute", type: "script" }] },
+                };
+            }
+            if (ref.definitionId === "d-pure-script" || ref.name === "pure-script-wf") {
+                return {
+                    definitionId: "d-pure-script", name: "pure-script-wf", locked: false,
+                    revision: { yaml: 'apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: pure-script-wf, version: "1.0.0" }\ninitial: compute\nstates:\n  compute:\n    type: script\n    outcomes: [ok]\n    source: |\n      await setResult("ok", { n: 1 });\n    transition: { next: { ok: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n' },
+                    graph: { states: [{ id: "compute", type: "script" }] },
+                };
             }
             if (ref.definitionId === "d-wait" || ref.name === "wait-wf") {
                 return { definitionId: "d-wait", name: "wait-wf", locked: false, graph: { states: [{ id: "hold", type: "wait" }] } };
@@ -491,7 +502,7 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
         saveSessionWorkflowDefinition: async (sid, req, opts) => { calls.push(["save", sid, req, opts]); return { definitionId: "d1", name: req.name, revision: 1, valid: true, replayed: false }; },
         startSessionWorkflowDefinition: async (sid, req, opts) => {
             calls.push(["start", sid, req, opts]);
-            const defId = req.definitionId ?? (req.name === "script-wf" ? "d-script" : req.name === "wait-wf" ? "d-wait" : "d-pkg");
+            const defId = req.definitionId ?? (req.name === "script-wf" ? "d-script" : req.name === "pure-script-wf" ? "d-pure-script" : req.name === "wait-wf" ? "d-wait" : "d-pkg");
             return { operation: "start", definitionId: defId, name: req.name ?? "script-wf", revision: req.revision ?? 1, workflowId: "wf-1", runId: "r-1", replayed: false };
         },
         updateSessionWorkflowPackage: async (sid, req, opts) => { calls.push(["updatePkg", sid, req, opts]); return { operation: "attach", definitionId: "d-pkg", name: "demo/pkg", revision: 3, replayed: false }; },
@@ -537,7 +548,7 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     await wfDef({ operation: "save", owner_session_id: OWNER_SID, name: "sum", yaml: "y", operation_id: "op-s1", originating_session_id: "spoofed" });
     assert.equal(calls.at(-1)[3].originatingSessionId, "bound-orig");
 
-    // start with script state -> appends WORKFLOW_PERSON_START_NO_TOOL_BINDING; keyed start without operation_id derives key:<k>
+    // start with script state calling callTool -> appends WORKFLOW_PERSON_START_NO_TOOL_BINDING; keyed start without operation_id derives key:<k>
     const scriptStart = JSON.parse((await wfDef({
         operation: "start", owner_session_id: OWNER_SID, name: "script-wf", key: "k1", workspace: "none",
     })).content[0].text);
@@ -546,6 +557,12 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     const startCall = calls.find(c => c[0] === "start");
     assert.equal(startCall[2].operationId, "key:k1");
     assert.equal(startCall[2].key, "k1");
+
+    // start with pure script state (no callTool) -> no WORKFLOW_PERSON_START_NO_TOOL_BINDING warning
+    const pureScriptStart = JSON.parse((await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "pure-script-wf", operation_id: "op-ps1", workspace: "none",
+    })).content[0].text);
+    assert.equal(Boolean(pureScriptStart.warnings?.some(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")), false);
 
     // start without script state -> no WORKFLOW_PERSON_START_NO_TOOL_BINDING warning
     const waitStart = JSON.parse((await wfDef({

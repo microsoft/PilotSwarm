@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { compileWorkflow, workflowScriptNodes, workflowTestModeFromEnv } from "pilotswarm-sdk";
+import { compileWorkflow, scriptToolRequirements, workflowTestModeFromEnv } from "pilotswarm-sdk";
 import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
 import { cacheSessionHandle } from "./sessions.js";
@@ -34,19 +34,17 @@ function isOlderPortalWithoutPhase4Definitions(ctx: ServerContext): boolean {
     return !ctx.workflowsAdvert.validate || !ctx.workflowsAdvert.card;
 }
 
-function graphHasScriptState(states: unknown): boolean {
-    if (!Array.isArray(states)) return false;
-    for (const s of states) {
-        if (!s || typeof s !== "object") continue;
-        const st = s as Record<string, unknown>;
-        if (st.type === "script") return true;
-        if (graphHasScriptState(st.states) || graphHasScriptState((st.body as Record<string, unknown> | undefined)?.states)) return true;
-        if (Array.isArray(st.branches) && st.branches.some(b => graphHasScriptState((b as Record<string, unknown> | undefined)?.states))) return true;
+function irScriptsCallTools(ir: ReturnType<typeof compileWorkflow>["ir"]): boolean {
+    if (!ir) return false;
+    for (const node of Object.values(ir.nodes)) {
+        if (node?.type !== "script") continue;
+        const req = scriptToolRequirements(node.source);
+        if (req.tools.length > 0 || req.dynamic || req.unchecked) return true;
     }
     return false;
 }
 
-async function startedRevisionHasScriptState(ctx: ServerContext, ownerSessionId: string, definitionId: unknown, revision: unknown): Promise<boolean> {
+async function startedRevisionCallsTools(ctx: ServerContext, ownerSessionId: string, definitionId: unknown, revision: unknown): Promise<boolean> {
     if (typeof definitionId !== "string" || !definitionId) return false;
     if (typeof ctx.mgmt.readSessionWorkflowDefinition !== "function") return false;
     try {
@@ -55,10 +53,9 @@ async function startedRevisionHasScriptState(ctx: ServerContext, ownerSessionId:
             ...(typeof revision === "number" && Number.isInteger(revision) ? { revision } : {}),
         });
         if (typeof read?.revision?.yaml === "string") {
-            const compiled = compileWorkflow(read.revision.yaml);
-            if (compiled.ir) return workflowScriptNodes(compiled.ir).length > 0;
+            return irScriptsCallTools(compileWorkflow(read.revision.yaml).ir);
         }
-        return graphHasScriptState(read?.graph?.states);
+        return false;
     } catch {
         return false;
     }
@@ -563,10 +560,10 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     mutOpts,
                 );
 
-                const hasScript = await startedRevisionHasScriptState(ctx, owner_session_id, started?.definitionId, started?.revision);
+                const callsTools = await startedRevisionCallsTools(ctx, owner_session_id, started?.definitionId, started?.revision);
                 const existingWarnings = Array.isArray(started?.warnings) ? started.warnings : [];
                 const alreadyWarned = existingWarnings.some((w: any) => w?.code === PERSON_START_TOOL_BINDING_WARNING.code);
-                const warnings = hasScript && !alreadyWarned
+                const warnings = callsTools && !alreadyWarned
                     ? [...existingWarnings, PERSON_START_TOOL_BINDING_WARNING]
                     : existingWarnings;
 
