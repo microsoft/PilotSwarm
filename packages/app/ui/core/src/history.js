@@ -646,7 +646,6 @@ function workflowUpdateCardOf(event, parsed, sender, id) {
 }
 
 const SPLIT_ITEM_MARKER = ":item:";
-const FROM_HEADER_LINE_RE = /^\[FROM:[^\]\n]*\]$/m;
 const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})/;
 
 function splitEventBaseId(id) {
@@ -806,7 +805,7 @@ function buildUserMessageItems(event) {
         return neutral ? [{ ...neutral, mergedMessages: merged }] : [];
     }
     const stampedUserSender = Boolean(data.sender && typeof data.sender === "object" && data.sender.kind === "user");
-    const canSplitCanvasActions = stampedUserSender || !data.sender;
+    const canSplitCanvasActions = stampedUserSender;
     if (canSplitCanvasActions) {
         const rawText = messageTextFromEvent(event);
         const textTrusted = !stampedByPersonOrAgent(event);
@@ -821,12 +820,7 @@ function buildUserMessageItems(event) {
         const visibleText = stripLeadingSenderMarker(extracted);
 
         // Single-action turns stay on the exact existing builder path.
-        // For senderless turns (where mixed-sender batches with id-less canvas
-        // presses can arrive without `mergedMessages`), refuse to split if any
-        // `[FROM: ...]` header is present so collaborator segments can never
-        // lose attribution or escalate to System rows (review H-1 / H-2).
-        const unflaggedMultiWriter = !stampedUserSender && FROM_HEADER_LINE_RE.test(extracted);
-        if (!unflaggedMultiWriter && !(isCanvasActionContent(visibleText) && parseCanvasActionContent(visibleText))) {
+        if (!(isCanvasActionContent(visibleText) && parseCanvasActionContent(visibleText))) {
             const segments = splitMergedCanvasActionSegments(visibleText, leadingFrom);
             const attachments = Array.isArray(data.attachments)
                 ? data.attachments.filter((a) => a && typeof a.filename === "string" && a.filename)
