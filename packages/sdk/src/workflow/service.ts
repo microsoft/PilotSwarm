@@ -377,7 +377,7 @@ export interface CreateWorkflowRequest {
 }
 
 /** Operation ids are stored as TEXT and compared exactly; refuse text PostgreSQL would reject or rewrite. */
-function requireOperationId(operationId: string): void {
+export function requireOperationId(operationId: string): void {
     if (typeof operationId !== "string" || !operationId.trim() || operationId.length > 256 || !isStorableText(operationId)) {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
             "operation_id must be 1-256 characters of valid Unicode text without NUL characters.");

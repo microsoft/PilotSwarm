@@ -136,10 +136,10 @@ export function effectiveChildLevel(
 export const WORKFLOW_DEFINITION_TOOLS: readonly string[] = ["spawn_workflow", "update_workflow", "workflow_definition"];
 
 /**
- * MCP-only A1 tool list (proposed; owner to confirm): adds create_session_for_workflow without widening
- * WORKFLOW_DEFINITION_TOOLS (which also filters built-in tools).
+ * MCP-only A1 tool list: adds create_session_for_workflow and send_workflow_input without widening
+ * WORKFLOW_DEFINITION_TOOLS (which also filters built-in agent tools).
  */
-export const WORKFLOW_DEFINITION_MCP_TOOLS: readonly string[] = [...WORKFLOW_DEFINITION_TOOLS, "create_session_for_workflow"];
+export const WORKFLOW_DEFINITION_MCP_TOOLS: readonly string[] = [...WORKFLOW_DEFINITION_TOOLS, "create_session_for_workflow", "send_workflow_input"];
 
 /** The code of the A1 refusal. */
 export const WORKFLOW_DEFINITION_TOOLS_REFUSED = "WORKFLOW_DEFINITION_TOOLS_REFUSED";

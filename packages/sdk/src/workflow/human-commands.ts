@@ -3,12 +3,11 @@ import type { ClusterDecisionCapability } from "../provider-catalog.js";
 import { sessionInsideWorkflow, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED, workflowHumanInputError } from "./input-policy.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { WORKFLOW_CONTROLLER_VERSION } from "./runtime.js";
-import type { WorkflowHost } from "./service.js";
+import { requireOperationId, respondWorkflowApproval, type WorkflowHost } from "./service.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowStore } from "./store.js";
-import { UPDATE_WORKFLOW_OPERATIONS, operationWords, runUpdateWorkflowCommand, workflowTestModeAbsentError } from "./tools.js";
+import { inputJsonArg, optionalString, requiredString, UPDATE_WORKFLOW_OPERATIONS, operationWords, runUpdateWorkflowCommand, workflowTestModeAbsentError } from "./tools.js";
 import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-mode-switch.js";
 import { parseApprovalCommand } from "./approval.js";
-import { respondWorkflowApproval } from "./service.js";
 
 /**
  * Workflow: a person's command to a workflow session (design 04 REST/SDK/MCP
@@ -71,8 +70,11 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  * - apiVersion: the workflow document version this build compiles.
  * - read: readWorkflow (GET /sessions/{id}/workflow) reads workflows; false where the host has no workflow store (each
  *   read is then WORKFLOW_NOT_FOUND).
- * - create and input: false. A person creates no workflow and sends one no typed input over this API; the workflow's
- *   parent agent does (workflow_definition, send_workflow_input).
+ * - create: false. A person creates no workflow directly over this API; the workflow's parent agent or session
+ *   workflow_definition flow does.
+ * - input: true when both read and commands are enabled; a person can send typed input to a workflow waiting at an
+ *   open receive step (sendWorkflowInput, POST /sessions/{id}/workflow/inputs). False when the host has no workflow
+ *   store or workflowCommands is null.
  * - commands: a person's commands (updateWorkflow, POST /sessions/{id}/workflow/commands). On unless the host has no
  *   workflowCommands (a management client created with `workflowCommands: null`): then it names the refusal every
  *   command gets (501 WORKFLOW_COMMANDS_UNAVAILABLE). On: the controller version the runs they start run at, and the
@@ -101,7 +103,7 @@ export function workflowCapabilities(options: {
         // parent session's "test waiting" card) only while it is; absent: hidden.
         ...(resolveWorkflowTestMode(commands?.testMode) ? { testMode: true } : {}),
         create: false,
-        input: false,
+        input: options.read === true && Boolean(commands),
         commands: commands
             ? {
                 available: true,
@@ -180,7 +182,7 @@ const UNPROCESSABLE = new Set(["WORKFLOW_INPUT_INVALID", "DEFINITION_INVALID", "
     "PACKAGE_WORKFLOW_UNSUPPORTED", "AGENT_HAS_WORKFLOWS",
     // OF-S2-7: a model the starter cannot use.
     "AGENT_MODEL_UNAVAILABLE"]);
-const LIMITED = new Set(["OPERATION_LIMIT", "TEST_INTERCEPTION_LIMIT", "INBOX_RATE_LIMITED", "WORKFLOW_REVISION_LIMIT", "REVISION_LIMIT",
+const LIMITED = new Set(["OPERATION_LIMIT", "TEST_INTERCEPTION_LIMIT", "INBOX_FULL", "INBOX_RATE_LIMITED", "WORKFLOW_REVISION_LIMIT", "REVISION_LIMIT",
     // Stage 2.4: Start keeps spawn_agent's budget of running children.
     "CHILD_LIMIT"]);
 
@@ -266,4 +268,93 @@ export async function updateWorkflowForPerson(command: unknown,
         return respondWorkflowApproval(host, workflowSessionId, parseApprovalCommand(args), actor);
     }
     return await runUpdateWorkflowCommand({ ...args, workflow_id: workflowSessionId }, host, actor, async () => {});
+}
+
+export interface SendWorkflowInputRequest {
+    contract: string;
+    payload: unknown;
+    correlation?: Record<string, unknown> | null;
+    operationId: string;
+    ttlSeconds?: number;
+    runId?: string;
+}
+
+export interface WorkflowInputSendReceipt {
+    replayed: boolean;
+    workflowId: string;
+    runId: string;
+    messageId: string;
+    senderSessionId: string;
+    operationId: string;
+    contract: string;
+    requestSha256: string;
+    payloadSha256: string;
+    acceptedAt: string;
+    expiresAt: string;
+    claimedBy: { nodeExecutionId: string; stateId: string } | null;
+}
+
+function encodeSenderPart(value: string, label: string): string {
+    if (typeof value !== "string" || !value.trim()) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${label} must be a non-empty string.`);
+    }
+    try {
+        return encodeURIComponent(value);
+    } catch {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${label} must be valid Unicode text.`);
+    }
+}
+
+export const PERSON_SENDER_PREFIX = "person:";
+
+/** Canonical unforgeable inbox senderSessionId for a person or host-system caller. */
+export function personSenderId(actor: WorkflowActor): string {
+    if (actor.kind === "agent") {
+        throw new WorkflowStoreError("FORBIDDEN",
+            "Agent sessions must send typed Workflow input with their native send_workflow_input tool so session sender identity is preserved.");
+    }
+    if (actor.kind === "user") {
+        return `${PERSON_SENDER_PREFIX}user:${encodeSenderPart(actor.provider, "actor.provider")}:${encodeSenderPart(actor.subject, "actor.subject")}`;
+    }
+    return `${PERSON_SENDER_PREFIX}system:${encodeSenderPart(actor.name, "actor.name")}`;
+}
+
+export interface ParsedPersonWorkflowInput {
+    contract: string;
+    payload: JsonValue;
+    correlation: JsonValue | undefined;
+    operationId: string;
+    ttlSeconds: number | null;
+    runId: string | null;
+}
+
+/** Validate camelCase fields for a person's typed Workflow input request, sharing field semantics with sendWorkflowInputFromTool. */
+export function parsePersonWorkflowInput(rawInput: unknown): ParsedPersonWorkflowInput {
+    if (rawInput === null || typeof rawInput !== "object" || Array.isArray(rawInput)) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "The workflow input request must be a JSON object.");
+    }
+    const args = rawInput as Record<string, unknown>;
+    const contract = requiredString(args, "contract");
+    if (typeof args.operationId !== "string") {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operationId is required.");
+    }
+    requireOperationId(args.operationId);
+    if (!Object.hasOwn(args, "payload") || args.payload === undefined) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "payload is required.");
+    }
+    const payload = inputJsonArg(args.payload, "payload");
+    const correlation = args.correlation === undefined || args.correlation === null ? undefined : inputJsonArg(args.correlation, "correlation");
+    const ttl = args.ttlSeconds;
+    if (ttl !== undefined && ttl !== null && typeof ttl !== "number") {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "ttlSeconds must be an integer.");
+    }
+    const runId = optionalString(args, "runId");
+    return {
+        contract,
+        payload,
+        correlation,
+        operationId: args.operationId,
+        ttlSeconds: typeof ttl === "number" ? ttl : null,
+        runId,
+    };
 }
