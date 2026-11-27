@@ -186,13 +186,21 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   ends by itself, and its snapshot is committed, so the next visit remembers
   it ("what you did in earlier cycles is above" is true). A stopped turn
   commits nothing, so a Stop there would lose the visit's work. Once the
-  visit is decided, every tool call of that turn is refused: the Workflow
-  tools and wrapped user tools as before, and the CLI's own tools (shell, file
-  edits, sub-agents) through a pre-tool hook (`withWorkflowVisitDeny`); the
-  model can only finish its reply. The next visit's prompt waits behind that
+  visit is decided, the turn's later model messages cannot start a tool: the
+  Workflow tools and wrapped user tools refuse as before, and the CLI's own
+  tools (shell, file edits, sub-agents) are refused by a pre-tool hook
+  (`withWorkflowVisitDeny`); the model can only finish its reply. A call
+  already admitted (in the same model message as the report, or a
+  sub-agent already running) may still finish. The next visit's prompt waits behind that
   turn (a session takes a Workflow prompt only between turns) and starts a
-  new turn bound to the new visit. The session ends when the run ends, and a
-  graceful stop ends an idle one at once. If the session ended on its own, the next open visit
+  new turn bound to the new visit. The reply is bounded: a reply still
+  running 5 minutes after the report (`WORKFLOW_AGENT_REPLY_SETTLE`, also when
+  `turnTimeoutMs` is 0) is stopped as a Stop stops it, and a reply lost with
+  its Copilot session (a lost live session, a corrupted transcript) is not
+  run again; neither is committed. The session ends when the run ends, and a
+  graceful stop ends an idle one at once; before it sends the session's end,
+  the run's end stops whichever turn still runs (request id
+  `workflow-session-stop:<session>`, which names no visit). If the session ended on its own, the next open visit
   starts a new agent session and says so. `workflow_agent_invocations` has one
   row per visit (`child_session_id` is not unique).
   Each turn of a continued agent session works for one visit, its turn visit:
@@ -207,16 +215,16 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   cleanup, recovery) ends it.
   **Known limits:** the next visit's prompt can wait behind the earlier
   visit's turn: until the abort of a timed-out turn lands, or until a
-  completed visit's turn finishes its reply (usually seconds). The next
-  visit's time limit runs during that wait, so a turn that hangs makes the
-  next visit time out; that visit's Stop names the next visit and does not
-  end the earlier turn, which ends at the turn's own time limit (20 minutes
-  by default, `PILOTSWARM_TURN_TIMEOUT_MS`). Results stay correct: each binds
-  to its own visit. A tool call made in the same model message as the
-  report is not refused (the CLI runs a message's pre-tool hooks before any
-  handler). A visit completed while the run is stopping or ended can still
-  have its turn stopped (the run's end), so that last reply may not be
-  committed; the session is ended then anyway.
+  completed visit's turn finishes its reply (usually seconds, at most the
+  5-minute reply limit). The next visit's time limit runs during that wait;
+  that visit's Stop names the next visit and does not end the earlier turn.
+  Results stay correct: each binds to its own visit. A tool call made in the
+  same model message as the report is not refused (the CLI runs a message's
+  pre-tool hooks before any handler), so an agent should call
+  `complete_workflow_node` alone in its message. The session remembers a
+  visit once that visit's turn has committed its snapshot: a reply that is
+  stopped (the run's end, the reply limit), lost with its Copilot session, or
+  cut by a worker crash before the commit is not remembered.
   An update from a sub-agent or a timer that arrives between visits is
   recorded in the agent session but is not given to the model; the next
   visit's prompt carries the current state.
