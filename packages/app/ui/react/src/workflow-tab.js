@@ -683,10 +683,13 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     const panel = panels.includes(tab.definitionPanel) ? tab.definitionPanel : null;
     // OF-S2-1: full screen and zen on a desktop put the panel beside the graph.
     const side = workflowPanelIsSide(displayMode, mobile);
+    // UX round 1 (G1, P2): when the person last chose a step or opened a panel (the graph then keeps the step in view).
+    const [revealAt, setRevealAt] = React.useState(0);
     const select = id => {
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: id } });
         // A click, or a phone's tap (UX round 1, P2), opens the node's facts.
         setTab({ definitionPanel: "node" });
+        setRevealAt(Date.now());
     };
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: `session:${sessionId}`, steps, at: Date.now() }),
         [controller, sessionId]);
@@ -731,7 +734,8 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
             line.text) : null,
         h(DecisionAvailabilityNotice, { states: graph?.states, decision }),
         notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
-        h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }) },
+        h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side,
+            onPanel: id => { setTab({ definitionPanel: id }); if (id) setRevealAt(Date.now()); } },
             panel === "node" ? h(NodeFacts, { node: selected, ...nodeCode, decision })
                 : panel === "test" ? h(TestPanel, { controller, child, runCommand })
                 : panel === "revisions"
@@ -746,7 +750,8 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                     : null) },
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
-                places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)) })
+                places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)),
+                reveal: view.selectedNodeId ?? null, revealAt })
                 // No graph to draw: the line above says why; its errors are listed under it (folded while the session writes).
                 : projection && line ? (line.calm
                     ? h("details", { className: "ps-wf-errors" }, h("summary", null, "Errors so far"), h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
@@ -921,12 +926,19 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const frameAt = frame ? frame.atMs : null;
     const replayed = React.useMemo(() => frameAt !== null ? child.projectAt(frameAt) : null, [frameAt, child.projectAt]);
     const newest = frames.length - 1;
+    // UX round 1 (G1, P2): when the person last chose a step, showed a visit or opened a panel (the graph then keeps the
+    // chosen step in view); a link to a step (`nodeStateId`) counts as chosen when the view opens.
+    const [revealAt, setRevealAt] = React.useState(() => (nodeStateId ? 1 : 0));
+    const intent = () => setRevealAt(Date.now());
     /** Show the visit at `index` (history), or Live for null and for the right end (timelineVisitAt). */
     const goTo = index => {
         const nextId = timelineVisitAt(frames, index);
         setReplayId(nextId);
         // A visit shown in history is the node selected (its panel says it as it stood then); Live never moves the selection.
-        if (nextId !== null) controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: frames[index].stateId } });
+        if (nextId !== null) {
+            controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: frames[index].stateId } });
+            intent();
+        }
         return nextId;
     };
     // Playing shows each next visit in turn, and rejoins Live at the right end (an ended run: Latest).
@@ -970,6 +982,17 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                 return;
             }
             goTo(index);
+        },
+        // UX round 1 (R3, review GU-02): a handled error's link shows the handler's visit and selects its step, also when that
+        // visit is the newest one (shown as Live or Latest).
+        onInspect: index => {
+            setPlaying(false);
+            setStepBackFrom(null);
+            if (!frames[index]) return;
+            if (goTo(index) === null) {
+                controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: frames[index].stateId } });
+                intent();
+            }
         },
         onPlay: () => { if (frame !== null) setPlaying(true); },
         onPause: () => setPlaying(false),
@@ -1044,6 +1067,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: id } });
         // A click, or a phone's tap (UX round 1, P2), selects the step and opens its details.
         setTab({ runPanel: "node" });
+        intent();
     };
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: `session:${sessionId}`, steps, at: Date.now() }),
         [controller, sessionId]);
@@ -1094,7 +1118,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
             h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry")) : null,
         notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"),
-            panel, mobile, side, onPanel: id => setTab({ runPanel: id }), steps: selected ? { node: selected.id } : null },
+            panel, mobile, side, onPanel: id => { setTab({ runPanel: id }); if (id) intent(); }, steps: selected ? { node: selected.id } : null },
             panel === "node" ? h(RunNodePanel, { controller, child: replayed ? { ...child, nodes } : child, selected, replayFrame: replayed ? frame : null,
                 visits, onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
             panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
@@ -1105,7 +1129,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         h("div", { className: "ps-wf-main" },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                 places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), lit,
-                reveal: chosen ?? null })
+                reveal: chosen ?? null, revealAt })
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         // The timeline stays with the graph (OF-S2-1).
@@ -1184,7 +1208,7 @@ export function timelineVisitAt(frames, index) {
  * the right end; Live has nothing to play. With no visit yet every control is off ("No steps yet"). The Log's line for the
  * visit shown is marked, and a click on a visit's line shows it.
  */
-export function ReplayBar({ frames, index, playing, ended = false, startMs = null, onGo, onPlay, onPause, onOlder = null, errors = [] }) {
+export function ReplayBar({ frames, index, playing, ended = false, startMs = null, onGo, onPlay, onPause, onOlder = null, errors = [], onInspect = null }) {
     const id = `wf-replay-${React.useId().replace(/:/g, "")}`;
     const count = frames.length;
     const newest = count - 1;
@@ -1233,7 +1257,7 @@ export function ReplayBar({ frames, index, playing, ended = false, startMs = nul
         h("span", { className: "ps-wf-replay-label", title: count === 0 ? undefined
             : workflowTimeTitle(frames[live ? newest : index].atMs) ?? undefined }, words),
         handledHere ? h("button", { type: "button", className: "ps-link-button ps-wf-replay-handled", "data-action": "replay-handler",
-            title: `The error was handled: show ${handledHere.handlerStep}'s visit`, onClick: () => onGo(handledHere.handler) },
+            title: `The error was handled: show ${handledHere.handlerStep}'s visit`, onClick: () => (onInspect ?? onGo)(handledHere.handler) },
         `handled by ${handledHere.handlerStep} ›`) : null,
         // Live while the graph is live: pressed, and (UXFD-F15) off but still focusable, its title saying why.
         h("button", { type: "button", className: `ps-mini-button ps-wf-replay-live${live && count > 0 ? " is-on" : ""}`, "data-action": "replay-live",

@@ -243,6 +243,8 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
     const [graphView, setGraphView] = React.useState(null);
     // UX round 1 (R2, G4): no step is selected until the person chooses one (another definition starts with none).
     const selected = nodes.find(node => node.id === selectedId) ?? null;
+    // UX round 1 (G1, P2): when the person last chose a step or opened a panel (the graph then keeps the step in view).
+    const [revealAt, setRevealAt] = React.useState(0);
     const placesKey = `session:${definition.definitionId}`;
     const places = useControllerSelector(controller, state => state.ui?.workflowLayouts?.[placesKey]?.steps ?? null);
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: placesKey, steps, at: Date.now() }),
@@ -276,6 +278,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
     const select = id => {
         setSelectedId(id);
         setTab({ definitionPanel: "node" });
+        setRevealAt(Date.now());
     };
     const line = revisionLine(model, { writing: ownerWorking && revision === definition.currentRevision, writer: ownerTitle });
     const nextNumber = sessionNextWorkflowNumber(definition);
@@ -330,8 +333,8 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
             h("button", { type: "button", className: "ps-mini-button", onClick: retry }, "Retry")) : null,
         line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined }, line.text) : null,
         h(DecisionAvailabilityNotice, { states: model?.graph?.states, decision }),
-        h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }),
-            steps: selected ? { node: selected.id } : null },
+        h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side,
+            onPanel: id => { setTab({ definitionPanel: id }); if (id) setRevealAt(Date.now()); }, steps: selected ? { node: selected.id } : null },
             // OF-S2-8: the node's script and samples come from the revision's YAML, for those who may read it.
             panel === "node" ? h(NodeFacts, { node: selected, yaml: read?.phase === "ready" ? access.yaml : null, pending: read?.phase !== "ready" && read?.phase !== "failed",
                 hidden: read?.phase === "failed" ? `The script could not be read: ${read.error ?? "no reason given"}`
@@ -340,7 +343,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
                 : null) },
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: placesKey, viewport: graphView, onViewport: setGraphView,
-                places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), reveal: selectedId })
+                places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), reveal: selectedId, revealAt })
                 : projection && line ? h("div", { className: "ps-wf-errors" }, h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, Number.isSafeInteger(revision) ? `Reading revision ${revision}…` : "No revisions yet.")),

@@ -384,7 +384,7 @@ function loadFlow() {
  * graph, so they never cover a step.
  */
 export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null, places = null, onPlaces = null,
-    mode = "normal", lit = null, mobile = false, reveal = null }) {
+    mode = "normal", lit = null, mobile = false, reveal = null, revealAt = 0 }) {
     const key = workflowGraphKey(definition);
     const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
     // The key holds everything of the definition the layout reads.
@@ -402,17 +402,18 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
     const [hoverEnd, setHoverEnd] = React.useState(null);
     const [allHandlers, setAllHandlers] = React.useState(false);
     const hasHandlers = (layout.handlers?.size ?? 0) > 0;
-    // UX round 1 (P1): on a phone, React Flow's controls go to a column beside the graph (`dock`), never over a step.
+    // UX round 1 (P1): on a phone, React Flow's controls go to a column beside the graph (`dock`), never over a step. The
+    // flow's parent is the same at every width, so crossing the phone width never mounts it again.
     const [dock, setDock] = React.useState(null);
     const flow = Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces,
-        mode, lit, phone, hoverEnd, allHandlers, reveal, dock: phone ? dock : null }) : null;
+        mode, lit, phone, hoverEnd, allHandlers, reveal, revealAt, dock: phone ? dock : null }) : null;
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
         definition.notes ? h("details", { className: "ps-workflow-definition-notes" },
             h("summary", null, "Definition notes"), h("div", { className: "ps-workflow-notes" }, definition.notes)) : null,
         h(WorkflowEndsRow, { ends: layout.ends, reached: lit?.endReached ?? null, run: Boolean(lit), hoverEnd, onHover: setHoverEnd, select,
             handlers: hasHandlers ? { all: allHandlers, onToggle: () => setAllHandlers(value => !value) } : null }),
-        flow && phone ? h("div", { className: "ps-workflow-graph-body" }, flow, h("div", { ref: setDock, className: "ps-workflow-graph-dock" }))
-            : flow ?? h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd, allHandlers }));
+        flow ? h("div", { className: "ps-workflow-graph-body" }, flow, phone ? h("div", { ref: setDock, className: "ps-workflow-graph-dock" }) : null)
+            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd, allHandlers }));
 }
 
 /**
@@ -442,7 +443,8 @@ export function WorkflowEndsRow({ ends, reached = null, run = false, hoverEnd = 
         const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
         observer?.observe(element);
         return () => { element.removeEventListener("scroll", check); observer?.disconnect(); };
-    }, [Array.isArray(ends) ? ends.length : 0]);
+    // Measured again when the ends, or the one reached (drawn bolder), change, not only the row's own size.
+    }, [Array.isArray(ends) ? ends.map(end => end?.id).join("\u0000") : "", reached, run, Boolean(handlers)]);
     if (!Array.isArray(ends) || !ends.length) return null;
     const scroll = by => row.current?.scrollBy?.({ left: by * row.current.clientWidth * 0.8, behavior: "smooth" });
     return h("div", { ref: row, className: `ps-workflow-ends${hidden.left || hidden.right ? " has-more" : ""}`, role: "group", "aria-label": "Ends" },

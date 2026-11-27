@@ -14649,7 +14649,8 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 }
 .ps-wf-tab.is-phone .ps-wf-panel-tab-step { max-width: 6.5em; }
 /* P1: on a phone, while a graph is shown, the header folds into one line (the toggle with the definition, the Workflow and
-   its state, and full screen); the lines and the Workflow's bar under it are hidden until it is opened. Errors stay. */
+   its state, and full screen); the lines and the Workflow's bar under it are hidden until it is opened. Errors, a failed
+   run's failure line (with Details) and a run command's notice stay. */
 .ps-wf-fold-toggle { display: none; }
 .ps-wf-tab.is-phone .ps-wf-fold-toggle {
   display: inline-flex;
@@ -14675,7 +14676,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-phone.is-folded .ps-wf-tab-head { flex-wrap: nowrap; }
 .ps-wf-tab.is-phone.is-folded .ps-wf-tab-head > :not(.ps-wf-fold-toggle):not(.ps-wf-tab-modes),
 .ps-wf-tab.is-phone.is-folded > .ps-wf-line:not(.is-error),
-.ps-wf-tab.is-phone.is-folded > .ps-wf-body > :not(.ps-wf-main):not(.ps-wf-replay):not(.ps-wf-panel):not(.ps-wf-split):not(.is-error) { display: none; }
+.ps-wf-tab.is-phone.is-folded > .ps-wf-body > :not(.ps-wf-main):not(.ps-wf-replay):not(.ps-wf-panel):not(.ps-wf-split):not(.is-error):not(.ps-wf-failure):not([role="alert"]):not(.ps-workflow-run-command-notice) { display: none; }
 /* P3: the header's controls wrap rather than run off a phone's edge. */
 .ps-wf-tab.is-phone .ps-wf-head-rest { flex-wrap: wrap; row-gap: 4px; }
 /* P3: on a phone the timeline's slider takes the rest of its row; its words (and a handled error's link) go to a short line
@@ -14683,7 +14684,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-phone .ps-wf-replay {
   display: grid;
   grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
-  grid-template-areas: ". . . track live older" "words words words words handled handled";
+  grid-template-areas: ". . . track live older" "words words words words words words";
   align-items: center;
   column-gap: 4px;
   row-gap: 0;
@@ -14692,6 +14693,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-live { grid-area: live; }
 .ps-wf-tab.is-phone .ps-wf-replay > [data-action="replay-older"] { grid-area: older; }
 .ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-label { grid-area: words; font-size: 11px; line-height: 16px; }
-.ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-handled { grid-area: handled; justify-self: end; font-size: 11px; }
-/* R3: a handled error's link to the step that took it. */
-.ps-wf-replay-handled { flex: none; white-space: nowrap; }
+/* The handler link has a line of its own across every column, so a long step id never widens the slider's columns. */
+.ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-handled { grid-row: 3; grid-column: 1 / -1; justify-self: end; font-size: 11px; }
+/* R3: a handled error's link to the step that took it; a long step id ends in an ellipsis (its title says it whole). */
+.ps-wf-replay-handled { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -52,16 +52,15 @@ const h = React.createElement;
  * as it is. The join bar moves only with its box; a click on it selects the parallel step. An edge between two boxes of
  * one branch box that moved only as a whole keeps its route, moved with the box.
  *
- * UX round 1 (owner 2026-11-26): Fit to screen shows the whole graph, however small (down to WORKFLOW_FIT_MIN_ZOOM; the
- * flow lets the view go as small as that fit). An automatic fit (the first one, a display mode change, the hydration fit)
- * keeps the steps readable (workflowFirstViewport: the main path, at least WORKFLOW_READABLE_ZOOM, panned to the rest).
- * The step chosen (`reveal`, its id) is kept in view: when it is chosen, and when the area changes (the Node panel opened
- * under it) or a phone's sheet covers it, the view pans just enough (workflowRevealViewport); a run's progress, which
- * chooses nothing, never moves the view. A phone's controls go to `dock` (an element outside the graph: the panel's bar),
- * so they never cover a step or take its tap.
+ * UX round 1 (owner 2026-11-26): Fit to screen shows the whole graph, however small (down to WORKFLOW_FIT_MIN_ZOOM, the
+ * flow's least zoom). An automatic fit (the first one, a display mode change, the hydration fit) keeps the steps readable
+ * (workflowFirstViewport: the main path, at least WORKFLOW_READABLE_ZOOM, panned to the rest). The step chosen (`reveal`,
+ * its id) is kept in view after the person's intent (`revealAt`: a step chosen, a visit shown, a panel opened), also when
+ * the area changes just after it (the Node panel opening under it) or a phone's sheet covers it: the view pans just
+ * enough (workflowRevealViewport). A run's progress, a dragged box or the person's own pan never moves it. A phone's
+ * controls go to `dock` (an element beside the graph), so they never cover a step or take its tap.
  */
 
-const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
 /** F8: how long after a change of display mode the area's new size (measured as it settles) fits the view again. */
 const MODE_REFIT_MS = 1000;
@@ -72,6 +71,8 @@ const FIT_PADDING = 0.06;
 const FIT_CONTROLS_GAP_PX = 4;
 const FIT_MIN_CLEAR_HEIGHT_PX = 120;
 const FIT_DURATION_MS = 200;
+/** UX round 1: how long after the person's intent (a step chosen, a panel opened) a change of the area reveals the step. */
+const REVEAL_WINDOW_MS = 800;
 const ZOOM_DURATION_MS = 150;
 /** A press on a step that moves less than this is a click; a longer one drags the box (f-03). */
 const DRAG_THRESHOLD_PX = 4;
@@ -227,7 +228,7 @@ const panZoomReady = state => Boolean(state.panZoom);
  * (UXP-TL-02): every fit leaves the controls' strip at the bottom of the area (`host`, the flow's element) clear.
  */
 function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, onReset, refit = 0, onInteract = null, phone = false, host = null,
-    focus = null, revealBox = null, dock = null }) {
+    focus = null, revealBox = null, revealAt = 0, revealUntil, dock = null }) {
     const flow = useReactFlow();
     const ready = useStore(panZoomReady);
     const panel = React.useRef(null);
@@ -256,14 +257,18 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
     React.useEffect(() => {
         if (refit > 0 && ready && area) fit(undefined, { readable: true });
     }, [refit]);
-    // UX round 1 (G1, P2): the step chosen stays in view: when chosen, and when the area changes under it (the Node panel
-    // opened) or a phone's sheet covers the graph's lower part. Measured once the panel has been laid out.
-    const revealKey = revealBox ? `${revealBox.x},${revealBox.y},${revealBox.width},${revealBox.height}` : "";
-    React.useEffect(() => {
-        if (!ready || !area || !revealBox || !fitted.current || typeof window === "undefined") return undefined;
+    // UX round 1 (G1, P2): the step chosen stays in view. Only the person's intent starts it (`revealAt`: a step chosen, a
+    // visit shown, a panel opened); for REVEAL_WINDOW_MS after it, the area's changes (the Node panel opening under the
+    // graph) reveal again, measured after layout, a phone's sheet over the graph's lower part counted out. A run's
+    // progress, a box dragged or the person panning (`revealUntil` set to 0) never moves the view.
+    const latestBox = React.useRef(revealBox);
+    latestBox.current = revealBox;
+    const reveal = React.useCallback(() => {
+        if (typeof window === "undefined" || Date.now() > revealUntil.current) return undefined;
         const frame = window.requestAnimationFrame(() => {
             const element = host?.current;
-            if (!element) return;
+            const box = latestBox.current;
+            if (!element || !box || Date.now() > revealUntil.current) return;
             const rect = element.getBoundingClientRect();
             let height = rect.height;
             const sheet = element.closest?.(".ps-wf-tab")?.querySelector?.(".ps-wf-panel.is-sheet");
@@ -271,11 +276,17 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
                 const top = sheet.getBoundingClientRect().top;
                 if (top > rect.top && top < rect.bottom) height = top - rect.top;
             }
-            const next = workflowRevealViewport(flow.getViewport(), revealBox, { width: rect.width, height });
+            const next = workflowRevealViewport(flow.getViewport(), box, { width: rect.width, height });
             if (next) flow.setViewport(next, { duration: FIT_DURATION_MS });
         });
         return () => window.cancelAnimationFrame(frame);
-    }, [ready, area, revealKey]);
+    }, [flow, host, revealUntil]);
+    React.useEffect(() => {
+        if (!ready || !area || !fitted.current || !revealAt) return undefined;
+        revealUntil.current = Date.now() + REVEAL_WINDOW_MS;
+        return reveal();
+    }, [ready, revealAt, area !== null]);
+    React.useEffect(() => (ready && area && fitted.current ? reveal() : undefined), [area]);
     const zoom = by => {
         onInteract?.();
         touched.current = true;
@@ -305,7 +316,7 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
  * its controls (UXP-TL-02).
  */
 export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null, mode = "normal",
-    lit = null, phone = false, hoverEnd = null, allHandlers = false, reveal = null, dock = null }) {
+    lit = null, phone = false, hoverEnd = null, allHandlers = false, reveal = null, revealAt = 0, dock = null }) {
     const [hand, setHand] = React.useState(true);
     const hostRef = React.useRef(null);
     const [start] = React.useState(() => workflowViewportOf(viewport));
@@ -467,12 +478,13 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         latest.current.onPlaces?.(null);
     }, []);
     const bounds = React.useMemo(() => workflowGraphBounds(layout, moved), [layout, moved]);
-    // UX round 1: the main path an automatic fit shows (G1), the chosen step kept in view (G1, P2), and how small the view may
-    // go: as small as the whole-graph fit (P1), never above the usual least zoom.
+    // UX round 1: the main path an automatic fit shows (G1), and the chosen step kept in view (G1, P2): a parallel step is
+    // drawn as its branch box (B1).
     const focus = React.useMemo(() => workflowMainPathBounds(layout, shown), [layout, shown]);
-    const revealBox = reveal !== null && reveal !== undefined ? shown.get(reveal) ?? null : null;
-    const wholeZoom = area ? workflowFitViewport(bounds, area).zoom : MIN_ZOOM;
-    const minZoom = Math.max(WORKFLOW_FIT_MIN_ZOOM, Math.min(MIN_ZOOM, wholeZoom));
+    const groupOf = id => [...(layout.groups?.values() ?? [])].find(group => group.parallel === id)?.id;
+    const revealBox = reveal !== null && reveal !== undefined ? shown.get(reveal) ?? shown.get(groupOf(reveal)) ?? null : null;
+    // While this is a time in the future, the person's last intent may still reveal the chosen step; their own pan or drag ends it.
+    const revealUntil = React.useRef(0);
     // R1: the error handlers' dashed arrows, between the boxes where they are drawn now (a moved box takes its arrows).
     const arrows = React.useMemo(() => workflowHandlerArrows(layout, shown, { selectedId, all: allHandlers, hoverEnd, lit }),
         [layout, shown, selectedId, allHandlers, hoverEnd, lit]);
@@ -486,12 +498,13 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         // A short press is a click (it selects the step and is not swallowed); past this distance it drags the box.
         nodeDragThreshold: DRAG_THRESHOLD_PX, nodeClickDistance: DRAG_THRESHOLD_PX,
         panOnDrag: hand, zoomOnScroll: hand, zoomOnPinch: hand, panOnScroll: false, zoomOnDoubleClick: false, preventScrolling: hand,
-        minZoom, maxZoom: MAX_ZOOM,
+        // UX round 1 (P1): as small as Fit to screen may go, so a fitted or remembered small view is never clamped.
+        minZoom: WORKFLOW_FIT_MIN_ZOOM, maxZoom: MAX_ZOOM,
         ...(start ? { defaultViewport: start } : {}),
         // Every settled view, the person's or a button's, so it can be restored exactly. A move the person starts (it has
         // an event) or a box they drag counts as touching the view (UI-6).
-        onMoveStart: event => { if (event) { interacted.current = true; touched.current = true; } },
-        onNodeDragStart: () => { interacted.current = true; },
+        onMoveStart: event => { if (event) { interacted.current = true; touched.current = true; revealUntil.current = 0; } },
+        onNodeDragStart: () => { interacted.current = true; revealUntil.current = 0; },
         // F8: with it, whether it is still the fitted view and the display mode it was taken in.
         onMoveEnd: (_event, view) => { onViewport?.({ x: view.x, y: view.y, zoom: view.zoom, fitted: !touched.current, mode: modeNow.current }); },
         defaultMarkerColor: null,
@@ -500,5 +513,5 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
     h(Background, { variant: BackgroundVariant.Dots, gap: 18, size: 1 }),
     arrows.length ? h(ViewportPortal, null, h(WorkflowHandlerArrows, { arrows })) : null,
     h(GraphView, { bounds, area, fitted, touched, modeChanged, hand, onHand: setHand, onReset: moved.size ? reset : null, refit, onInteract, phone,
-        host: hostRef, focus, revealBox, dock }));
+        host: hostRef, focus, revealBox, revealAt, revealUntil, dock }));
 }

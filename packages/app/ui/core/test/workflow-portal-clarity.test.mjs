@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { appReducer, createInitialState } from "../src/index.js";
@@ -111,3 +112,22 @@ for (const phone of [false, true]) {
         assert.equal(workflowRunControls(model).controls.find(item => item.operation === "resume").enabled, true);
     });
 }
+
+// UX round 1 (P1; review GU-04): a phone showing a graph folds the tab's bars into one line, but never a failure, its Details
+// or a run command's notice.
+test("phone: the bars fold into one line while a graph shows; failures and notices stay; a desktop never folds", () => {
+    const phone = render(harness(), true);
+    assert.match(phone, /^<section class="ps-wf-tab is-mobile is-phone is-folded"/);
+    assert.match(phone, /<header class="ps-wf-tab-head is-pickers is-two-lines"><button type="button" class="ps-wf-fold-toggle" data-action="fold-bars" aria-expanded="false"/);
+    assert.match(phone, /aria-label="Workflow graph"/);
+    assert.match(phone, /aria-label="YAML"/, "folded parts stay in the page, hidden by the stylesheet");
+    const desktop = render(harness(), false);
+    assert.ok(!desktop.includes("is-folded") && !desktop.includes("ps-wf-fold-toggle"));
+    // The YAML view is no graph: it does not fold.
+    assert.ok(!render(harness({ tab: { sessionYaml: true }, read: ready("apiVersion: pilotswarm.dev/v1\n") }), true).includes("is-folded"));
+    const css = readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
+    const fold = css.split("\n").find(line => line.startsWith(".ps-wf-tab.is-phone.is-folded > .ps-wf-body > :not("));
+    for (const kept of [".ps-wf-main", ".ps-wf-replay", ".ps-wf-panel", ".is-error", ".ps-wf-failure", "[role=\"alert\"]", ".ps-workflow-run-command-notice"]) {
+        assert.ok(fold?.includes(`:not(${kept})`), `the fold keeps ${kept}`);
+    }
+});
