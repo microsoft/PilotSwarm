@@ -192,11 +192,11 @@ test("effectiveLevel and effectiveChildLevel match all 14 chains of Every chain,
 
 test("effectiveLevelDetail matches the owner level-table oracle across every legal delegation chain up to length 6, root Workflows, system resets, cycles, and depth > 32", () => {
     // Independent oracle of the owner's level table over a root-to-leaf spec list.
+    // A system node resets the segment root to 0 only when it and EVERY ancestor above it are system.
     function oracle(specs) {
-        // Find the last system reset (if any) as the segment root; otherwise index 0 must have parentSessionId === null.
         let start = 0;
         for (let i = specs.length - 1; i >= 0; i -= 1) {
-            if (specs[i].isSystem) {
+            if (specs[i].isSystem && specs.slice(0, i).every(anc => anc.isSystem)) {
                 start = i;
                 break;
             }
@@ -211,18 +211,18 @@ test("effectiveLevelDetail matches the owner level-table oracle across every leg
                 if (!hasWorkflow) hasWorkflow = true; // first Workflow in chain is free (+0)
                 else level += 1; // any later Workflow is +1
             } else {
-                level += 1; // sub-agent is +1
+                level += 1; // sub-agent (including user-spawned system agent) is +1
             }
         }
         return { level, hasWorkflow };
     }
 
     // Allowed moves from each node role:
-    // - person / sub_outside / system: sub_outside | workflow
+    // - person / sub_outside / system: sub_outside | workflow | system (user-spawned or platform system child)
     // - workflow: agent_step | workflow
     // - agent_step / sub_inside: sub_inside (Rule 5)
     const nextKinds = role => {
-        if (role === "person" || role === "sub_outside" || role === "system") return ["sub_outside", "workflow"];
+        if (role === "person" || role === "sub_outside" || role === "system") return ["sub_outside", "workflow", "system"];
         if (role === "workflow") return ["agent_step", "workflow"];
         return ["sub_inside"];
     };
@@ -247,7 +247,11 @@ test("effectiveLevelDetail matches the owner level-table oracle across every leg
         for (const role of nextKinds(lastRole)) {
             const childSpec = makeSpec(specs.length, role);
             const childKind = role === "workflow" ? "workflow" : role === "agent_step" ? "agent_step" : "sub_agent";
-            assert.equal(effectiveChildLevel(expected, childKind), oracle([...specs, childSpec]).level);
+            // Platform system children of an all-system chain reset to 0; all other moves follow effectiveChildLevel.
+            const childExpected = oracle([...specs, childSpec]);
+            if (!(role === "system" && specs.every(s => s.isSystem))) {
+                assert.equal(effectiveChildLevel(expected, childKind), childExpected.level);
+            }
             walk([...specs, childSpec]);
         }
     }
@@ -256,13 +260,13 @@ test("effectiveLevelDetail matches the owner level-table oracle across every leg
     walk([makeSpec(0, "person")]);
     walk([makeSpec(0, "workflow")]);
     walk([makeSpec(0, "system")]);
-    assert.ok(checked > 50, `expected exhaustive enumeration, checked=${checked}`);
+    assert.ok(checked > 300, `expected exhaustive enumeration, checked=${checked}`);
 
     // Explicit root Workflow checks (parentSessionId === null, isWorkflow: true).
     assert.deepEqual(effectiveLevelDetail(buildChain([{ id: "rootWf", isWorkflow: true }])), { level: 0, hasWorkflow: true });
     assert.deepEqual(effectiveLevelDetail(buildChain([{ id: "rootWf", isWorkflow: true }, { id: "childWf", isWorkflow: true }])), { level: 1, hasWorkflow: true });
 
-    // 2. Platform system sessions reset to level 0, hasWorkflow: false; user-spawned system agents stay in their parent's chain (Q2).
+    // 2. Platform system sessions reset to level 0, hasWorkflow: false; user-spawned system agents (1 or 2 hops) stay in their chain (Q2).
     const sysHierarchy = [
         { id: "sysRoot", isWorkflow: false, isSystem: true },
         { id: "sysChild", isWorkflow: false, isSystem: true },
@@ -270,7 +274,7 @@ test("effectiveLevelDetail matches the owner level-table oracle across every leg
     assert.deepEqual(effectiveLevelDetail(buildChain(sysHierarchy)), { level: 0, hasWorkflow: false });
     assert.deepEqual(effectiveLevelDetail(buildChain([...sysHierarchy, { id: "sysWf", isWorkflow: true }])), { level: 0, hasWorkflow: true });
     assert.deepEqual(effectiveLevelDetail(buildChain([...sysHierarchy, { id: "s1" }, { id: "s2" }])), { level: 2, hasWorkflow: false });
-    // User-spawned creatable system agent under a non-system session does NOT reset depth (owner decision Q2).
+    // User-spawned creatable system agent (1 hop or 2 consecutive system hops) under a non-system session does NOT reset depth (owner decision Q2).
     const userSpawnedSys = [
         { id: "p", isWorkflow: false, isSystem: false },
         { id: "sub1", isWorkflow: false, isSystem: false },
@@ -278,6 +282,13 @@ test("effectiveLevelDetail matches the owner level-table oracle across every leg
     ];
     assert.deepEqual(effectiveLevelDetail(buildChain(userSpawnedSys)), { level: 2, hasWorkflow: false });
     assert.equal(effectiveChildLevel(effectiveLevelDetail(buildChain(userSpawnedSys)), "sub_agent"), 3);
+    const twoUserSpawnedSys = [
+        { id: "p", isWorkflow: false, isSystem: false },
+        { id: "sysX", isWorkflow: false, isSystem: true },
+        { id: "sysY", isWorkflow: false, isSystem: true },
+    ];
+    assert.deepEqual(effectiveLevelDetail(buildChain(twoUserSpawnedSys)), { level: 2, hasWorkflow: false });
+    assert.deepEqual(effectiveLevelDetail(buildChain([...twoUserSpawnedSys, { id: "sub" }])), { level: 3, hasWorkflow: false });
     // Platform system session whose parent was pruned (parentSessionId still non-null, not in chain) still terminates as segment root.
     assert.deepEqual(effectiveLevelDetail([
         { sessionId: "child", parentSessionId: "sys", isWorkflow: false, isSystem: false },

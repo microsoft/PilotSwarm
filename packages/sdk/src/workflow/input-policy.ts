@@ -63,27 +63,29 @@ export interface EffectiveLevelDetail {
 
 /**
  * Walk `chain` (ordered from the target session [0] up to its ancestor root) up to its segment root
- * (`isSystem === true` or `parentSessionId === null`), then evaluate from segment root down to target:
+ * (`parentSessionId === null`, or a platform system session whose every remaining ancestor in `chain` is also `isSystem`),
+ * then evaluate from segment root down to target:
  * - segment root: level 0 (hasWorkflow = Boolean(root.isWorkflow && !root.isSystem))
  * - agent step (`isAgentStep === true`): +0
  * - first Workflow in segment (`isWorkflow === true && !hasWorkflow`): +0, sets hasWorkflow = true
- * - any later Workflow or any sub-agent: +1
- * Returns null when `chain` is empty, has a cycle before reaching a segment root, or never reaches a segment root.
+ * - any later Workflow or any sub-agent (including a system agent spawned under a non-system session): +1
+ * Returns null when `chain` is empty, has a cycle, or never reaches a segment root.
  */
 export function effectiveLevelDetail(chain: readonly SessionLevelNode[]): EffectiveLevelDetail | null {
     if (chain.length === 0) return null;
-    const seen = new Set<string>();
+    const allSeen = new Set<string>();
+    for (const node of chain) {
+        if (allSeen.has(node.sessionId)) return null;
+        allSeen.add(node.sessionId);
+    }
     const segment: SessionLevelNode[] = [];
     let reachedRoot = false;
     for (let i = 0; i < chain.length; i += 1) {
         const node = chain[i];
-        if (seen.has(node.sessionId)) return null;
-        seen.add(node.sessionId);
         segment.push(node);
-        // Rule 8: platform system sessions (top-level, pruned parent, or under another system session) reset the
-        // segment root to level 0; a creatable system agent spawned under a non-system session stays in its chain.
-        const isPlatformSystemRoot = node.isSystem === true
-            && (node.parentSessionId === null || i === chain.length - 1 || chain[i + 1].isSystem === true);
+        // Rule 8: top-level platform system sessions and their all-system descendants reset the segment root to level 0;
+        // any system agent spawned under a non-system session stays in its parent's delegation chain.
+        const isPlatformSystemRoot = node.isSystem === true && chain.slice(i + 1).every(up => up.isSystem === true);
         if (node.parentSessionId === null || isPlatformSystemRoot) {
             reachedRoot = true;
             break;

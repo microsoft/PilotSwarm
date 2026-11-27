@@ -372,6 +372,15 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
             expect(userSysLineage).toMatchObject({ level: 2, hasWorkflow: false });
             expect(spawnNesting(2, SESSION_MAX_NESTING_LEVEL, userSysLineage).childNestingLevel).toBe(3);
 
+            // R2-F1: two consecutive user-spawned system agents (userRoot -> sysX -> sysY) stay in userRoot's chain (level 2, not reset to 0).
+            const userSysX = randomUUID();
+            await h.catalog.createSession(userSysX, { parentSessionId: userRoot, owner: OWNER, isSystem: true });
+            const userSysY = randomUUID();
+            await h.catalog.createSession(userSysY, { parentSessionId: userSysX, owner: OWNER, isSystem: true });
+            const userSysYLineage = await h.store.readWorkflowLineage(userSysY);
+            expect(userSysYLineage).toMatchObject({ level: 2, hasWorkflow: false });
+            expect(spawnNesting(2, SESSION_MAX_NESTING_LEVEL, userSysYLineage).childNestingLevel).toBe(3);
+
             // 4. Broken (missing parent) and cyclic lineages fail closed in Start limits and Check 4.
             const orphan = randomUUID();
             await h.catalog.createSession(orphan, { owner: OWNER });
@@ -389,9 +398,11 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
                 { captureSpawnTools: async () => { badCaptureCalls += 1; return { toolCeiling: [] }; }, getSessionStateDir: () => "/tmp", getWorkspaceProvider: () => null },
                 null, undefined, h.catalog, undefined, "in-memory://depth-broken", undefined, undefined, [], null, [], [],
             );
-            await expect(handlers.get("captureSpawnToolsV1")({ traceInfo() {} }, {
-                parentSessionId: userSpawnedSys, childConfig: {}, agent: null,
-            })).rejects.toThrow("you are already at nesting level 2 (max 2).");
+            for (const sysAtTwo of [userSpawnedSys, userSysY]) {
+                await expect(handlers.get("captureSpawnToolsV1")({ traceInfo() {} }, {
+                    parentSessionId: sysAtTwo, childConfig: {}, agent: null,
+                })).rejects.toThrow("you are already at nesting level 2 (max 2).");
+            }
             for (const bad of [orphan, cycA, randomUUID()]) {
                 const startErr = await refused(requireWorkflowStartLimits(host, bad), "WORKFLOW_NESTING_LIMIT");
                 expect(startErr.message).toContain("delegation chain cannot be verified");
