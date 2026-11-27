@@ -258,6 +258,26 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
             expect(r1.rerun?.mode).toBe("run_again");
             expect(r1.rerun?.reused).toBe(1);
 
+            // 1b. Continue mode on completed visit sets rerunResume.predecessorId to the MAPPED chosen execution ID
+            // (not chosen.predecessorId, which is null on visit 1 and causes predecessor_mismatch on the first new step).
+            const rCont = await startSessionWorkflowDefinition(h, {
+                ownerSessionId: src.ownerSessionId,
+                definition: { definitionId: src.definitionId },
+                inputs: {},
+                actor: OWNER_ACTOR,
+                owner: OWNER,
+                operationId: "rerun-continue-step1",
+                rerunFrom: { workflowId: src.workflowId, executionId: src.ids["step1#1"], mode: "continue" },
+            });
+            expect(rCont.rerun?.mode).toBe("continue");
+            expect(rCont.rerun?.reused).toBe(1);
+            const rContRow = await h.store.readRun(rCont.runId);
+            const rContNodes = await h.store.listNodeExecutions(rCont.runId);
+            const rContMappedStep1 = rContNodes.find(n => n.nodeId === "step1");
+            expect(rContMappedStep1?.reusedFromExecutionId).toBe(src.ids["step1#1"]);
+            expect(rContRow?.rerunResume?.mode).toBe("continue");
+            expect(rContRow?.rerunResume?.predecessorId).toBe(rContMappedStep1?.nodeExecutionId);
+
             // 2. Supply mode with explicit key, replay after #2 is soft-deleted, and OPERATION_CONFLICT on mutated output/note
             const supKey = `sup-key-${randomUUID()}`;
             const rSup = await startSessionWorkflowDefinition(h, {

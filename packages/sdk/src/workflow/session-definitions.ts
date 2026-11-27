@@ -1000,9 +1000,11 @@ async function prepareRerunStart(
             nextOrdinal,
         };
     }
-    const mappedPredecessorId = picked.chosen.predecessorId === null
-        ? null
-        : (mapped.find(m => m.source.nodeExecutionId === picked.chosen.predecessorId)?.newId ?? null);
+    const mappedPredecessorId = picked.mode === "continue"
+        ? (mapped.find(m => m.source.nodeExecutionId === picked.chosen.nodeExecutionId)?.newId ?? null)
+        : picked.chosen.predecessorId === null
+            ? null
+            : (mapped.find(m => m.source.nodeExecutionId === picked.chosen.predecessorId)?.newId ?? null);
     const resume = buildRerunResume({
         mode: picked.mode,
         chosen: picked.chosen,
