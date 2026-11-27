@@ -7,6 +7,9 @@ import { parse as parseYaml } from "yaml";
 import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { WORKFLOW_ENDED_NOTICE_MAX_BYTES, WORKFLOW_MAX_SEND_PAYLOAD_BYTES } from "../../dist/workflow/runtime.js";
+import { WORKFLOW_JSON_MAX_DEPTH, WORKFLOW_PAYLOAD_MAX_BYTES } from "../../dist/workflow/json.js";
+import { WORKFLOW_CARRY_MAX_BYTES } from "../../dist/workflow/carry.js";
 import {
     WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR,
 } from "../../dist/workflow/guidance.js";
@@ -28,16 +31,17 @@ const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_SKILLS_DIR), path.join(PLUGINS, "workflow", "skills"));
-    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-approval", "workflow-authoring", "workflow-carry", "workflow-decision", "workflow-long-agent", "workflow-patterns", "workflow-polling",
-        "workflow-reference", "workflow-schedules", "workflow-tools"]);
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-approval", "workflow-authoring", "workflow-carry", "workflow-decision", "workflow-limits", "workflow-long-agent",
+        "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-schedules", "workflow-tools"]);
     assert.equal(path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {
         // The skills index clips a description at 240 characters; each body stays small enough to load on demand: 20 KiB,
         // and 8 KiB for workflow-patterns, which a session loads only when one Workflow runs different nodes per branch (OF-S2-6),
-        // and for the basic how-to skills a session loads for one kind of state or schedule (workflow-decision, workflow-schedules).
+        // and for the basic how-to skills a session loads for one kind of state or schedule (workflow-decision, workflow-schedules),
+        // and for the one table of size limits (workflow-limits).
         assert.ok(skill.description.length >= 80 && skill.description.length <= 240, `${skill.name} description: ${skill.description.length}`);
-        const budget = ["workflow-decision", "workflow-patterns", "workflow-polling", "workflow-schedules"].includes(skill.name) ? 8 * 1024 : 20 * 1024;
+        const budget = ["workflow-decision", "workflow-limits", "workflow-patterns", "workflow-polling", "workflow-schedules"].includes(skill.name) ? 8 * 1024 : 20 * 1024;
         assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= budget, `${skill.name} body: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);
         assert.ok(readFileSync(path.join(skill.dir, "SKILL.md")).byteLength <= budget, `${skill.name} file exceeds ${budget} bytes`);
     }
@@ -55,6 +59,18 @@ test("the workflow skills load from their own plugin directory, which no worker 
     for (const phrase of ["description", "graph label; id stays visible", "transition.notes", "16 KiB UTF-8",
         "never executed", "Absent keys stay absent", "editing notes makes a new revision/hash"]) {
         assert.ok(reference.prompt.includes(phrase), `the reference covers annotations: ${phrase}`);
+    }
+    // Owner decision i6-downstream: the size limits in one table, with the fan-out rule; the reference and the core skill point to it.
+    const limits = skills().find(skill => skill.name === "workflow-limits");
+    for (const phrase of ["keep only what you need from each child", "`full_output: true`", "`WORKFLOW_ENDED_WHOLE_OUTPUT`",
+        `${WORKFLOW_ENDED_NOTICE_MAX_BYTES.toLocaleString("en-US")} bytes`,
+        `| A \`send\` or \`request\` message (the state's input) | ${WORKFLOW_MAX_SEND_PAYLOAD_BYTES / 1024} KiB |`,
+        `| A parallel join's output (all branches together) | ${WORKFLOW_PAYLOAD_MAX_BYTES / 1024} KiB |`,
+        `| \`carry\` | ${WORKFLOW_CARRY_MAX_BYTES / 1024} KiB |`, `| JSON nesting, anywhere | ${WORKFLOW_JSON_MAX_DEPTH} levels |`]) {
+        assert.ok(limits.prompt.includes(phrase), `workflow-limits covers: ${phrase}`);
+    }
+    for (const name of ["workflow-reference", WORKFLOW_AUTHORING_SKILL]) {
+        assert.match(skills().find(skill => skill.name === name).prompt, /keep only what you need (from each|per) child; size limits: `workflow-limits`\./, name);
     }
     // The guides agents read do not teach test mode (spec 16): no test operation, test run or testing guide.
     for (const skill of skills()) {
