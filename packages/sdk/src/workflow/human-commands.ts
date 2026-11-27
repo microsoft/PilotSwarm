@@ -166,7 +166,9 @@ const NOT_FOUND = new Set(["WORKFLOW_NOT_FOUND", "WORKFLOW_DELETED", "RUN_NOT_FO
     // Stage 2.1: a session's Workflow Definitions.
     "DEFINITION_NOT_FOUND", "REVISION_NOT_FOUND", "SESSION_NOT_FOUND",
     // Stage 2.3: a package's Workflow Definition.
-    "PACKAGE_WORKFLOW_NOT_FOUND"]);
+    "PACKAGE_WORKFLOW_NOT_FOUND",
+    // Phase 4: Workflow skills over management / Web API / MCP.
+    "WORKFLOW_SKILL_NOT_FOUND"]);
 const INVALID = new Set(["WORKFLOW_COMMAND_INVALID", "WORKFLOW_YAML_INVALID", "WORKFLOW_YAML_TOO_LARGE", "INPUT_INVALID", "WORKFLOW_NAME_MISMATCH",
     // OF-S2-7: a start's agent node models that do not name agent nodes of the revision, or are not shaped as one.
     "AGENT_MODELS_INVALID"]);

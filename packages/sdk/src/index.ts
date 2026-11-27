@@ -86,6 +86,11 @@ export {
 } from "./workflow/scripts-gate.js";
 // Workflow: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
 export { workflowReaderView } from "./workflow/tools.js";
+// Workflow: pure compilation and no-write validation (Phase 4).
+export { compileWorkflow } from "./workflow/compiler.js";
+export type { WorkflowCompileResult, WorkflowDiagnostic, WorkflowIR } from "./workflow/compiler.js";
+export { validateWorkflowYaml } from "./workflow/validation.js";
+export type { WorkflowValidationDiagnostic, WorkflowValidationResult } from "./workflow/validation.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";
 export { resolveStorageConfig, DEFAULT_DUROXIDE_SCHEMA, DEFAULT_RUNTIME_STORAGE_PROVIDER, DEFAULT_DUROXIDE_STORAGE_PROVIDER } from "./storage-config.js";
 // The pg.Client config for LISTEN connections to the session catalog database.
