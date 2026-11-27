@@ -12,8 +12,7 @@ import { managedSessionFence } from "../helpers/managed-session-fence.mjs";
 test("after the step's result the pre-tool hook refuses every call until the session's next turn", async () => {
     const inner = { onPreToolUse: async () => ({ permissionDecision: "allow" }), onPostToolUse: async () => undefined };
     assert.equal(withWorkflowVisitDeny(inner, null), inner, "no hook outside a Workflow agent step");
-    const session = { ...managedSessionFence(ManagedSession), workflowVisitDecided: false,
-        decideWorkflowVisit: ManagedSession.prototype.decideWorkflowVisit, workflowVisitIsDecided: ManagedSession.prototype.workflowVisitIsDecided };
+    const session = managedSessionFence(ManagedSession);
     const hooks = withWorkflowVisitDeny(inner, () => session.workflowVisitIsDecided());
     assert.equal(hooks.onPostToolUse, inner.onPostToolUse);
     assert.deepEqual(await hooks.onPreToolUse({ toolName: "bash" }), { permissionDecision: "allow" });
@@ -28,8 +27,7 @@ test("after the step's result the pre-tool hook refuses every call until the ses
 });
 
 test("a turn whose binding is refused keeps complete_workflow_node: only a decided visit refuses every tool", async () => {
-    const session = { ...managedSessionFence(ManagedSession), workflowVisitDecided: false,
-        decideWorkflowVisit: ManagedSession.prototype.decideWorkflowVisit, workflowVisitIsDecided: ManagedSession.prototype.workflowVisitIsDecided };
+    const session = managedSessionFence(ManagedSession);
     const hooks = withWorkflowVisitDeny({}, () => session.workflowVisitIsDecided());
     session.decideWorkflowVisit();
     // The next turn starts with its tools open, then its binding is refused (session-manager's warm path): its Workflow tools
