@@ -6604,6 +6604,12 @@ export class WorkflowStore {
         } : null;
     }
 
+    /** Join enclosing parallel execution `parallelAlias` from a branch node's `scope_id` (`<parallelNx>#<index>`), NULL for root (I8). */
+    private parallelJoinSql(nodeAlias: string, parallelAlias: string): string {
+        return `LEFT JOIN ${this.t.nodes} ${parallelAlias} ON ${parallelAlias}.run_id = ${nodeAlias}.run_id `
+            + `AND ${parallelAlias}.node_execution_id = CASE WHEN strpos(${nodeAlias}.scope_id, '#') > 1 THEN split_part(${nodeAlias}.scope_id, '#', 1) ELSE NULL END`;
+    }
+
     /**
      * A session's workflow lineage (design 03 human-input denial and depth;
      * R13, R16): one recursive read of the session rows from the session up
@@ -6628,11 +6634,13 @@ export class WorkflowStore {
               FROM lineage
               ${withInvocations ? `LEFT JOIN LATERAL (
                   -- One row per lineage session (review RT-4): a session that continues has one invocation per visit, and
-                  -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest.
+                  -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest (composite
+                  -- rank (COALESCE(p.ordinal, 0), n.ordinal) across outer-loop parallel re-entries, I8).
                   SELECT i.node_execution_id, i.workflow_session_id, i.controlling_session_id
                     FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                    ${this.parallelJoinSql("n", "p")}
                    WHERE i.child_session_id = lineage.session_id
-                   ORDER BY COALESCE(n.state = 'pending', false) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC
+                   ORDER BY COALESCE(n.state = 'pending', false) DESC, COALESCE(p.ordinal, 0) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC
                    LIMIT 1) invocation ON true` : ""}
              ORDER BY lineage.distance`;
         let rows: Row[];
@@ -6801,13 +6809,16 @@ export class WorkflowStore {
 
     /**
      * The newest invocation whose child agent session is `childSessionId` (a session that continues has one per visit), or
-     * null. Newest by the visit's ordinal (review PRR-3: the database clock can step back between two visits), then time.
+     * null. Newest by composite (COALESCE(p.ordinal, 0), n.ordinal) rank (PRR-3 + I8: clock-skew-immune and monotonic
+     * across outer-loop parallel re-entries), then time.
      */
     async readAgentInvocationByChild(childSessionId: string): Promise<WorkflowAgentInvocation | null> {
         if (!storableId(childSessionId)) return null;
         const { rows } = await this.pool.query(
             `SELECT i.* FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
-              WHERE i.child_session_id = $1 ORDER BY n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId]);
+               ${this.parallelJoinSql("n", "p")}
+              WHERE i.child_session_id = $1
+              ORDER BY COALESCE(p.ordinal, 0) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId]);
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
     }
 
@@ -6864,8 +6875,9 @@ export class WorkflowStore {
             if (ids.length === 0) return null;
             const { rows } = await this.pool.query(
                 `SELECT i.node_execution_id, n.state FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                   ${this.parallelJoinSql("n", "p")}
                   WHERE i.child_session_id = $1 AND i.node_execution_id = ANY($2::text[])
-                  ORDER BY (n.state = 'pending') DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
+                  ORDER BY (n.state = 'pending') DESC, COALESCE(p.ordinal, 0) DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
             return rows[0] ? { id: str(rows[0], "node_execution_id"), open: str(rows[0], "state") === "pending" } : null;
         };
         const own = await visitsOf(promptClientMessageIds.map(workflowVisitOfPromptId).filter((id): id is string => id !== null));
@@ -6933,11 +6945,14 @@ export class WorkflowStore {
         const { rows } = await this.pool.query(
             `SELECT count(*) OVER () AS visits, i.* FROM ${this.t.agentInvocations} i
                JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+               ${this.parallelJoinSql("n", "p")}
               WHERE i.run_id = $1 AND n.node_id = $2
-                AND ($3::text IS NULL OR (n.ordinal, i.created_at, i.node_execution_id) <
-                     (SELECT bn.ordinal, b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b
-                        JOIN ${this.t.nodes} bn ON bn.node_execution_id = b.node_execution_id WHERE b.node_execution_id = $3))
-              ORDER BY n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
+                AND ($3::text IS NULL OR (COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id) <
+                     (SELECT COALESCE(bp.ordinal, 0), bn.ordinal, b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b
+                        JOIN ${this.t.nodes} bn ON bn.node_execution_id = b.node_execution_id
+                        ${this.parallelJoinSql("bn", "bp")}
+                       WHERE b.node_execution_id = $3))
+              ORDER BY COALESCE(p.ordinal, 0) DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
         return rows[0] ? { count: int(rows[0], "visits"), previous: agentInvocationFrom(rows[0]) } : { count: 0, previous: null };
     }
 
@@ -7004,7 +7019,9 @@ export class WorkflowStore {
     async listAgentInvocationsOfState(runId: string, stateId: string, limit = 1_000): Promise<WorkflowAgentInvocation[]> {
         const { rows } = await this.pool.query(
             `SELECT i.* FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
-              WHERE i.run_id = $1 AND n.node_id = $2 ORDER BY n.ordinal, i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
+               ${this.parallelJoinSql("n", "p")}
+              WHERE i.run_id = $1 AND n.node_id = $2
+              ORDER BY COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
         return rows.map(agentInvocationFrom);
     }
 
