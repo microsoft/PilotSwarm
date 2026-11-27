@@ -199,6 +199,41 @@ test("Stop and Steer share session:write and carry their options in the body", (
     assert.deepEqual(stop.body, { options: { requestId: "r-2", reason: "enough" } }, "the request id reaches the server unchanged");
 });
 
+test("Task 3: Phase 4 Workflow skills, validate, card, and definition name/originatingSessionId round-trip", () => {
+    const skillsOp = getOperation("readWorkflowSkills");
+    assert.equal(skillsOp.method, "GET");
+    assert.equal(skillsOp.access, "authed");
+    assert.equal(skillsOp.params.name.strict, true);
+    const skillsReq = buildOperationRequest("readWorkflowSkills", { name: "workflow-authoring" });
+    assert.equal(skillsReq.path, `${API_PREFIX}/workflow-definitions/skills`);
+    assert.equal(skillsReq.query.get("name"), "workflow-authoring");
+
+    const valOp = getOperation("validateWorkflowDefinition");
+    assert.equal(valOp.method, "POST");
+    assert.equal(valOp.access, "authed");
+    const valReq = buildOperationRequest("validateWorkflowDefinition", { yaml: "apiVersion: pilotswarm.dev/v1" });
+    assert.equal(valReq.path, `${API_PREFIX}/workflow-definitions/validate`);
+    assert.deepEqual(valReq.body, { yaml: "apiVersion: pilotswarm.dev/v1" });
+
+    const cardOp = getOperation("readSessionWorkflowCard");
+    assert.equal(cardOp.method, "GET");
+    assert.equal(cardOp.access, "session:manage");
+    assert.equal(cardOp.params.name.strict, true);
+    const cardReq = buildOperationRequest("readSessionWorkflowCard", { sessionId: "s1", name: "demo/echo" });
+    assert.equal(cardReq.path, `${API_PREFIX}/sessions/s1/workflow-definitions/card`);
+    assert.equal(cardReq.query.get("name"), "demo/echo");
+
+    for (const opName of ["startSessionWorkflowDefinition", "deleteSessionWorkflowDefinition", "copySessionWorkflowDefinition", "updateSessionWorkflowPackage"]) {
+        const req = buildOperationRequest(opName, { sessionId: "s1", name: "my-wf", operationId: "op-1", originatingSessionId: "child-1" });
+        assert.equal(req.body.name, "my-wf", `${opName} must serialize name`);
+        assert.equal(req.body.originatingSessionId, "child-1", `${opName} must serialize originatingSessionId`);
+    }
+    const saveReq = buildOperationRequest("saveSessionWorkflowDefinition", {
+        sessionId: "s1", name: "my-wf", yaml: "y", operationId: "op-1", originatingSessionId: "child-1",
+    });
+    assert.equal(saveReq.body.originatingSessionId, "child-1");
+});
+
 test("artifact upload carries opt-in create-only semantics in the request body", () => {
     const request = buildOperationRequest("uploadArtifact", {
         sessionId: "s1",

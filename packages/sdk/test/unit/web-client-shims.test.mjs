@@ -97,6 +97,23 @@ const SHIM_CASES = [
     // One definition revision's YAML (owner decision q4).
     { call: (c) => c.readWorkflow("s1", { definitionRevision: 3 }), op: "readWorkflow", params: { sessionId: "s1", definitionRevision: 3 } },
     { call: (c) => c.readWorkflow("s1", { stepInput: { state: "review" } }), op: "readWorkflow", params: { sessionId: "s1", stepInput: { state: "review" } } },
+    // — Phase 4 workflow MCP / management shims —
+    { call: (c) => c.createSessionForWorkflow("demo/echo", { model: "m:1", reasoningEffort: "high", contextTier: "default", groupId: "g1" }),
+        op: "createSessionForWorkflow", params: { ref: "demo/echo", model: "m:1", reasoningEffort: "high", contextTier: "default", groupId: "g1" } },
+    { call: (c) => c.readWorkflowSkills(), op: "readWorkflowSkills", params: {} },
+    { call: (c) => c.readWorkflowSkills({ name: "workflow-authoring" }), op: "readWorkflowSkills", params: { name: "workflow-authoring" } },
+    { call: (c) => c.validateWorkflowDefinition("yaml-text"), op: "validateWorkflowDefinition", params: { yaml: "yaml-text" } },
+    { call: (c) => c.readSessionWorkflowCard("s1", { name: "demo/echo" }), op: "readSessionWorkflowCard", params: { sessionId: "s1", name: "demo/echo" } },
+    { call: (c) => c.saveSessionWorkflowDefinition("s1", { name: "w", yaml: "y", operationId: "op-1" }, { originatingSessionId: "orig-1" }),
+        op: "saveSessionWorkflowDefinition", params: { sessionId: "s1", name: "w", yaml: "y", operationId: "op-1", originatingSessionId: "orig-1" } },
+    { call: (c) => c.startSessionWorkflowDefinition("s1", { name: "w", operationId: "op-2" }, { originatingSessionId: "orig-1" }),
+        op: "startSessionWorkflowDefinition", params: { sessionId: "s1", name: "w", operationId: "op-2", originatingSessionId: "orig-1" } },
+    { call: (c) => c.deleteSessionWorkflowDefinition("s1", { name: "w", operationId: "op-3" }, { originatingSessionId: "orig-1" }),
+        op: "deleteSessionWorkflowDefinition", params: { sessionId: "s1", name: "w", operationId: "op-3", originatingSessionId: "orig-1" } },
+    { call: (c) => c.copySessionWorkflowDefinition("s1", { name: "pkg/w", operationId: "op-4" }, { originatingSessionId: "orig-1" }),
+        op: "copySessionWorkflowDefinition", params: { sessionId: "s1", name: "pkg/w", operationId: "op-4", originatingSessionId: "orig-1" } },
+    { call: (c) => c.updateSessionWorkflowPackage("s1", { name: "pkg/w", operationId: "op-5" }, { originatingSessionId: "orig-1" }),
+        op: "updateSessionWorkflowPackage", params: { sessionId: "s1", name: "pkg/w", operationId: "op-5", originatingSessionId: "orig-1" } },
 ];
 
 /** Operations whose shim passes its options to the request builder as they are: checked by the request it builds. */

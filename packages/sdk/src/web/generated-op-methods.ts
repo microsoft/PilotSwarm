@@ -139,8 +139,10 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
+    "readSessionWorkflowCard",
     "readSessionWorkflowDefinition",
     "readWorkflow",
+    "readWorkflowSkills",
     "regenerateSession",
     "removeCanvasShareLink",
     "removeProviderLimit",
@@ -201,6 +203,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "upsertGraphEdge",
     "upsertGraphNamespace",
     "upsertGraphNode",
+    "validateWorkflowDefinition",
     "waitForStatusChange",
     "writeCanvasKv",
 ];
@@ -314,14 +317,16 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Stage 2.3: a person's Make a copy of a package's locked Workflow Definition in a session (every deployment takes a person's workflow commands; 501 only from a client created without them): its revision (default the newest) is saved as the session's own, editable definition at revision 1, named as its YAML names it; the session reads a note about it on its next turn. A name the session already has refuses it (409 DEFINITION_EXISTS). Owner or admin.
+     * Stage 2.3: a person's Make a copy of a package's locked Workflow Definition in a session (accepts definitionId or name; every deployment takes a person's workflow commands; 501 only from a client created without them): its revision (default the newest) is saved as the session's own, editable definition at revision 1, named as its YAML names it; the session reads a note about it on its next turn. A name the session already has refuses it (409 DEFINITION_EXISTS). Owner or admin. originatingSessionId inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED).
      * @remarks `POST /sessions/:sessionId/workflow-definitions/copy` — access: `session:manage`
      */
     copySessionWorkflowDefinition(params: {
         sessionId: string;
         definitionId?: any;
+        name?: any;
         revision?: any;
         operationId?: any;
+        originatingSessionId?: any;
     }): Promise<any>;
 
     /**
@@ -512,13 +517,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person deletes a session's Workflow Definition (501 only from a client created without a person's workflow commands). Refused while one of its Workflows is running (409 DEFINITION_IN_USE, naming them). Its revisions stay, so a finished Workflow keeps its copy. Owner or admin.
+     * A person deletes a session's Workflow Definition (accepts definitionId or name, replay-safe by operationId; 501 only from a client created without a person's workflow commands). Refused while one of its Workflows is running (409 DEFINITION_IN_USE, naming them). Its revisions stay, so a finished Workflow keeps its copy. Owner or admin. originatingSessionId inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED).
      * @remarks `POST /sessions/:sessionId/workflow-definitions/delete` — access: `session:manage`
      */
     deleteSessionWorkflowDefinition(params: {
         sessionId: string;
         definitionId?: any;
+        name?: any;
         operationId?: any;
+        originatingSessionId?: any;
     }): Promise<any>;
 
     /**
@@ -1359,6 +1366,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read a package Workflow Definition's interface card (<package>/<name>) in the context of an owning session. Uses the owning session's owner as viewer; requires session:manage (enforced even when ownership enforcement is off) so share-readers cannot probe private user-scope package cards. 404 NOT_FOUND for unreadable sessions, 403 FORBIDDEN for non-owner share-readers, 404 PACKAGE_WORKFLOW_NOT_FOUND if absent.
+     * @remarks `GET /sessions/:sessionId/workflow-definitions/card` — access: `session:manage`
+     */
+    readSessionWorkflowCard(params: {
+        sessionId: string;
+        name?: string;
+    }): Promise<any>;
+
+    /**
      * One of a session's Workflow Definitions, by definitionId (deleted ones too) or by name (its live one), with a revision's YAML, diagnostics and graph (null for a revision with errors) (revision, a JSON integer; default the newest); personCommands says whether the deployment takes a person's save, start and delete, and viewer whether this caller may send them. A caller who may not gets no YAML, and the input schema and diagnostics without what their author wrote. 404 DEFINITION_NOT_FOUND or REVISION_NOT_FOUND.
      * @remarks `GET /sessions/:sessionId/workflow-definition` — access: `session:read`
      */
@@ -1384,6 +1400,14 @@ export interface ManagementOps {
         agentVersions?: any;
         definitionRevision?: any;
         stepInput?: any;
+    }): Promise<any>;
+
+    /**
+     * List Workflow authoring skills packaged with this deployment (omit name) or read one skill's Markdown body by exact name (404 WORKFLOW_SKILL_NOT_FOUND when unknown).
+     * @remarks `GET /workflow-definitions/skills` — access: `authed`
+     */
+    readWorkflowSkills(params: {
+        name?: string;
     }): Promise<any>;
 
     /**
@@ -1491,7 +1515,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person saves the next revision of a session's Workflow Definition (every deployment takes a person's workflow commands; 501 WORKFLOW_COMMANDS_UNAVAILABLE only from a client created without them). definitionId and expectedRevision name the revision the edit was based on; without them, the first save of name. A newer revision saved meanwhile refuses it (409 REVISION_STALE, with who saved it and when); a deleted definition 409 DEFINITION_DELETED; a revision with errors is saved with them. The session reads a note about it on its next turn; nothing wakes it. Owner or admin; operationId makes a retry return its first receipt.
+     * A person saves the next revision of a session's Workflow Definition (every deployment takes a person's workflow commands; 501 WORKFLOW_COMMANDS_UNAVAILABLE only from a client created without them). definitionId and expectedRevision name the revision the edit was based on; without them, the first save of name. A newer revision saved meanwhile refuses it (409 REVISION_STALE, with who saved it and when); a deleted definition 409 DEFINITION_DELETED; a revision with errors is saved with them. The session reads a note about it on its next turn; nothing wakes it. Owner or admin; operationId makes a retry return its first receipt. originatingSessionId inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED).
      * @remarks `POST /sessions/:sessionId/workflow-definitions/save` — access: `session:manage`
      */
     saveSessionWorkflowDefinition(params: {
@@ -1501,6 +1525,7 @@ export interface ManagementOps {
         definitionId?: any;
         expectedRevision?: any;
         operationId?: any;
+        originatingSessionId?: any;
     }): Promise<any>;
 
     /**
@@ -1814,12 +1839,13 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person starts a new Workflow from a revision of a session's Workflow Definition (501 only from a client created without a person's workflow commands): revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its Agent model choices unless agentModels is given and its pinned Decision model choices unless decisionModels is given); workspace (optional): omit to capture the owning session's effective workspace and default folders; an object selects another record plus the captured defaults; null selects no workspace record but keeps captured defaults; "none" selects no workspace record and no defaults. agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning session's catalog (the agent nodes spend as that session's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the session's model. decisionModels is the separate Decision-node map: state id to { model }, checked against the exact revision and current eligible Cluster Decision Default catalog; it has no chat reasoning/context fallback. Refused for a session that has ended (409 SESSION_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it. Optional key (1-128 characters, exact, nonblank valid Unicode without NUL) deduplicates starts in the owning session across different operationIds: a repeat returns the original Workflow, run and revision; different start arguments conflict. Use a new key, or omit it, for a deliberate new attempt.
+     * A person starts a new Workflow from a revision of a session's Workflow Definition (501 only from a client created without a person's workflow commands): accepts definitionId or name; revision, default the newest valid one; runAgainOf, a Workflow of this definition whose revision is started again (with its Agent model choices unless agentModels is given and its pinned Decision model choices unless decisionModels is given); workspace (optional): omit to capture the owning session's effective workspace and default folders; an object selects another record plus the captured defaults; null selects no workspace record but keeps captured defaults; "none" selects no workspace record and no defaults. agentModels (OF-S2-7), optional: agent node id (its key under states:) to { model: provider:model, reasoningEffort?, contextTier? }, checked against that revision and the owning session's catalog (the agent nodes spend as that session's owner, whoever starts it), an effort or tier being one the model lists (400 AGENT_MODELS_INVALID, 422 AGENT_MODEL_UNAVAILABLE); an empty map clears Run again's choices; without it every agent node uses the session's model. decisionModels is the separate Decision-node map: state id to { model }, checked against the exact revision and current eligible Cluster Decision Default catalog; it has no chat reasoning/context fallback. Refused for a session that has ended (409 SESSION_NOT_LIVE), a deleted definition (409 DEFINITION_DELETED) or a revision with errors (422 DEFINITION_INVALID). Owner or admin; operationId names the new Workflow, so a retry returns it. Optional key (1-128 characters, exact, nonblank valid Unicode without NUL) deduplicates starts in the owning session across different operationIds: a repeat returns the original Workflow, run and revision; different start arguments conflict. Use a new key, or omit it, for a deliberate new attempt. originatingSessionId inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED).
      * @remarks `POST /sessions/:sessionId/workflow-definitions/start` — access: `session:manage`
      */
     startSessionWorkflowDefinition(params: {
         sessionId: string;
         definitionId?: any;
+        name?: any;
         revision?: any;
         runAgainOf?: any;
         inputs?: any;
@@ -1830,6 +1856,7 @@ export interface ManagementOps {
         decisionModels?: any;
         key?: any;
         workspace?: any;
+        originatingSessionId?: any;
     }): Promise<any>;
 
     /**
@@ -1906,13 +1933,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Stage 2.3: a person takes the package's newer version of a locked Workflow Definition for the session's next Workflow (501 only from a client created without a person's workflow commands): it becomes the definition's next revision; running Workflows keep theirs. Owner or admin.
+     * Stage 2.3: a person takes the package's newer version of a locked Workflow Definition for the session's next Workflow (accepts definitionId or name; 501 only from a client created without a person's workflow commands): it becomes the definition's next revision; running Workflows keep theirs. Owner or admin. originatingSessionId inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED).
      * @remarks `POST /sessions/:sessionId/workflow-definitions/update-package` — access: `session:manage`
      */
     updateSessionWorkflowPackage(params: {
         sessionId: string;
         definitionId?: any;
+        name?: any;
         operationId?: any;
+        originatingSessionId?: any;
     }): Promise<any>;
 
     /**
@@ -1978,6 +2007,14 @@ export interface ManagementOps {
      */
     upsertGraphNode(params: {
         input?: any;
+    }): Promise<any>;
+
+    /**
+     * Pure no-write validation of Workflow YAML against this deployment's compiler, scripts posture, and Cluster Decision Default capability. Returns { valid, name, errors, warnings, graph, inputsSchema } with zero DB writes.
+     * @remarks `POST /workflow-definitions/validate` — access: `authed`
+     */
+    validateWorkflowDefinition(params: {
+        yaml?: any;
     }): Promise<any>;
 
     /**
@@ -2142,8 +2179,10 @@ export function createManagementOps(
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
+        readSessionWorkflowCard: (params: Record<string, unknown> = {}) => callOp("readSessionWorkflowCard", params),
         readSessionWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("readSessionWorkflowDefinition", params),
         readWorkflow: (params: Record<string, unknown> = {}) => callOp("readWorkflow", params),
+        readWorkflowSkills: (params: Record<string, unknown> = {}) => callOp("readWorkflowSkills", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),
@@ -2204,6 +2243,7 @@ export function createManagementOps(
         upsertGraphEdge: (params: Record<string, unknown> = {}) => callOp("upsertGraphEdge", params),
         upsertGraphNamespace: (params: Record<string, unknown> = {}) => callOp("upsertGraphNamespace", params),
         upsertGraphNode: (params: Record<string, unknown> = {}) => callOp("upsertGraphNode", params),
+        validateWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("validateWorkflowDefinition", params),
         waitForStatusChange: (params: Record<string, unknown> = {}) => callOp("waitForStatusChange", params),
         writeCanvasKv: (params: Record<string, unknown> = {}) => callOp("writeCanvasKv", params),
     };
