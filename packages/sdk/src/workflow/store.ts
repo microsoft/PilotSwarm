@@ -4518,6 +4518,20 @@ export class WorkflowStore {
         return rows[0] ? nodeFrom(rows[0]) : null;
     }
 
+    /**
+     * Issue I1 (review R3-1): a node execution's state, read under a row lock that conflicts with the lock a decision takes
+     * (FOR UPDATE, as completeAgentNode's), so the read is ordered after any decision still in flight: a COMMIT whose
+     * answer was lost is waited for, not read around. `lockTimeoutMs` bounds the wait; past it the read fails (SQLSTATE
+     * 55P03). Null: no such node execution.
+     */
+    async readNodeStateAfterWriters(nodeExecutionId: string, lockTimeoutMs: number): Promise<WorkflowNodeExecutionRow["state"] | null> {
+        return this.transaction(async client => {
+            await client.query("SELECT set_config('lock_timeout', $1, true)", [`${Math.max(1, Math.floor(lockTimeoutMs))}ms`]);
+            const { rows } = await client.query(`SELECT state FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR SHARE`, [nodeExecutionId]);
+            return rows[0] ? (str(rows[0], "state") as WorkflowNodeExecutionRow["state"]) : null;
+        });
+    }
+
     async listNodeExecutions(runId: string, limit = 500): Promise<WorkflowNodeExecutionRow[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.t.nodes} WHERE run_id = $1 ORDER BY entered_at, node_execution_id LIMIT $2`, [runId, limit]);

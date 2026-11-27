@@ -442,6 +442,36 @@ describe("SessionManager.abortWarmSessionTurn", () => {
         expect((await second).type).toBe("completed");
     });
 
+    // Issue I1, review R3-3: a CLI that no longer answers the disconnect never holds the session lock.
+    it("a forced stop's invalidation is bounded: a disconnect that never answers releases the session lock", { timeout: 20_000 }, async () => {
+        const manager = Object.create(SessionManager.prototype);
+        manager.sessions = new Map();
+        const forgotten = [];
+        let lock = Promise.resolve();
+        manager._withSessionLock = (_sessionId, _label, fn) => {
+            const run = lock.then(fn);
+            lock = run.catch(() => {});
+            return run;
+        };
+        manager._cancelWorkspaceShells = async () => {};
+        manager._forgetWarmSession = (sessionId) => { forgotten.push(sessionId); manager.sessions.delete(sessionId); };
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        copilot.disconnect = () => new Promise(() => {});
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        // The forced stop's backstop invalidation takes the lock, and gives it back after its deadline. (The turn's own drop,
+        // in the activity, passes a deadline too: workflow-simplified-turn-fence.test.js, RT-F1.)
+        const first = managed.runTurn("hung reply", { turnIndex: 1 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        expect((await manager.abortWarmSessionTurn(managed.sessionId, { reason: "reply limit", expectedTurnIndex: 1, unwindGraceMs: 100 })).outcome)
+            .toBe("stop_forced");
+        expect((await first).type).toBe("stopped");
+        const next = await Promise.race([manager._withSessionLock(managed.sessionId, "runTurn", async () => "ran"), sleep(15_000).then(() => "held")]);
+        expect(next).toBe("ran");
+        expect(forgotten).toEqual([managed.sessionId]);
+    });
+
     it("never takes the per-session lock (lock-bypass contract)", () => {
         // runTurn holds withRunTurnLock for the entire turn; a lock-taking
         // stop would serialize behind the turn and defeat mid-flight stop.

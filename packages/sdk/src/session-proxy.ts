@@ -664,6 +664,15 @@ function isLiveSessionLostErrorMessage(message?: string): boolean {
 /** Issue 329: how long a turn that lost its runtime waits for its warm session's disconnect before forgetting it. */
 const TRANSPORT_LOSS_DESTROY_DEADLINE_MS = 5_000;
 
+/**
+ * Issue I1 (review R3-3): how long a turn whose run a Stop settled by force waits for its warm session's disconnect before
+ * forgetting it, so the session lock is released even when the CLI no longer answers.
+ */
+const UNSETTLED_RUN_DESTROY_DEADLINE_MS = 5_000;
+
+/** Issue I1 (review R3-1): how long the read of a turn's Workflow visit waits for a decision still in flight. */
+const WORKFLOW_VISIT_READ_LOCK_MS = 10_000;
+
 function isToolCallTranscriptCorruptionErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
     return normalized.includes("assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'")
@@ -2736,18 +2745,23 @@ export function registerActivities(
         // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
         // and its reminder and completion name only that visit. Null for every other session (session: new included).
         const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
-        // Issue I1 (reviews R1-3, R2-1, R2-3): whether the store has this turn's Workflow visit decided. The visit is the one the
-        // turn is bound to: a continued session's turn visit (none when the turn has no visit), or a session: new step's own
-        // visit. Null when the turn has no such visit. A read that fails throws (after the store retries).
-        const storedTurnVisitDecided = async (): Promise<boolean | null> => {
+        // Issue I1 (reviews R1-3, R2-1, R2-3, R3-1): whether the store has this turn's Workflow visit decided. The visit is the
+        // one the turn is bound to: a continued session's turn visit (none when the turn has no visit), or a session: new
+        // step's own visit (oneShotVisit). Null when the turn has no such visit. The read waits for a decision still in flight
+        // (a completion whose COMMIT answer was lost), up to WORKFLOW_VISIT_READ_LOCK_MS; a read that fails throws (after the
+        // store retries a transient failure).
+        const oneShotVisit = (): string | null => {
             const root = workflowLineage?.agentRoot;
-            const visit = workflowTurnVisit?.nodeExecutionId
-                ?? (root && !workflowAgentSessionContinues({ nodeExecutionId: root.nodeExecutionId, childSessionId: input.sessionId })
-                    ? root.nodeExecutionId : null);
+            return root && root.distance === 0
+                && !workflowAgentSessionContinues({ nodeExecutionId: root.nodeExecutionId, childSessionId: input.sessionId })
+                ? root.nodeExecutionId : null;
+        };
+        const storedTurnVisitDecided = async (): Promise<boolean | null> => {
+            const visit = workflowTurnVisit?.nodeExecutionId ?? oneShotVisit();
             if (!workflowFenceStore || !visit) return null;
-            const node = await cmsRetryCritical(`runTurn.visitDecided session=${input.sessionId}`,
-                () => workflowFenceStore.readNodeExecution(visit), (msg) => activityCtx.traceInfo(msg));
-            return node !== null && node.state !== "pending";
+            const state = await cmsRetryCritical(`runTurn.visitDecided session=${input.sessionId}`,
+                () => workflowFenceStore.readNodeStateAfterWriters(visit, WORKFLOW_VISIT_READ_LOCK_MS), (msg) => activityCtx.traceInfo(msg));
+            return state !== null && state !== "pending";
         };
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
@@ -4825,6 +4839,15 @@ export function registerActivities(
             };
             const decidedTurnVisit = (): string | null =>
                 workflowTurnVisit?.nodeExecutionId && !workflowTurnVisit.open ? workflowTurnVisit.nodeExecutionId : null;
+            // Issue I1 (review R3-2): a session: new step's session has no turn visit (readTurnVisit), but its turn is fenced
+            // by its own visit the same way: a turn whose visit is already decided (a retry after the result was recorded, after
+            // a lost runtime or a failed read, or a prompt that came after it) does not run. A read that fails fails the turn.
+            const decidedAtAdmission = async (): Promise<string | null> => {
+                const decided = decidedTurnVisit();
+                if (decided || workflowTurnVisit) return decided;
+                const visit = oneShotVisit();
+                return visit && await storedTurnVisitDecided() === true ? visit : null;
+            };
 
             // ── Turn control T3: turn start (replaces setActiveTurnIndex) ──
             // Not best-effort: without it no control could reach this turn,
@@ -4844,7 +4867,7 @@ export function registerActivities(
                 if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
                 // RT-D2 (C1): the end's fence is the visit this admission uses, set before any path can end the turn.
                 tc.visitFence = workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : null;
-                const decided = decidedTurnVisit();
+                const decided = await decidedAtAdmission();
                 let start = 0;
                 if (lifecycle && (started.stopped || started.controls.length > 0)) {
                     // The saved cursor is read only when needed. A session
@@ -4905,7 +4928,7 @@ export function registerActivities(
                 // No turn control: no Stop reaches a turn, but a turn whose visit is decided still does not run (the fence).
                 workflowTurnVisit = await readWorkflowTurnVisit();
                 if (workflowAgentTools && workflowTurnVisit?.nodeExecutionId) workflowAgentTools.nodeExecutionId = workflowTurnVisit.nodeExecutionId;
-                const decided = decidedTurnVisit();
+                const decided = await decidedAtAdmission();
                 if (decided) {
                     session.closeWorkflowTools();
                     await Promise.allSettled(pendingEventWrites.splice(0));
@@ -5216,7 +5239,8 @@ export function registerActivities(
                 if (typeof unsettled === "function" && unsettled.call(targetSession)) {
                     traceWarn(`[runTurn] session=${input.sessionId}: the model run did not settle after its abort; dropping its warm session`);
                     try {
-                        await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true });
+                        // Review R3-3: bounded, so the session lock is released even when the CLI does not answer the disconnect.
+                        await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true, destroyDeadlineMs: UNSETTLED_RUN_DESTROY_DEADLINE_MS });
                     } catch (err: any) {
                         // Review RT-F1-L1: the unsettled session is never committed or reused. invalidateWarmSession forgets
                         // the handle whatever fails; this attempt fails (retryable) so nothing of it is saved.

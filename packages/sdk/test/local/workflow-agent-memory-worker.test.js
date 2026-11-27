@@ -15,6 +15,8 @@
  * WORKFLOW_AGENT_REPLY_SETTLE.ms after the report is stopped, also with turnTimeoutMs 0; and a reply lost with its Copilot
  * session is not replayed with the step's tools open. Review R2: neither when the report came in a recovery's own run
  * (R2-1), and a result written whose acknowledgement was lost closes the tools and bounds the reply as well (R2-3).
+ * Review R3: also when the read-back comes while that write's COMMIT is still in flight (R3-1), and a session: new step's
+ * turn retried after its result does not run the model again (R3-2).
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -201,7 +203,7 @@ const CORRUPTED = "An assistant message with 'tool_calls' must be followed by to
  * A session: new step's turn ended after a fault that came after its result, and was not run again: the step's session
  * ended (so no run of that turn is still to come), no model request came after the fault, and the turn was not committed.
  */
-async function expectSettledUnreplayed(ctx, runId, state) {
+async function expectSettledUnreplayed(ctx, runId, state, { counter = "afterFault", unpublished: mustBeUnpublished = true } = {}) {
     const [visit] = await talkVisits(ctx.store, runId);
     const agentSession = visit.invocation.childSessionId;
     const evidence = async () => ({ state, agent: await agentSessionEvidence(ctx, agentSession, ["session.turn_started", "session.snapshot_unpublished", "system.message"]) });
@@ -209,7 +211,8 @@ async function expectSettledUnreplayed(ctx, runId, state) {
         const status = (await ctx.duroxide.getStatus(`session-${agentSession}`)).status;
         return ["Completed", "Failed", "Terminated"].includes(status) ? status : null;
     }, 90_000, evidence);
-    expect(state.afterFault, JSON.stringify(await evidence())).toBe(0);
+    expect(state[counter], JSON.stringify(await evidence())).toBe(0);
+    if (!mustBeUnpublished) return;
     const unpublished = await agentSessionEvidence(ctx, agentSession, ["session.snapshot_unpublished"]);
     expect(unpublished.length, JSON.stringify(await evidence())).toBeGreaterThan(0);
 }
@@ -492,7 +495,26 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
         });
     });
 
-    it("a result whose write committed but whose acknowledgement was lost closes the turn's tools and bounds its reply", { timeout: TIMEOUT }, async () => {
+    // Reviews R2-3 and R3-1: the completion's write commits, but its call fails: after the commit (a lost acknowledgement), or
+    // while the COMMIT is still in flight (the decision's row lock held when the worker reads the visit back; it lands after).
+    const LOST_ACK = {
+        "committed, then its acknowledgement lost": async function (original, input) {
+            await original.call(this, input);
+            throw new Error("Connection terminated unexpectedly");
+        },
+        "its COMMIT still in flight": async function (original, input) {
+            // Another transaction holds the visit's row lock, as the decision's own does until its COMMIT lands. The decision
+            // queues behind it, and commits 2 seconds after the worker saw its call fail.
+            const holder = await this.pool.connect();
+            await holder.query("BEGIN");
+            await holder.query(`SELECT 1 FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [input.nodeExecutionId]);
+            original.call(this, input).catch(() => {});
+            await pause(500);
+            setTimeout(() => { holder.query("COMMIT").catch(() => {}).finally(() => holder.release()); }, 2_000);
+            throw new Error("Connection terminated unexpectedly");
+        },
+    };
+    for (const [writeFault, fault] of Object.entries(LOST_ACK)) it(`a result whose write commits though its call fails (${writeFault}) closes the turn's tools and bounds its reply`, { timeout: TIMEOUT }, async () => {
         const marker = path.join(getEnv().baseDir, `after-lost-ack-${randomUUID()}.txt`);
         const state = { denied: 0, steps: 0 };
         const respond = async (_body, position) => {
@@ -512,9 +534,7 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
         };
         const original = WorkflowStore.prototype.completeAgentNode;
         WorkflowStore.prototype.completeAgentNode = async function (input) {
-            const result = await original.call(this, input);
-            if (input.operationId === "op-1") throw new Error("Connection terminated unexpectedly");
-            return result;
+            return input.operationId === "op-1" ? fault.call(this, original, input) : original.call(this, input);
         };
         const before = WORKFLOW_AGENT_REPLY_SETTLE.ms;
         WORKFLOW_AGENT_REPLY_SETTLE.ms = 4_000;
@@ -541,5 +561,83 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
             WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
             WorkflowStore.prototype.completeAgentNode = original;
         }
+    });
+
+    it("a completion whose write did not commit leaves the visit open: the agent completes it again", { timeout: TIMEOUT }, async () => {
+        const state = {};
+        const respond = (_body, position) => {
+            const nx = visitOf(position);
+            if (cycleOf(position) === 1) {
+                if (position.step === 0) return { tools: [complete(nx, "again", "op-1", { said: "zebra-42" })] };
+                if (position.step === 1) {
+                    state.first = JSON.parse(position.toolResults[0] ?? "null");
+                    return { tools: [complete(nx, "again", "op-1b", { said: "zebra-42" })] };
+                }
+                if (position.step === 2) state.second = JSON.parse(position.toolResults[0] ?? "null");
+                return { content: "Reported." };
+            }
+            return position.step === 0 ? { tools: [complete(nx, "finish", "op-2", { recalled: "nothing" })] } : { content: "done" };
+        };
+        const original = WorkflowStore.prototype.completeAgentNode;
+        WorkflowStore.prototype.completeAgentNode = async function (input) {
+            if (input.operationId === "op-1") throw new Error("Connection terminated unexpectedly");
+            return original.call(this, input);
+        };
+        try {
+            await withFixture(respond, async ctx => {
+                const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", []);
+                try {
+                    const { runId } = await startStep(ctx, stepYaml("continue"));
+                    expect(await runEnded(ctx, runId, async () => ({ state, visits: await talkVisits(ctx.store, runId) })))
+                        .toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                    expect(state.first).toMatchObject({ ok: false });
+                    expect(state.second).toMatchObject({ ok: true, outcome: "again", operationId: "op-1b" });
+                } finally {
+                    await worker.stop();
+                }
+            });
+        } finally {
+            WorkflowStore.prototype.completeAgentNode = original;
+        }
+    });
+
+    it("a session: new step's turn retried after its result was recorded does not run the model again (review R3-2)", { timeout: TIMEOUT }, async () => {
+        const marker = path.join(getEnv().baseDir, `retried-${randomUUID()}.txt`);
+        let release = () => {};
+        const held = new Promise(resolve => { release = resolve; });
+        const state = { afterReport: 0 };
+        const respond = async (_body, position) => {
+            const nx = visitOf(position);
+            if (!state.reported) {
+                if (position.step === 0) return { tools: [complete(nx, "finish", "op-1", { said: "one" })] };
+                // The result is recorded; the reply is held while the worker stops, so the turn is cut and retried.
+                state.reported = true;
+                await Promise.race([held, pause(150_000)]);
+                return { content: "late reply" };
+            }
+            state.afterReport += 1;
+            return position.step === 0 ? { tools: [{ name: "bash", args: { command: `echo retried > ${marker}`, description: "again" } }] } : { content: "ok" };
+        };
+        await withFixture(respond, async ctx => {
+            let worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", []);
+            let workerB = null;
+            try {
+                const { runId } = await startStep(ctx, stepYaml("new"));
+                const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId) });
+                await until("the result is recorded and the reply held", async () => state.reported
+                    && (await talkVisits(ctx.store, runId))[0]?.node?.state === "completed" ? true : null, 60_000, evidence);
+                await worker.stop();
+                worker = null;
+                release();
+                workerB = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-b", []);
+                expect(await runEnded(ctx, runId, evidence)).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { said: "one" } });
+                await expectSettledUnreplayed(ctx, runId, state, { counter: "afterReport", unpublished: false });
+                expect(fs.existsSync(marker), "the step's task ran again after its result").toBe(false);
+            } finally {
+                release();
+                await worker?.stop();
+                await workerB?.stop();
+            }
+        });
     });
 });
