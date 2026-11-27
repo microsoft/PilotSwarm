@@ -14,9 +14,10 @@
  *   state's visits works on the visits its turn's prompts name (their client message ids,
  *   `workflow:<wf>:<run>:agent:<nx>`), which must be this session's; a turn whose prompts name none (a timer, a sub-agent's
  *   update) works on the visit of the session's newest prompt that names one (store.readTurnVisit, as the completion and
- *   reminder fences read it). A state's visits are sequential (a continued session is refused inside a parallel state), so
- *   at most one of them is pending: a turn that carried an earlier visit's late prompt and the next visit's prompt
- *   decides only the next one.
+ *   reminder fences read it). A state's visits are sequential (a named branch runs its states one at a time, an outer loop
+ *   re-enters the parallel state only after the earlier fork's join or cut decided its visits, and For each bodies refuse
+ *   continued sessions), so at most one of them is pending: a turn that carried an earlier visit's late prompt and the next
+ *   visit's prompt decides only the next one.
  * - The fence: each visit is decided by the node's single terminal compare-and-swap (store.completeNode: pending only,
  *   under the workflow session's lock), so a visit already decided (its completion, its deadline, a cancel, a stop, the
  *   run's end, a deletion) is left as it is: a late or repeated report is a no-op. A visit is the session's own when its

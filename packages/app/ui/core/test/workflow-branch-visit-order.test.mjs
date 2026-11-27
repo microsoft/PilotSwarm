@@ -182,4 +182,7 @@ test("projectWorkflow stamps parallelOrdinal onto branch executions so downstrea
         ["nx-f1v2", 1, 2],
         ["nx-f1v1", 1, 1],
     ]);
+    // Production branch-node path in workflowNodeSummary (parallel: "fan") sees fork-2 visit 1 as current (running)
+    const branchSummary = workflowNodeSummary(leftNode, { now: NOW });
+    assert.match(branchSummary.now ?? "", /^Running/);
 });

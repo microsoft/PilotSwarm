@@ -35,10 +35,32 @@ commit `0f80ee3c3` (branch `waldemort/wf-phase2-continue-branches`, base `1a866c
 |---|---|
 | `(COALESCE(p.ordinal, 0), n.ordinal)` | `workflowVisitRank(execution, executions)` & `compareWorkflowVisitRank` in `packages/app/ui/core/src/workflow-view.js` (`projectWorkflow` stamps `parallelOrdinal`, `nodeView` sorts by composite rank), wired across `workflow-agent-log.js` (`workflowAgentLogVisits`, `own`, `byOrdinal`, plus ` · cycle ${cycle}` header suffix on re-entered forks) and `workflow-node-summary.js` (`lastEnded`, `chatOf`). |
 
-## 4. TLC Receipts (TLC 2.19, Temurin JDK 21.0.13.1, 2 workers)
+## 4. State Variables <-> Runtime & Store Data
 
-All 14 `i8.*` cases ran exhaustively with 0 timeouts and 14/14 matching expectations:
-- Safety & liveness PASS (0 errors, 0 deadlocks): `i8.fix-two-branch-safety` (2,700,838 distinct states, 86s), `i8.fix-two-branch-live` (87,455 states, 13s), `i8.fix-fail-branch-isolation` (10,398 states, 3s), `i8.fix-outer-loop-safety` (644,319 states, 20s), `i8.fix-outer-loop-live` (644,319 states, 97s).
-- Deliberate `OrderByNodeOrdinalOnly = TRUE` faults VIOLATED as expected: `i8.fault-node-ordinal-only` (`Inv_MonotonicCycleOrder`, 39 states), `i8.fault-node-ordinal-q5` (`Inv_StoppingKeepsActiveVisit`, 636 states).
-- Non-vacuity witnesses REACHED (7/7): `W_BranchLoopCommitRecall` (40 states), `W_CutPendingStopsVisit` (12 states), `W_CutAfterDoneKeepsReply` (44 states), `W_OuterForkReentry` (145 states), `W_CrossForkReplacement` (56 states), `W_StoppingMixedBranches` (96 states), `W_OwedCutThenRunEnd` (72 states).
-- Pre-existing 134 `WfContinuedSession` cases remain untouched (`cases.tsv` total: 148 cases, `./check-packet.sh` OK).
+| Model Variable(s) | Code Backing |
+|---|---|
+| `runState`, `fork`, `nextFork` | `workflow_runs.status`, `workflow_runs.stop`, enclosing `parallel` node `workflow_node_executions.ordinal` (`p.ordinal`). |
+| `branchPhase`, `branchOrd` | Controller per-scope state (`controller/index.ts:652-653`, resetting `ordinal` to `1` per `${parallelNx}#${index}`). |
+| `admitted`, `vState`, `vWinner`, `vSess`, `vCycle`, `vSpawned`, `vEndSent`, `vStopOwed`, `vCycleStopSent` | `workflow_node_executions` (`state`, `winner`, `ordinal`, `scope_id`) + `workflow_agent_invocations` (`child_session_id`, `spawned_at`, `end_sent_at`, `end_child_status`). |
+| `sessState`, `sessEndedBy`, `sessEndCount`, `sessTurn`, `sessTurnVisit`, `sessQueue`, `sessCommitted` | Session catalog row (`sessions`), `session.end_requested` mark, Duroxide orchestration queue/status, and `I1` committed turn snapshots. |
+| `wCutAfterDone`, `wStoppingMixed`, `wOwedCutAtRunEnd`, `wCrossForkReplace` | Pure observer latches for non-vacuity witness canaries (read only by `W_*` invariants, never affect transitions). |
+
+## 5. Abstractions, Explicit Assumptions, and Limits
+
+- **Cross-branch session/Stop isolation (explicit assumption, verified in code):** Model state arrays are indexed per branch `b \in Branches`. In code, non-collision across branches is guaranteed by: (1) compiler `WORKFLOW_STATE_ID` uniqueness across the entire Workflow (`compiler.ts:2164, :2227`), (2) `workflowAgentSessionId(runId, stateId[, visit])` hashing `stateId`, and (3) keyed Stop IDs (`workflow-cycle-stop:<nodeExecutionId>` and `workflow-session-stop:<childSessionId>`).
+- **Modeled abstractions vs runtime:**
+  - (a) Cycle/session Stops take effect atomically in `EndVisit`/`EndBranchSession`; asynchronous Stop delivery and reply-limit timeouts are already exhaustively modeled in `WfContinuedSession.tla` (`I1` R2–R5, 134 cases).
+  - (b) Stale sends of an already-decided visit (`afterSpawn` `:sent` Stop) are modeled in `WfContinuedSession.tla` and omitted from `WfBranchContinuedSession.tla` (`SpawnVisit` requires `vState = "pending"`).
+  - (c) A `TurnReport` that loses the `completeAgentNode` CAS transitions `sessTurn` to `"idle"` directly (in code the turn finishes or is stopped by the cut's cycle Stop; the visit itself is never mutated).
+  - (d) `EndBranchSession` clears `vStopOwed` for visits of `s`; in code, `endWorkflowRunAgents` settles owed visit rows while `endContinuedSessionLocked` sends `workflow-session-stop:<childSessionId>` before `cmd: done|cancel`.
+  - (e) `BranchCut` fires from `in_agent` or `after_agent` (cutting from `idle` admits no visit and creates no session).
+  - (f) `PersonEndSession` fires while the session is idle; person-end-during-turn (`G1` residual / `EndMark`) is covered in `WfContinuedSession.tla`.
+  - (g) `readTurnVisit`, `readWorkflowLineage`, and `listAgentInvocationsOfState` share the identical `parallelJoinSql` + `(COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id)` composite key as `readAgentVisitsBefore` and `readAgentInvocationByChild`, and are verified directly by PostgreSQL and HorizonDB store tests (`workflow-branch-session-continue-store.test.js`).
+
+## 6. TLC Receipts (TLC 2.19, Temurin JDK 21.0.13.1, 2 workers)
+
+All 15 `i8.*` cases ran exhaustively with 0 timeouts and 15/15 matching expectations:
+- Safety & liveness PASS (0 errors, 0 deadlocks): `i8.fix-two-branch-safety` (2,700,838 distinct states, 88 s), `i8.fix-two-branch-live` (87,455 states, 13 s), `i8.fix-fail-branch-isolation` (10,398 states, 2 s), `i8.fix-outer-loop-safety` (644,319 states, 20 s), `i8.fix-outer-loop-live` (644,319 states, 101 s), `i8.fix-two-branch-outer-safety` (4,211,022 states, 128 s; 2 branches × 2 forks with cuts, cross-fork replacement, and mixed-branch graceful stop).
+- Deliberate `OrderByNodeOrdinalOnly = TRUE` faults VIOLATED as expected: `i8.fault-node-ordinal-only` (`Inv_MonotonicCycleOrder`, 104 states), `i8.fault-node-ordinal-q5` (`Inv_StoppingKeepsActiveVisit`, 589 states).
+- Non-vacuity witnesses REACHED (7/7): `W_BranchLoopCommitRecall` (40 states), `W_CutPendingStopsVisit` (12 states), `W_CutAfterDoneKeepsReply` (45 states), `W_OuterForkReentry` (145 states), `W_CrossForkReplacement` (56 states), `W_StoppingMixedBranches` (96 states), `W_OwedCutThenRunEnd` (70 states).
+- Pre-existing 134 `WfContinuedSession` cases remain untouched (`cases.tsv` total: 149 cases, `./check-packet.sh` OK).

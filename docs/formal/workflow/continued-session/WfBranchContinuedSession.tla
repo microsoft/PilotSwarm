@@ -71,13 +71,12 @@ VARIABLES
     wCutAfterDone,      \* BOOLEAN: a branch was cut while a completed ("agent") visit's reply turn was still reporting
     wStoppingMixed,     \* BOOLEAN: while runState="stopping", one branch session ended while another branch had a pending visit
     wOwedCutAtRunEnd,   \* BOOLEAN: the run ended while a cut visit still had vStopOwed = TRUE
-    wCrossForkReplace,  \* BOOLEAN: fork 2 allocated a replacement session after fork 1's session ended on its own
-    wStopCollision      \* BOOLEAN: a Stop for branch b1 ever affected a session of branch b2 (always FALSE; checked by invariant)
+    wCrossForkReplace   \* BOOLEAN: fork 2 allocated a replacement session after fork 1's session ended on its own
 
 vars == <<runState, fork, nextFork, branchPhase, branchOrd, admitted, vState, vWinner, vSess, vCycle,
           vSpawned, vEndSent, vStopOwed, vCycleStopSent, vStoppedActive, vStopFailUsed, vSawCommitted,
           sessState, sessEndedBy, sessEndCount, sessTurn, sessTurnVisit, sessQueue, sessCommitted,
-          personEndUsed, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd, wCrossForkReplace, wStopCollision>>
+          personEndUsed, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd, wCrossForkReplace>>
 
 VisitKeys == (1..MaxForks) \X (1..MaxBranchVisits)
 NoVisit == <<0, 0>>
@@ -91,7 +90,7 @@ TrueLt(k1, k2) == (k1[1] < k2[1]) \/ (k1[1] = k2[1] /\ k1[2] < k2[2])
 \* Store query rank: composite (p.ordinal, n.ordinal) under fix, or n.ordinal only under fault
 StoreLt(k1, k2) ==
     IF OrderByNodeOrdinalOnly
-    THEN k1[2] < k2[2]
+    THEN (k1[2] < k2[2]) \/ (k1[2] = k2[2] /\ k1[1] < k2[1])
     ELSE TrueLt(k1, k2)
 
 \* Equivalent to readAgentVisitsBefore(runId, stateId, before):
@@ -105,9 +104,7 @@ VisitsBefore(S, before) == { k \in S : StoreLt(k, before) }
 StoreMax(S) ==
     CHOOSE k \in S :
         \A other \in S :
-            other = k
-            \/ StoreLt(other, k)
-            \/ (OrderByNodeOrdinalOnly /\ other[2] = k[2] /\ other[1] < k[1])
+            other = k \/ StoreLt(other, k)
 
 \* Visits of branch b bound to session s
 VisitsOfSession(b, s) == { k \in admitted[b] : vSess[b][k] = s }
@@ -153,7 +150,6 @@ Init ==
     /\ wStoppingMixed = FALSE
     /\ wOwedCutAtRunEnd = FALSE
     /\ wCrossForkReplace = FALSE
-    /\ wStopCollision = FALSE
 
 \* 1. Enter the parallel state (outer fork p.ordinal = nextFork). Resets per-scope branchOrd to 0!
 EnterParallel ==
@@ -167,7 +163,7 @@ EnterParallel ==
     /\ UNCHANGED <<runState, admitted, vState, vWinner, vSess, vCycle, vSpawned, vEndSent, vStopOwed,
                    vCycleStopSent, vStoppedActive, vStopFailUsed, vSawCommitted, sessState, sessEndedBy,
                    sessEndCount, sessTurn, sessTurnVisit, sessQueue, sessCommitted, personEndUsed,
-                   wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd, wCrossForkReplace, wStopCollision>>
+                   wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd, wCrossForkReplace>>
 
 \* 2. Admit a visit of branch b's continued agent state (WORKFLOW_ACTIVITIES.enter + continuedSessionOf)
 AdmitVisit(b) ==
@@ -203,7 +199,7 @@ AdmitVisit(b) ==
           /\ UNCHANGED <<runState, fork, nextFork, vSpawned, vEndSent, vStopOwed, vCycleStopSent,
                          vStoppedActive, vStopFailUsed, vSawCommitted, sessState, sessEndedBy,
                          sessEndCount, sessTurn, sessTurnVisit, sessQueue, sessCommitted,
-                         personEndUsed, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd, wStopCollision>>
+                         personEndUsed, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd>>
 
 \* 3. Spawn visit k of branch b (spawnAgent: enforces G2 endEarlierVisitsOf, G1 recheck, queues prompt)
 SpawnVisit(b, k) ==
@@ -226,7 +222,7 @@ SpawnVisit(b, k) ==
                          vStopOwed, vCycleStopSent, vStoppedActive, vStopFailUsed, vSawCommitted,
                          sessEndedBy, sessEndCount, sessTurn, sessTurnVisit, sessCommitted,
                          personEndUsed, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd,
-                         wCrossForkReplace, wStopCollision>>
+                         wCrossForkReplace>>
 
 \* 4. Session s of branch b dequeues its next prompt (turn admission: skips already-decided visits)
 StartTurn(b, s) ==
@@ -245,7 +241,7 @@ StartTurn(b, s) ==
                          vSess, vCycle, vSpawned, vEndSent, vStopOwed, vCycleStopSent, vStoppedActive,
                          vStopFailUsed, sessState, sessEndedBy, sessEndCount, sessCommitted,
                          personEndUsed, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd,
-                         wCrossForkReplace, wStopCollision>>
+                         wCrossForkReplace>>
 
 \* 5. Agent calls complete_workflow_node (completeAgentNode CAS): wins only if visit is still pending!
 TurnReport(b, s) ==
@@ -268,7 +264,7 @@ TurnReport(b, s) ==
                          vEndSent, vStopOwed, vCycleStopSent, vStoppedActive, vStopFailUsed,
                          vSawCommitted, sessState, sessEndedBy, sessEndCount,
                          sessQueue, sessCommitted, personEndUsed, wCutAfterDone, wStoppingMixed,
-                         wOwedCutAtRunEnd, wCrossForkReplace, wStopCollision>>
+                         wOwedCutAtRunEnd, wCrossForkReplace>>
 
 \* 6. Post-report reply finishes naturally and commits turn snapshot (memory) to session s (I1)
 TurnFinish(b, s) ==
@@ -282,7 +278,7 @@ TurnFinish(b, s) ==
                          vSess, vCycle, vSpawned, vEndSent, vStopOwed, vCycleStopSent, vStoppedActive,
                          vStopFailUsed, vSawCommitted, sessState, sessEndedBy, sessEndCount, sessQueue,
                          personEndUsed, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd,
-                         wCrossForkReplace, wStopCollision>>
+                         wCrossForkReplace>>
 
 \* 7. endContinuedVisit for a completed visit k:
 \*    - winner="agent" while runState="running": I1 sends NO Stop, marks AgentSessionContinues.
@@ -320,7 +316,7 @@ EndVisit(b, k) ==
     /\ UNCHANGED <<runState, fork, nextFork, branchPhase, branchOrd, admitted, vState, vWinner,
                    vSess, vCycle, vSpawned, vSawCommitted, sessState, sessEndedBy, sessEndCount,
                    sessQueue, sessCommitted, personEndUsed, wCutAfterDone, wStoppingMixed,
-                   wOwedCutAtRunEnd, wCrossForkReplace, wStopCollision>>
+                   wOwedCutAtRunEnd, wCrossForkReplace>>
 
 \* 8. Branch advances after agent visit reported: either loops back (idle) or completes branch (done)
 BranchAdvance(b) ==
@@ -332,7 +328,7 @@ BranchAdvance(b) ==
                    vSpawned, vEndSent, vStopOwed, vCycleStopSent, vStoppedActive, vStopFailUsed,
                    vSawCommitted, sessState, sessEndedBy, sessEndCount, sessTurn, sessTurnVisit,
                    sessQueue, sessCommitted, personEndUsed, wCutAfterDone, wStoppingMixed,
-                   wOwedCutAtRunEnd, wCrossForkReplace, wStopCollision>>
+                   wOwedCutAtRunEnd, wCrossForkReplace>>
 
 \* 9. Branch cut (cancelBranches from failFast / join: { first: k } / parallel.timeoutSeconds)
 \*    - If branch is in_agent with a pending visit k: cancels k (winner="cut"), EndVisit will Stop k.
@@ -359,7 +355,7 @@ BranchCut(b) ==
                    vStopOwed, vCycleStopSent, vStoppedActive, vStopFailUsed, vSawCommitted,
                    sessState, sessEndedBy, sessEndCount, sessTurn, sessTurnVisit, sessQueue,
                    sessCommitted, personEndUsed, wStoppingMixed, wOwedCutAtRunEnd,
-                   wCrossForkReplace, wStopCollision>>
+                   wCrossForkReplace>>
 
 \* 10. Parallel join completes once every branch is done or cut
 JoinParallel ==
@@ -372,7 +368,7 @@ JoinParallel ==
                    vStopOwed, vCycleStopSent, vStoppedActive, vStopFailUsed, vSawCommitted,
                    sessState, sessEndedBy, sessEndCount, sessTurn, sessTurnVisit, sessQueue,
                    sessCommitted, personEndUsed, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd,
-                   wCrossForkReplace, wStopCollision>>
+                   wCrossForkReplace>>
 
 \* 11. Person ends a branch's idle continued session on its own (between visits or across forks)
 PersonEndSession(b, s) ==
@@ -388,7 +384,7 @@ PersonEndSession(b, s) ==
                    vSess, vCycle, vSpawned, vEndSent, vStopOwed, vCycleStopSent, vStoppedActive,
                    vStopFailUsed, vSawCommitted, sessEndCount, sessTurn, sessTurnVisit, sessQueue,
                    sessCommitted, wCutAfterDone, wStoppingMixed, wOwedCutAtRunEnd,
-                   wCrossForkReplace, wStopCollision>>
+                   wCrossForkReplace>>
 
 \* 12. Graceful stop requested (run.stop != null): no new visits admitted; pending visits finish
 RequestGracefulStop ==
@@ -400,7 +396,7 @@ RequestGracefulStop ==
                    vSpawned, vEndSent, vStopOwed, vCycleStopSent, vStoppedActive, vStopFailUsed,
                    vSawCommitted, sessState, sessEndedBy, sessEndCount, sessTurn, sessTurnVisit,
                    sessQueue, sessCommitted, personEndUsed, wCutAfterDone, wStoppingMixed,
-                   wOwedCutAtRunEnd, wCrossForkReplace, wStopCollision>>
+                   wOwedCutAtRunEnd, wCrossForkReplace>>
 
 \* 13. Run completes normally (outside parallel after at least one fork) or finishes graceful stop
 FinishRun ==
@@ -426,7 +422,7 @@ FinishRun ==
     /\ UNCHANGED <<fork, nextFork, branchOrd, admitted, vSess, vCycle, vSpawned, vEndSent, vStopOwed,
                    vCycleStopSent, vStoppedActive, vStopFailUsed, vSawCommitted, sessState,
                    sessEndedBy, sessEndCount, sessTurn, sessTurnVisit, sessQueue, sessCommitted,
-                   personEndUsed, wCutAfterDone, wStoppingMixed, wCrossForkReplace, wStopCollision>>
+                   personEndUsed, wCutAfterDone, wStoppingMixed, wCrossForkReplace>>
 
 \* 14. endWorkflowContinuedSessions -> endContinuedSessionLocked for branch b, session s:
 \*     Reads readAgentInvocationByChild(s) via StoreMax(VisitsOfSession(b, s)).
@@ -451,7 +447,7 @@ EndBranchSession(b, s) ==
     /\ UNCHANGED <<runState, fork, nextFork, branchPhase, branchOrd, admitted, vState, vWinner,
                    vSess, vCycle, vSpawned, vEndSent, vCycleStopSent, vStoppedActive, vStopFailUsed,
                    vSawCommitted, sessQueue, sessCommitted, personEndUsed, wCutAfterDone,
-                   wOwedCutAtRunEnd, wCrossForkReplace, wStopCollision>>
+                   wOwedCutAtRunEnd, wCrossForkReplace>>
 
 \* Stutter step once run is terminal and all non-failing sessions are ended (prevents spurious deadlock)
 Quiescent ==
@@ -517,11 +513,11 @@ TypeOK ==
             /\ sessTurn[b][s] \in {"idle", "running", "reporting"}
             /\ sessTurnVisit[b][s] \in (VisitKeys \cup {NoVisit})
 
-\* Concurrent named-branch isolation: at most one live session per branch, each ended at most once,
-\* and no turn or Stop crosses branch boundaries.
+\* Per-branch session discipline: at most one live session per branch, each ended at most once,
+\* and every running turn belongs to an admitted visit of its own session (cross-branch non-collision
+\* holds by construction from Workflow-unique stateIds and stateId-hashed session/Stop keys).
 Inv_BranchIsolation ==
-    /\ ~wStopCollision
-    /\ \A b \in Branches :
+    \A b \in Branches :
         /\ Cardinality({ s \in SessIds : sessState[b][s] = "live" }) <= 1
         /\ \A s \in SessIds :
             /\ sessEndCount[b][s] <= 1

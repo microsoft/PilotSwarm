@@ -403,6 +403,10 @@ I8_CASES = [
   i8c(branches=("A",), forks=2, visits=2, cut=True, stopfail=True, personend=True, stop=True, cancel=True),
   I8_SAFE, ["Prop_AllEnded"], "PASS", True,
   "I8 outer-loop liveness: 2 forks x 2 visits with owed cut Stops and cross-fork replacements: every session ends and no Stop remains owed."),
+ ("i8.fix-two-branch-outer-safety", "proposal", "proposed-fix", "Spec",
+  i8c(branches=("A", "B"), forks=2, visits=1, cut=True, stopfail=False, personend=True, stop=True, cancel=False),
+  I8_SAFE, [], "PASS", True,
+  "I8 two-branch outer-loop safety: 2 concurrent named branches x 2 forks with cuts, cross-fork replacements, and mixed-branch graceful stop (Q5)."),
  # Deliberate faults: bare n.ordinal ordering (OrderByNodeOrdinalOnly = TRUE) breaks both monotonic cycles and Q5 graceful stop!
  ("i8.fault-node-ordinal-only", "deliberate", "deliberate", "Spec",
   i8c(branches=("A",), forks=2, visits=2, cut=False, stopfail=False, personend=False, stop=False, cancel=False, nodeordonly=True),

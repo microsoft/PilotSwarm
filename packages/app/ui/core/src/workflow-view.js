@@ -1249,7 +1249,7 @@ function visitScopes(list, parallelVisit) {
 
 function nodeView(node, executions, context) {
     const kind = workflowKind(node);
-    const list = executions.filter(item => item.stateId === node.id).sort((a, b) => compareWorkflowVisitRank(a, b, executions));
+    const list = executions.filter(item => item.stateId === node.id).sort((a, b) => compareWorkflowVisitRank(a, b));
     // R2-UI-4: visit numbers count within a scope (the root, or one branch of one parallel visit). Each scope's pending
     // visit is stale only against an ended visit of the same scope, and a branch step says its branches' state in the
     // parallel step's shown visit: running while any of them runs, else its latest ended visit there.

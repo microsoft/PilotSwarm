@@ -10998,6 +10998,56 @@
   }
  },
  {
+  "id": "i8.fix-two-branch-outer-safety",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.fix-two-branch-outer-safety.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_BranchIsolation",
+   "Inv_CutPendingStopsVisit",
+   "Inv_NoStopOnActiveDone",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_MonotonicCycleOrder",
+   "Inv_StoppingKeepsActiveVisit",
+   "Inv_ReplacementDistinct"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 two-branch outer-loop safety: 2 concurrent named branches x 2 forks with cuts, cross-fork replacements, and mixed-branch graceful stop (Q5).",
+  "tlc": {
+   "comment": "i8.fix-two-branch-outer-safety (expected PASS): I8 two-branch outer-loop safety: 2 concurrent named branches x 2 forks with cuts, cross-fork replacements, and mixed-branch graceful stop (Q5).",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\", \"B\"}",
+    "MaxForks": "2",
+    "MaxBranchVisits": "1",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "TRUE",
+    "AllowGracefulStop": "TRUE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_BranchIsolation",
+    "Inv_CutPendingStopsVisit",
+    "Inv_NoStopOnActiveDone",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_MonotonicCycleOrder",
+    "Inv_StoppingKeepsActiveVisit",
+    "Inv_ReplacementDistinct"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
   "id": "i8.fault-node-ordinal-only",
   "module": "WfBranchContinuedSession",
   "config": "i8.fault-node-ordinal-only.cfg",

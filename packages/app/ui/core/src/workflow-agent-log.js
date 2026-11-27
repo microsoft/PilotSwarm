@@ -405,7 +405,8 @@ export function workflowAgentNodeLog({ node, events = [], agentSessions = new Ma
         const started = visit.enteredAt ? workflowNodeClock(visit.enteredAt, now) : null;
         // UI-10: the visit's start (its prompt) is not loaded while the session has older events: the group is not complete.
         const truncated = !waiting && Boolean(agentSessionId) && covered.get(agentSessionId)?.hasOlder === true && !rows.some(row => row.label === "Prompt");
-        const cycle = node?.session === "continue" ? (spawnedCycles.get(visit.id) ?? fallbackCycles.get(visit.id) ?? null) : null;
+        const inBranch = Boolean(visit.branch?.parallelNodeExecutionId || (Number.isSafeInteger(visit.parallelOrdinal) && visit.parallelOrdinal > 0));
+        const cycle = node?.session === "continue" && inBranch ? (spawnedCycles.get(visit.id) ?? fallbackCycles.get(visit.id) ?? null) : null;
         const cycleLabel = Number.isSafeInteger(cycle) && cycle !== visit.ordinal ? ` · cycle ${cycle}` : "";
         return {
             visitId: visit.id, ordinal: visit.ordinal ?? null, agentSessionId, loading: waiting, truncated, older: truncated ? workflowAgentLogOlder(covered.get(agentSessionId)) : null,
