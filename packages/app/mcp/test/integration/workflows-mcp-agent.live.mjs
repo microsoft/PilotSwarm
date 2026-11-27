@@ -153,6 +153,7 @@ function mcpToolsToOpenAI(tools) {
         name: t.name,
         description: t.description || "",
         parameters: sanitizeJsonSchemaForOpenAI(t.inputSchema),
+        strict: false,
     }));
 }
 
@@ -205,9 +206,7 @@ async function runOpenAILoop(modelCfg, client, mcpInstructions, tools, prompt) {
             break;
         }
         for (const item of output) {
-            if (item.type === "function_call" || item.type === "message") {
-                input.push(item);
-            }
+            input.push(item);
         }
         for (const call of fnCalls) {
             toolCallsUsed += 1;
