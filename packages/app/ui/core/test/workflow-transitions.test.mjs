@@ -19,7 +19,7 @@ import {
     layoutWorkflowGraphTB, workflowGraphEdgeKey, workflowGraphEdgeKeys, workflowGraphErrorEdgeKey, workflowGroupId, workflowJoinId,
 } from "../src/workflow-graph-layout.js";
 import {
-    WORKFLOW_LIT_TRANSITIONS, workflowEdgeShown, workflowEndReached, workflowErrorTransitions, workflowJoinShown, workflowLanePill, workflowLitLevel,
+    WORKFLOW_LIT_TRANSITIONS, workflowEdgeShown, workflowEndReached, workflowErrorMarks, workflowErrorTransitions, workflowJoinShown, workflowLanePill, workflowLitLevel,
     workflowLitTransitions, workflowStepMarks, workflowTransitions,
 } from "../src/workflow-transitions.js";
 import { WorkflowGraph, WorkflowStepCard } from "../../react/src/workflow-graph.js";
@@ -240,6 +240,34 @@ test("a route drawn as an error handler or a chip is keyed by it; each transitio
     assert.equal(unknown[1].edgeKey, "chip:gate:failed");
 });
 
+test("R3: an error mark points at the visit that threw; an error a step took is handled, one that ended the run is not", () => {
+    // The gate throws on its second visit and the error ends the run at failed: not handled, marked at the gate's visit.
+    const failedRun = [
+        visit("nx-0", "fetch", 0, { status: "completed", outcome: "ok", resultKind: "business" }),
+        visit("nx-1", "review", 10, { status: "completed", outcome: "approved", resultKind: "business" }),
+        visit("nx-2", "gate", 20, { status: "completed", outcome: "execution_failed", resultKind: "runtime_error", errorWords: "the script stopped with an error: boom" }),
+        visit("nx-3", "failed", 30),
+    ];
+    assert.deepEqual(workflowErrorMarks(failedRun, GATED),
+        [{ at: 2, step: "gate", handler: 3, handlerStep: "failed", handled: false, words: "✕ script failed" }]);
+    // A catch-all arrival: marked at the step whose error it took.
+    const caught = [visit("nx-0", "review", 0, { status: "completed", outcome: "timed_out", resultKind: "runtime_error" }),
+        visit("nx-1", "failed", 10, { catchAll: true })];
+    assert.deepEqual(workflowErrorMarks(caught, GATED).map(mark => [mark.at, mark.step, mark.handler, mark.handled]), [[0, "review", 1, false]]);
+    // The review's failure route goes on to a step that records it: handled, and the mark links that step's visit.
+    const RECORDED = workflowDefinition({ revision: 1, initial: "review", states: [
+        { id: "review", type: "script", outcomes: ["approved"], next: { approved: "done", failure: "record" } },
+        { id: "record", type: "script", outcomes: ["recorded"], next: { recorded: "done" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+    ] });
+    const handled = workflowErrorMarks([visit("nx-0", "review", 0, { status: "completed", outcome: "execution_failed", resultKind: "runtime_error" }),
+        visit("nx-1", "record", 10, { status: "completed", outcome: "recorded", resultKind: "business" }), visit("nx-2", "done", 20)], RECORDED);
+    assert.deepEqual(handled.map(mark => [mark.at, mark.step, mark.handler, mark.handlerStep, mark.handled]), [[0, "review", 1, "record", true]]);
+    // Its transitions are unchanged by the marks; no visits, no marks.
+    assert.deepEqual(workflowErrorTransitions(workflowTransitions(failedRun, GATED)), [3]);
+    assert.deepEqual(workflowErrorMarks(null, GATED), []);
+});
+
 test("the moment shown: what the run had taken by then, the transition shown, the end reached and the error marks", () => {
     const run = [
         visit("nx-0", "fetch", 0, { status: "completed", outcome: "ok", resultKind: "business" }),
@@ -431,6 +459,22 @@ test("the bar: Live by default (Latest once ended), Play off with its reason; hi
     for (const label of ["Step back", "Play", "Step on"]) assert.match(button(empty, label), /aria-disabled="true"/, label);
     // Load older visits: its name whole; "Older" on a phone.
     assert.match(render({ onOlder() {} }), /aria-label="Load older visits"[^>]*>.*Load older visits.*Older/);
+});
+
+test("R3: an error mark sits at the visit that threw; at that visit a handled error links the handler's visit", () => {
+    const render = props => renderToStaticMarkup(React.createElement(ReplayBar, { frames: FRAMES, index: null, playing: false,
+        onGo() {}, onPlay() {}, onPause() {}, ...props }));
+    const handled = [{ at: 1, step: "wait", handler: 2, handlerStep: "check", handled: true, words: "✕ script failed" }];
+    const live = render({ errors: handled });
+    // The mark is at the throwing visit (wait, visit 2 of the timeline), and its tooltip says who handled it.
+    assert.match(live, /data-action="replay-error" aria-label="Show the error at [^"]*wait visit 2" title="Error: [^"]*wait visit 2 · handled by check"/, live);
+    assert.ok(!live.includes("replay-handler"), "Live has no handler link");
+    // At the throwing visit: "handled by check ›" shows the handler's visit.
+    const at = render({ errors: handled, index: 1 });
+    assert.match(at, /data-action="replay-handler"[^>]*>handled by check ›<\/button>/);
+    // Not handled (the run ended on it): no link. A plain index (as before) is still a mark at that visit.
+    assert.ok(!render({ errors: [{ ...handled[0], handled: false }], index: 1 }).includes("replay-handler"));
+    assert.match(render({ errors: [3] }), /aria-label="Show the error at [^"]*done visit 4" title="Error: [^"]*done visit 4"/);
 });
 
 // UXP-TL-04 (owner, TEST at 09d98247): the thumb jittered on a long running run, as the loaded visits changed at both ends.

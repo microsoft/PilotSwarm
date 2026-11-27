@@ -17,7 +17,7 @@ import { projectWorkflow } from "../src/workflow-view.js";
 import { workflowNodeSummary } from "../src/workflow-node-summary.js";
 import { workflowAgentNodeLog } from "../src/workflow-agent-log.js";
 import { workflowAgentModel, workflowModelFromKey, workflowModelWords, workflowSessionModel, workflowSessionModelKey, workflowSpawnedModels,
-    workflowStartModels } from "../src/workflow-words.js";
+    workflowStartAgentChoices, workflowStartAgentModels, workflowStartModels } from "../src/workflow-words.js";
 import { StartDialog } from "../../react/src/workflow-tab.js";
 import { workflowPickerItems } from "../src/controller.js";
 import { workflowPickerDetailsLines } from "../src/selectors.js";
@@ -178,6 +178,27 @@ test("the Start dialog shows what each agent node will use: the session's model,
     const html = render(workflowStartModels(states, { chosen: CHOSEN, sessionModel: SESSION_MODEL }));
     assert.match(html, /data-field="models"><span class="ps-wf-label">Models<\/span><ul class="ps-wf-models"><li>classify: anthropic:fast · low reasoning · long context · chosen at start<\/li><li>review: from the session · now azure:chat-model · medium reasoning<\/li><\/ul>/);
     assert.ok(!render([]).includes('data-field="models"'), "no agent nodes: no Models field");
+});
+
+test("O1: the Start dialog lets the person pick a model per agent node; the picks become the start's agentModels", async () => {
+    // The choices: the catalog's provider:model names, each once; Decision models and bare names left out.
+    assert.deepEqual(workflowStartAgentChoices([{ qualifiedName: "azure:gpt-a" }, "azure:gpt-b", { qualifiedName: "azure:gpt-a" },
+        { qualifiedName: "dec:decision-1", modelKind: "decision" }, { qualifiedName: "bare" }, null]), ["azure:gpt-a", "azure:gpt-b"]);
+    assert.deepEqual(workflowStartAgentChoices(null), []);
+    // The map: only agent nodes with a pick; none picked sends no map (the start is as before).
+    const entries = workflowStartModels(states, { sessionModel: SESSION_MODEL });
+    assert.deepEqual(workflowStartAgentModels(entries, { review: "azure:gpt-b", classify: "", done: "azure:gpt-a" }), { review: { model: "azure:gpt-b" } });
+    assert.equal(workflowStartAgentModels(entries, {}), null);
+    assert.equal(workflowStartAgentModels(entries, { classify: " " }), null);
+    // With the catalog known, each agent node has a picker whose first choice is the session's model.
+    const props = { controller: {}, sessionId: "def-1", name: "triage", number: 2, models: entries, agentChoices: ["azure:gpt-a", "azure:gpt-b"],
+        publication: { inputsSchema: null, revision: 1, publishedRevision: 1, state: "published", valid: true }, control: { operation: "start", enabled: true },
+        startWith: async () => ({ ok: true }), onClose: () => {}, onStarted: () => {} };
+    const html = renderToStaticMarkup(React.createElement(StartDialog, props));
+    assert.match(html, /<li data-agent-node="review"><label><span>review: <\/span><select class="ps-workflow-input" aria-label="Model for review"><option value="" selected="">from the session · now azure:chat-model · medium reasoning<\/option><option value="azure:gpt-a">azure:gpt-a<\/option><option value="azure:gpt-b">azure:gpt-b<\/option><\/select><\/label><\/li>/);
+    // Run again (a source) and Start another (onAsk) keep the read-only words: they reuse the Workflow's own choices.
+    const again = renderToStaticMarkup(React.createElement(StartDialog, { ...props, source: { number: 1, inputs: {} } }));
+    assert.ok(!again.includes("data-agent-node") && again.includes("<li>review: from the session · now azure:chat-model · medium reasoning</li>"), again);
 });
 
 test("DEV at fed7e7ac: a run whose stored choices cannot be read says so for its agent nodes, never the session's model", () => {

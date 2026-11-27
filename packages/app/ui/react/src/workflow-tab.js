@@ -13,8 +13,10 @@ import {
     workflowDrawableInput, workflowInputsShape, workflowRunInputs, workflowStartAnotherShape,
     workflowApprovalView,
 } from "../../core/src/workflow-commands.js";
-import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowStartModels, workflowTimeTitle,
+import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowStartAgentChoices, workflowStartAgentModels,
+    workflowStartModels, workflowTimeTitle,
 } from "../../core/src/workflow-words.js";
+import { workflowRunSelectedNode, workflowRunSwitched } from "../../core/src/workflow-run-picker.js";
 import {
     normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection,
     workflowDecisionOverrideMap, workflowDecisionUnavailableText, workflowStartDecisionModels,
@@ -22,7 +24,7 @@ import {
 import { AUTO_HISTORY_EVENT_SOFT_CAP, SESSION_NAV_SETTLE_MS } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import {
-    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorTransitions, workflowLitTransitions, workflowTransitions,
+    WORKFLOW_LIT_TRANSITIONS, workflowEndReached, workflowErrorMarks, workflowLitTransitions, workflowTransitions,
 } from "../../core/src/workflow-transitions.js";
 import {
     WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogSessions, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
@@ -448,21 +450,25 @@ const PANEL_ROOM_ABOVE = 190;
  * height is remembered per device class in the profile settings (workflowPanelHeights). With `side` (OF-S2-1: a desktop
  * in full screen or zen, workflowPanelIsSide), the same panel is a column to the right of the graph instead (SidePanel).
  */
-export function BottomPanel({ controller, panels, panel, onPanel, mobile, children, extra = null, side = false }) {
-    if (side && !mobile) return h(SidePanel, { controller, panels, panel, onPanel, extra }, children);
-    return h(UnderPanel, { controller, panels, panel, onPanel, mobile, extra }, children);
+export function BottomPanel({ controller, panels, panel, onPanel, mobile, children, extra = null, side = false, steps = null }) {
+    if (side && !mobile) return h(SidePanel, { controller, panels, panel, onPanel, extra, steps }, children);
+    return h(UnderPanel, { controller, panels, panel, onPanel, mobile, extra, steps }, children);
 }
 
-/** The panel's tab buttons: one per panel; a second click on the shown one closes it (not on a phone, whose sheet has Back). */
-function PanelTabs({ panels, panel, onPanel, mobile = false, vertical = false }) {
+/**
+ * The panel's tab buttons: one per panel; a second click on the shown one closes it (not on a phone, whose sheet has Back).
+ * UX round 1 (P2): `steps` names what a tab holds ({ node: "review" }), shown after its label ("Node · review").
+ */
+function PanelTabs({ panels, panel, onPanel, mobile = false, vertical = false, steps = null }) {
     const labels = { node: "Node", log: "Log", variables: "Variables", revisions: "Revisions", test: "Test" };
     return h("div", { className: "ps-wf-panel-tabs", role: "tablist", "aria-label": "Workflow panel", ...(vertical ? { "aria-orientation": "vertical" } : {}) },
         panels.map(id => h("button", { key: id, type: "button", role: "tab", "aria-selected": panel === id, className: panel === id ? "is-on" : "",
-            onClick: () => onPanel(panel === id && !mobile ? null : id) }, labels[id])));
+            onClick: () => onPanel(panel === id && !mobile ? null : id) }, labels[id],
+        typeof steps?.[id] === "string" && steps[id] ? h("span", { className: "ps-wf-panel-tab-step", "data-step": steps[id] }, ` · ${steps[id]}`) : null)));
 }
 
 /** The bottom panel, as it was (normal mode, and a phone's sheet). */
-function UnderPanel({ controller, panels, panel, onPanel, mobile, children, extra = null }) {
+function UnderPanel({ controller, panels, panel, onPanel, mobile, children, extra = null, steps = null }) {
     const sheetRef = React.useRef(null);
     const device = mobile ? "phone" : "desktop";
     const stored = useControllerSelector(controller, state => state.ui.workflowPanelHeights?.[device] ?? null);
@@ -498,7 +504,7 @@ function UnderPanel({ controller, panels, panel, onPanel, mobile, children, extr
             if (!closedByBack && window.history.state?.psWorkflowSheet) window.history.back();
         };
     }, [mobile, Boolean(panel)]);
-    const tabs = h(PanelTabs, { panels, panel, onPanel, mobile });
+    const tabs = h(PanelTabs, { panels, panel, onPanel, mobile, steps });
     if (!panel) return h("div", { ref: sheetRef, className: "ps-wf-panel is-closed" }, tabs, extra);
     const onPointerDown = event => {
         if (event.button !== undefined && event.button !== 0) return;
@@ -552,7 +558,7 @@ const SIDE_PANEL_BIG_STEP = 64;
  * width is remembered in the profile settings (workflowPanelWidths). Closed, it is a slim strip at the right edge with
  * the tabs stacked, so one click opens it.
  */
-function SidePanel({ controller, panels, panel, onPanel, children, extra = null }) {
+function SidePanel({ controller, panels, panel, onPanel, children, extra = null, steps = null }) {
     const columnRef = React.useRef(null);
     const stored = useControllerSelector(controller, state => state.ui.workflowPanelWidths?.desktop ?? null);
     const [dragWidth, setDragWidth] = React.useState(null);
@@ -574,7 +580,7 @@ function SidePanel({ controller, panels, panel, onPanel, children, extra = null 
     const width = workflowPanelWidth({ desktop: dragWidth ?? stored ?? undefined }, room);
     const keep = next => controller.dispatch({ type: "ui/workflowPanelWidth", width: next === null ? null : workflowPanelWidth({ desktop: next }, room) });
     if (!panel) {
-        return h("div", { ref: columnRef, className: "ps-wf-panel is-side is-closed" }, h(PanelTabs, { panels, panel, onPanel, vertical: true }), extra);
+        return h("div", { ref: columnRef, className: "ps-wf-panel is-side is-closed" }, h(PanelTabs, { panels, panel, onPanel, vertical: true, steps }), extra);
     }
     const onPointerDown = event => {
         if (event.button !== undefined && event.button !== 0) return;
@@ -609,7 +615,7 @@ function SidePanel({ controller, panels, panel, onPanel, children, extra = null 
             title: "Drag, or use the arrow keys, to resize. Double-click puts it back.",
             onPointerDown, onKeyDown, onDoubleClick: () => keep(null) }),
         h("div", { className: "ps-wf-panel-bar" },
-            h(PanelTabs, { panels, panel, onPanel }), extra,
+            h(PanelTabs, { panels, panel, onPanel, steps }), extra,
             h("button", { type: "button", className: "ps-wf-panel-close", "aria-label": "Close the panel", title: "Close", onClick: () => onPanel(null) }, "✕")),
         h("div", { className: "ps-wf-panel-body" }, children));
 }
@@ -678,8 +684,8 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     const side = workflowPanelIsSide(displayMode, mobile);
     const select = id => {
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: id } });
-        // A desktop click opens the node's facts; a phone tap only selects, and a second tap opens them (12).
-        if (!mobile || id === view.selectedNodeId) setTab({ definitionPanel: "node" });
+        // A click, or a phone's tap (UX round 1, P2), opens the node's facts.
+        setTab({ definitionPanel: "node" });
     };
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: `session:${sessionId}`, steps, at: Date.now() }),
         [controller, sessionId]);
@@ -979,8 +985,9 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         ? { ...workflowLitTransitions(transitions, shownIndex, WORKFLOW_LIT_TRANSITIONS), flow: !ended,
             endReached: workflowEndReached(transitions, rootEnds, shownIndex) } : null),
     [timeline, transitions, shownIndex, frames.length, ended, rootEnds]);
-    // The timeline marks error transitions in red, so a person can jump to them.
-    const errorMarks = React.useMemo(() => workflowErrorTransitions(transitions), [transitions]);
+    // The timeline marks error transitions in red, so a person can jump to them; UX round 1 (R3): each mark shows the visit
+    // that threw, and says (and links) the step that handled the error.
+    const errorMarks = React.useMemo(() => workflowErrorMarks(visits, child.definition), [visits, child.definition]);
     const logReplay = React.useMemo(() => replay ? {
         visits: new Set(frames.map(item => item.nodeExecutionId)), current: frame?.nodeExecutionId ?? null,
         onVisit: id => { const index = frames.findIndex(item => item.nodeExecutionId === id); if (index >= 0) { setPlaying(false); goTo(index); } },
@@ -989,9 +996,16 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     } : null, [Boolean(replay), frames, frame?.nodeExecutionId, child.olderEvents, controller, sessionId]);
     const nodes = replayed ? replayed.nodes : child.nodes;
     const graph = child.definition;
-    const chosen = nodeStateId && view.selectedNodeId == null ? nodeStateId : view.selectedNodeId;
-    const selected = nodes.find(node => node.id === chosen) || (projection ? nodes.find(node => node.pending) : null)
-        || nodes.find(node => node.id === graph?.initial) || nodes[0] || null;
+    // UX round 1 (R2): switching from another run shows this one with no step selected (its own earlier choice included).
+    const switched = React.useRef(workflowRunSwitched(tab.shownRun ?? null, sessionId));
+    React.useEffect(() => {
+        if (switched.current && view.selectedNodeId != null) controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: null } });
+        switched.current = false;
+        if (tab.shownRun !== sessionId) setTab({ shownRun: sessionId });
+    }, [sessionId]);
+    const chosen = nodeStateId && view.selectedNodeId == null ? nodeStateId : switched.current ? null : view.selectedNodeId;
+    // UX round 1 (R2, G4): the step chosen, else a running Workflow's pending step; an ended run has none by default.
+    const selected = workflowRunSelectedNode(nodes, chosen ?? null);
     const state = workflowStateOf(session, view);
     const runCommand = view.runCommand ?? null;
     const runControls = React.useMemo(() => workflowRunControls(readModel, runCommand), [readModel, runCommand]);
@@ -1025,11 +1039,13 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const panel = WORKFLOW_RUN_PANELS.includes(tab.runPanel) ? tab.runPanel : null;
     // OF-S2-1: full screen and zen on a desktop put the panel beside the graph.
     const side = workflowPanelIsSide(displayMode, mobile);
-    const select = (id, { open = false } = {}) => {
+    const select = id => {
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: id } });
-        // A tap selects; a second tap on the selected node, or a desktop click, opens its details (12).
-        if (open || !mobile || id === view.selectedNodeId) setTab({ runPanel: "node" });
+        // A click, or a phone's tap (UX round 1, P2), selects the step and opens its details.
+        setTab({ runPanel: "node" });
     };
+    // UX round 1 (P1): where a phone's graph controls go (the panel's bar).
+    const [dock, setDock] = React.useState(null);
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: `session:${sessionId}`, steps, at: Date.now() }),
         [controller, sessionId]);
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }), [controller, sessionId]);
@@ -1079,7 +1095,9 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
             h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry")) : null,
         notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"),
-            panel, mobile, side, onPanel: id => setTab({ runPanel: id }) },
+            panel, mobile, side, onPanel: id => setTab({ runPanel: id }), steps: selected ? { node: selected.id } : null,
+            // UX round 1 (P1): a phone's graph controls sit in the panel's bar, never over the steps.
+            extra: phone ? h("span", { ref: setDock, className: "ps-workflow-graph-dock" }) : null },
             panel === "node" ? h(RunNodePanel, { controller, child: replayed ? { ...child, nodes } : child, selected, replayFrame: replayed ? frame : null,
                 visits, onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
             panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
@@ -1089,7 +1107,8 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                 : null) },
         h("div", { className: "ps-wf-main" },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
-                places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), lit })
+                places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), lit,
+                reveal: chosen ?? null, dock: phone ? dock : null })
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         // The timeline stays with the graph (OF-S2-1).
@@ -1185,6 +1204,11 @@ export function ReplayBar({ frames, index, playing, ended = false, startMs = nul
         onGo(Math.min(to, newest));
     };
     const liveWord = ended ? "Latest" : "Live";
+    const marks = (Array.isArray(errors) ? errors : []).map(item => (Number.isSafeInteger(item) ? { at: item } : item))
+        .filter(mark => mark && Number.isSafeInteger(mark.at) && mark.at >= 0 && mark.at < count);
+    // R3: at a visit whose error a step took, a link to that step's visit.
+    const handledHere = live ? null : marks.find(mark => mark.at === index && mark.handled === true && Number.isSafeInteger(mark.handler)
+        && mark.handler >= 0 && mark.handler < count && mark.handler !== index) ?? null;
     const words = count === 0 ? "No steps yet"
         : live ? `${liveWord} · ${workflowReplayLabel(frames[newest])}`
             : `${workflowReplayLabel(frames[index])} · ${newest - index} newer`;
@@ -1203,13 +1227,17 @@ export function ReplayBar({ frames, index, playing, ended = false, startMs = nul
             h("input", { id, type: "range", className: "ps-wf-replay-range", min: scale.min, max: scale.max, step: "any",
                 value: count ? frames[position].atMs : scale.min, disabled: count === 0, "aria-valuetext": words,
                 onChange: event => slide(Number(event.target.value)), onKeyDown: keys }),
-            // Owner 2026-11-26: each error transition is a red mark on the timeline; a click shows it.
-            errors.filter(at => Number.isSafeInteger(at) && at >= 0 && at < count).map(at => h("button", { key: frames[at].nodeExecutionId, type: "button",
-                className: "ps-wf-replay-error", "data-action": "replay-error", "aria-label": `Show the error at ${workflowReplayLabel(frames[at])}`,
-                title: `Error: ${workflowReplayLabel(frames[at])}`,
-                style: { left: `${((frames[at].atMs - scale.min) / Math.max(1, scale.max - scale.min)) * 100}%` }, onClick: () => onGo(at) }))),
+            // Owner 2026-11-26: each error transition is a red mark on the timeline; a click shows it. UX round 1 (R3): a mark
+            // (workflowErrorMarks) shows the visit that threw and says the step that handled it; a plain index is that visit.
+            marks.map(mark => h("button", { key: `${frames[mark.at].nodeExecutionId}:${mark.handler ?? mark.at}`, type: "button",
+                className: "ps-wf-replay-error", "data-action": "replay-error", "aria-label": `Show the error at ${workflowReplayLabel(frames[mark.at])}`,
+                title: `Error: ${workflowReplayLabel(frames[mark.at])}${mark.handled && mark.handlerStep ? ` · handled by ${mark.handlerStep}` : ""}`,
+                style: { left: `${((frames[mark.at].atMs - scale.min) / Math.max(1, scale.max - scale.min)) * 100}%` }, onClick: () => onGo(mark.at) }))),
         h("span", { className: "ps-wf-replay-label", title: count === 0 ? undefined
             : workflowTimeTitle(frames[live ? newest : index].atMs) ?? undefined }, words),
+        handledHere ? h("button", { type: "button", className: "ps-link-button ps-wf-replay-handled", "data-action": "replay-handler",
+            title: `The error was handled: show ${handledHere.handlerStep}'s visit`, onClick: () => onGo(handledHere.handler) },
+        `handled by ${handledHere.handlerStep} ›`) : null,
         // Live while the graph is live: pressed, and (UXFD-F15) off but still focusable, its title saying why.
         h("button", { type: "button", className: `ps-mini-button ps-wf-replay-live${live && count > 0 ? " is-on" : ""}`, "data-action": "replay-live",
             "aria-disabled": live ? "true" : undefined, "aria-pressed": live, title: live ? `Showing ${liveWord.toLowerCase()}` : `Back to ${liveWord}`,
@@ -1678,7 +1706,7 @@ export function DecisionAvailabilityNotice({ states, decision, admin = false }) 
  * same ones (inputs undefined), unless the person chooses to give others.
  */
 export function StartDialog({ controller, sessionId, publication, control = null, name, number, onClose, onStarted, onAsk = null, source = null,
-    startWith = null, models = null, decision = null }) {
+    startWith = null, models = null, decision = null, agentChoices = null }) {
     const schema = publication.inputsSchema && typeof publication.inputsSchema === "object" ? publication.inputsSchema : null;
     const properties = schema?.properties && typeof schema.properties === "object" ? schema.properties : {};
     const keys = Object.keys(properties);
@@ -1736,6 +1764,21 @@ export function StartDialog({ controller, sessionId, publication, control = null
         return { revision, values, stale };
     });
     const canOverrideDecisions = !source && !onAsk;
+    // UX round 1 (O1): a new start from a revision (not Run again, not Start another) may pick a model for each agent node,
+    // from the portal's model catalog (`agentChoices` when given, else read once); until the catalog is known, or when it
+    // cannot be read, the nodes keep the read-only words. The engine checks each pick against the owning session's catalog.
+    const canPickAgents = Boolean(startWith) && !source && !onAsk && Array.isArray(models) && models.some(entry => entry?.kind === "agent");
+    const [loadedChoices, setLoadedChoices] = React.useState(null);
+    React.useEffect(() => {
+        const read = controller?.transport?.listModels;
+        if (!canPickAgents || Array.isArray(agentChoices) || typeof read !== "function") return undefined;
+        let live = true;
+        Promise.resolve().then(() => read.call(controller.transport))
+            .then(list => { if (live) setLoadedChoices(workflowStartAgentChoices(list)); }, () => {});
+        return () => { live = false; };
+    }, [canPickAgents]);
+    const agentModelChoices = canPickAgents ? (Array.isArray(agentChoices) ? agentChoices : loadedChoices) ?? [] : [];
+    const [agentPicks, setAgentPicks] = React.useState({});
     const toJson = () => { setJsonText(JSON.stringify(values, null, 2)); setAsJson(true); };
     const send = async () => {
         if (busy || decisionBlocked) return;
@@ -1758,7 +1801,9 @@ export function StartDialog({ controller, sessionId, publication, control = null
         if (startWith) {
             // Run again keeps the run's Decision models unless one is no longer eligible (then the dialog's reconciled map).
             const sentDecisions = workflowStartDecisionModels(models, decisionOverrides, { runAgain: Boolean(source) });
-            const started = await startWith({ inputs: inputs ?? {}, vars, ...(sentDecisions ? { decisionModels: sentDecisions } : {}) });
+            const agentModels = canPickAgents ? workflowStartAgentModels(models, agentPicks) : null;
+            const started = await startWith({ inputs: inputs ?? {}, vars, ...(agentModels ? { agentModels } : {}),
+                ...(sentDecisions ? { decisionModels: sentDecisions } : {}) });
             setBusy(false);
             if (started?.ok) onStarted(started);
             // Review 21:15Z: "Start refused: <why>"; an answer that never came keeps its own words (it may have started).
@@ -1834,7 +1879,8 @@ export function StartDialog({ controller, sessionId, publication, control = null
         }, `The saved Decision model ${model} for ${id} is no longer eligible. `
             + (defaultModel ? `It will use the current Cluster Decision Default (${defaultModel})${canOverrideDecisions ? " unless you choose another eligible model" : ""}.`
                 : "Choose an eligible Cluster Decision Default before starting."))),
-        // OF-S2-7: agent bindings stay read-only. Decision nodes additionally accept an override only from their eligible catalog.
+        // OF-S2-7: Decision nodes accept an override only from their eligible catalog. UX round 1 (O1): an agent node takes a
+        // model from the portal's catalog on a new start; its first choice is the session's model (no override is sent).
         Array.isArray(models) && models.length ? h("div", { className: "ps-wf-field", "data-field": "models" },
             h("span", { className: "ps-wf-label" }, "Models"),
             h("ul", { className: "ps-wf-models" }, models.map(entry => entry.kind === "decision"
@@ -1848,6 +1894,15 @@ export function StartDialog({ controller, sessionId, publication, control = null
                             h("option", { value: "" }, `Use Cluster Decision Default (${entry.defaultModel ?? entry.model})`),
                             entry.choices.map(model => h("option", { key: model, value: model }, model)))
                             : entry.text))
+                    : entry.kind === "agent" && agentModelChoices.length
+                        ? h("li", { key: entry.id, "data-agent-node": entry.id },
+                            h("label", null,
+                                h("span", null, `${entry.id}: `),
+                                h("select", { className: "ps-workflow-input", value: agentPicks[entry.id] ?? "", "aria-label": `Model for ${entry.id}`,
+                                    onChange: event => { const value = event.target.value; setAgentPicks(current => ({ ...current, [entry.id]: value })); } },
+                                h("option", { value: "" }, typeof entry.text === "string" && entry.text.startsWith(`${entry.id}: `)
+                                    ? entry.text.slice(entry.id.length + 2) : entry.text),
+                                agentModelChoices.map(model => h("option", { key: model, value: model }, model)))))
                     : h("li", { key: entry.id }, entry.text)))) : null,
         h("div", { className: "ps-wf-field" },
             h("span", { className: "ps-wf-label" }, "Variables · optional"),

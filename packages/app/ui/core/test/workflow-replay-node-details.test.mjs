@@ -74,3 +74,13 @@ test("a replayed branch visit's details are that visit's: its branch, and its ow
     const first = frames.find(item => item.nodeExecutionId === "nx-work-b0");
     assert.match(render(projectWorkflow({ readModel: model, asOf: first.atMs }), first), /data-session="owner-a"/);
 });
+
+test("R1: at a moment shown in history the step's state is labelled At this point, never Now", () => {
+    const live = projectWorkflow({ readModel: model });
+    const frame = workflowReplayFrames(live.allExecutions).find(item => item.nodeExecutionId === "nx-work-b1");
+    const replayed = render(projectWorkflow({ readModel: model, asOf: frame.atMs }), frame);
+    assert.match(replayed, /<div class="ps-wf-fact" data-fact="now" data-replay="true" title="[^"]+"><span>At this point<\/span><strong>Running · since [^<]+<\/strong><\/div>/, replayed);
+    assert.ok(!replayed.includes("<span>Now</span>"));
+    // Live, it is Now as before.
+    assert.match(render(live, null), /<div class="ps-wf-fact" data-fact="now"><span>Now<\/span>/);
+});

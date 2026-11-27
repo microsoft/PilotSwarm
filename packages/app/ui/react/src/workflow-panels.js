@@ -586,7 +586,9 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             h("h3", null, "Notes"), h("div", null, summary.notes)) : null,
         branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch, named: Boolean(selected.branchName) }) : null,
         h("div", { className: "ps-wf-facts" },
-            fact("Now", summary.now, { "data-fact": "now" }),
+            // UX round 1 (R1): at a moment shown in history the step's state is that moment's, not now.
+            replay ? fact("At this point", summary.now, { "data-fact": "now", "data-replay": "true", title: "The step as it stood at the moment the timeline shows" })
+                : fact("Now", summary.now, { "data-fact": "now" }),
             fact("Visits", summary.runs, { "data-fact": "runs", title: summary.runsTitle }),
             summary.agent ? fact("Agent session", summary.agent.sessionMode, { "data-fact": "session" }) : null,
             summary.agent?.tools ? fact("Tools", summary.agent.tools, { "data-fact": "tools", title: summary.agent.toolsTitle }) : null,

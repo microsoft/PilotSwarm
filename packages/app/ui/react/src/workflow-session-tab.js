@@ -93,6 +93,8 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
     React.useEffect(() => {
         if (workflow && view === "workflows" && shownState?.key === "failed") controller.dispatch({ type: "ui/workflowSeen", sessionId: workflow.sessionId });
     }, [controller, workflow?.sessionId, view, shownState?.key]);
+    // UX round 1 (P1): on a phone, while a graph is shown, the tab's bars are folded into one line until opened.
+    const [barsOpen, setBarsOpen] = React.useState(false);
     const listLine = listError ? h("p", { className: "ps-wf-line is-error", role: "alert", "data-session-definitions": "error" },
         `The definitions could not be read again: ${listError} `,
         h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.ensureSessionWorkflowDefinitions(ownerId, { force: true }) }, "Retry"))
@@ -129,8 +131,9 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
             onChoose: number => setTab({ sessionRevision: number === definition.currentRevision ? "newest" : number }) }) : null,
         h("div", { className: "ps-wf-switch is-icons", role: "group", "aria-label": "Definition or Workflows" },
             // UX2P-F3: the header's tooltips show above their buttons, so they never cover the lines under them.
+            // UX round 1 (G3): the graph and the YAML are one view or the other: Definition shows the graph, YAML the text.
             h(WorkflowToolButton, { label: "Definition", glyph: "definition", title: workflowTabButtonTip("definition"), tipAbove: true,
-                "aria-pressed": view === "definition", onClick: () => setTab({ view: "definition" }) }),
+                "aria-pressed": view === "definition" && !yaml, onClick: () => setTab({ view: "definition", sessionYaml: false }) }),
             h(WorkflowToolButton, { label: "Workflows", glyph: "workflows", title: workflowTabButtonTip("workflows"), tipAbove: true,
                 "aria-pressed": view === "workflows", onClick: () => setTab({ view: "workflows" }) })),
         onDefinition ? h("span", { className: "ps-wf-head-actions" },
@@ -146,10 +149,25 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
                 title: decisionBlocked ? "Decision nodes are unavailable for this definition"
                     : start.enabled ? `start Workflow #${sessionNextWorkflowNumber(definition)} from revision ${revision}` : start.title,
                 onClick: () => setTab({ definitionStart: true }) })) : null);
-    return h("section", { className: `ps-wf-tab${mobile ? " is-mobile" : ""}${phone ? " is-phone" : ""}`, "aria-label": "Workflow", "data-view": view,
-        "data-definition": definition.name, "data-definition-id": definition.definitionId, "data-revision": revision ?? undefined,
+    // UX round 1 (P1): a phone showing a graph (a definition's, or a Workflow's) folds the pickers, the lines under them and
+    // the Workflow's bar into one line (the header: its words and state, and the full screen button), so the graph gets
+    // most of the height; a tap on the line opens them again. Errors stay shown. Nothing is removed: the folded parts are
+    // hidden (CSS) and come back as they were.
+    const foldable = phone && (onDefinition ? !yaml : Boolean(workflow));
+    const folded = foldable && !barsOpen;
+    const fold = foldable ? h("button", { type: "button", className: "ps-wf-fold-toggle", "data-action": "fold-bars", "aria-expanded": !folded,
+        title: folded ? "Show the pickers, the revision and the Workflow's controls" : "Fold them into one line, so the graph gets the height",
+        onClick: () => setBarsOpen(open => !open) },
+    h("span", { className: "ps-wf-fold-mark", "aria-hidden": "true" }, folded ? "▸" : "▾"),
+    h("span", { className: "ps-wf-fold-text" }, onDefinition
+        ? `${definition.name}${Number.isSafeInteger(revision) ? ` · rev ${revision}` : ""}`
+        : `${definition.name} #${workflow.number}`),
+    !onDefinition && shownState ? h(StateChip, { state: shownState }) : null) : null;
+    return h("section", { className: `ps-wf-tab${mobile ? " is-mobile" : ""}${phone ? " is-phone" : ""}${folded ? " is-folded" : ""}`, "aria-label": "Workflow",
+        "data-view": view, "data-definition": definition.name, "data-definition-id": definition.definitionId, "data-revision": revision ?? undefined,
         "data-session-definitions": "true" },
         h("header", { className: `ps-wf-tab-head is-pickers${wraps ? " is-two-lines" : ""}` },
+            fold,
             h(SessionDefinitionPicker, { definitions, chosen: definition, onChoose: chooseDefinition }),
             wraps ? modes : null,
             rest,
@@ -223,7 +241,10 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
     const nodes = projection?.nodes ?? [];
     const [selectedId, setSelectedId] = React.useState(null);
     const [graphView, setGraphView] = React.useState(null);
-    const selected = nodes.find(node => node.id === selectedId) || nodes.find(node => node.id === graph?.initial) || nodes[0] || null;
+    // UX round 1 (R2, G4): no step is selected until the person chooses one (another definition starts with none).
+    const selected = nodes.find(node => node.id === selectedId) ?? null;
+    // UX round 1 (P1): where a phone's graph controls go (the panel's bar).
+    const [dock, setDock] = React.useState(null);
     const placesKey = `session:${definition.definitionId}`;
     const places = useControllerSelector(controller, state => state.ui?.workflowLayouts?.[placesKey]?.steps ?? null);
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: placesKey, steps, at: Date.now() }),
@@ -253,9 +274,10 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
     const panel = panels.includes(tab.definitionPanel) ? tab.definitionPanel : null;
     // OF-S2-1: full screen and zen on a desktop put the panel beside the graph.
     const side = workflowPanelIsSide(displayMode, mobile);
+    // A click, or a phone's tap (UX round 1, P2), selects the step and opens its details.
     const select = id => {
         setSelectedId(id);
-        if (!mobile || id === selectedId) setTab({ definitionPanel: "node" });
+        setTab({ definitionPanel: "node" });
     };
     const line = revisionLine(model, { writing: ownerWorking && revision === definition.currentRevision, writer: ownerTitle });
     const nextNumber = sessionNextWorkflowNumber(definition);
@@ -310,7 +332,10 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
             h("button", { type: "button", className: "ps-mini-button", onClick: retry }, "Retry")) : null,
         line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined }, line.text) : null,
         h(DecisionAvailabilityNotice, { states: model?.graph?.states, decision }),
-        h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }) },
+        h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }),
+            steps: selected ? { node: selected.id } : null,
+            // UX round 1 (P1): a phone's graph controls sit in the panel's bar, never over the steps.
+            extra: phone && mode === "graph" ? h("span", { ref: setDock, className: "ps-workflow-graph-dock" }) : null },
             // OF-S2-8: the node's script and samples come from the revision's YAML, for those who may read it.
             panel === "node" ? h(NodeFacts, { node: selected, yaml: read?.phase === "ready" ? access.yaml : null, pending: read?.phase !== "ready" && read?.phase !== "failed",
                 hidden: read?.phase === "failed" ? `The script could not be read: ${read.error ?? "no reason given"}`
@@ -319,7 +344,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
                 : null) },
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: placesKey, viewport: graphView, onViewport: setGraphView,
-                places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)) })
+                places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), reveal: selectedId, dock: phone ? dock : null })
                 : projection && line ? h("div", { className: "ps-wf-errors" }, h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, Number.isSafeInteger(revision) ? `Reading revision ${revision}…` : "No revisions yet.")),

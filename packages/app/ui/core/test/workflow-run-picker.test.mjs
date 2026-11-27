@@ -12,6 +12,7 @@ import {
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { WorkflowRunView } from "../../react/src/workflow-tab.js";
 import { selectWorkflowRun, workflowRunPickerModel } from "../../react/src/workflow-panels.js";
+import { workflowRunSelectedNode, workflowRunSwitched } from "../src/workflow-run-picker.js";
 import { startedData, ev, row, done, readModel } from "./workflow-fixtures.mjs";
 
 const SID = "wf-picker";
@@ -94,6 +95,20 @@ test("the Workflow view and phone picker use the saved source pin, not a local c
     const phone = render(true);
     assert.match(phone, /<option[^>]*>[^<]*Saved definition revision 2<\/option>/);
     assert.ok(!phone.includes("Saved definition revision 3"));
+});
+
+test("R2, G4: an ended run has no step selected until one is chosen; a running one shows its pending step; switching runs clears", () => {
+    const nodes = [{ id: "fetch" }, { id: "review", pending: false }, { id: "gate" }];
+    assert.equal(workflowRunSelectedNode(nodes, null), null, "an ended run: no default step, so no handler arrows on its first step");
+    assert.equal(workflowRunSelectedNode(nodes, "gate").id, "gate");
+    assert.equal(workflowRunSelectedNode(nodes, "gone"), null);
+    const running = [{ id: "fetch" }, { id: "review", pending: true }];
+    assert.equal(workflowRunSelectedNode(running, null).id, "review");
+    assert.equal(workflowRunSelectedNode(running, "fetch").id, "fetch");
+    assert.equal(workflowRunSelectedNode(null, "fetch"), null);
+    assert.equal(workflowRunSwitched("wf-1", "wf-4"), true);
+    assert.equal(workflowRunSwitched("wf-4", "wf-4"), false);
+    assert.equal(workflowRunSwitched(null, "wf-4"), false, "the first run shown keeps its selection (a link to a step)");
 });
 
 test("a selected id that is not listed, or whose list is not loaded, stays visible instead of falling back", () => {
