@@ -150,24 +150,28 @@ describe("migration 0104: workflow_rerun", () => {
         const qIdent = (name) => `"${name.replace(/"/g, '""')}"`;
         const query = (sql, params) => pool.query(sql, params);
         try {
-            // 1. Upgrade from <= 0103 to <= 0104, verify idempotent re-apply, and match fresh install.
+            // 1. Upgrade from <= 0103 to <= 0104, verify idempotent re-apply (all 5 steps), and match fresh install.
             await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded).filter(m => m.version < "0104"), SEED);
             await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded).filter(m => m.version <= "0104"), SEED);
             const afterUpgrade = await schemaSnapshot(query, upgraded);
-            await query(`BEGIN; ${workflowRerunMigration(upgraded)} COMMIT;`);
+            for (const stepSql of workflowRerunMigration(upgraded)) {
+                await query(stepSql);
+            }
             expect(snapshotDifferences(afterUpgrade, await schemaSnapshot(query, upgraded))).toEqual({});
 
             await runMigrations(pool, fresh, CMS_MIGRATIONS(fresh).filter(m => m.version <= "0104"), SEED);
             const catalog = ({ data, ...rest }) => rest;
             expect(snapshotDifferences(catalog(afterUpgrade), catalog(await schemaSnapshot(query, fresh)))).toEqual({});
 
-            // 2. Apply 0104 on a schema whose name contains a double quote.
-            // (Earlier migrations before 0096 don't escape quotes, so create minimal base tables in quotedSchema to test 0104 SQL directly.)
-            await query(`CREATE SCHEMA ${qIdent(quotedSchema)}`);
-            await query(`CREATE TABLE ${qIdent(quotedSchema)}.workflow_runs (run_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
-            await query(`CREATE TABLE ${qIdent(quotedSchema)}.workflow_node_executions (node_execution_id TEXT PRIMARY KEY, state TEXT NOT NULL, deadline_at TIMESTAMPTZ)`);
-            await query(`BEGIN; ${workflowRerunMigration(quotedSchema)} COMMIT;`);
-            await query(`BEGIN; ${workflowRerunMigration(quotedSchema)} COMMIT;`);
+            // 2. Apply 0104 steps on schemas whose names contain a double quote and a single quote.
+            const singleQuotedSchema = `pilot'swarm_${tag}`;
+            for (const special of [quotedSchema, singleQuotedSchema]) {
+                await query(`CREATE SCHEMA ${qIdent(special)}`);
+                await query(`CREATE TABLE ${qIdent(special)}.workflow_runs (run_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+                await query(`CREATE TABLE ${qIdent(special)}.workflow_node_executions (node_execution_id TEXT PRIMARY KEY, state TEXT NOT NULL, deadline_at TIMESTAMPTZ)`);
+                for (const stepSql of workflowRerunMigration(special)) await query(stepSql);
+                for (const stepSql of workflowRerunMigration(special)) await query(stepSql);
+            }
 
             // 3. Seed #2 and #3 in upgraded schema and test CHECK constraints + survival on #2 deletion.
             const s = qIdent(upgraded);
@@ -205,6 +209,22 @@ describe("migration 0104: workflow_rerun", () => {
                     rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
                  VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-unwalked', $4, $5, $6, 'run_again', '{}', 2, 2, '{}')`,
                 [`${run3}-unwalked`, wf3, `session-${wf3}-unwalked`, wf2, run2, nx2],
+            ), "23514");
+
+            // Invalid rerun_mode rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id,
+                    rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
+                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-badmode', $4, $5, $6, 'bogus', '{}', 1, 0, '{}')`,
+                [`${run3}-badmode`, wf3, `session-${wf3}-badmode`, wf2, run2, nx2],
+            ), "23514");
+
+            // rerun_reused = 0 rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id,
+                    rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
+                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-zero', $4, $5, $6, 'run_again', '{}', 0, 0, '{}')`,
+                [`${run3}-zero`, wf3, `session-${wf3}-zero`, wf2, run2, nx2],
             ), "23514");
 
             // Valid #3 re-run row succeeds
@@ -257,20 +277,29 @@ describe("migration 0104: workflow_rerun", () => {
             await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(upgraded)} CASCADE`);
             await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(fresh)} CASCADE`);
             await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(quotedSchema)} CASCADE`);
+            await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(`pilot'swarm_${tag}`)} CASCADE`);
             await pool.end();
         }
     });
 
-    it("passes over 100 and 1,000 SQL-seeded reused visits on the unchanged 1.3.0 controller and records RERUN_PASSOVER_MS", { timeout: testTime.ms(300_000) }, async () => {
+    it("passes over 0 (baseline), 100, and 1,000 SQL-seeded reused visits on the unchanged 1.3.0 controller and records RERUN_PASSOVER_MS", { timeout: testTime.ms(300_000) }, async () => {
         await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
             const h = host(client);
+            // Admit without dispatching so copied visits are seeded deterministically BEFORE the controller starts.
+            const deferDispatchHost = {
+                ...h,
+                duroxideClient: {
+                    ...h.duroxideClient,
+                    startOrchestrationVersioned: async () => {},
+                },
+            };
             const pool = new pg.Pool(pgPoolConfig(getEnv().store));
             const schema = getEnv().cmsSchema;
             try {
                 const timings = {};
-                for (const count of [100, 1000]) {
+                for (const count of [0, 100, 1000]) {
                     const wfId = randomUUID();
-                    const created = await createWorkflow(h, {
+                    const created = await createWorkflow(deferDispatchHost, {
                         workflowSessionId: wfId,
                         parentSessionId: null,
                         yaml: PASSOVER_LOOP(count),
@@ -280,16 +309,14 @@ describe("migration 0104: workflow_rerun", () => {
                     });
                     expect(created.receipt.run, `run for ${count}`).not.toBeNull();
                     const runId = created.receipt.run.runId;
-                    const srcWfId = randomUUID();
-                    const srcRunId = randomUUID();
-                    await seedCopiedLoopVisits(pool, schema, srcWfId, srcRunId, runId, count);
+                    if (count > 0) {
+                        const srcWfId = randomUUID();
+                        const srcRunId = randomUUID();
+                        await seedCopiedLoopVisits(pool, schema, srcWfId, srcRunId, runId, count);
+                    }
 
                     const t0 = Date.now();
-                    await dispatchWorkflowRun(h, {
-                        workflowSessionId: wfId,
-                        runId,
-                        controllerInstanceId: created.receipt.run.controllerInstanceId,
-                    });
+                    await dispatchWorkflowRun(h, created.receipt);
                     const finished = await waitForRunEnd(h, runId, 240_000);
                     const elapsedMs = Date.now() - t0;
                     timings[count] = elapsedMs;
@@ -315,7 +342,7 @@ describe("migration 0104: workflow_rerun", () => {
                         live_attempts: 1,
                     });
                 }
-                console.info("RERUN_PASSOVER_MS", JSON.stringify({ visits100Ms: timings[100], visits1000Ms: timings[1000] }));
+                console.info("RERUN_PASSOVER_MS", JSON.stringify({ baseline0Ms: timings[0], visits100Ms: timings[100], visits1000Ms: timings[1000] }));
             } finally {
                 await pool.end();
             }

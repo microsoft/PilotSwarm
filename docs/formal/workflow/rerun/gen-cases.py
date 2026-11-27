@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1).
+"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1, batch rr2).
 The .cfg files are generated from these by run-tlc.sh / check-packet.sh (../../tlc_cases.py)."""
 import json
 import os as _os
@@ -8,7 +8,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import tlc_cases  # docs/formal/tlc_cases.py
 
-BATCH = "rr1"
+BATCH = "rr2"
 M = "WorkflowRerun"
 
 
@@ -24,6 +24,8 @@ def c(
     actor="owner",
     max_visits=2,
     step_limit=5,
+    start_vars=False,
+    input_hash_mismatch=False,
     allow_deleters=False,
     allow_owner_end=False,
     allow_claim_crash=False,
@@ -32,6 +34,8 @@ def c(
     allow_can=False,
     fit_check=True,
     guard=True,
+    check_input_hash=True,
+    check_copy_coord=True,
     plan_budget=True,
     flat_origin=True,
     atomic_copy=True,
@@ -55,6 +59,8 @@ def c(
         Actor=q(actor),
         MaxVisits=max_visits,
         StepLimit=step_limit,
+        StartVars=start_vars,
+        InputHashMismatch=input_hash_mismatch,
         AllowDeleters=allow_deleters,
         AllowOwnerEnd=allow_owner_end,
         AllowClaimCrash=allow_claim_crash,
@@ -63,6 +69,8 @@ def c(
         AllowCan=allow_can,
         FitCheck=fit_check,
         Guard=guard,
+        CheckInputHash=check_input_hash,
+        CheckCopyCoord=check_copy_coord,
         PlanBudget=plan_budget,
         FlatOrigin=flat_origin,
         AtomicCopy=atomic_copy,
@@ -92,6 +100,7 @@ ALL_SAFE_INVS = [
     "Inv_PinnedChoice",
     "Inv_NoConsentReuse",
     "Inv_FirstNewAtCut",
+    "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
@@ -103,6 +112,7 @@ ALL_SAFE_INVS = [
 ]
 SAFE_PROPS = ["Prop_NoAdmissionAfterTerminal"]
 LIVE_PROPS = ["Live_ReachesCut", "Live_Terminates"]
+STRONG_LIVE_PROPS = ["Live_AdmittedReachesCut", "Live_Terminates"]
 
 # (id, group, spec, constants, invariants, properties, expected, deadlock, note)
 CASES = [
@@ -125,7 +135,7 @@ CASES = [
         SAFE_PROPS,
         "PASS",
         True,
-        "Run-again loop with all 3 deleters, claim crash + new revision, pause/stop/cancel, retry and continue-as-new in pass-over.",
+        "Run-again loop with all 3 deleters (incl. defLock), claim crash + new revision, pause/stop/cancel, retry and CAN in pass-over.",
     ),
     (
         "rr.design-loop-continue",
@@ -199,7 +209,7 @@ CASES = [
         SAFE_PROPS,
         "PASS",
         True,
-        "Carried waiting inbox message taken once by new receive visit; total wait anchor starts fresh from first new visit.",
+        "Carried waiting inbox message + reused spawn notice copied (consumed m0 & late m2 excluded); total wait anchor resets.",
     ),
     (
         "rr.design-gen2",
@@ -210,7 +220,7 @@ CASES = [
         SAFE_PROPS,
         "PASS",
         True,
-        "Second-generation re-run (#1 -> #2 -> #3) flattens origin to #1.",
+        "Second-generation re-run (#1 -> #2 -> #3) flattens origin via COALESCE to #1.",
     ),
     (
         "rr.design-reroute-refused",
@@ -232,7 +242,62 @@ CASES = [
         SAFE_PROPS,
         "PASS",
         True,
-        "With FitCheck disabled, cut guard catches divergence and fails rerun_diverged with zero new rows or effects.",
+        "Run-again with FitCheck disabled: cut guard catches divergence and fails rerun_diverged with zero new rows or effects.",
+    ),
+    (
+        "rr.design-continue-diverge",
+        "design",
+        "Spec",
+        c(source_kind="loop", mode="continue", target="reroute_taken", fit_check=False, guard=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "Continue mode with FitCheck disabled: predecessor-only cut guard catches divergence and fails rerun_diverged.",
+    ),
+    (
+        "rr.design-copy-coord-diverge",
+        "design",
+        "Spec",
+        c(source_kind="loop", mode="run_again", target="reroute_onto_copy", fit_check=False, guard=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "S1 copied-coordinate divergence: faulty revision reroutes onto existing copied row from wrong predecessor; failRerunDiverged ends run cleanly.",
+    ),
+    (
+        "rr.design-same-ir-hash-diverge",
+        "design",
+        "Spec",
+        c(source_kind="loop", mode="run_again", target="same", start_vars=False, input_hash_mismatch=True, guard=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "Decision 3 same-IR byte check: mismatched input/carry hash with same IR & same KV rev fails rerun_diverged before insert.",
+    ),
+    (
+        "rr.design-fix-chosen-skips-hash",
+        "design",
+        "Spec",
+        c(source_kind="loop", mode="run_again", target="fix_chosen", start_vars=False, input_hash_mismatch=True, guard=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "Decision 3: Target=fix_chosen (sameIr=FALSE) skips byte check and admits the fixed chosen visit.",
+    ),
+    (
+        "rr.design-start-vars-skips-hash",
+        "design",
+        "Spec",
+        c(source_kind="loop", mode="run_again", target="same", start_vars=True, input_hash_mismatch=True, guard=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "Decision 3: Start vars (kvRev=R+1 != cutKvRev) skips same-IR byte check and admits the chosen visit.",
     ),
     # ---- Liveness cases (deadlock checking ON) ----
     (
@@ -253,7 +318,7 @@ CASES = [
         LIVE_PROPS,
         "PASS",
         True,
-        "Liveness (run_again): eventually refused or reaches cut and terminates under all deleters and commands.",
+        "Liveness (run_again with all deleters/commands): eventually refused or reaches cut and terminates.",
     ),
     (
         "rr.live-continue",
@@ -271,31 +336,108 @@ CASES = [
         LIVE_PROPS,
         "PASS",
         True,
-        "Liveness (continue): pass-over reaches cut and terminates.",
+        "Liveness (continue with deleters): pass-over reaches cut and terminates.",
+    ),
+    (
+        "rr.live-clean-reaches-cut",
+        "design",
+        "LiveSpec",
+        c(source_kind="loop", mode="run_again", target="same", allow_retry=True, allow_can=True),
+        ["TypeOK"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Strong liveness: valid same-IR re-run is never blocked by the cut guard or byte check and reaches resumedAtCut.",
+    ),
+    (
+        "rr.live-fix-chosen",
+        "design",
+        "LiveSpec",
+        c(source_kind="loop", mode="run_again", target="fix_chosen", input_hash_mismatch=True),
+        ["TypeOK"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Strong liveness: Target=fix_chosen with changed input hash reaches resumedAtCut and terminates.",
+    ),
+    (
+        "rr.live-start-vars",
+        "design",
+        "LiveSpec",
+        c(source_kind="loop", mode="run_again", target="same", start_vars=True, input_hash_mismatch=True),
+        ["TypeOK"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Strong liveness: same-IR with StartVars (kvRev R+1) reaches resumedAtCut and terminates.",
     ),
     (
         "rr.live-catchall",
         "design",
         "LiveSpec",
-        c(source_kind="catchall", allow_deleters=True),
+        c(source_kind="catchall"),
         ["TypeOK"],
-        LIVE_PROPS,
+        STRONG_LIVE_PROPS,
         "PASS",
         True,
-        "Liveness (reused catch-all): reaches cut and terminates.",
+        "Strong liveness (reused catch-all): reaches resumedAtCut and terminates.",
+    ),
+    (
+        "rr.live-parallel",
+        "design",
+        "LiveSpec",
+        c(source_kind="parallel", step_limit=3),
+        ["TypeOK"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Strong liveness (reused parallel with unwalked lane): reaches resumedAtCut and terminates.",
+    ),
+    (
+        "rr.live-approval-owner",
+        "design",
+        "LiveSpec",
+        c(source_kind="approval", actor="owner"),
+        ["TypeOK"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Strong liveness (owner past answered approval): reaches resumedAtCut and terminates.",
     ),
     (
         "rr.live-inbox",
         "design",
         "LiveSpec",
-        c(source_kind="inbox", allow_deleters=True),
+        c(source_kind="inbox"),
         ["TypeOK"],
-        LIVE_PROPS,
+        STRONG_LIVE_PROPS,
         "PASS",
         True,
-        "Liveness (carried inbox): reaches cut, takes carried message, and terminates.",
+        "Strong liveness (carried inbox): reaches resumedAtCut, takes carried message, and terminates.",
     ),
-    # ---- 13 Non-Vacuity Witnesses (expected VIOLATED, exit 12, deadlock ON) ----
+    (
+        "rr.live-gen2",
+        "design",
+        "LiveSpec",
+        c(source_kind="loop", generations=2),
+        ["TypeOK"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Strong liveness (generation 2): reaches resumedAtCut and terminates.",
+    ),
+    (
+        "rr.live-diverge",
+        "design",
+        "LiveSpec",
+        c(source_kind="loop", target="reroute_onto_copy", fit_check=False, guard=True),
+        ["TypeOK"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Strong liveness (copied-coordinate divergence): reaches rerun_diverged and terminates cleanly.",
+    ),
+    # ---- Non-Vacuity Witnesses (13 required + 2 new for B1, expected VIOLATED exit 12) ----
     (
         "wit.rr-never-resumes",
         "witness",
@@ -371,7 +513,7 @@ CASES = [
         [],
         "VIOLATION:Wit_NoSecondGeneration",
         True,
-        "Witness 7: a generation-2 re-run (#1 -> #2 -> #3) completes.",
+        "Witness 7: a generation-2 re-run (#1 -> #2 -> #3) completes with origin flattened to wf1.",
     ),
     (
         "wit.rr-no-diverge",
@@ -404,7 +546,7 @@ CASES = [
         [],
         "VIOLATION:Wit_NoDeleteAfterCopy",
         True,
-        "Witness 10: a deleter waits on copy, soft-deletes source #2, and re-run #3 completes.",
+        "Witness 10: a deleter observes copy_share, waits, deletes source #2 after copy, and re-run #3 completes.",
     ),
     (
         "wit.rr-no-approval-refusal",
@@ -439,7 +581,29 @@ CASES = [
         True,
         "Witness 13: claim crashes, a newer revision is saved, and resumed Start uses rerunPin.",
     ),
-    # ---- 15 Deliberate Faults (expected named violation / deadlock, exit 12) ----
+    (
+        "wit.rr-no-copy-coord-diverge",
+        "witness",
+        "Spec",
+        c(source_kind="loop", target="reroute_onto_copy", fit_check=False, guard=True),
+        ["Wit_NoDiverge"],
+        [],
+        "VIOLATION:Wit_NoDiverge",
+        True,
+        "Witness 14 (B1): copied-coordinate mismatch hits failRerunDiverged cleanly.",
+    ),
+    (
+        "wit.rr-no-hash-diverge",
+        "witness",
+        "Spec",
+        c(source_kind="loop", target="same", start_vars=False, input_hash_mismatch=True, guard=True),
+        ["Wit_NoDiverge"],
+        [],
+        "VIOLATION:Wit_NoDiverge",
+        True,
+        "Witness 15 (B1): same-IR input/carry hash mismatch triggers rerun_diverged.",
+    ),
+    # ---- Deliberate Faults (15 required + 3 new for B1 & I6) ----
     (
         "rr-df-starts-decided",
         "fault",
@@ -460,7 +624,7 @@ CASES = [
         [],
         "VIOLATION:Inv_SourceUntouched",
         True,
-        "Fault 2: copy keeps/mutates source visit IDs.",
+        "Fault 2: copy mutates source visit rows.",
     ),
     (
         "rr-df-no-fit-no-guard",
@@ -526,7 +690,7 @@ CASES = [
         [],
         "VIOLATION:Inv_OriginRan",
         True,
-        "Fault 8: gen-2 copy points to intermediate copy #2 instead of origin #1.",
+        "Fault 8: gen-2 copy points to intermediate copy #2 instead of flattening via COALESCE to #1.",
     ),
     (
         "rr-df-no-source-lock",
@@ -592,7 +756,7 @@ CASES = [
         [],
         "VIOLATION:Inv_CarriedWereWaiting",
         True,
-        "Fault 14: inbox carry copies a message that arrived after the cut.",
+        "Fault 14: inbox carry copies a message that arrived after the cut (m2).",
     ),
     (
         "rr-df-lock-new-before-owner",
@@ -604,6 +768,39 @@ CASES = [
         "DEADLOCK",
         True,
         "Fault 15: copy locks #2/#3 before owner row, causing TLC deadlock with OwnerEnded.",
+    ),
+    (
+        "rr-df-copy-hit-ignores-pred",
+        "fault",
+        "Spec",
+        c(source_kind="loop", target="reroute_onto_copy", fit_check=False, guard=True, check_copy_coord=False),
+        ["Inv_PassOverOnChain"],
+        [],
+        "VIOLATION:Inv_PassOverOnChain",
+        True,
+        "Fault 16 (B1/S1): pass-over hit ignores copied row's predecessor/route mismatch.",
+    ),
+    (
+        "rr-df-ignores-input-hash",
+        "fault",
+        "Spec",
+        c(source_kind="loop", target="same", start_vars=False, input_hash_mismatch=True, guard=True, check_input_hash=False),
+        ["Inv_FirstNewAtCut"],
+        [],
+        "VIOLATION:Inv_FirstNewAtCut",
+        True,
+        "Fault 17 (B1): cut guard ignores same-IR input/carry hash mismatch at same KV rev.",
+    ),
+    (
+        "rr-df-continue-no-guard",
+        "fault",
+        "Spec",
+        c(source_kind="loop", mode="continue", target="reroute_taken", fit_check=False, guard=False),
+        ["Inv_FirstNewAtCut"],
+        [],
+        "VIOLATION:Inv_FirstNewAtCut",
+        True,
+        "Fault 18 (I6): continue mode with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
     ),
 ]
 

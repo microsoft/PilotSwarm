@@ -13,6 +13,8 @@ import { CATCH_ALL_ROUTE, branchScopeId } from "../../dist/workflow/controller/r
 import { nodeExecutionIdFor } from "../../dist/workflow/store.js";
 import {
     WORKFLOW_RERUN_MAX_COPY_BYTES,
+    WorkflowRerunError,
+    flattenRerunOrigin,
     pickRerunTarget,
     partitionRerunVisits,
     mapRerunExecutions,
@@ -192,7 +194,7 @@ test("pickRerunTarget: covers all 6 auto-pick rows and all refusal reasons", () 
     assert.equal(p3b.mode, "run_again");
     assert.equal(p3b.picked, "failed_visit");
 
-    // 4. limit_exceeded -> last top-level visit, continue
+    // 4. limit_exceeded -> last top-level visit, continue when completed with real result
     const p4 = pickRerunTarget(
         { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "limit_exceeded", message: "hit limit" } },
         keys2,
@@ -200,6 +202,42 @@ test("pickRerunTarget: covers all 6 auto-pick rows and all refusal reasons", () 
     assert.equal(p4.chosen.nodeExecutionId, keys2[1].nodeExecutionId);
     assert.equal(p4.mode, "continue");
     assert.equal(p4.picked, "limit_exceeded");
+
+    // 4b. (I5) limit_exceeded inside a parallel lane: finishRun cancelled pending root parallel visit (winner="controller") -> falls back to run_again
+    const p4bKeys = [
+        keys1[0],
+        makeKey({ nodeId: "fanout", ordinal: 1, nodeType: "parallel", predecessorId: keys1[0].nodeExecutionId, arrivalRoute: "ok", outcome: "cancelled", resultKind: "runtime_error", winner: "controller" }),
+    ];
+    const p4b = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "limit_exceeded", message: "hit limit in lane" } },
+        p4bKeys,
+    );
+    assert.equal(p4b.chosen.nodeExecutionId, p4bKeys[1].nodeExecutionId);
+    assert.equal(p4b.mode, "run_again");
+    assert.equal(p4b.picked, "limit_exceeded");
+
+    // 1d. (m6) lane visit whose enclosing parallel row is missing -> explicitly refuses inside_lane (never returns lane visit)
+    const orphanLane = makeKey({ scopeId: branchScopeId("nx-missing-parallel", 0), nodeId: "worker", ordinal: 1, predecessorId: "nx-missing-parallel", arrivalRoute: "@branch", outcome: "execution_failed", resultKind: "runtime_error" });
+    assert.throws(
+        () => pickRerunTarget(
+            { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "execution_failed", details: { nodeExecutionId: orphanLane.nodeExecutionId } } },
+            [keys1[0], orphanLane],
+        ),
+        (err) => err instanceof WorkflowRerunError && err.code === "RERUN_VISIT_NOT_ALLOWED" && err.details?.reason === "inside_lane",
+    );
+
+    // 5c. (m7) technical failure (timed_out with winner="deadline") -> tagged last_visit, mode run_again
+    const keys5c = chainKeys([
+        { nodeId: "build", ordinal: 1, outcome: "ok" },
+        { nodeId: "finish", ordinal: 1, arrivalRoute: "ok", outcome: "cancelled", resultKind: "runtime_error", winner: "deadline" },
+    ]);
+    const p5c = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "timed_out", details: { nodeExecutionId: keys5c[1].nodeExecutionId } } },
+        keys5c,
+    );
+    assert.equal(p5c.chosen.nodeExecutionId, keys5c[1].nodeExecutionId);
+    assert.equal(p5c.mode, "run_again");
+    assert.equal(p5c.picked, "last_visit");
 
     // 5a. Stopped with real result on last visit -> continue
     const p5a = pickRerunTarget(
@@ -583,52 +621,143 @@ states:
         });
         assert.equal(ok.fits, true, `version ${v} should fit`);
     }
+
+    // C2: initial step changed -> step_moved
+    const initChanged = mustCompile(SPEC_82_BASE_YAML.replace("initial: build", "initial: review"));
+    const c2Init = checkRerunCompatibility({
+        sourceIr: srcCompiled.ir, targetIr: initChanged.ir,
+        reused: partFinish.reused, reusedTop: partFinish.reusedTop, chosen: finish, mode: "run_again", sourceControllerVersion: "1.3.0",
+    });
+    assert.equal(c2Init.fits, false);
+    assert.ok(c2Init.problems.some(p => p.code === "step_moved"));
+
+    // C4 continue: no_route when chosen outcome is not routed in target
+    const unroutedReview = makeKey({ ...review2, outcome: "unhandled_label", resultKind: "business" });
+    const unroutedVisits = [...visits.slice(0, 3), unroutedReview];
+    const unroutedPart = partitionRerunVisits(unroutedVisits, unroutedReview.nodeExecutionId, "continue");
+    const c4NoRoute = checkRerunCompatibility({
+        sourceIr: srcCompiled.ir, targetIr: srcCompiled.ir,
+        reused: unroutedPart.reused, reusedTop: unroutedPart.reusedTop, chosen: unroutedReview, mode: "continue", sourceControllerVersion: "1.3.0",
+    });
+    assert.equal(c4NoRoute.fits, false);
+    assert.ok(c4NoRoute.problems.some(p => p.code === "no_route"));
+
+    // C4 continue (m5): explicit route from chosen into an already-entered catch-all -> catch_all_twice
+    const explicitCaIr = mustCompile(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: ca-cont, version: "1.0.0" }
+initial: work
+catchAll: rescue
+states:
+  work:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: done, failure: rescue } }
+  rescue:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: work } }
+  done: { type: terminal, outcome: succeeded }
+`).ir;
+    const caContVisits = chainKeys([
+        { nodeId: "work", ordinal: 1, outcome: "execution_failed", resultKind: "runtime_error" },
+        { nodeId: "rescue", ordinal: 1, arrivalRoute: "failure", outcome: "ok" },
+        { nodeId: "work", ordinal: 2, arrivalRoute: "ok", outcome: "execution_failed", resultKind: "runtime_error" },
+    ]);
+    const caContPart = partitionRerunVisits(caContVisits, caContVisits[2].nodeExecutionId, "continue");
+    const c4CatchAllTwice = checkRerunCompatibility({
+        sourceIr: explicitCaIr, targetIr: explicitCaIr,
+        reused: caContPart.reused, reusedTop: caContPart.reusedTop, chosen: caContVisits[2], mode: "continue", sourceControllerVersion: "1.3.0",
+    });
+    assert.equal(c4CatchAllTwice.fits, false);
+    assert.ok(c4CatchAllTwice.problems.some(p => p.code === "catch_all_twice"));
+
+    // C7: forEach <-> named branches kind change -> parallel_changed
+    const parForEach = mustCompile(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: par, version: "1.0.0" }
+initial: fan
+states:
+  fan:
+    type: parallel
+    forEach: [1, 2]
+    body:
+      initial: a1
+      states:
+        a1: { type: script, source: 'await setResult("ok", {});', transition: { next: { ok: ad } } }
+        ad: { type: terminal, outcome: succeeded }
+    transition: { next: { joined: fin, blocked: fin } }
+  fin: { type: script, source: 'await setResult("ok", {});', transition: { next: { ok: done } } }
+  done: { type: terminal, outcome: succeeded }
+`);
+    const c7Kind = checkRerunCompatibility({
+        sourceIr: parSrc.ir, targetIr: parForEach.ir,
+        reused: pPart.reused, reusedTop: pPart.reusedTop, chosen: pTop[1], mode: "run_again", sourceControllerVersion: "1.3.0",
+    });
+    assert.equal(c7Kind.fits, false);
+    assert.ok(c7Kind.problems.some(p => p.code === "parallel_changed"));
 });
 
-test("mapRerunExecutions: remaps top-level + parallel lane scopes, flattens 3-generation origins, and refuses non-completed keys", () => {
+test("mapRerunExecutions & flattenRerunOrigin: remaps multi-lane/multi-parallel scopes, flattens 3-generation origins, and refuses non-completed keys", () => {
     const k1 = makeKey({ runId: "run-2", nodeId: "setup", ordinal: 1, reusedFromExecutionId: "nx-gen1-setup", reusedFromRunId: "run-1", reusedFromWorkflowSessionId: "wf-1" });
-    const kPar = makeKey({ runId: "run-2", nodeId: "fan", ordinal: 1, nodeType: "parallel", predecessorId: k1.nodeExecutionId, arrivalRoute: "ok", outcome: "joined" });
-    const l0a = makeKey({ runId: "run-2", scopeId: branchScopeId(kPar.nodeExecutionId, 0), nodeId: "b1", ordinal: 1, predecessorId: kPar.nodeExecutionId, arrivalRoute: "@branch" });
-    const l0b = makeKey({ runId: "run-2", scopeId: branchScopeId(kPar.nodeExecutionId, 0), nodeId: "b2", ordinal: 1, predecessorId: l0a.nodeExecutionId, arrivalRoute: "ok" });
-    const kFin = makeKey({ runId: "run-2", nodeId: "fin", ordinal: 1, predecessorId: kPar.nodeExecutionId, arrivalRoute: "joined", outcome: "execution_failed", resultKind: "runtime_error" });
+    const kPar1 = makeKey({ runId: "run-2", nodeId: "fan1", ordinal: 1, nodeType: "parallel", predecessorId: k1.nodeExecutionId, arrivalRoute: "ok", outcome: "joined" });
+    const l0a = makeKey({ runId: "run-2", scopeId: branchScopeId(kPar1.nodeExecutionId, 0), nodeId: "b1", ordinal: 1, predecessorId: kPar1.nodeExecutionId, arrivalRoute: "@branch" });
+    const l0b = makeKey({ runId: "run-2", scopeId: branchScopeId(kPar1.nodeExecutionId, 0), nodeId: "b2", ordinal: 1, predecessorId: l0a.nodeExecutionId, arrivalRoute: "ok" });
+    const l1a = makeKey({ runId: "run-2", scopeId: branchScopeId(kPar1.nodeExecutionId, 1), nodeId: "b1", ordinal: 1, predecessorId: kPar1.nodeExecutionId, arrivalRoute: "@branch" });
+    const kPar2 = makeKey({ runId: "run-2", nodeId: "fan2", ordinal: 1, nodeType: "parallel", predecessorId: kPar1.nodeExecutionId, arrivalRoute: "joined", outcome: "joined" });
+    const p2l0 = makeKey({ runId: "run-2", scopeId: branchScopeId(kPar2.nodeExecutionId, 0), nodeId: "c1", ordinal: 1, predecessorId: kPar2.nodeExecutionId, arrivalRoute: "@branch" });
+    const kFin = makeKey({ runId: "run-2", nodeId: "fin", ordinal: 1, predecessorId: kPar2.nodeExecutionId, arrivalRoute: "joined", outcome: "execution_failed", resultKind: "runtime_error" });
 
-    // Deliberately pass l0b before l0a to prove topological ordering
-    const part = partitionRerunVisits([k1, kPar, l0b, l0a, kFin], kFin.nodeExecutionId, "run_again");
-    assert.equal(part.reusedTop.length, 2);
-    assert.equal(part.unwalkedCount, 2);
-    assert.equal(part.reused.length, 4);
-    assert.equal(part.totalBytes, 4 * 1024);
+    // Deliberately pass l0b before l0a and p2l0 early to prove topological ordering across multiple parallels and lanes
+    const part = partitionRerunVisits([k1, p2l0, kPar1, l0b, l1a, l0a, kPar2, kFin], kFin.nodeExecutionId, "run_again");
+    assert.equal(part.reusedTop.length, 3);
+    assert.equal(part.unwalkedCount, 4);
+    assert.equal(part.reused.length, 7);
+    assert.equal(part.totalBytes, 7 * 1024);
 
-    const mapped = mapRerunExecutions("run-3", part.reused, "wf-2");
-    assert.equal(mapped.length, 4);
-    // Deterministic IDs
+    const mapped = mapRerunExecutions("run-3", part.reused);
+    assert.equal(mapped.length, 7);
+    // Deterministic IDs matching store.ts › nodeExecutionIdFor exactly
     assert.equal(mapped[0].newId, nodeExecutionIdFor("run-3", "root", "setup", 1));
     assert.equal(mapped[0].newPredecessorId, null);
-    // 3-generation origin flattening: wf-1 -> wf-2 -> wf-3 points to wf-1!
-    assert.equal(mapped[0].originExecutionId, "nx-gen1-setup");
-    assert.equal(mapped[0].originRunId, "run-1");
-    assert.equal(mapped[0].originWorkflowSessionId, "wf-1");
-    // Direct copy (wf-2 -> wf-3) points to wf-2!
-    assert.equal(mapped[1].newId, nodeExecutionIdFor("run-3", "root", "fan", 1));
+    assert.equal(mapped[1].newId, nodeExecutionIdFor("run-3", "root", "fan1", 1));
     assert.equal(mapped[1].newPredecessorId, mapped[0].newId);
-    assert.equal(mapped[1].originExecutionId, kPar.nodeExecutionId);
-    assert.equal(mapped[1].originRunId, "run-2");
-    assert.equal(mapped[1].originWorkflowSessionId, "wf-2");
-    // Parallel lane scopes remapped to new parallel ID, parent before child!
-    const expectedScope = branchScopeId(mapped[1].newId, 0);
-    assert.equal(mapped[2].source.nodeId, "b1");
-    assert.equal(mapped[2].newScopeId, expectedScope);
+    assert.equal(mapped[2].newId, nodeExecutionIdFor("run-3", "root", "fan2", 1));
     assert.equal(mapped[2].newPredecessorId, mapped[1].newId);
-    assert.equal(mapped[2].newId, nodeExecutionIdFor("run-3", expectedScope, "b1", 1));
-    assert.equal(mapped[3].source.nodeId, "b2");
-    assert.equal(mapped[3].newScopeId, expectedScope);
-    assert.equal(mapped[3].newPredecessorId, mapped[2].newId);
-    assert.equal(mapped[3].newId, nodeExecutionIdFor("run-3", expectedScope, "b2", 1));
+
+    // 3-generation origin flattening (always non-null workflowSessionId)
+    assert.deepEqual(flattenRerunOrigin(mapped[0].source, "wf-2"), {
+        executionId: "nx-gen1-setup",
+        runId: "run-1",
+        workflowSessionId: "wf-1",
+    });
+    assert.deepEqual(flattenRerunOrigin(mapped[1].source, "wf-2"), {
+        executionId: kPar1.nodeExecutionId,
+        runId: "run-2",
+        workflowSessionId: "wf-2",
+    });
+
+    // Multi-lane & multi-parallel scope remapping, parent always before child
+    const byOld = new Map(mapped.map(m => [m.source.nodeExecutionId, m]));
+    const scope1_0 = branchScopeId(mapped[1].newId, 0);
+    const scope1_1 = branchScopeId(mapped[1].newId, 1);
+    const scope2_0 = branchScopeId(mapped[2].newId, 0);
+    assert.equal(byOld.get(l0a.nodeExecutionId).newScopeId, scope1_0);
+    assert.equal(byOld.get(l0a.nodeExecutionId).newPredecessorId, mapped[1].newId);
+    assert.equal(byOld.get(l0b.nodeExecutionId).newScopeId, scope1_0);
+    assert.equal(byOld.get(l0b.nodeExecutionId).newPredecessorId, byOld.get(l0a.nodeExecutionId).newId);
+    assert.ok(mapped.indexOf(byOld.get(l0a.nodeExecutionId)) < mapped.indexOf(byOld.get(l0b.nodeExecutionId)));
+    assert.equal(byOld.get(l1a.nodeExecutionId).newScopeId, scope1_1);
+    assert.equal(byOld.get(l1a.nodeExecutionId).newPredecessorId, mapped[1].newId);
+    assert.equal(byOld.get(p2l0.nodeExecutionId).newScopeId, scope2_0);
+    assert.equal(byOld.get(p2l0.nodeExecutionId).newPredecessorId, mapped[2].newId);
 
     // Refuses any non-completed reused key before DB write
     assert.throws(
-        () => mapRerunExecutions("run-3", [k1, makeKey({ ...kPar, state: "pending" })], "wf-2"),
-        (err) => err.code === "RERUN_VISIT_NOT_ALLOWED",
+        () => mapRerunExecutions("run-3", [k1, makeKey({ ...kPar1, state: "pending" })]),
+        (err) => err instanceof WorkflowRerunError && err.code === "RERUN_VISIT_NOT_ALLOWED",
     );
 });
 
@@ -719,7 +848,7 @@ states:
     }
     assert.ok(!codesDecide.has("step_runs_again"), "decision_runs_again replaces step_runs_again for a decision step");
 
-    // Case B: chosen = send_step (triggers step_runs_again!)
+    // Case B: chosen = send_step (triggers step_runs_again, does NOT trigger agent_memory since coder is unreachable from send_step!)
     const partSend = partitionRerunVisits(v, v[5].nodeExecutionId, "run_again");
     const warningsSend = buildRerunWarnings({
         sourceNumber: 2,
@@ -732,11 +861,33 @@ states:
         deliveredOutboxExecIds: new Set(),
         droppedSpawnChildren: new Map(),
         reusedSpawnNoticeChildIds: new Set(["child-a"]),
-        droppedConsumedUncarriedExecIds: new Set(),
+        droppedConsumedUncarriedExecIds: new Set(["msg-1", "msg-2"]),
         reusedApprovals: [],
         droppedApprovals: [],
     });
     assert.ok(warningsSend.some(w => w.code === "step_runs_again" && w.stateId === "send_step"));
+    assert.ok(!warningsSend.some(w => w.code === "agent_memory"), "unreachable continued agent must not emit agent_memory");
+    const pluralInputs = warningsSend.find(w => w.code === "inputs_taken");
+    assert.ok(pluralInputs && pluralInputs.message.includes("Send them again"), "plural inputs_taken uses 'them'");
+
+    // Case C (m11): chosen settled at entry (exhausted, winner='controller') does NOT emit step_runs_again
+    const exhaustedChosen = makeKey({ ...v[5], outcome: "exhausted", resultKind: "runtime_error", winner: "controller" });
+    const warningsExhausted = buildRerunWarnings({
+        sourceNumber: 2,
+        targetIr: compiled.ir,
+        reused: partSend.reused,
+        dropped: [exhaustedChosen],
+        chosen: exhaustedChosen,
+        mode: "run_again",
+        changedReusedSteps: [],
+        deliveredOutboxExecIds: new Set(),
+        droppedSpawnChildren: new Map(),
+        reusedSpawnNoticeChildIds: new Set(["child-a"]),
+        droppedConsumedUncarriedExecIds: new Set(),
+        reusedApprovals: [],
+        droppedApprovals: [],
+    });
+    assert.ok(!warningsExhausted.some(w => w.code === "step_runs_again"), "exhausted visit never started work");
 
     // buildRerunResume (run_again sameIr vs changedIr, and continue)
     const resumeSame = buildRerunResume({

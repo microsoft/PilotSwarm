@@ -447,7 +447,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0101", name: "provider_inference_latency", sql: providerInferenceLatencyMigration(schema) },
         { version: "0102", name: "decision_default_provider_routing", sql: decisionDefaultProviderRoutingMigration(schema) },
         { version: "0103", name: "workflow_child_workflows", sql: workflowChildWorkflowsMigration(schema) },
-        { version: "0104", name: "workflow_rerun", sql: workflowRerunMigration(schema) },
+        { version: "0104", name: "workflow_rerun", steps: workflowRerunMigration(schema) },
     ];
 }
 

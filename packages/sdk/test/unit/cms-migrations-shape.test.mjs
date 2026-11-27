@@ -44,8 +44,9 @@ test("the Decision-era and Workflow rerun migrations 0096-0104 quote-escape the 
     const quoted = CMS_MIGRATIONS('pilot"swarm').filter(migration => migration.version >= "0096" && migration.version <= "0104");
     assert.deepEqual(quoted.map(migration => migration.version), ["0096", "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104"]);
     for (const migration of quoted) {
-        assert.ok(migration.sql.includes('"pilot""swarm".'), `${migration.version} must write the schema as "pilot""swarm"`);
-        assert.ok(!migration.sql.includes('"pilot"swarm"'), `${migration.version} must not write the schema name unescaped`);
+        const text = migration.sql ?? migration.steps.join("\n");
+        assert.ok(text.includes('"pilot""swarm".'), `${migration.version} must write the schema as "pilot""swarm"`);
+        assert.ok(!text.includes('"pilot"swarm"'), `${migration.version} must not write the schema name unescaped`);
     }
     const m98 = migrations.find(migration => migration.version === "0098");
     assert.equal(createHash("sha256").update(m98.sql).digest("hex"),
@@ -53,10 +54,14 @@ test("the Decision-era and Workflow rerun migrations 0096-0104 quote-escape the 
     const m104 = migrations.find(migration => migration.version === "0104");
     assert.ok(m104, "migration 0104 must be registered");
     assert.equal(m104.name, "workflow_rerun");
-    assert.match(m104.sql, /ADD CONSTRAINT workflow_runs_rerun_check CHECK \([\s\S]*?\) NOT VALID;/);
-    assert.match(m104.sql, /ALTER TABLE "shape_check"\.workflow_runs VALIDATE CONSTRAINT workflow_runs_rerun_check;/);
-    assert.match(m104.sql, /ADD CONSTRAINT workflow_node_executions_reused_check CHECK \([\s\S]*?\) NOT VALID;/);
-    assert.match(m104.sql, /ALTER TABLE "shape_check"\.workflow_node_executions VALIDATE CONSTRAINT workflow_node_executions_reused_check;/);
+    assert.ok(Array.isArray(m104.steps) && m104.steps.length === 5, "0104 must use separate steps for NOT VALID, VALIDATE, and CONCURRENTLY indexes");
+    assert.match(m104.steps[0], /ADD CONSTRAINT workflow_runs_rerun_check CHECK \([\s\S]*?\) NOT VALID;/);
+    assert.match(m104.steps[0], /ADD CONSTRAINT workflow_node_executions_reused_check CHECK \([\s\S]*?\) NOT VALID;/);
+    assert.doesNotMatch(m104.steps[0], /VALIDATE CONSTRAINT/, "step 0 must release ACCESS EXCLUSIVE before VALIDATE");
+    assert.match(m104.steps[1], /ALTER TABLE "shape_check"\.workflow_runs VALIDATE CONSTRAINT workflow_runs_rerun_check;/);
+    assert.match(m104.steps[2], /ALTER TABLE "shape_check"\.workflow_node_executions VALIDATE CONSTRAINT workflow_node_executions_reused_check;/);
+    assert.match(m104.steps[3], /CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_runs_by_rerun_of_run/);
+    assert.match(m104.steps[4], /CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_runs_by_rerun_of_workflow/);
 });
 
 // Extract the RETURNS TABLE column list of a named function from a SQL blob.

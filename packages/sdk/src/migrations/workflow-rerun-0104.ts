@@ -1,8 +1,19 @@
-/** Migration 0104 — Workflow re-run from a chosen visit: run-level link/guard columns and visit-level origin columns. */
-export function workflowRerunMigration(schema: string): string {
+/**
+ * Migration 0104 — Workflow re-run from a chosen visit: run-level link/guard columns and visit-level origin columns.
+ *
+ * Uses `steps` (individually autocommitted, idempotent statements) so:
+ *   1. Step 1 adds the nullable columns and `CHECK (...) NOT VALID` constraints under a bounded 5 s lock_timeout and
+ *      commits immediately, releasing ACCESS EXCLUSIVE without a full-table scan.
+ *   2. Steps 2 and 3 run `VALIDATE CONSTRAINT` in separate transactions under SHARE UPDATE EXCLUSIVE (allowing concurrent
+ *      reads and writes).
+ *   3. Steps 4 and 5 build the partial rerun indexes `CONCURRENTLY IF NOT EXISTS`.
+ */
+export function workflowRerunMigration(schema: string): string[] {
     const s = `"${schema.replace(/"/g, "\"\"")}"`;
     const name = schema.replace(/'/g, "''");
-    return `
+    return [
+        `
+BEGIN;
 SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE ${s}.workflow_runs
@@ -39,13 +50,6 @@ BEGIN
 END
 $runs_check$;
 
-ALTER TABLE ${s}.workflow_runs VALIDATE CONSTRAINT workflow_runs_rerun_check;
-
-CREATE INDEX IF NOT EXISTS workflow_runs_by_rerun_of_run
-    ON ${s}.workflow_runs (rerun_of_run_id, created_at) WHERE rerun_of_run_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS workflow_runs_by_rerun_of_workflow
-    ON ${s}.workflow_runs (rerun_of_workflow_session_id, created_at) WHERE rerun_of_workflow_session_id IS NOT NULL;
-
 ALTER TABLE ${s}.workflow_node_executions
     ADD COLUMN IF NOT EXISTS reused_from_execution_id TEXT,
     ADD COLUMN IF NOT EXISTS reused_from_run_id TEXT,
@@ -71,7 +75,27 @@ BEGIN
     END IF;
 END
 $nodes_check$;
-
+COMMIT;
+`,
+        `
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE ${s}.workflow_runs VALIDATE CONSTRAINT workflow_runs_rerun_check;
+COMMIT;
+`,
+        `
+BEGIN;
+SET LOCAL lock_timeout = '5s';
 ALTER TABLE ${s}.workflow_node_executions VALIDATE CONSTRAINT workflow_node_executions_reused_check;
-`;
+COMMIT;
+`,
+        `
+CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_runs_by_rerun_of_run
+    ON ${s}.workflow_runs (rerun_of_run_id, created_at) WHERE rerun_of_run_id IS NOT NULL;
+`,
+        `
+CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_runs_by_rerun_of_workflow
+    ON ${s}.workflow_runs (rerun_of_workflow_session_id, created_at) WHERE rerun_of_workflow_session_id IS NOT NULL;
+`,
+    ];
 }
