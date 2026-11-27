@@ -167,13 +167,13 @@ dynamic names stay unchecked.
 
 For review or SDLC work, pin each branch's facts (repository, exact base and head commits, round) and return evidence
 (reviewed commit, findings, test receipt) in typed outputs, not messages. A request's `approved: true` is the responder's
-authenticated decision; a person approves first. Opening, merging and publishing stay separately
+authenticated decision; if a person must approve, get that approval the normal way first. Opening, merging and publishing stay separately
 authorized.
 
 ## 12. Rework and approval
 
-From a step's details, people can ask you (the parent) for findings, rework or approval; you decide. Write the decision
-itself into the graph:
+From a step's details, people can ask the parent agent for findings, rework or approval; that is a message to the
+parent, which decides. Write the decision itself into the graph:
 
 - Direct human consent: load `workflow-approval`; never answer it.
 - An agent's decision: a `request` state to `{ parent: true }` whose response contract carries the decision (for example `approved: boolean`), with routes for `responded`, `declined` and `timed_out`; a script reads the decision and routes `approved` or `rejected`.
@@ -203,32 +203,14 @@ initial: await_event
 initialInput: { polls: 0 }
 limits: { maxNodeExecutions: 200 }
 schemas:
-  WatchInputs:
-    type: object
-    additionalProperties: false
-    required: [buildId, ownerSessionId]
-    properties:
-      buildId: { type: integer, minimum: 1 }
-      ownerSessionId: { type: string, minLength: 1 }
-  BuildEvent:
-    type: object
-    additionalProperties: false
-    required: [buildId, state]
-    properties:
-      buildId: { type: integer, minimum: 1 }
-      state: { type: string, enum: [running, succeeded, failed] }
-  GaveUp:
-    type: object
-    additionalProperties: false
-    required: [buildId, polls]
-    properties:
-      buildId: { type: integer }
-      polls: { type: integer }
+  WatchInputs: { type: object, additionalProperties: false, required: [buildId, ownerSessionId],
+    properties: { buildId: { type: integer, minimum: 1 }, ownerSessionId: { type: string, minLength: 1 } } }
+  BuildEvent: { type: object, additionalProperties: false, required: [buildId, state],
+    properties: { buildId: { type: integer, minimum: 1 }, state: { type: string, enum: [running, succeeded, failed] } } }
+  GaveUp: { type: object, additionalProperties: false, required: [buildId, polls], properties: { buildId: { type: integer }, polls: { type: integer } } }
 contracts:
-  BuildEvent@1:
-    schema: { $ref: "#/schemas/BuildEvent" }
-  WatchGaveUp@1:
-    schema: { $ref: "#/schemas/GaveUp" }
+  BuildEvent@1: { schema: { $ref: "#/schemas/BuildEvent" } }
+  WatchGaveUp@1: { schema: { $ref: "#/schemas/GaveUp" } }
 states:
   await_event:
     type: messaging
@@ -237,8 +219,7 @@ states:
     from: { parent: true }
     correlate: { buildId: "${inputs.buildId}" }
     wait: { seconds: 300 }
-    transition:
-      next: { received: classify, elapsed: poll, failure: failed }
+    transition: { next: { received: classify, elapsed: poll, failure: failed } }
   classify:
     type: script
     outcomes: [running, final]
@@ -246,8 +227,7 @@ states:
       const event = context.input;
       if (event.state === "running") await setResult("running", { polls: 0 });
       else await setResult("final", event);
-    transition:
-      next: { running: await_event, final: done, failure: failed }
+    transition: { next: { running: await_event, final: done, failure: failed } }
   poll:
     type: script
     timeoutSeconds: 60
@@ -260,27 +240,16 @@ states:
       if (status.state !== "running") await setResult("finished", { buildId, state: status.state });
       else if (polls >= (context.kv.pollLimit ?? 12)) await setResult("gave_up", { buildId, polls });
       else await setResult("running", { polls });
-    transition:
-      next: { running: await_event, finished: done, gave_up: tell_owner, failure: failed }
+    transition: { next: { running: await_event, finished: done, gave_up: tell_owner, failure: failed } }
   tell_owner:
     type: messaging
     mode: send
     contract: WatchGaveUp@1
     recipient: { sessionId: "${inputs.ownerSessionId}" }
-    transition:
-      next: { sent: gave_up, failure: gave_up }
-  done:
-    type: terminal
-    outcome: succeeded
-    output: "${input}"
-  gave_up:
-    type: terminal
-    outcome: blocked
-    summary: The build did not reach a final state within the poll limit.
-  failed:
-    type: terminal
-    outcome: failed
-    output: "${runtime.error}"
+    transition: { next: { sent: gave_up, failure: gave_up } }
+  done: { type: terminal, outcome: succeeded, output: "${input}" }
+  gave_up: { type: terminal, outcome: blocked, summary: The build did not reach a final state within the poll limit. }
+  failed: { type: terminal, outcome: failed, output: "${runtime.error}" }
 ```
 
 `get_build_status` reads only. Send `BuildEvent@1` via

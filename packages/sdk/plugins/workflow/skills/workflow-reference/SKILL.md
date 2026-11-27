@@ -254,21 +254,8 @@ the interface's digest with the package revision.
 
 Outcomes: `joined` and `blocked`. Routes for both are required.
 
-- `joined` with `all`: the branch outputs in list order. With `{ first: k }`:
-  `[{ index, output }]` of the first k successes, in the order the store
-  saved them (ties: lower index first); the other branches are cancelled or
-  not started. Named branches: `{ <name>: output }`, the winners only; a
-  report's branches add `name`. Without `timeoutSeconds`, a named branch
-  with an agent state, or a receive with no wait, warns
-  `WORKFLOW_BRANCH_UNBOUNDED`.
-- `blocked`: k successes can no longer happen (with `{ first: k }` and fewer
-  than k items, at once). Output: `{ joined: false, timedOut, total, needed,
-  succeeded, failFast, branches: [{ index, ended, nodeExecutionId, outcome,
-  resultKind, output or error, cancelledBy?, late? }] }`. `ended` is
-  `terminal`, `error`, `cancelled`, `not_started` or `finished` (its last
-  step's result was saved, and kept, but its next step never started). `cancelledBy` is `failFast`, `join` or `timeout`. `late` marks a
-  success saved after the time limit. A report too large to store drops
-  every `output` and `error` and adds `truncated: true`.
+- `joined` with `all`: the branch outputs in list order. With `{ first: k }`: `[{ index, output }]` of the first k successes, in the order the store saved them (ties: lower index first); the other branches are cancelled or not started. Named branches: `{ <name>: output }`, the winners only; a report's branches add `name`. Without `timeoutSeconds`, a named branch with an agent state, or a receive with no wait, warns `WORKFLOW_BRANCH_UNBOUNDED`.
+- `blocked`: k successes can no longer happen (with `{ first: k }` and fewer than k items, at once). Output: `{ joined: false, timedOut, total, needed, succeeded, failFast, branches: [{ index, ended, nodeExecutionId, outcome, resultKind, output or error, cancelledBy?, late? }] }`. `ended` is `terminal`, `error`, `cancelled`, `not_started` or `finished` (its last step's result was saved, and kept, but its next step never started). `cancelledBy` is `failFast`, `join` or `timeout`. `late` marks a success saved after the time limit. A report too large to store drops every `output` and `error` and adds `truncated: true`.
 - With `timeoutSeconds`, only timely successes count; fewer than k ends `timed_out` (or `blocked` if k was already unreachable) with `timedOut: true`. Keep `concurrency` below `PILOTSWARM_WORKER_CONCURRENCY`.
 
 ### spawn
@@ -293,11 +280,8 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 ## Semantics
 
-- **Durable.** The store keeps runs, visits, variables and accepted messages.
-  Worker restarts resume saved work.
-- **Order.** Starts at `initial`. Outside parallel branches, one state runs
-  at a time and takes one route. Every visit counts toward
-  `maxNodeExecutions`; exhaustion fails with `limit_exceeded`.
+- **Durable.** The store keeps runs, visits, variables and accepted messages. Worker restarts resume saved work.
+- **Order.** Starts at `initial`. Outside parallel branches, one state runs at a time and takes one route. Every visit counts toward `maxNodeExecutions`; exhaustion fails with `limit_exceeded`.
 - **One result per visit.** The first saved result wins. Effects are not undone.
 
 | Effect | On a retry or a worker restart |
@@ -336,15 +320,10 @@ Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: change-review, version: "1.0.0" }
-description: Bounded review with accepted and rejected routes.
 initial: review
 states:
-  review:
-    type: agent
-    invoke: { prompt: "Review the input and return accepted or rejected." }
-    outcomes: [accepted, rejected]
-    timeoutSeconds: 900
-    transition: { next: { accepted: done, rejected: blocked, failure: failed } }
+  review: { type: agent, invoke: { prompt: "Review the input." }, outcomes: [accepted, rejected], timeoutSeconds: 900,
+    transition: { next: { accepted: done, rejected: blocked, failure: failed } } }
   done: { type: terminal, outcome: succeeded }
   blocked: { type: terminal, outcome: blocked }
   failed: { type: terminal, outcome: failed }
@@ -359,18 +338,10 @@ kind: Workflow
 metadata: { name: child-dispatch, version: "1.0.0" }
 initial: go
 states:
-  go:
-    type: spawn
-    definition: worker-task
-    inputs: { item: "alpha" }
-    transition: { next: { started: wait, failure: fail } }
-  wait:
-    type: messaging
-    mode: receive
-    contract: WorkflowEnded@1
-    from: "${states.go.output.workflowId}"
-    wait: { seconds: 300 }
-    transition: { next: { received: done, elapsed: fail, failure: fail } } # check input.outcome
+  go: { type: spawn, definition: worker-task, inputs: { item: "alpha" }, transition: { next: { started: wait, failure: fail } } }
+  wait: { type: messaging, mode: receive, contract: WorkflowEnded@1, from: "${states.go.output.workflowId}", wait: { seconds: 300 },
+    transition: { next: { received: check, elapsed: fail, failure: fail } } }
+  check: { type: script, outcomes: [ok, no], source: 'await setResult(context.input.outcome === "succeeded" ? "ok" : "no", context.input);', transition: { next: { ok: done, no: fail, failure: fail } } }
   done: { type: terminal, outcome: succeeded, output: "${input}" }
-  fail: { type: terminal, outcome: failed, output: "${runtime.error}" }
+  fail: { type: terminal, outcome: failed, output: "${input}" }
 ```
