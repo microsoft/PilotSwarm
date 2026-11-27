@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -389,5 +389,67 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
                 }
             } finally { await manager.shutdown(); }
         });
+    });
+});
+
+// Outside the concurrent block: the keep-warm flag is read from process.env and the timer is moved by fake timers.
+describe("Claude keep-warm replay (real SDK/CLI, synthetic HTTP)", () => {
+    it("a turn's request is replayed once with max_tokens 0 when the interval passes, as one claimed ledger operation", { timeout: 60_000 }, async () => {
+        const previousFlag = process.env.PILOTSWARM_CLAUDE_KEEPWARM;
+        process.env.PILOTSWARM_CLAUDE_KEEPWARM = "1";
+        try {
+            await harness(async ({ home, server }) => {
+                const registry = new ModelProviderRegistry({ providers: [
+                    { id: "anthropic", type: "anthropic", baseUrl: server.baseUrl, apiKey: "synthetic-key", models: [
+                        { name: "claude-sonnet-5", keepWarm: { intervalSeconds: 60, maxPings: 1 } },
+                    ] },
+                ] });
+                const sessionId = randomUUID();
+                const model = "anthropic:claude-sonnet-5";
+                const claims = [];
+                const settles = [];
+                let pingSettled;
+                const settled = new Promise(resolve => { pingSettled = resolve; });
+                // The smallest catalog the admission gate and the recorder call; this file has no database.
+                const catalog = {
+                    getSession: async () => ({ state: "idle", model }),
+                    recordEvents: async () => {},
+                    providers: {
+                        previewTurn: async () => ({ verdict: "clear", providerName: "anthropic" }),
+                        sessionChargeFacts: async () => ({ isSystem: false, ownerUserId: null }),
+                        claimInferenceOperation: async claim => { claims.push(claim); return true; },
+                        settleInferenceOperation: async settle => { settles.push(settle); pingSettled(); return true; },
+                    },
+                };
+                const manager = new SessionManager(undefined, null, { modelProviders: registry }, join(home, "session-state"));
+                manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }), storeFact: async () => ({ stored: true }), deleteFact: async () => ({ deleted: true }) });
+                manager.setSessionCatalog(catalog);
+                manager.setConfig(sessionId, {});
+                try {
+                    const session = await manager.getOrCreate(sessionId, { model }, { turnIndex: 0 });
+                    // Only the timer and the clock are faked, so the CLI process and the HTTP server keep real I/O.
+                    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+                    expect((await session.runTurn("Say hello")).content).toContain("violet-739");
+                    const modelCalls = () => server.requests.filter(request => request.path.endsWith("/messages"));
+                    expect(modelCalls().length).toBeGreaterThan(0);
+                    expect(modelCalls().some(request => request.body.max_tokens === 0)).toBe(false);
+                    expect(claims).toHaveLength(0);
+                    await vi.advanceTimersByTimeAsync(60_000);
+                    await settled;
+                    const pings = modelCalls().filter(request => request.body.max_tokens === 0);
+                    expect(pings).toHaveLength(1);
+                    expect(claims).toHaveLength(1);
+                    expect(claims[0].operationId).toMatch(new RegExp(`^keepwarm:${sessionId}:\\d+:1$`));
+                    expect(claims[0].capability).toBe("keep_warm");
+                    expect(settles.map(settle => settle.operationId)).toEqual([claims[0].operationId]);
+                } finally {
+                    vi.useRealTimers();
+                    await manager.shutdown();
+                }
+            });
+        } finally {
+            if (previousFlag === undefined) delete process.env.PILOTSWARM_CLAUDE_KEEPWARM;
+            else process.env.PILOTSWARM_CLAUDE_KEEPWARM = previousFlag;
+        }
     });
 });

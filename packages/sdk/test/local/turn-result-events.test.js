@@ -189,6 +189,15 @@ describe("turn events collected by ManagedSession", () => {
         expect(lines).toHaveLength(1);
         expect(lines[0]).toMatch(/session=late-pieces-log tool call call-big \(create\): 25 argument pieces arrived after the tool started, the first \d+ ms and the last \d+ ms after the start, \d+ bytes$/);
     });
+
+    it("tells the keep-warm drop when the CLI compacts the conversation, at the start and at the end", async () => {
+        const reasons = [];
+        const session = new FakeCopilotSession(largeToolCallTurn({ fragments: 2, fragmentChars: 10 }));
+        const managed = new ManagedSession("compaction-drop", session, {});
+        managed.setHeartbeatDrop((reason) => reasons.push(reason));
+        await managed.runTurn("go", {});
+        expect(reasons).toEqual(["compaction_start", "compaction_complete"]);
+    });
 });
 
 describe("turn result returned by the runTurn activity", () => {

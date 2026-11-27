@@ -13,6 +13,9 @@ import type { Pool } from "pg";
 import type { BudgetPeriod, BudgetRuleState, TurnAdmission } from "./provider-budgets.js";
 import { toTurnAdmission } from "./provider-budgets.js";
 
+/** How long the admission check of a keep-warm ping waits for any one of its queries (the database's own limits are shorter). */
+const PREVIEW_QUERY_TIMEOUT_MS = 6_000;
+
 export type ProviderClass = "shared" | "personal";
 
 /**
@@ -435,6 +438,66 @@ export class ProviderStore {
             `SELECT * FROM ${this.fn("cms_provider_check_turn")}($1, $2)`,
             [sessionId, model ?? null]);
         return toTurnAdmission(rows[0] ?? {});
+    }
+
+    /**
+     * The admission check of a turn that is not run: the same `cms_provider_check_turn` call, always rolled back, so
+     * the session row and the pause record are left as they were (the call may stamp the model or the pause on the
+     * row). A keep-warm ping reads the verdict this way. One connection is held for the call; the error listener is on
+     * it for as long as it is out, so a connection that drops cannot raise an unhandled event; any failure releases the
+     * connection with that error, and the pool discards it. The database gives up on a row lock after 1 s and on a
+     * statement after 5 s, and the client stops waiting for any one query after 6 s; each of these is a refusal (the
+     * call rejects), as a ping that cannot be admitted quickly is not sent. The wait for a connection from the pool is
+     * not bounded here: the pool has its own connection timeout.
+     */
+    previewTurn(sessionId: string, model?: string | null): Promise<TurnAdmission> {
+        return new Promise<TurnAdmission>((resolve, reject) => {
+            this.pool.connect((connectError, client, release) => {
+                if (connectError || !client) {
+                    reject(connectError ?? new Error("no database connection for the admission check"));
+                    return;
+                }
+                let dropped: Error | undefined;
+                const onError = (error: Error) => { dropped ??= error; };
+                client.on("error", onError);
+                const finish = (error?: Error) => {
+                    client.removeListener("error", onError);
+                    release(error);
+                };
+                const bounded = (text: string, values?: unknown[]) => {
+                    // pg supports query_timeout per query; older @types/pg only exposes it on ClientConfig.
+                    const query = { text, values, query_timeout: PREVIEW_QUERY_TIMEOUT_MS };
+                    return client.query(query);
+                };
+                void (async () => {
+                    let failure: Error | undefined;
+                    let admission: TurnAdmission | undefined;
+                    try {
+                        await bounded("BEGIN");
+                        await bounded("SET LOCAL lock_timeout = '1s'");
+                        await bounded("SET LOCAL statement_timeout = '5s'");
+                        const { rows } = await bounded(
+                            `SELECT * FROM ${this.fn("cms_provider_check_turn")}($1, $2)`,
+                            [sessionId, model ?? null]);
+                        admission = toTurnAdmission(rows[0] ?? {});
+                    } catch (error) {
+                        failure = error instanceof Error ? error : new Error(String(error));
+                    }
+                    try {
+                        await bounded("ROLLBACK");
+                    } catch (error) {
+                        failure ??= error instanceof Error ? error : new Error(String(error));
+                    }
+                    failure ??= dropped;
+                    finish(failure);
+                    if (failure || !admission) {
+                        try { rethrow(failure ?? new Error("the admission check gave no answer")); } catch (error) { reject(error); }
+                    } else {
+                        resolve(admission);
+                    }
+                })();
+            });
+        });
     }
 
     /** Non-chat admission: pin or linearize one shared provider without changing the session's chat projection. */

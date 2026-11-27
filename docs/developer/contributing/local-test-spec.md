@@ -548,6 +548,39 @@ Hardening ideas:
 - add partial-spawn diagnostics so failures identify which child agent is missing and what pilotswarm last emitted
 - add deterministic-id restart assertions to prove system children are reused rather than recreated incorrectly
 
+### `claude-keepwarm.integration.test.js`
+
+Purpose:
+
+- Claude keep-warm pings recorded in the provider ledger as `keep_warm` inference operations (a claim before the ping, a settle with its reply's tokens)
+
+Tests:
+
+- user session ping
+  - asserts the operation row, its key and capability, and that the provider and user day meters rise by input plus output
+- system session ping
+  - asserts the row is charged as system and no meter moves
+- a ping is not a turn
+  - asserts the usage totals count its tokens while the turn count and the chat ledger stay as they were
+- provider created again under the same name after capture
+  - asserts the claim is refused and leaves no row and no meter
+- provider replaced between claim and settle
+  - asserts the settle succeeds, the row stays bound to the old incarnation and no meter of the new provider moves
+- admission check on a held provider
+  - asserts `previewTurn` is paused and the session row (pause_state, model, updated_at) is as it was, also for a session with no model, while the real check records the pause
+- admission check on a clear provider
+  - asserts `previewTurn` names the provider, and the gate admits a running session and records its claim
+- admission check on a session row another transaction holds
+  - asserts `previewTurn` is refused by the database (lock or statement timeout) before the 6 s client deadline and the catalog then closes
+- gate on a timed-out admission check
+  - asserts the gate refuses the ping and no operation is claimed
+- keep-warm events
+  - asserts a settled ping and a stop are written as `session.keepwarm_ping` and `session.keepwarm_stopped` and read back through the management client and the `read_agent_events` tool
+
+Primary assertions:
+
+- a ping costs the provider's meters exactly once and only for a user session, and never counts as a turn
+
 ## Sub-Agent Focused Files
 
 The sub-agent suite is split into dedicated files under `packages/sdk/test/local/sub-agents/`.

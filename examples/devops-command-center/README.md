@@ -71,6 +71,12 @@ dashboards do not eagerly refresh. The native direct transport stays on durable 
 [live-plane architecture](../../docs/architecture/live-plane.md) for limits
 and reconnect behavior.
 
+An idle Claude session can keep its prompt cache warm with periodic pings. This
+is off by default: set `PILOTSWARM_CLAUDE_KEEPWARM=1` on the worker process, and
+optionally give a Claude model a `keepWarm` entry in the model catalog. Each ping
+is billed, so read [Keep-warm cadence](../../docs/developer/reference/configuration.md#keep-warm-cadence-keepwarm)
+first. No sample change is required.
+
 From the repo root:
 
 ```bash

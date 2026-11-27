@@ -932,6 +932,12 @@ export class ManagedSession {
         this.skillCatalog = Array.isArray(list) ? list : [];
     }
 
+    /** Stops the Claude keep-warm replay of this session. The session manager sets it; unset, nothing replays. */
+    private heartbeatDrop: ((reason: string) => void) | null = null;
+    setHeartbeatDrop(drop: ((reason: string) => void) | null): void {
+        this.heartbeatDrop = drop;
+    }
+
     /** Section 4.12: the skills this session loaded by path, read again this turn. load_skill by name serves them first. */
     private loadedSkillCatalog: Array<{ name: string; description: string; prompt: string }> = [];
     setLoadedSkillCatalog(list: Array<{ name: string; description: string; prompt: string }>): void {
@@ -4323,6 +4329,10 @@ export class ManagedSession {
                 this.copilotSession.on((event: any) => {
                     lastEventAt = Date.now();
                     const eventType = event.type ?? event.eventType ?? "unknown";
+                    // The prompt cache no longer matches a conversation the CLI compacts.
+                    if (eventType === "session.compaction_start" || eventType === "session.compaction_complete") {
+                        try { this.heartbeatDrop?.(eventType === "session.compaction_start" ? "compaction_start" : "compaction_complete"); } catch { /* never breaks the turn */ }
+                    }
                     if (isStaleIdle(eventType, event)) return;
                     const rawEventData = event.data ?? event;
                     let eventData = rawEventData;

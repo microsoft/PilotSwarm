@@ -36,6 +36,7 @@ import {
     parseAskedAndAnsweredExchange,
 } from "./history.js";
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
+import { KEEPWARM_STATS_EVENT_LIMIT, summarizeKeepWarmPings } from "./keepwarm-stats.js";
 import { validateCanvasAction, formatCanvasActionPrompt, createCanvasActionLimiter } from "./canvas-actions.js";
 import { shouldKeepSessionWarning } from "./session-errors.js";
 import {
@@ -3755,7 +3756,7 @@ export class PilotSwarmUiController {
 
         this.dispatch({ type: "sessionStats/loading", sessionId });
         try {
-            const [summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace] = await Promise.all([
+            const [summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace, keepWarmEvents] = await Promise.all([
                 this.transport.getSessionMetricSummary(sessionId),
                 typeof this.transport.getSessionTokensByModel === "function"
                     ? this.transport.getSessionTokensByModel(sessionId).catch(() => [])
@@ -3778,8 +3779,12 @@ export class PilotSwarmUiController {
                 typeof this.transport.getSessionWorkspace === "function"
                     ? this.transport.getSessionWorkspace(sessionId).catch(() => null)
                     : null,
+                // The newest keep-warm ping events: a failed read leaves the other stats alone and shows no keep-warm rows.
+                typeof this.transport.getSessionEvents === "function"
+                    ? Promise.resolve().then(() => this.transport.getSessionEvents(sessionId, undefined, KEEPWARM_STATS_EVENT_LIMIT, ["session.keepwarm_ping"])).catch(() => null)
+                    : null,
             ]);
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace, keepWarm: summarizeKeepWarmPings(keepWarmEvents) });
         } catch {
             this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, tokensByModel: [], treeStats: null, skillUsage: null, treeSkillUsage: null, factsStats: null, treeFactsStats: null });
         }

@@ -25,6 +25,7 @@ function hungWorker({ runtimeHangs = false } = {}) {
             sessionStore: {},
             sessionManager: {
                 beginDrain() {},
+                stopKeepWarmHeartbeats: () => { calls.push("keep-warm stopped"); },
                 releaseIdleWorkspaces: () => { calls.push("workspace release"); return hang(); },
                 sweepIdleSessions: () => { calls.push("release sweep"); return hang(); },
             },
@@ -57,7 +58,7 @@ test("a graceful shutdown whose release, sweep and closes hang returns at the dr
         assert.ok(took >= 350 && took < 2_000, `returned after ${took} ms (deadline 400 ms)`);
     });
     // Every step was tried, in order; the ones still waiting at the deadline were left behind, each said so once.
-    assert.deepEqual(calls.filter((call) => call !== "heartbeat"), ["polling stopped", "drain 100", "workspace release", "release sweep", "stop"]);
+    assert.deepEqual(calls.filter((call) => call !== "heartbeat"), ["keep-warm stopped", "polling stopped", "drain 100", "workspace release", "release sweep", "stop"]);
     assert.equal(worker._agentPackagesTimer, null, "the heartbeat timer is cleared after the drain");
     const heartbeats = calls.filter((call) => call === "heartbeat").length;
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -89,7 +90,7 @@ test("a shutdown whose steps finish in time waits for each, and returns as soon 
     const worker = {
         config: {}, _stopProviderPolling() {}, _agentPackagesCacheDir: null, _agentPackagesTimer: null, _evictionTimer: null,
         _runtimeStartup: null, runtime: { shutdown: async () => { calls.push("drain"); } }, sessionStore: {},
-        sessionManager: { beginDrain() {}, releaseIdleWorkspaces: async () => { calls.push("release"); return 0; }, sweepIdleSessions: async () => { calls.push("sweep"); return 0; } },
+        sessionManager: { beginDrain() {}, stopKeepWarmHeartbeats() {}, releaseIdleWorkspaces: async () => { calls.push("release"); return 0; }, sweepIdleSessions: async () => { calls.push("sweep"); return 0; } },
         stop: async () => { await new Promise((resolve) => setTimeout(resolve, 30)); calls.push("stopped"); },
     };
     const started = Date.now();
@@ -116,7 +117,7 @@ test("the draining report is bounded by the shared deadline when that comes firs
             const took = Date.now() - started;
             assert.ok(took < Number(drain) + Number(grace) + 500, `drain ${drain} + grace ${grace}: took ${took} ms, not the report's 5 s`);
         });
-        assert.equal(calls[0], "polling stopped");
+        assert.deepEqual(calls.slice(0, 2), ["keep-warm stopped", "polling stopped"]);
         assert.ok(calls.includes("draining report"));
     }
 });
@@ -138,7 +139,7 @@ test("a fast draining report leaves no timer scheduled", async (t) => {
     const worker = {
         config: {}, _stopProviderPolling() {}, _agentPackagesCacheDir: "/tmp/agent-packages", _reportAgentWorkerState: async () => {},
         _agentPackagesTimer: null, _evictionTimer: null, _runtimeStartup: null, runtime: null, sessionStore: null,
-        sessionManager: { beginDrain() {}, releaseIdleWorkspaces: async () => 0 }, stop: async () => {},
+        sessionManager: { beginDrain() {}, stopKeepWarmHeartbeats() {}, releaseIdleWorkspaces: async () => 0 }, stop: async () => {},
     };
     await withEnv({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "60000" }, () => PilotSwarmWorker.prototype.gracefulShutdown.call(worker));
     assert.ok(scheduled.includes(5_000), "the report's own 5 s cap (the deadline is later)");
@@ -164,6 +165,7 @@ test("FRT-F2: after a drain past the deadline the release, the sweep and the clo
         sessionStore: {},
         sessionManager: {
             beginDrain() {},
+            stopKeepWarmHeartbeats() {},
             releaseIdleWorkspaces: async () => { calls.push("release started"); const released = await releaseHeld; calls.push("release finished"); return released; },
             sweepIdleSessions: async () => { calls.push("sweep started"); calls.push("sweep finished"); return 0; },
         },
@@ -207,7 +209,7 @@ test("the worker's shutdown runs its release sweep as an ordinary sweep of every
     const worker = {
         config: {}, _stopProviderPolling() {}, _agentPackagesCacheDir: null, _agentPackagesTimer: null, _evictionTimer: null,
         _runtimeStartup: null, runtime: { shutdown: async () => {} }, sessionStore: {},
-        sessionManager: { beginDrain() {}, releaseIdleWorkspaces: async () => 0, sweepIdleSessions: async (...args) => { sweeps.push(args); return 0; } },
+        sessionManager: { beginDrain() {}, stopKeepWarmHeartbeats() {}, releaseIdleWorkspaces: async () => 0, sweepIdleSessions: async (...args) => { sweeps.push(args); return 0; } },
         stop: async () => {},
     };
     await PilotSwarmWorker.prototype.gracefulShutdown.call(worker);

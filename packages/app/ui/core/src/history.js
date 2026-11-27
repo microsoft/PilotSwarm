@@ -1,6 +1,6 @@
 import { formatHumanDurationSeconds, formatTimestamp, shortModelName, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
 import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
-import { formatCompactionActivityRuns } from "./context-usage.js";
+import { formatCompactionActivityRuns, formatTokenCount } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { matchesSessionError } from "./session-warning.js";
 import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
@@ -1279,6 +1279,24 @@ function formatToolActivityRuns(time, event, phase = "start") {
     ];
 }
 
+// The Claude keep-warm heartbeat's events (session.keepwarm_ping, session.keepwarm_stopped): short normalized fields
+// only, so a missing or odd payload still gives a readable line.
+function formatKeepWarmActivityRuns(time, event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const count = (value) => (Number.isInteger(value) && value >= 0 ? value : null);
+    if (event.eventType === "session.keepwarm_stopped") {
+        const reason = typeof data.reason === "string" ? data.reason.trim().slice(0, 40) : "";
+        const pings = count(data.pings);
+        const detail = ["stopped", reason, pings === null ? "" : `${pings} ${pings === 1 ? "ping" : "pings"}`].filter(Boolean).join(" · ");
+        return buildLabeledActivityRuns(time, "[keep-warm]", "gray", detail);
+    }
+    const ping = count(data.ping);
+    const status = Number.isInteger(data.status) ? String(data.status) : "no reply";
+    const cached = Number.isFinite(data.tokensCacheRead) ? `${formatTokenCount(data.tokensCacheRead)} cached` : "";
+    const detail = [ping === null ? "ping" : `ping ${ping}`, status, cached].filter(Boolean).join(" · ");
+    return buildLabeledActivityRuns(time, "[keep-warm]", data.ok === true ? "cyan" : "yellow", detail);
+}
+
 function formatActivity(event) {
     const time = formatTimestamp(event.createdAt);
     const body = formatEventSnippet(event);
@@ -1411,6 +1429,11 @@ function formatActivity(event) {
                 "yellow",
                 formatLossyHandoffActivityDetail(event, body) || "handoff to a new worker",
             );
+            break;
+
+        case "session.keepwarm_ping":
+        case "session.keepwarm_stopped":
+            runs = formatKeepWarmActivityRuns(time, event);
             break;
 
         case "session.dehydrated":

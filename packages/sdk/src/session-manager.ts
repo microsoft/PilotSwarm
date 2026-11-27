@@ -16,9 +16,22 @@ import { FeatureFlagError, isAlwaysOn, type FeatureOwner } from "./feature-flags
 import { createDecideTool, createDecisionCatalogReader, DECIDE_TOOL_NAME, type DecideToolHost, type DecisionCatalogSnapshot } from "./decision-tools.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
-import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
+import {
+    BYOK_CLIENT_PREFIX,
+    ClaudeKeepWarmHeartbeat,
+    type ClaudeKeepWarmBeforePing,
+    type ClaudeKeepWarmIdentity,
+    type ClaudeKeepWarmPolicy,
+    createCopilotClient,
+    HEARTBEAT_CLIENT_PREFIX,
+    isClaudeKeepWarmEnabled,
+    isClaudeModelName,
+    needsByokRequestCompatibility,
+    supportsClaudeKeepWarm,
+} from "./copilot-client.js";
 import { CopilotRuntimeMonitor, COPILOT_RUNTIME_EXIT_MARKER, describeCopilotRuntimeExit, transportLossMessage, type CopilotRuntimeExit } from "./copilot-runtime-monitor.js";
 import { runtimeMetrics } from "./runtime-metrics.js";
+import { KeepWarmLedger } from "./keepwarm-ledger.js";
 import { ManagedSession } from "./managed-session.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
 import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, WorkflowPackageCheckError, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
@@ -93,6 +106,8 @@ const SESSION_LOCK_MAX_WAIT_MS = 120_000;
 const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 // The wait for a dropped handle's disconnect when its local files are not published (its runtime may be gone).
 const UNPUBLISHED_DESTROY_DEADLINE_MS = 5_000;
+/** Session states in which a keep-warm ping is no longer sent (running and idle are admitted). */
+const KEEP_WARM_ENDED_STATES: ReadonlySet<string> = new Set(["completed", "failed", "error", "cancelled"]);
 /** The once-per-process warning that a stdio client started with no runtime bound to it (review S7). */
 let runtimeUnclaimedWarned = false;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
@@ -1056,6 +1071,13 @@ export class SessionManager {
 
     private clients = new Map<string, CopilotClient>();
     /**
+     * The keep-warm handler of each heartbeat client, by pool key. Only
+     * `PILOTSWARM_CLAUDE_KEEPWARM=1` Claude sessions have an entry.
+     */
+    private readonly heartbeats = new Map<string, ClaudeKeepWarmHeartbeat>();
+    /** Set when a worker stop or graceful drain begins: a keep-warm client made from then on has a closed handler, until the next worker start. */
+    private keepWarmStopped = false;
+    /**
      * The start in progress for each pooled client.
      *
      * The Copilot SDK starts a client on its first createSession or
@@ -1101,7 +1123,9 @@ export class SessionManager {
     get client(): CopilotClient | undefined {
         return this.clients.get("") ?? this.clients.get(this.githubToken || "")
             ?? this.clients.get(BYOK_CLIENT_PREFIX)
-            ?? this.clients.get(BYOK_CLIENT_PREFIX + (this.githubToken || ""));
+            ?? this.clients.get(BYOK_CLIENT_PREFIX + (this.githubToken || ""))
+            ?? this.clients.get(HEARTBEAT_CLIENT_PREFIX)
+            ?? this.clients.get(HEARTBEAT_CLIENT_PREFIX + (this.githubToken || ""));
     }
     set client(value: CopilotClient | undefined) {
         const providerTokens = new Set<string>();
@@ -1112,20 +1136,30 @@ export class SessionManager {
             const token = this.workerDefaults.modelProviders?.resolve(`${provider.id}:${modelName}`)?.githubToken;
             if (token) providerTokens.add(token);
         }
+        // The keep-warm slot is injected too, so a stub also serves a Claude session when PILOTSWARM_CLAUDE_KEEPWARM=1.
         if (value) {
             this.clients.set("", value);
             this.clients.set(BYOK_CLIENT_PREFIX, value);
+            this.clients.set(HEARTBEAT_CLIENT_PREFIX, value);
             if (this.githubToken) this.clients.set(this.githubToken, value);
             if (this.githubToken) this.clients.set(BYOK_CLIENT_PREFIX + this.githubToken, value);
+            if (this.githubToken) this.clients.set(HEARTBEAT_CLIENT_PREFIX + this.githubToken, value);
             for (const token of providerTokens) this.clients.set(token, value);
             for (const token of providerTokens) this.clients.set(BYOK_CLIENT_PREFIX + token, value);
+            for (const token of providerTokens) this.clients.set(HEARTBEAT_CLIENT_PREFIX + token, value);
         } else {
             this.clients.delete("");
             this.clients.delete(BYOK_CLIENT_PREFIX);
+            this.clients.delete(HEARTBEAT_CLIENT_PREFIX);
             if (this.githubToken) this.clients.delete(this.githubToken);
             if (this.githubToken) this.clients.delete(BYOK_CLIENT_PREFIX + this.githubToken);
+            if (this.githubToken) this.clients.delete(HEARTBEAT_CLIENT_PREFIX + this.githubToken);
             for (const token of providerTokens) this.clients.delete(token);
             for (const token of providerTokens) this.clients.delete(BYOK_CLIENT_PREFIX + token);
+            for (const token of providerTokens) this.clients.delete(HEARTBEAT_CLIENT_PREFIX + token);
+            // The handlers of the removed keep-warm clients go with them.
+            for (const heartbeat of this.heartbeats.values()) heartbeat.stopAll();
+            this.heartbeats.clear();
         }
     }
     private sessions = new Map<string, ManagedSession>();
@@ -1770,7 +1804,12 @@ export class SessionManager {
      * It may not be started yet: create and resume sessions on it through
      * `_createCopilotSession` / `_resumeCopilotSession`.
      */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
+    private async ensureClient(
+        tokenOverride?: string,
+        byokOpenAi = false,
+        workspaceRoot?: string,
+        claudeKeepWarm = false,
+    ): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
@@ -1788,12 +1827,55 @@ export class SessionManager {
             }
         }
 
-        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
+        // The flag is checked here too, so no path makes a keep-warm client while PILOTSWARM_CLAUDE_KEEPWARM is not 1.
+        // A stop does not change which client a session uses (that would recycle a warm session during a drain); a handler made after it is closed below.
+        const heartbeatClient = claudeKeepWarm && !byokOpenAi && isClaudeKeepWarmEnabled();
+        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : heartbeatClient ? HEARTBEAT_CLIENT_PREFIX : "") + (token || "")
             + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
         const existing = this.clients.get(clientKey);
         if (existing && !this.runtimeMonitor.isLost(existing)) return existing;
         if (existing) this._evictClient(existing);
 
+        const heartbeat = heartbeatClient
+            ? new ClaudeKeepWarmHeartbeat({
+                policy: (sessionId, model) => this.keepWarmPolicy(sessionId, model),
+                identity: (sessionId, model) => this.keepWarmIdentity(sessionId, model),
+                bearerToken: (sessionId, model) => this.keepWarmBearerToken(sessionId, model),
+                beforePing: (event) => this.keepWarmAdmit(event),
+                onPingUsage: async (ping) => {
+                    const ledger = this.keepWarmLedger();
+                    if (ledger && !await ledger.settle(ping)) throw new Error("keep-warm ping was not claimed or is already settled");
+                    if (ledger) {
+                        this.recordKeepWarmEvent(ping.sessionId, "session.keepwarm_ping", {
+                            ping: ping.ping,
+                            status: ping.status ?? null,
+                            ok: ping.status !== undefined && ping.status >= 200 && ping.status < 300,
+                            model: ping.model,
+                            tokensInput: ping.usage?.input ?? null,
+                            tokensOutput: ping.usage?.output ?? null,
+                            tokensCacheRead: ping.usage?.cacheRead ?? null,
+                            tokensCacheWrite: ping.usage?.cacheWrite ?? null,
+                            totalNanoAiu: typeof ping.totalNanoAiu === "number" && Number.isFinite(ping.totalNanoAiu) ? ping.totalNanoAiu : null,
+                            latencyMs: ping.latencyMs ?? null,
+                        });
+                    }
+                },
+                onPingAborted: async (ping) => {
+                    const ledger = this.keepWarmLedger();
+                    try {
+                        if (ledger && !await ledger.settle(ping)) {
+                            console.warn(`[SessionManager] keep-warm aborted ping was not claimed or is already settled session=${ping.sessionId}`);
+                        }
+                    } catch (error) {
+                        console.warn(`[SessionManager] keep-warm aborted ping settlement failed session=${ping.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+                    }
+                },
+                onStop: ({ sessionId, reason, pings }) => {
+                    console.warn(`[SessionManager] Claude keep-warm stopped session=${sessionId} reason=${reason} pings=${pings}`);
+                    this.recordKeepWarmEvent(sessionId, "session.keepwarm_stopped", { reason, pings });
+                },
+            })
+            : undefined;
         const created = createCopilotClient({
             ...(token ? { gitHubToken: token } : {}),
             logLevel: "error",
@@ -1835,8 +1917,13 @@ export class SessionManager {
             } catch {
                 return undefined;
             }
-        } : undefined);
+        } : undefined, heartbeat);
         this.clients.set(clientKey, created);
+        if (heartbeat) {
+            this.heartbeats.set(clientKey, heartbeat);
+            // Made during a stop or drain: it keeps the session on this client, but captures and pings nothing.
+            if (this.keepWarmStopped) heartbeat.stopAll();
+        }
         this.stdioClients.add(created);
         return created;
     }
@@ -1876,7 +1963,11 @@ export class SessionManager {
             })
             .catch((error: unknown) => {
                 for (const [key, pooled] of this.clients) {
-                    if (pooled === client) this.clients.delete(key);
+                    if (pooled === client) {
+                        this.heartbeats.get(key)?.stopAll();
+                        this.heartbeats.delete(key);
+                        this.clients.delete(key);
+                    }
                 }
                 // The start failed because the client's runtime exited (review S6): name it a transport loss, so the
                 // turn takes the orchestration's connection-closed retry on a fresh client, not its generic retry.
@@ -1896,10 +1987,16 @@ export class SessionManager {
         return starting;
     }
 
-    /** Take every pool key of this client out of the pool. */
+    /**
+     * Take every pool key of this client out of the pool. Its keep-warm handler goes too: the client's runtime is
+     * lost, so no replay may keep pinging through it (a session resumed on a fresh client gets a fresh handler).
+     */
     private _evictClient(client: CopilotClient): void {
         for (const [key, pooled] of this.clients) {
-            if (pooled === client) this.clients.delete(key);
+            if (pooled !== client) continue;
+            this.heartbeats.get(key)?.stopAll();
+            this.heartbeats.delete(key);
+            this.clients.delete(key);
         }
     }
 
@@ -1920,6 +2017,8 @@ export class SessionManager {
             + `(${describeCopilotRuntimeExit(exit)}); its client leaves the pool (${keys} key(s)) and is not reused. `
             + `In-flight turns: [${inFlight.join(", ")}]; idle warm sessions: [${idle.join(", ")}].`);
         runtimeMetrics().copilotRuntime(exit.duringStartup ? "during_startup" : "after_startup");
+        // The replay of every session warm on this client stops with a reason word; the eviction below closes the rest.
+        for (const [id] of warm) this._dropHeartbeat(id, "runtime-lost");
         this._evictClient(client);
         if (typeof client.forceStop === "function") {
             void Promise.resolve().then(() => client.forceStop()).catch(() => {});
@@ -2040,8 +2139,11 @@ export class SessionManager {
         const rootAt = key.indexOf(WORKSPACE_ROOT_CLIENT_SEPARATOR);
         const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
         const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
-        return base.startsWith(BYOK_CLIENT_PREFIX)
-            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot)
+        if (base.startsWith(BYOK_CLIENT_PREFIX)) {
+            return this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot);
+        }
+        return base.startsWith(HEARTBEAT_CLIENT_PREFIX)
+            ? this.ensureClient(base.slice(HEARTBEAT_CLIENT_PREFIX.length) || undefined, false, workspaceRoot, true)
             : this.ensureClient(base || undefined, false, workspaceRoot);
     }
 
@@ -2232,6 +2334,7 @@ export class SessionManager {
                     // Re-check under the lock — a turn may have landed.
                     const touched = this.sessionLastTouchedAt.get(sessionId);
                     if (touched != null && Date.now() - touched < evictAfterMs) return;
+                    this._dropHeartbeat(sessionId, "eviction");
                     const dirExists = fs.existsSync(sessionDir);
                     const committedMarker = dirExists ? readSnapshotMarker(sessionDir) : null;
                     const existing = this.sessions.get(sessionId);
@@ -2345,6 +2448,7 @@ export class SessionManager {
         }
 
         // Marker first, then abort — the unwind classification can never miss it.
+        this._dropHeartbeat(sessionId, "abort");
         managed.requestStop(opts.reason);
         try {
             managed.abort();
@@ -2785,7 +2889,10 @@ export class SessionManager {
             );
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
-        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
+        // Opt-in: a Claude session gets the keep-warm heartbeat client only with PILOTSWARM_CLAUDE_KEEPWARM=1.
+        const claudeKeepWarm = this.claudeKeepWarmFor(sdkModelName, resolvedProviderConfig.provider);
+        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : claudeKeepWarm ? HEARTBEAT_CLIENT_PREFIX : "")
+            + (userGithubToken || "")
             + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
@@ -2802,11 +2909,12 @@ export class SessionManager {
                     { trace },
                 );
                 await this._cancelWorkspaceShells(sessionId, existingWarm, "a client change");
+                this._dropHeartbeat(sessionId, "client-change");
                 try { await existingWarm.destroy(); } catch {}
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root, claudeKeepWarm);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -3597,6 +3705,7 @@ export class SessionManager {
                     `disconnecting warm Copilot session so it can resume with the updated configuration.`,
                 );
                 await this._cancelWorkspaceShells(sessionId, existing, "a rebind");
+                this._dropHeartbeat(sessionId, "model-change");
                 await existing.destroy();
                 this._forgetWarmSession(sessionId);
             } else {
@@ -3726,6 +3835,7 @@ export class SessionManager {
         managed.setWorkflowDelegationRefusal(agentBindingRefusal);
         if (agentBindingRefusal) managed.closeWorkflowTools();
         managed.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
+        managed.setHeartbeatDrop(reason => this._dropHeartbeat(sessionId, reason));
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
@@ -3779,9 +3889,135 @@ export class SessionManager {
         return this.sessionStateDir;
     }
 
+    /**
+     * Stop a session's Claude keep-warm replay on every heartbeat client, for a reason word (compaction, model-change,
+     * close, abort, eviction, ...). A session with no replay is unaffected.
+     */
+    private _dropHeartbeat(sessionId: string, reason: string): void {
+        for (const heartbeat of this.heartbeats.values()) heartbeat.dropSession(sessionId, reason);
+    }
+
+    /** Stop every keep-warm replay and ignore later requests; a stopping or draining worker calls this before it drains. */
+    stopKeepWarmHeartbeats(): void {
+        // A keep-warm client made after this call has a closed handler (ensureClient); the next worker start lifts the flag (startWorkflowTools).
+        this.keepWarmStopped = true;
+        for (const heartbeat of this.heartbeats.values()) heartbeat.stopAll();
+    }
+
+    /** A Claude session gets the keep-warm client only with PILOTSWARM_CLAUDE_KEEPWARM=1, on GitHub Copilot or an Anthropic provider, never on a shim client or an OpenAI or Azure provider. */
+    private claudeKeepWarmFor(sdkModelName: unknown, provider: unknown): boolean {
+        return supportsClaudeKeepWarm(provider) && isClaudeKeepWarmEnabled() && isClaudeModelName(sdkModelName);
+    }
+
+    /** The catalog's keepWarm of the session's model, when the request is for that model (as the toolCatalog policy). */
+    private keepWarmPolicy(sessionId: string, model: string): ClaudeKeepWarmPolicy | undefined {
+        const config = this.sessionConfigs.get(sessionId);
+        if (!config) return undefined;
+        try {
+            const descriptor = this.workerDefaults.modelProviders?.getDescriptor(this.normalizeModelRef(config.model));
+            if (!descriptor?.keepWarm || descriptor.modelName !== model) return undefined;
+            return { intervalMs: descriptor.keepWarm.intervalSeconds * 1000, maxPings: descriptor.keepWarm.maxPings };
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * The session's model reference and the provider row's immutable id when the request is for that model: the provider
+     * a ping of it is sent to. Read when the request is captured, so a provider replaced later is seen by the claim.
+     */
+    private keepWarmIdentity(sessionId: string, model: string): ClaudeKeepWarmIdentity | undefined {
+        const ref = String(this.sessionConfigs.get(sessionId)?.model ?? "").trim();
+        if (!ref) return undefined;
+        try {
+            const registry = this.workerDefaults.modelProviders;
+            const normalized = this.normalizeModelRef(ref);
+            if (registry?.getDescriptor(normalized)?.modelName !== model) return undefined;
+            const providerInstanceId = registry.resolve(normalized)?.providerInstanceId;
+            return { modelRef: normalized, ...(providerInstanceId ? { providerInstanceId } : {}) };
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * The gate before each keep-warm ping: true to send it, "provider-changed" when the ledger refuses the claim, and
+     * false (stop as provider-paused) for everything else, including any failure of the checks. The session must still
+     * exist and be live (running and idle are admitted), must still use the model the request was captured for, and its
+     * provider must pass a turn admission check that is rolled back, so the check leaves the session row as it was.
+     */
+    private async keepWarmAdmit(event: ClaudeKeepWarmBeforePing): Promise<boolean | string> {
+        try {
+            const catalog = this.sessionCatalog;
+            const providers = catalog?.providers;
+            const ledger = this.keepWarmLedger();
+            if (!catalog || !providers || !ledger || !event.modelRef) return false;
+            const row = await catalog.getSession(event.sessionId);
+            if (!row || KEEP_WARM_ENDED_STATES.has(row.state)) return false;
+            if (!row.model || this.normalizeModelRef(row.model) !== event.modelRef) return false;
+            const admission = await providers.previewTurn(event.sessionId, event.modelRef);
+            if (admission.verdict !== "clear" || typeof admission.providerName !== "string" || !admission.providerName) return false;
+            const claimed = await ledger.claim({
+                sessionId: event.sessionId,
+                capturedAt: event.capturedAt,
+                ping: event.ping,
+                providerName: admission.providerName,
+                modelQualified: event.modelRef,
+                providerInstanceId: event.providerInstanceId,
+            });
+            return claimed ? true : "provider-changed";
+        } catch (error) {
+            console.warn(`[SessionManager] Claude keep-warm admission failed session=${event.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+            return false;
+        }
+    }
+
+    /**
+     * Writes a keep-warm session event without waiting for it. A stop must never throw, also at shutdown when the
+     * catalog may already be closed, so a failed write is only logged.
+     */
+    private recordKeepWarmEvent(sessionId: string, eventType: string, data: Record<string, unknown>): void {
+        const catalog = this.sessionCatalog;
+        if (!catalog) return;
+        const warn = (error: unknown) => console.warn(`[SessionManager] Claude keep-warm event write failed session=${sessionId} type=${eventType}: ${error instanceof Error ? error.message : String(error)}`);
+        try {
+            void catalog.recordEvents(sessionId, [{ eventType, data }], this.workspaceWorkerNodeId ?? os.hostname()).catch(warn);
+        } catch (error) {
+            warn(error);
+        }
+    }
+
+    /** Records a keep-warm ping in the provider ledger; none without a catalog. */
+    private keepWarmLedger(): KeepWarmLedger | undefined {
+        const providers = this.sessionCatalog?.providers;
+        return providers ? new KeepWarmLedger(providers) : undefined;
+    }
+
+    /**
+     * A reader of a fresh workload-identity token for a session on an Anthropic workload-identity provider, when the
+     * request is for the session's model. Any other session, and any failure to build the reader, has none: its ping
+     * keeps the captured request's authorization header.
+     */
+    private keepWarmBearerToken(sessionId: string, model: string): (() => Promise<string>) | undefined {
+        const ref = String(this.sessionConfigs.get(sessionId)?.model ?? "").trim();
+        if (!ref) return undefined;
+        try {
+            const registry = this.workerDefaults.modelProviders;
+            const normalized = this.normalizeModelRef(ref);
+            if (registry?.getDescriptor(normalized)?.modelName !== model) return undefined;
+            const resolved = registry.resolve(normalized);
+            if (resolved?.type !== "anthropic-wif") return undefined;
+            const reader = attachWorkloadIdentity(resolved).bearerTokenProvider;
+            return typeof reader === "function" ? reader as () => Promise<string> : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
     /** Release snapshots with their SDK handle; application tools survive ordinary hydration. */
     private _forgetWarmSession(sessionId: string): void {
         this.sessions.get(sessionId)?.closeWorkflowTools();
+        this._dropHeartbeat(sessionId, "released");
         this.sessions.delete(sessionId);
         this.workflowBindingRecords.delete(sessionId);
         this.workflowSnapshots.delete(sessionId);
@@ -3954,6 +4190,7 @@ export class SessionManager {
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);
                             this._bindRuntimeWatch(managed, client);
+                            managed.setHeartbeatDrop(reason => this._dropHeartbeat(sessionId, reason));
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
@@ -4339,6 +4576,7 @@ export class SessionManager {
         if (!options?.lockHeld) {
             return this._withSessionLock(sessionId, "destroySession", () => this.destroySession(sessionId, { lockHeld: true }));
         }
+        this._dropHeartbeat(sessionId, "close");
         try {
             await this.sessions.get(sessionId)?.destroy();
         } finally {
@@ -4439,6 +4677,7 @@ export class SessionManager {
     /** A worker start (E1-R4): workflow tools are available again, to openings made from now on. */
     startWorkflowTools(): void {
         this.workflowToolsClosing = false;
+        this.keepWarmStopped = false;
         // E1b-R3: a barrier raised in an earlier generation, with none of its work still running, is lifted; that
         // generation's clients were stopped with it.
         for (const [sessionId, causes] of [...this.workflowExecutorFailures]) {
@@ -4502,6 +4741,7 @@ export class SessionManager {
         // First, before anything below can end a running model turn: CopilotClient.stop aborts each session before it
         // detaches (SDK 1.0.34), and the aborted run then returns as if the turn had finished. runTurn saves no such run.
         this.shutdownsBegun += 1;
+        this.stopKeepWarmHeartbeats();
         // An opening, waiting or setting up, takes nothing after this (M-08, E1-R4). The open executors are closed as this
         // generation's, so their teardowns still release their folders; then a new generation begins (E1b-R1), and any
         // work of this one that ends later touches only its own handles.
@@ -4525,6 +4765,7 @@ export class SessionManager {
         // must never clear clients/configuration installed by a later start.
         const clients = [...new Set(this.clients.values())];
         this.clients.clear();
+        this.heartbeats.clear();
         this.clientStarts = new WeakMap();
         for (const session of this.sessions.values()) session.closeWorkflowTools();
         this.sessions.clear();

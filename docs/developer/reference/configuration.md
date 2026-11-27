@@ -321,6 +321,14 @@ Duroxide runtime concurrency, and process-wide worker limits.
   Sets the wall-clock cap for one Copilot turn across the worker deployment.
   Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
   `PilotSwarmWorker({ turnTimeoutMs })` option takes precedence over the env var.
+- `PILOTSWARM_CLAUDE_KEEPWARM`
+  Exactly `1` turns on the Claude keep-warm heartbeat on a worker; unset, empty
+  or any other value: off, and the worker's Copilot clients are as before. On, a
+  worker re-sends an idle Claude session's latest model request with
+  `max_tokens: 0` every 240 seconds, at most 7 times in one idle gap, to keep
+  the session's prompt cache warm, and records each ping. Default: off. The
+  cadence, the admission check, what stops a replay and what is recorded are in
+  [Keep-warm cadence](#keep-warm-cadence-keepwarm).
 - Duroxide lock settings. Each has a matching `PilotSwarmWorker` option
   (`workerLockTimeoutMs`, `workerLockRenewalBufferMs`, `orchestratorLockTimeoutMs`,
   `orchestratorLockRenewalBufferMs`, `sessionLockTimeoutMs`,
@@ -855,6 +863,147 @@ resume re-resolve the policy; a missing session/model match leaves dispatch off.
 Reload/rebuild the registry after changing the catalog, using the deployment's
 existing reload or rollout path. No new database migration or runtime provider
 row rewrite is required by this field.
+
+### Keep-warm cadence (`keepWarm`)
+
+With `PILOTSWARM_CLAUDE_KEEPWARM=1` a worker pings an idle Claude session 240
+seconds after the start of its last request, and again 240 seconds after the
+start of each ping, at most 7 times in one idle gap. The interval is counted
+from a request's start, as the prompt cache's 5-minute lifetime is, so a long
+reply does not push the ping past the lifetime. A reply that ends 290 seconds or
+more after its request started, 10 seconds short of the lifetime, gets no ping
+(the replay stops as `cache-expired`), because a ping sent later may reach the
+cache after it expired. A Claude model entry in the provider-type catalog can set
+its own cadence and cap:
+
+```json
+{
+  "name": "claude-sonnet-5",
+  "keepWarm": {
+    "intervalSeconds": 240,
+    "maxPings": 7
+  }
+}
+```
+
+`intervalSeconds` must be an integer from 60 to 290, below the 300-second prompt
+cache lifetime, and `maxPings` an integer from 1 to 49; both are required. Any
+other value, an unknown key, or `keepWarm` on a model whose name does not start
+with `claude-` fails the catalog load. A model without `keepWarm` uses 240 and 7.
+The setting does nothing while the flag is off, and a reloaded catalog applies
+from the session's next model call. No migration is needed.
+
+**What a ping is, and what it costs.** With the flag on, a Claude session's
+Copilot client sends its model traffic through the worker, and the worker re-sends
+the session's latest model request with `max_tokens: 0` and `stream: false`,
+which reads the cached prompt and keeps it warm. A new model call restarts the
+count. Only a main-conversation model call on `/v1/messages` is kept. A Chat
+Completions call, a background, sampling or subagent call, a request with
+`thinking` enabled, with `output_config.format`, or with a forced `tool_choice`
+(`any` or a named tool) is passed through and never kept, and a compaction stops
+the session's replay. The keep-warm client is made only for GitHub Copilot and
+Anthropic provider clients, never for an OpenAI or Azure provider. The flag adds
+one Copilot runtime process for each token and workspace, and a switch between a
+GPT and a Claude model moves the session between clients. A ping is also sent
+while a long tool call is running, by design: the call can outlast the cache
+lifetime, and the ping keeps the cache warm for the turn that follows it.
+
+Each ping is one `keep_warm` inference operation of the provider ledger
+(claimed before the send, settled once with the reply's token counts; none when
+the reply was not a readable 2xx), charged to the provider of the session's model
+with the session's owner and charge class. A ping that was admitted, and so
+claimed, but is dropped before it is sent (the session ends or is replaced, or the
+cache deadline passes during the admission check) settles its claim with no
+counts; it writes no ping event and does not count toward `maxPings`. It is not a
+turn: it moves that
+provider's meters, limits and allowances like any inference operation, and it
+adds no turn to any count.
+
+**Billing.** Since 2026-06-01 every Copilot plan bills GitHub AI Credits by tokens, cached
+tokens included ([GitHub changelog, 2026-06-01](https://github.blog/changelog/2026-06-01-updates-to-github-copilot-billing-and-plans/));
+a ping bills its cache read. On a legacy annual Copilot Pro or Pro+ plan that is
+still on premium requests, how a ping counts is not confirmed with GitHub.
+
+**How long a session stays warm, and the affinity limit.** A session stays warm
+for `maxPings` times `intervalSeconds`, or until the worker evicts it from memory.
+The worker evicts an idle session after `PILOTSWARM_SESSION_EVICT_MS`
+(default 2,100,000 ms, 35 minutes; this page has no other entry for it, and the
+worker reads it when it starts), and an eviction stops the replay. A session's
+affinity to its worker is held for `dehydrateOnIdle` seconds of idle time (the
+client's default is 1,800). The interval times the number of pings should stay
+under 1,800 seconds, so that the last ping comes before the affinity is released;
+the catalog load only warns when it does not and never changes the value. The
+defaults (7 pings at 240 seconds, 28 minutes) fit. A longer run, such as 60 minutes,
+needs 14 pings at 240 seconds, a raised `PILOTSWARM_SESSION_EVICT_MS`, and the
+knowledge that its later pings may be sent by a worker that no longer holds the
+session (there is no fence across workers). A turn that starts more than about 5
+minutes after the last ping or request pays for a cold prompt cache.
+
+**Cap guard and break-even.** A ping reads the cached prompt at the cache read
+price; a missed cache makes the next turn write it at the cache write price. The
+break-even number of pings is `floor((write - read) / read)`. The catalog load
+warns, and never clamps, when `maxPings` is above 11, the break-even at the
+standard prices (a read at 0.1 and a write at 1.25 times the input price). The
+numbers below were read in November 2026 from the cache prices the Copilot model
+catalog listed in the pull request's live runs. They are snapshots: not current
+tariffs, not billed cost and not a guarantee of savings. A model that is not in
+the table should stay at 11 or below until its prices are known. No table is in
+code and no price is read at run time.
+
+| Model | Break-even pings |
+| --- | --- |
+| Claude Opus 5.5 | 24 |
+| Claude Sonnet 5.5 | 24 |
+| Claude Sonnet 5 | 11 |
+| Claude Haiku 5.5 | 11 |
+| Claude Haiku 4.5 | 11 |
+
+**Admission and stops.** Before each ping the worker checks that the session
+still exists and is not finished (completed, failed, error or cancelled), still
+uses the model the request was captured for, and that its provider would admit a
+turn now (no hold, limit or allowance reached; the check is rolled back and leaves
+the session as it was), then claims the ping in the ledger. With no session
+catalog no ping is sent. A claim the ledger refuses, because the provider row was
+deleted or created again under the same name since the request was captured,
+stops the replay as `provider-changed`; any other refusal stops it as
+`provider-paused`. A workload-identity provider sends each ping with a fresh
+token. A stopped replay is not restarted by the worker: the next model call
+starts a new gap. The reasons that stop a replay: `max-pings`, `cache-miss` (a
+cache read of 0, or a cache write above 1% of the read), `cache-expired`,
+`unauthorized`, `forbidden`, `rate-limited`, `http-error`, `redirect` (a ping does
+not follow redirects), `usage-unreadable`, `usage-write-failed`, `error` (a send
+that threw or timed out), `uncapturable` (a request that replaces the kept one but
+cannot be kept), `provider-paused`, `provider-changed`, and the session-side
+reasons `compaction`, `compaction_start`, `compaction_complete`, `model-change`,
+`client-change`, `abort`, `close`, `eviction`, `runtime-lost`, `released` and
+`shutdown`. A ping already sent when a stop happens is not cancelled: it ends
+within its 60-second timeout and is recorded if it got a reply. A session that
+ends a turn in a durable wait or cron timer longer than the dehydrate threshold
+is dehydrated, and a dehydrating session loses its heartbeat (the replay stops as
+`released`); the next model call starts a new gap.
+
+**Reading the pings.** Each recorded ping is a `session.keepwarm_ping` event
+(`ping`, `status`, `ok`, `model`, `tokensInput`, `tokensOutput`,
+`tokensCacheRead`, `tokensCacheWrite`, `totalNanoAiu`, `latencyMs`), and each stop
+is a `session.keepwarm_stopped` event (`reason`, `pings`). Read them with
+`getSessionEvents(sessionId, afterSeq, limit, ["session.keepwarm_ping"])` of the
+management client, or with `read_agent_events`. In the TUI and the portal, the
+Tokens card of the session stats pane shows "Keep-warm Pings" (the count, with a
+`+` when the read hit its limit and the number that failed) and "Keep-warm Cost"
+(in AIU; "not reported" when no ping reported one, "(partial)" when only some did,
+and `≥` with "(newest 1,000)" past the limit): the pane reads the newest 1,000
+ping events of the session. The activity feed labels the two event types
+`[keep-warm]` (`ping 2 · 200 · 74.6k cached`, `stopped · max-pings · 7 pings`).
+
+**Usage reports.** Pings are listed as `operations`, never as turns, in the
+provider usage reports, next to Decision calls; no report groups by capability
+(`provider-inference-operations-0097.ts`). In practice the model view keeps them
+apart (`getProviderUsage({ dimension: "model" })` of the management client, and the
+usage summary's model pivot), because a ping sits under the session's Claude chat
+model and Decision calls use Decision models. Two cautions: the split fails when
+a provider names one model as both a chat model and a Decision model, and for one
+session it fails when that chat session also makes `decide` calls; for a session,
+read its `session.keepwarm_ping` events instead.
 
 ### GPT-6 Astra through GitHub Copilot
 

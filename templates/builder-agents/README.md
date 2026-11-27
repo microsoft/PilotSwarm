@@ -61,6 +61,10 @@ with `toolCatalog: { "maxDeclarations": 128, "overflowStrategy": "typed-dispatch
 router names alone do not enable it. Shared/personal instances inherit the
 type's model policy. See [Tool Catalog Overflow](../../docs/developer/reference/configuration.md#tool-catalog-overflow-toolcatalog).
 
+Leave the Claude keep-warm heartbeat off in generated scaffolds. A deployer turns it
+on with `PILOTSWARM_CLAUDE_KEEPWARM=1` on the worker, and a Claude model entry may
+set a `keepWarm` cadence; each ping is billed. See [Keep-warm cadence](../../docs/developer/reference/configuration.md#keep-warm-cadence-keepwarm).
+
 PilotSwarm includes built-in facts tools (`store_fact`, `read_facts`, `delete_fact`) on workers, and they are available to every agent session by default, including system agents. Use them for durable structured memory and shared cross-agent state instead of inventing an app-specific facts table unless the app truly needs one.
 
 PilotSwarm also ships optional SDK-bundled named agents under its `default-agents` tier. They stay hidden unless an app opts in through `session-policy.json` with `creation.bundledAgents`, for example `"bundledAgents": ["generic-crawler"]`. Builder templates should teach that opt-in instead of copying bundled agent files, unless the app needs to customize the agent.
