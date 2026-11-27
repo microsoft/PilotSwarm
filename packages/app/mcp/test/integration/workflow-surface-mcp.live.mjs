@@ -19,6 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import pg from "pg";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { loadDotEnv, startWebEnv, mcpStdioArgs } from "./web-env.mjs";
@@ -34,6 +35,15 @@ async function ensureModelProviderForModelFreeRun() {
     if (process.env.GITHUB_TOKEN || process.env.PS_MODEL_PROVIDERS_PATH) {
         return { close: async () => {} };
     }
+    const schema = (process.env.CMS_SCHEMA || "copilot_sessions").replace(/"/g, '""');
+    const queryDb = async (fn) => {
+        if (!process.env.DATABASE_URL) return null;
+        const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+        try { return await fn(pool); } finally { await pool.end().catch(() => {}); }
+    };
+    const prevSettings = await queryDb((pool) => pool.query(
+        `SELECT default_provider, default_model, default_reasoning, default_context, bootstrapped_at FROM "${schema}".provider_cluster_settings WHERE singleton`,
+    ).then((r) => r.rows[0] ?? null)).catch(() => null);
     const prevProvidersPath = process.env.PS_MODEL_PROVIDERS_PATH;
     const model = await startScriptedModel({ respond: () => ({ content: "Ready." }) });
     const dir = fs.mkdtempSync(resolve(os.tmpdir(), "ps-wf-surface-mcp-model-"));
@@ -55,6 +65,14 @@ async function ensureModelProviderForModelFreeRun() {
             else process.env.PS_MODEL_PROVIDERS_PATH = prevProvidersPath;
             await model.close().catch(() => {});
             fs.rmSync(dir, { recursive: true, force: true });
+            await queryDb(async (pool) => {
+                await pool.query(
+                    `UPDATE "${schema}".provider_cluster_settings SET default_provider = $1, default_model = $2, default_reasoning = $3, default_context = $4, bootstrapped_at = $5, updated_at = now() WHERE singleton`,
+                    [prevSettings?.default_provider ?? null, prevSettings?.default_model ?? null, prevSettings?.default_reasoning ?? null, prevSettings?.default_context ?? null, prevSettings?.bootstrapped_at ?? null],
+                );
+                await pool.query(`DELETE FROM "${schema}".provider_instances WHERE name = $1`, ["wf-surface-scripted"]);
+                await pool.query(`DELETE FROM "${schema}".provider_bootstrap_receipts WHERE provider_name = $1`, ["wf-surface-scripted"]);
+            }).catch(() => {});
         },
     };
 }
