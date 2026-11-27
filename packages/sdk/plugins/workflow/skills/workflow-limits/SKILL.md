@@ -70,13 +70,10 @@ agent step sits at its Workflow's level (`+0`). Workflows may nest three deep
 | Native task | no level; cannot delegate |
 | Anything above level `2` | refused |
 
-In practice:
-- An agent step in a top-level Workflow (`level 0`) can delegate two sub-agent
-  levels down (`1 -> 2`), matching a top-level session.
-- An agent step in a child Workflow (`level 1`) can spawn a sub-agent (`level 2`),
-  for example a coder step spawning its reviewer.
-- An agent step in a level-2 Workflow (a third nested Workflow, or a Workflow
-  started by a level-2 sub-agent) sits at level `2` and cannot delegate further.
+In practice (effective levels in parentheses):
+- Top-level Workflow: `person (0) -> Workflow (0, free) -> agent step (0) -> sub-agent (1) -> sub-agent (2)` (delegates two sub-agent levels down, matching a top-level session).
+- Child Workflow: `person (0) -> batch Workflow (0, free) -> child Workflow (1) -> agent step (1) -> sub-agent (2)` (a child Workflow's agent step sits at level `1` and CAN spawn a level-`2` sub-agent with `spawn_agent`, such as an independent reviewer).
+- Level-2 Workflow: `person (0) -> W1 (0, free) -> W2 (1) -> W3 (2) -> agent step (2)`, or `person (0) -> sub (1) -> sub (2) -> W1 (2, free) -> agent step (2)` (Workflows nest three deep; a level-2 Workflow's agent step sits at level `2` and cannot delegate further).
 - Nothing inside a Workflow can save, change, or start a Workflow Definition
   (`WORKFLOW_DEFINITION_TOOLS_REFUSED`); declare child Workflows with `spawn` steps.
 - Width limits apply alongside depth: at most 50 running sub-agents and active
