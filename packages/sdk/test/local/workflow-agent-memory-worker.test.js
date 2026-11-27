@@ -19,6 +19,7 @@
  * turn retried after its result does not run the model again (R3-2).
  */
 import { describe, it, expect } from "vitest";
+import pg from "pg";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -198,6 +199,35 @@ async function expectFirstTurnCommitted(ctx, agentSession, visit1) {
 }
 
 const CORRUPTED = "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'.";
+
+async function waitUntil(check, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (await check()) return true;
+        await pause(100);
+    }
+    return false;
+}
+
+/** Whether PostgreSQL shows another session waiting on a lock in a statement on `table` that takes `lock` (FOR UPDATE, FOR SHARE). */
+async function lockWaiter(pool, table, lock) {
+    const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()
+           AND position($1 in query) > 0 AND position($2 in query) > 0`, [table, lock]);
+    return rows[0].n > 0;
+}
+
+/** The step session's turns that were not run at admission (their visit was decided): the activity results that say so. */
+async function turnsNotRun(ctx, sessionId) {
+    const instance = `session-${sessionId}`;
+    const found = [];
+    for (const execution of await ctx.duroxide.listExecutions(instance)) {
+        for (const event of await ctx.duroxide.readExecutionHistory(instance, execution)) {
+            if (event.kind === "ActivityCompleted" && /this turn was not run/.test(String(event.data))) found.push(event);
+        }
+    }
+    return found;
+}
 
 /**
  * A session: new step's turn ended after a fault that came after its result, and was not run again: the step's session
@@ -502,15 +532,25 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
             await original.call(this, input);
             throw new Error("Connection terminated unexpectedly");
         },
-        "its COMMIT still in flight": async function (original, input) {
-            // Another transaction holds the visit's row lock, as the decision's own does until its COMMIT lands. The decision
-            // queues behind it, and commits 2 seconds after the worker saw its call fail.
-            const holder = await this.pool.connect();
+        "its COMMIT still in flight": async function (original, input, witness) {
+            // Another transaction holds the visit's row lock, as the decision's own does until its COMMIT lands. The real
+            // decision queues behind it (PostgreSQL shows it waiting). The call fails; the lock is released only once the
+            // worker's read-back is seen waiting behind it too (or after 10 seconds, for a read that does not wait). The
+            // holder and the witness use the test's own connections, not the worker's small pool.
+            const holder = await witness.side.connect();
             await holder.query("BEGIN");
             await holder.query(`SELECT 1 FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [input.nodeExecutionId]);
-            original.call(this, input).catch(() => {});
-            await pause(500);
-            setTimeout(() => { holder.query("COMMIT").catch(() => {}).finally(() => holder.release()); }, 2_000);
+            witness.deciding = original.call(this, input);
+            witness.deciding.catch(() => {});
+            const waiting = lock => lockWaiter(witness.side, this.t.nodes, lock);
+            if (!await waitUntil(() => waiting("FOR UPDATE"), 10_000)) {
+                await holder.query("ROLLBACK").finally(() => holder.release());
+                throw new Error("the decision was not seen waiting behind the held row lock");
+            }
+            witness.released = (async () => {
+                witness.readerWaited = await waitUntil(() => waiting("FOR SHARE"), 10_000);
+                try { await holder.query("COMMIT"); } finally { holder.release(); }
+            })();
             throw new Error("Connection terminated unexpectedly");
         },
     };
@@ -533,8 +573,9 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
             return position.step === 0 ? { tools: [complete(nx, "finish", "op-2", { recalled: "nothing" })] } : { content: "done" };
         };
         const original = WorkflowStore.prototype.completeAgentNode;
+        const witness = { side: new pg.Pool({ connectionString: getEnv().store, max: 2 }) };
         WorkflowStore.prototype.completeAgentNode = async function (input) {
-            return input.operationId === "op-1" ? fault.call(this, original, input) : original.call(this, input);
+            return input.operationId === "op-1" ? fault.call(this, original, input, witness) : original.call(this, input);
         };
         const before = WORKFLOW_AGENT_REPLY_SETTLE.ms;
         WORKFLOW_AGENT_REPLY_SETTLE.ms = 4_000;
@@ -553,6 +594,12 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                     expect(fs.existsSync(marker), "a tool ran after the committed result").toBe(false);
                     expect(state.denied).toBeGreaterThan(0);
                     expect(state.steps).toBeLessThan(40);
+                    if (witness.released) {
+                        // The read-back waited behind the held lock, and the real decision committed after it.
+                        await witness.released;
+                        expect(witness.readerWaited, "the worker's read-back was not seen waiting for the decision").toBe(true);
+                        expect(await witness.deciding).toMatchObject({ kind: "accepted" });
+                    }
                 } finally {
                     await worker.stop();
                 }
@@ -560,6 +607,7 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
         } finally {
             WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
             WorkflowStore.prototype.completeAgentNode = original;
+            await witness.side.end();
         }
     });
 
@@ -633,6 +681,9 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                 expect(await runEnded(ctx, runId, evidence)).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { said: "one" } });
                 await expectSettledUnreplayed(ctx, runId, state, { counter: "afterReport", unpublished: false });
                 expect(fs.existsSync(marker), "the step's task ran again after its result").toBe(false);
+                // The retry reached admission on worker B and was not run there (not merely ended by the step's end command).
+                const [visit] = await talkVisits(ctx.store, runId);
+                expect(await turnsNotRun(ctx, visit.invocation.childSessionId), JSON.stringify(await evidence())).not.toEqual([]);
             } finally {
                 release();
                 await worker?.stop();

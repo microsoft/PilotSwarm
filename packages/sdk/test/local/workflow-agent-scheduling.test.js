@@ -101,6 +101,8 @@ describe("the scheduling bridge uses this turn's visit", () => {
             readAgentRequiredTools: async () => [],
             readAgentMissingTools: async () => [],
             readTurnVisit: async () => turnVisit,
+            // Issue I1: admission reads the turn's fixed visit again, ordered after a decision in flight; it is open here.
+            readNodeStateAfterWriters: async () => "pending",
             readAgentInvocation: async id => {
                 reads.push(id);
                 return { childSessionId: CHILD, deadlineAt: new Date(deadlineAt) };

@@ -183,6 +183,28 @@ describe("the turn-to-visit fence of a session that continues", () => {
         expect(plain.fence.reads.filter(([name]) => name === "readControlRequestIds")).toEqual([]);
     });
 
+    // Issue I1, review R4-1: readTurnVisit's plain read can see an open visit while a decision of it commits (a retry whose
+    // earlier attempt's completion was still committing when its worker was lost). Admission reads the fixed visit again,
+    // ordered after that decision: nothing reaches the model before it lands, and a decided visit's turn does not run.
+    it("a continued turn whose open visit is being decided waits for the decision: decided, it does not run; rolled back, it runs", async () => {
+        for (const [landed, runs] of [["completed", 0], ["pending", 1]]) {
+            const { h, fence } = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false }, writeback: true });
+            let commit = null;
+            fence.store.readNodeStateAfterWriters = nx => {
+                fence.reads.push(["readNodeStateAfterWriters", nx]);
+                return new Promise(resolve => { commit = () => resolve(landed); });
+            };
+            const turn = h.runTurn(AGENT_SESSION, { turnIndex: 21, clientMessageIds: [promptId(NX2)] }, "runTurnV5");
+            await vi.waitFor(() => expect(commit).toBeTypeOf("function"));
+            expect(fence.reads).toContainEqual(["readNodeStateAfterWriters", NX2]);
+            expect(h.session.runTurn).not.toHaveBeenCalled();
+            commit();
+            const result = await turn;
+            expect(h.session.runTurn).toHaveBeenCalledTimes(runs);
+            if (runs === 0) expect(result.type).toBe("stopped");
+        }
+    });
+
     // Issue I1, review R3-2: a session: new step's turn (a retry after its result was recorded, or a prompt after it) whose
     // own visit is decided does not run; one whose visit cannot be read fails (it is retried).
     it("a session that does not continue: a turn whose own visit is decided does not run; an unreadable visit fails the turn", async () => {

@@ -665,10 +665,11 @@ function isLiveSessionLostErrorMessage(message?: string): boolean {
 const TRANSPORT_LOSS_DESTROY_DEADLINE_MS = 5_000;
 
 /**
- * Issue I1 (review R3-3): how long a turn whose run a Stop settled by force waits for its warm session's disconnect before
- * forgetting it, so the session lock is released even when the CLI no longer answers.
+ * Issue I1 (reviews R3-3, R4-3): how long a turn that drops its warm session (a run a Stop settled by force, or a decided
+ * visit's turn that lost its Copilot session) waits for the disconnect before forgetting the handle, so the session lock is
+ * released even when the CLI no longer answers. It bounds the disconnect only, not the workspace-task cancel before it.
  */
-const UNSETTLED_RUN_DESTROY_DEADLINE_MS = 5_000;
+const DROPPED_TURN_DESTROY_DEADLINE_MS = 5_000;
 
 /** Issue I1 (review R3-1): how long the read of a turn's Workflow visit waits for a decision still in flight. */
 const WORKFLOW_VISIT_READ_LOCK_MS = 10_000;
@@ -4839,13 +4840,15 @@ export function registerActivities(
             };
             const decidedTurnVisit = (): string | null =>
                 workflowTurnVisit?.nodeExecutionId && !workflowTurnVisit.open ? workflowTurnVisit.nodeExecutionId : null;
-            // Issue I1 (review R3-2): a session: new step's session has no turn visit (readTurnVisit), but its turn is fenced
-            // by its own visit the same way: a turn whose visit is already decided (a retry after the result was recorded, after
-            // a lost runtime or a failed read, or a prompt that came after it) does not run. A read that fails fails the turn.
+            // Issue I1 (reviews R3-2, R4-1): the turn's fixed visit (a continued session's turn visit, or a session: new step's
+            // own visit, which readTurnVisit does not give) is read again ordered after any decision in flight: readTurnVisit's
+            // plain read can see an open visit while a decision of it commits (a retry whose earlier attempt's completion was
+            // still committing when its worker was lost). A turn whose visit is decided does not run; a read that fails or
+            // times out fails the turn (it is retried). The visit chosen and the Stops' routing do not change.
             const decidedAtAdmission = async (): Promise<string | null> => {
                 const decided = decidedTurnVisit();
-                if (decided || workflowTurnVisit) return decided;
-                const visit = oneShotVisit();
+                if (decided) return decided;
+                const visit = workflowTurnVisit ? workflowTurnVisit.nodeExecutionId : oneShotVisit();
                 return visit && await storedTurnVisitDecided() === true ? visit : null;
             };
 
@@ -5240,7 +5243,7 @@ export function registerActivities(
                     traceWarn(`[runTurn] session=${input.sessionId}: the model run did not settle after its abort; dropping its warm session`);
                     try {
                         // Review R3-3: bounded, so the session lock is released even when the CLI does not answer the disconnect.
-                        await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true, destroyDeadlineMs: UNSETTLED_RUN_DESTROY_DEADLINE_MS });
+                        await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true, destroyDeadlineMs: DROPPED_TURN_DESTROY_DEADLINE_MS });
                     } catch (err: any) {
                         // Review RT-F1-L1: the unsettled session is never committed or reused. invalidateWarmSession forgets
                         // the handle whatever fails; this attempt fails (retryable) so nothing of it is saved.
@@ -5263,7 +5266,7 @@ export function registerActivities(
             const visitDecidedNow = async (): Promise<boolean> => visitDecidedThisTurn || await storedTurnVisitDecided() === true;
             const notRunAgain = async (why: string): Promise<TurnResult> => {
                 traceWarn(`[runTurn] session=${input.sessionId}: the turn's workflow visit is decided; it is not run again after: ${why}`);
-                await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true }).catch((err: any) =>
+                await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true, destroyDeadlineMs: DROPPED_TURN_DESTROY_DEADLINE_MS }).catch((err: any) =>
                     traceWarn(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`));
                 return { type: "stopped", reason: "The workflow step's result is recorded; the rest of its turn was lost with its "
                     + "Copilot session, so the turn was not run again." } as TurnResult;
