@@ -11,7 +11,9 @@
 (* or is created under O. Concurrent changes:                              *)
 (* - Create: W is created under O. Creation locks its parent O first       *)
 (*   (lockLiveParent: FOR SHARE, or FOR NO KEY UPDATE when the child       *)
-(*   budget takes it), then inserts W with a run that has not ended.       *)
+(*   budget takes it), then inserts W with a run that has not ended. With  *)
+(*   StartCheck, it first reads the sessions above O and refuses when one  *)
+(*   is deleted (review round 3: a Start after a prune).                   *)
 (* - RunEnd: W's run ends. Its writer holds W's row (FOR NO KEY UPDATE)    *)
 (*   first, then ends the run and commits.                                 *)
 (* Each transaction's changes become visible at its commit. A row lock is  *)
@@ -26,14 +28,15 @@ CONSTANTS
     Create,     \* a Workflow is created under O (meaningful with WInit = "none")
     CreateMode, \* "share" or "nku": the lock the creation takes on O
     RunEnd,     \* W's run ends (meaningful with WInit = "active", or with Create)
-    Check       \* the final check: "locked" (the fix), "nolock" (reads the sessions left below without locking
+    Check,      \* the final check: "locked" (the fix), "nolock" (reads the sessions left below without locking
                 \* them), "kept" (refuses only when a kept Workflow is below), "none" (round 2: no check below)
+    StartCheck  \* TRUE: a creation under its lock on O refuses when R is deleted (the fix); FALSE: round 3, no such check
 
 Rows == {"R", "O", "W"}
 
-VARIABLES w, deleted, locks, pcS, sResult, seen, pcC, pcE, createdAfter
+VARIABLES w, deleted, locks, pcS, sResult, seen, pcC, pcE
 
-vars == <<w, deleted, locks, pcS, sResult, seen, pcC, pcE, createdAfter>>
+vars == <<w, deleted, locks, pcS, sResult, seen, pcC, pcE>>
 
 \* The sessions under R that the prune leaves in place, as the committed state has them.
 Left == {"O"} \cup (IF w # "none" THEN {"W"} ELSE {})
@@ -56,7 +59,6 @@ Init ==
     /\ seen = {}
     /\ pcC = IF Create THEN "idle" ELSE "done"
     /\ pcE = IF RunEnd THEN "idle" ELSE "done"
-    /\ createdAfter = FALSE
 
 (***************************************************************************)
 (* The final check of the prune of R: R's row (waits); the sessions under  *)
@@ -70,13 +72,13 @@ S_LockTarget ==
     /\ CanLock("sweeper", "R", "nku")
     /\ locks' = AcquireAll(locks, "sweeper", {"R"}, "nku")
     /\ pcS' = "target"
-    /\ UNCHANGED <<w, deleted, sResult, seen, pcC, pcE, createdAfter>>
+    /\ UNCHANGED <<w, deleted, sResult, seen, pcC, pcE>>
 
 S_Read ==
     /\ pcS = "target"
     /\ seen' = Left
     /\ pcS' = "read"
-    /\ UNCHANGED <<w, deleted, locks, sResult, pcC, pcE, createdAfter>>
+    /\ UNCHANGED <<w, deleted, locks, sResult, pcC, pcE>>
 
 S_LockLeft ==
     /\ pcS = "read"
@@ -90,7 +92,7 @@ S_LockLeft ==
                   ELSE /\ locks' = ReleaseIn(locks, "sweeper")
                        /\ pcS' = "done"
                        /\ sResult' = "busy"
-    /\ UNCHANGED <<w, deleted, seen, pcC, pcE, createdAfter>>
+    /\ UNCHANGED <<w, deleted, seen, pcC, pcE>>
 
 S_Check ==
     /\ pcS = "locked"
@@ -104,7 +106,7 @@ S_Check ==
                   /\ sResult' = result
              ELSE /\ pcS' = "checked"
                   /\ UNCHANGED <<locks, sResult>>
-    /\ UNCHANGED <<w, deleted, seen, pcC, pcE, createdAfter>>
+    /\ UNCHANGED <<w, deleted, seen, pcC, pcE>>
 
 S_Commit ==
     /\ pcS = "checked"
@@ -112,23 +114,28 @@ S_Commit ==
     /\ locks' = ReleaseIn(locks, "sweeper")
     /\ pcS' = "done"
     /\ sResult' = "deleted"
-    /\ UNCHANGED <<w, seen, pcC, pcE, createdAfter>>
+    /\ UNCHANGED <<w, seen, pcC, pcE>>
 
-(* A Workflow created under O: O's row first (lockLiveParent), then the insert, visible at the commit. *)
+(* A Workflow created under O: O's row first (lockLiveParent), then, with StartCheck, the sessions above O are read (a   *)
+(* deleted one: refused, nothing created), then the insert, visible at the commit.                                     *)
 C_Lock ==
     /\ pcC = "idle"
     /\ CanLock("create", "O", CreateMode)
     /\ locks' = AcquireAll(locks, "create", {"O"}, CreateMode)
     /\ pcC' = "locked"
-    /\ UNCHANGED <<w, deleted, pcS, sResult, seen, pcE, createdAfter>>
+    /\ UNCHANGED <<w, deleted, pcS, sResult, seen, pcE>>
 
 C_Commit ==
     /\ pcC = "locked"
-    /\ w' = "active"
-    /\ createdAfter' = ("R" \in deleted)
+    /\ IF StartCheck /\ "R" \in deleted
+          THEN /\ pcC' = "refused"
+               /\ pcE' = "done"   \* no Workflow, so no run to end
+               /\ UNCHANGED w
+          ELSE /\ pcC' = "done"
+               /\ w' = "active"
+               /\ UNCHANGED pcE
     /\ locks' = ReleaseIn(locks, "create")
-    /\ pcC' = "done"
-    /\ UNCHANGED <<deleted, pcS, sResult, seen, pcE>>
+    /\ UNCHANGED <<deleted, pcS, sResult, seen>>
 
 (* The run's end: W's row first (lockLiveSession), once W exists with a run that has not ended. *)
 E_Lock ==
@@ -137,16 +144,16 @@ E_Lock ==
     /\ CanLock("runend", "W", "nku")
     /\ locks' = AcquireAll(locks, "runend", {"W"}, "nku")
     /\ pcE' = "locked"
-    /\ UNCHANGED <<w, deleted, pcS, sResult, seen, pcC, createdAfter>>
+    /\ UNCHANGED <<w, deleted, pcS, sResult, seen, pcC>>
 
 E_Commit ==
     /\ pcE = "locked"
     /\ w' = "finished"
     /\ locks' = ReleaseIn(locks, "runend")
     /\ pcE' = "done"
-    /\ UNCHANGED <<deleted, pcS, sResult, seen, pcC, createdAfter>>
+    /\ UNCHANGED <<deleted, pcS, sResult, seen, pcC>>
 
-AllDone == pcS = "done" /\ pcC = "done" /\ pcE = "done"
+AllDone == pcS = "done" /\ pcC \in {"done", "refused"} /\ pcE = "done"
 Finished == AllDone /\ UNCHANGED vars
 
 Next ==
@@ -164,14 +171,13 @@ TypeOK ==
     /\ seen \subseteq {"O", "W"}
     /\ sResult \in {"none", "deleted", "busy", "changed", "below", "kept"}
 Inv_Locks == \A r \in Rows : \A l1, l2 \in locks[r] : l1[1] # l2[1] => ~Conflicts(l1[2], l2[2])
-\* A Workflow the committed state keeps is never left under a deleted R, unless it was created after the prune
-\* committed: a session the prune had already left without its parent created it (out of scope, as on main).
-Inv_KeptShown == ~(KeptW /\ "R" \in deleted /\ ~createdAfter)
+\* A Workflow the committed state keeps is never left under a deleted R, also one created after the prune committed.
+Inv_KeptShown == ~(KeptW /\ "R" \in deleted)
 
 (* Witnesses: each is expected to be violated, which shows that the outcome is reachable. *)
 Wit_Deleted == sResult # "deleted"
 Wit_Below == sResult # "below"
 Wit_Busy == sResult # "busy"
 Wit_Changed == sResult # "changed"
-Wit_CreatedAfter == ~createdAfter
+Wit_StartRefused == pcC # "refused"
 =============================================================================

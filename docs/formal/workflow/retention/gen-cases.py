@@ -7,8 +7,8 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import tlc_cases   # docs/formal/tlc_cases.py
 
-BATCH = "ret2"
-HEAD = "issue-412-r3"
+BATCH = "ret3"
+HEAD = "pr415-round4"
 M = "WorkflowRetention"
 MP = "WorkflowPrune"
 
@@ -67,8 +67,8 @@ CASES = [
 ]
 
 
-def p(w="finished", o=True, r=False, create=False, cmode="share", runend=False, check="locked"):
-    return dict(WInit=q(w), OActive=o, RActive=r, Create=create, CreateMode=q(cmode), RunEnd=runend, Check=q(check))
+def p(w="finished", o=True, r=False, create=False, cmode="share", runend=False, check="locked", start=True):
+    return dict(WInit=q(w), OActive=o, RActive=r, Create=create, CreateMode=q(cmode), RunEnd=runend, Check=q(check), StartCheck=start)
 
 
 PSAFE = ["TypeOK", "Inv_Locks", "Inv_KeptShown"]
@@ -94,14 +94,17 @@ PRUNE_CASES = [
  ("find.ret-prune-nolock", "finding", p(w="none", create=True, runend=True, check="nolock"), ["Inv_KeptShown"],
   "VIOLATION:Inv_KeptShown",
   "A check that does not lock the sessions it leaves: a Workflow created under O between the check and the commit, then its run ends."),
+ ("find.ret-r3-start-after-prune", "finding", p(w="none", create=True, cmode="nku", runend=True, start=False), ["Inv_KeptShown"],
+  "VIOLATION:Inv_KeptShown",
+  "Round 3 (review of 35ef0302): a Start under O that does not read the sessions above O creates W after the prune deleted R; its run ends and W is kept out of reach."),
  ("wit.ret-prune-deleted", "witness", p(w="none"), ["Wit_Deleted"], "VIOLATION:Wit_Deleted",
   "With no Workflow under O, the prune deletes R as before."),
  ("wit.ret-prune-below", "witness", p(), ["Wit_Below"], "VIOLATION:Wit_Below", "The prune refuses (WorkflowBelow)."),
  ("wit.ret-prune-busy", "witness", P_CREATE, ["Wit_Busy"], "VIOLATION:Wit_Busy", "A creation that holds O first makes the prune refuse (Busy)."),
  ("wit.ret-prune-changed", "witness", P_CREATE, ["Wit_Changed"], "VIOLATION:Wit_Changed",
   "A Workflow created between the read and the locks makes the prune refuse (Changed)."),
- ("wit.ret-prune-created-after", "witness", P_CREATE, ["Wit_CreatedAfter"], "VIOLATION:Wit_CreatedAfter",
-  "A creation that waited for the prune's lock creates W after R's delete committed (the case Inv_KeptShown leaves out)."),
+ ("wit.ret-prune-start-refused", "witness", P_CREATE, ["Wit_StartRefused"], "VIOLATION:Wit_StartRefused",
+  "A creation that waited for the prune's lock reads R deleted and refuses: nothing is created."),
 ]
 
 

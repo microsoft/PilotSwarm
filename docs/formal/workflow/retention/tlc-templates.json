@@ -8,7 +8,8 @@
       "Create",
       "CreateMode",
       "RunEnd",
-      "Check"
+      "Check",
+      "StartCheck"
     ],
     "lists": "block",
     "deadlockFirst": false

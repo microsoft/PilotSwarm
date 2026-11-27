@@ -24,8 +24,9 @@ ret.prune-ended	ret.prune-ended.cfg	WorkflowPrune
 find.ret-r2-prune	find.ret-r2-prune.cfg	WorkflowPrune
 find.ret-prune-kept-only	find.ret-prune-kept-only.cfg	WorkflowPrune
 find.ret-prune-nolock	find.ret-prune-nolock.cfg	WorkflowPrune
+find.ret-r3-start-after-prune	find.ret-r3-start-after-prune.cfg	WorkflowPrune
 wit.ret-prune-deleted	wit.ret-prune-deleted.cfg	WorkflowPrune
 wit.ret-prune-below	wit.ret-prune-below.cfg	WorkflowPrune
 wit.ret-prune-busy	wit.ret-prune-busy.cfg	WorkflowPrune
 wit.ret-prune-changed	wit.ret-prune-changed.cfg	WorkflowPrune
-wit.ret-prune-created-after	wit.ret-prune-created-after.cfg	WorkflowPrune
+wit.ret-prune-start-refused	wit.ret-prune-start-refused.cfg	WorkflowPrune

@@ -21,7 +21,8 @@ the event purge of round 1, as deliberate faults.
 leaves the ordinary sessions under its target in place: it never leaves a kept
 Workflow under a deleted session, where lists and the portal no longer reach it.
 Review round 2 found that round 2's check missed a Workflow under an ordinary
-child of the target; that case is a deliberate fault here.
+child of the target; review round 3 found that a Start under that child after
+the prune created such a Workflow. Both are deliberate faults here.
 
 ## `WorkflowRetention`: what it models
 
@@ -60,7 +61,8 @@ so any other state with no step is reported.
 ## `WorkflowRetention`: code binding
 
 The binding is the branch `waldemort/issue-412-workflows-stop-sweeping-finished-workflo`
-at the round-3 commit that adds `WorkflowPrune` (the same for both modules).
+at the round-3 commit that adds `WorkflowPrune` (the same for both modules), and,
+for the Start's check, the branch `waldemort/bf-batch-338-341-412` (PR 415, round 4).
 
 | Model | Code |
 |---|---|
@@ -98,7 +100,7 @@ under `O` adds it with a run that has not ended.
 | Transaction | Steps |
 |---|---|
 | Sweeper (prune of `R`) | Lock `R` `nku` (waits); read the sessions under `R` that the delete leaves in place (`O`, and `W` when it exists); with `Check = "locked"`, lock them `nku` NOWAIT (a held one: `Busy`) and read them again (a set that grew: `Changed`); check on the committed state; commit the delete of `R`. |
-| Create | Lock `O` with `CreateMode` (`share` or `nku`, waits), insert `W` with a run that has not ended, commit. |
+| Create | Lock `O` with `CreateMode` (`share` or `nku`, waits); with `StartCheck`, read whether `R` is deleted (deleted: refuse, nothing is created); insert `W` with a run that has not ended, commit. |
 | RunEnd | Once `W` exists with a run that has not ended: lock `W` `nku`, end the run, commit. |
 
 | Constant | Values |
@@ -107,12 +109,13 @@ under `O` adds it with a run that has not ended.
 | `OActive`, `RActive` | whether `O` and `R` are active |
 | `Create`, `CreateMode`, `RunEnd` | which other transactions run, and the creation's lock on `O` |
 | `Check` | `"locked"`: the fix (refuse while a Workflow is left under `R`, under the locks); `"nolock"`: the same check without the locks; `"kept"`: refuse only while a kept Workflow is left under `R`; `"none"`: round 2 (`7824eafc`), which checked only the target and its Workflow children |
+| `StartCheck` | `TRUE`: the fix (a creation refuses when a session above `O` is deleted); `FALSE`: round 3 (`35ef0302`), which checked only `O` |
 
 | Name | Meaning |
 |---|---|
-| `Inv_KeptShown` | Never a kept `W` (run ended, `O` active, or `R` active and not deleted) under a deleted `R`, unless `W` was created after the prune committed. Such a `W` was created by a session that the prune had already left without its parent, as every prune on `main` leaves the sessions under its target. |
+| `Inv_KeptShown` | Never a kept `W` (run ended, `O` active, or `R` active and not deleted) under a deleted `R`, also when `W` is created after the prune committed. |
 | `Inv_Locks`, `TypeOK` | Lock compatibility; types. |
-| `Wit_*` | Witnesses: the delete, `WorkflowBelow`, `Busy`, `Changed`, and a creation after the prune committed. |
+| `Wit_*` | Witnesses: the delete, `WorkflowBelow`, `Busy`, `Changed`, and a creation that waited for the prune and then refused. |
 
 | Model | Code |
 |---|---|
@@ -121,29 +124,33 @@ under `O` adds it with a run that has not ended.
 | `S_LockLeft` | the same NOWAIT statement locks the delete set and the sessions left below; SQLSTATE `55P03` throws `SweeperBusy` |
 | `S_Check` | the DR-02 re-read of both sets (`Changed`), then a live Workflow among the locked rows left below: `WorkflowBelow` |
 | `S_Commit` | `cms_soft_delete_session` of the target, then the commit |
-| `C_Lock`, `C_Commit` | `cms.ts` `lockLiveParent` (`FOR SHARE`, or `FOR NO KEY UPDATE` under the child budget), then the insert of the Workflow session |
+| `C_Lock`, `C_Commit` | `cms.ts` `lockLiveParent` (`FOR SHARE`, or `FOR NO KEY UPDATE` under the child budget), then the insert of the Workflow session; `StartCheck`: `SessionDefinitionStore.requireChildBudgetLocked` reads the sessions above the owner after that lock and refuses (`SESSION_NOT_FOUND`) when one is deleted. Every session Start's claim runs it (the child budget, so its lock on `O` is `nku`); the `share` cases show that the check needs no stronger lock on `O` than the one the prune's NOWAIT lock conflicts with. |
 | `E_Lock`, `E_Commit` | `lockLiveSession`, then the run's end |
 
 ## Results
 
-Batch ret2, 2026-11-26, TLC 2.19 (`tla2tools.jar` v1.7.4) on OpenJDK 21.0.13,
-`-workers 2`: **31 of 31 as expected**. The 18 cases of batch ret1 are
-unchanged and give the same results.
+Batch ret3, 2026-11-27, TLC 2.19 (`tla2tools.jar` v1.7.4) on OpenJDK 21.0.13,
+`-workers 2`: **32 of 32 as expected**. The `WorkflowRetention` cases are
+unchanged and give the same results as in batches ret1 and ret2.
 
 | Module | Group | Cases | Result |
 |---|---|---|---|
 | `WorkflowRetention` | design | `ret.restart-cleanup-workflow`, `ret.runend-cleanup-agent`, `ret.restart-runend-cleanup-agent`, `ret.purge-runend`, `ret.purge-finished`, `ret.all-workflow`, `ret.all-agent` | 7 PASS; largest 299 distinct states (`ret.all-agent`) |
 | `WorkflowRetention` | finding (deliberate faults) | `find.ret-r1-restart`, `find.ret-r1-runend` (`Inv_NoKeptDelete`); `find.ret-r1-purge`, `find.ret-purge-nolock` (`Inv_NoFinishedLogPurge`) | 4 violated on their named invariant |
 | `WorkflowRetention` | witness | `wit.ret-deleted`, `wit.ret-restart-after-delete`, `wit.ret-busy`, `wit.ret-kept`, `wit.ret-kept-runend`, `wit.ret-purged-then-ended`, `wit.ret-kept-log-then-ended` | 7 reached |
-| `WorkflowPrune` | design | `ret.prune-finished`, `ret.prune-runend`, `ret.prune-create-share`, `ret.prune-create-nku`, `ret.prune-ended` | 5 PASS; largest 42 distinct states (`ret.prune-create-share`, `ret.prune-create-nku`) |
-| `WorkflowPrune` | finding (deliberate faults) | `find.ret-r2-prune`, `find.ret-prune-kept-only`, `find.ret-prune-nolock` (`Inv_KeptShown`) | 3 violated on their named invariant |
-| `WorkflowPrune` | witness | `wit.ret-prune-deleted`, `wit.ret-prune-below`, `wit.ret-prune-busy`, `wit.ret-prune-changed`, `wit.ret-prune-created-after` | 5 reached |
+| `WorkflowPrune` | design | `ret.prune-finished`, `ret.prune-runend`, `ret.prune-create-share`, `ret.prune-create-nku`, `ret.prune-ended` | 5 PASS; largest 40 distinct states (`ret.prune-create-share`, `ret.prune-create-nku`) |
+| `WorkflowPrune` | finding (deliberate faults) | `find.ret-r2-prune`, `find.ret-prune-kept-only`, `find.ret-prune-nolock`, `find.ret-r3-start-after-prune` (`Inv_KeptShown`) | 4 violated on their named invariant |
+| `WorkflowPrune` | witness | `wit.ret-prune-deleted`, `wit.ret-prune-below`, `wit.ret-prune-busy`, `wit.ret-prune-changed`, `wit.ret-prune-start-refused` | 5 reached |
 
 The counterexample of `find.ret-r1-restart` is review round 1's sequence: the
 Sweeper locks `W` and `A`, checks (`R` ended), `R` locks and commits active, the
 Sweeper commits the delete. The counterexample of `find.ret-r2-prune` is review
 round 2's: the prune locks `R`, checks, and commits its delete while the
-finished `W` under the idle `O` is kept.
+finished `W` under the idle `O` is kept. The counterexample of
+`find.ret-r3-start-after-prune` is review round 3's: the prune locks `R` and
+`O`, checks (no Workflow under `O`) and commits the delete of `R`; then a Start
+locks `O` and creates `W`, and `W`'s run ends: `W` is kept under the deleted
+`R`.
 
 ## Run
 
