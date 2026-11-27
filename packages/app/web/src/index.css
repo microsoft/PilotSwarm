@@ -14604,3 +14604,83 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   position: absolute;
   inset: -4px;
 }
+
+/* UX round 1 (owner 2026-11-26): the Workflow graph on a phone and in the default three columns. */
+/* G2, P3: the Ends row stays one line and scrolls sideways; while ends are out of sight, a "‹" or "+N ›" cue at its edge
+   says so and scrolls to them (WorkflowEndsRow). */
+.ps-workflow-ends { position: relative; }
+.ps-workflow-ends-more {
+  position: sticky;
+  z-index: 1;
+  flex: none;
+  align-self: stretch;
+  border: 0;
+  color: var(--ps-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ps-workflow-ends-more.is-right { right: 0; margin-left: auto; padding: 0 4px 0 16px; background: linear-gradient(to right, transparent, var(--ps-chrome) 12px); }
+.ps-workflow-ends-more.is-left { left: 0; padding: 0 16px 0 4px; background: linear-gradient(to left, transparent, var(--ps-chrome) 12px); }
+.ps-wf-tab.is-phone .ps-workflow-ends-more { min-width: 44px; }
+/* P1: a phone's graph controls sit in the bottom panel's bar, at its right end (WorkflowFlow's dock), never over a step. */
+.ps-workflow-graph-dock { display: inline-flex; align-items: center; margin-left: auto; min-width: 0; }
+.ps-workflow-graph-controls.is-docked { padding: 0; border: 0; background: transparent; }
+/* P2: the Node tab names the step it holds. */
+.ps-wf-panel-tab-step {
+  display: inline-block;
+  max-width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  color: var(--ps-foreground);
+}
+.ps-wf-tab.is-phone .ps-wf-panel-tab-step { max-width: 6.5em; }
+/* P1: on a phone, while a graph is shown, the header folds into one line (the toggle with the definition, the Workflow and
+   its state, and full screen); the lines and the Workflow's bar under it are hidden until it is opened. Errors stay. */
+.ps-wf-fold-toggle { display: none; }
+.ps-wf-tab.is-phone .ps-wf-fold-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ps-wf-fold-mark { flex: none; color: var(--ps-muted); }
+.ps-wf-fold-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-wf-fold-toggle > .ps-wf-state { flex: none; }
+.ps-wf-tab.is-phone:not(.is-folded) .ps-wf-tab-head:has(> .ps-wf-fold-toggle) { flex-wrap: wrap; }
+.ps-wf-tab.is-phone:not(.is-folded) .ps-wf-tab-head > .ps-wf-fold-toggle { flex: 1 1 100%; }
+.ps-wf-tab.is-phone.is-folded .ps-wf-tab-head { flex-wrap: nowrap; }
+.ps-wf-tab.is-phone.is-folded .ps-wf-tab-head > :not(.ps-wf-fold-toggle):not(.ps-wf-tab-modes),
+.ps-wf-tab.is-phone.is-folded > .ps-wf-line:not(.is-error),
+.ps-wf-tab.is-phone.is-folded > .ps-wf-body > :not(.ps-wf-main):not(.ps-wf-replay):not(.ps-wf-panel):not(.ps-wf-split):not(.is-error) { display: none; }
+/* P3: the header's controls wrap rather than run off a phone's edge. */
+.ps-wf-tab.is-phone .ps-wf-head-rest { flex-wrap: wrap; row-gap: 4px; }
+/* P3: on a phone the timeline's slider takes the rest of its row; its words (and a handled error's link) go to a short line
+   under it. */
+.ps-wf-tab.is-phone .ps-wf-replay {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
+  grid-template-areas: ". . . track live older" "words words words words handled handled";
+  align-items: center;
+  column-gap: 4px;
+  row-gap: 0;
+}
+.ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-track { grid-area: track; min-width: 0; }
+.ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-live { grid-area: live; }
+.ps-wf-tab.is-phone .ps-wf-replay > [data-action="replay-older"] { grid-area: older; }
+.ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-label { grid-area: words; font-size: 11px; line-height: 16px; }
+.ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-handled { grid-area: handled; justify-self: end; font-size: 11px; }
+/* R3: a handled error's link to the step that took it. */
+.ps-wf-replay-handled { flex: none; white-space: nowrap; }
