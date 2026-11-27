@@ -226,6 +226,38 @@ export function workflowStartModels(states, { chosen = null, sessionModel = null
 }
 
 /**
+ * UX round 1 (O1): the models a person may pick for an agent node in the Start dialog: the chat models the portal lists
+ * (its model catalog, as the New Session picker reads it: names or { qualifiedName }), each once, in their order; Decision
+ * models and entries without a provider:model name are left out. The engine checks the choice against the owning session's
+ * catalog at start. Pure.
+ */
+export function workflowStartAgentChoices(models) {
+    const out = [];
+    for (const entry of Array.isArray(models) ? models : []) {
+        const name = typeof entry === "string" ? entry : entry && typeof entry === "object" && entry.modelKind !== "decision" && entry.kind !== "decision"
+            ? entry.qualifiedName : null;
+        const model = typeof name === "string" ? name.trim() : "";
+        if (model.includes(":") && !out.includes(model)) out.push(model);
+    }
+    return out;
+}
+
+/**
+ * UX round 1 (O1): the Start dialog's agent model picks (`picks`: agent node id -> "provider:model", "" for the session's
+ * model) as the start's `agentModels` map ({ id: { model } }) for the agent nodes of `models` (workflowStartModels), or null
+ * when every agent node keeps the session's model (the start then sends no map, as before). Pure.
+ */
+export function workflowStartAgentModels(models, picks) {
+    const agents = new Set((Array.isArray(models) ? models : []).filter(entry => entry?.kind === "agent").map(entry => entry.id));
+    const map = {};
+    for (const [id, value] of Object.entries(picks && typeof picks === "object" ? picks : {})) {
+        const model = typeof value === "string" ? value.trim() : "";
+        if (agents.has(id) && model) map[id] = { model };
+    }
+    return Object.keys(map).length ? map : null;
+}
+
+/**
  * OF-S2-7: the model of a session (by id, in a sessions-by-id record) as one stable text, for a screen's selector ("" when
  * the session or its model is not loaded); workflowModelFromKey reads it back. Pure.
  */

@@ -109,3 +109,22 @@ export function workflowRunPickerModel({ workflowModel = null, selectedRunId = n
     else if (!ownModelLoaded) notes.push({ level: "info", text: selection === null ? "Reading the Workflow…" : "Reading this one…" });
     return { selection, value: liveSelected ? "" : selection ?? "", options, notes, runsKnown: Boolean(list), runCount: runs.length, malformed, missing };
 }
+
+/**
+ * UX round 1 (R2, G4): the step a Workflow's view shows as selected: the one chosen (`chosen`, a step id), else the step
+ * a running Workflow is at (its pending node), else none. A run that has ended has no step selected until the person
+ * chooses one, so no step shows its error handlers' arrows and the Node panel asks for a choice. Pure.
+ */
+export function workflowRunSelectedNode(nodes, chosen = null) {
+    const list = Array.isArray(nodes) ? nodes : [];
+    return (chosen !== null && chosen !== undefined ? list.find(node => node?.id === chosen) : null)
+        ?? list.find(node => node?.pending) ?? null;
+}
+
+/**
+ * UX round 1 (R2): whether a Workflow's view, now showing run `shown`, starts with no step selected: the tab showed another
+ * run (`last`, its session id) before it. The first run shown, or the same one again, keeps its selection. Pure.
+ */
+export function workflowRunSwitched(last, shown) {
+    return typeof last === "string" && last !== "" && typeof shown === "string" && last !== shown;
+}

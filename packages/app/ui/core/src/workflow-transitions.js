@@ -43,6 +43,11 @@ function parallelVisitOf(execution, scope) {
  * for a branch's first visit, or null where it draws nothing. `definition`: the graph it is drawn from. Pure.
  */
 export function workflowTransitions(executions, definition) {
+    return sourcedTransitions(executions, definition).map(item => item.transition);
+}
+
+/** workflowTransitions, each with the visit it came from (`from`, null for none). */
+function sourcedTransitions(executions, definition) {
     const list = (Array.isArray(executions) ? executions : []).filter(item => isRecord(item) && typeof item.id === "string");
     const byId = new Map(list.map(item => [item.id, item]));
     const model = workflowGraphModel(definition);
@@ -81,15 +86,16 @@ export function workflowTransitions(executions, definition) {
         }
         lastInScope.set(scope, execution);
         const base = { nodeExecutionId: frame.nodeExecutionId, fromStateId, toStateId: frame.stateId };
-        if (fromStateId === null) return { ...base, edgeKey: null, route: null, words: null, error: false };
+        const sourced = transition => ({ transition, from: from ?? null });
+        if (fromStateId === null) return sourced({ ...base, edgeKey: null, route: null, words: null, error: false });
         // A branch's first visit, entered from its parallel step: its lane's pill (B1: no line into a lane).
-        if (laneEntry) return { ...base, edgeKey: model.laneKeys.get(frame.stateId) ?? null, route: null, words: null, error: false };
+        if (laneEntry) return sourced({ ...base, edgeKey: model.laneKeys.get(frame.stateId) ?? null, route: null, words: null, error: false });
         const node = model.byId.get(fromStateId);
         const route = execution.catchAll === true ? WORKFLOW_CATCH_ALL_ROUTE : routeTaken(node, from);
         const error = route === WORKFLOW_CATCH_ALL_ROUTE || from?.resultKind === "runtime_error";
         const edgeKey = route !== null && model.routeKeys.has(`${fromStateId}\u0000${route}`)
             ? model.routeKeys.get(`${fromStateId}\u0000${route}`) : lineOf(fromStateId, frame.stateId, error);
-        return { ...base, edgeKey, route, words: transitionWords(node, route, from), error };
+        return sourced({ ...base, edgeKey, route, words: transitionWords(node, route, from), error });
     });
 }
 
@@ -164,6 +170,26 @@ export function workflowEndReached(transitions, ends, uptoIndex = null) {
 /** The timeline's error transitions (a route taken on an error, or the catch-all's), by index, for its red marks. Pure. */
 export function workflowErrorTransitions(transitions) {
     return (Array.isArray(transitions) ? transitions : []).flatMap((transition, index) => (transition?.error ? [index] : []));
+}
+
+/**
+ * UX round 1 (R3): the timeline's error marks, each at the visit that threw, not at the visit of the step that took the
+ * error: { at, step, handler, handlerStep, handled, words }, in the timeline's order (indexes into workflowReplayFrames of
+ * the same visits). `at` is the throwing visit (the handler's own visit when the throwing one is not loaded), `handler`
+ * the visit of the step or end the error went to; `handled` is false when that is an end that fails or cancels (the run,
+ * or the branch, ended on the error), else true: a step, or an end with another outcome, took it. Pure.
+ */
+export function workflowErrorMarks(executions, definition) {
+    const sourced = sourcedTransitions(executions, definition);
+    const index = new Map(sourced.map((item, at) => [item.transition.nodeExecutionId, at]));
+    const model = workflowGraphModel(definition);
+    return sourced.flatMap(({ transition, from }, handler) => {
+        if (!transition.error) return [];
+        const target = model.byId.get(transition.toStateId);
+        const ends = target?.type === "terminal" && (target.outcome === "failed" || target.outcome === "cancelled");
+        const at = from && index.has(from.id) ? index.get(from.id) : handler;
+        return [{ at, step: transition.fromStateId, handler, handlerStep: transition.toStateId, handled: !ends, words: transition.words ?? null }];
+    });
 }
 
 /** How a key is lit now: { count, age } among the last four, or null. */
