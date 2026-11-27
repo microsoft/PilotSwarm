@@ -74,9 +74,10 @@ export function createSweeperTools(opts: {
      *   gone, is the product's to recover (update_workflow operation recover), not the Sweeper's to delete. With no run
      *   active, its status is its latest own run's controller's: a Workflow's live run (`session-<id>`), or a test bench's
      *   test run (`wft-<run>`); a test run of any other Workflow (a draft's test) is not its run. A Workflow session with no
-     *   run of its own yet (a draft, tested or not) has nothing to read: `noRun`, never a cleanup candidate. A failed read
-     *   of the store is `unreadable`, like a failed status read. `controllers` names its runs' controller instances, the
-     *   ones a cleanup deletes.
+     *   run of its own yet (a draft, tested or not) has nothing to read: `noRun`, never a cleanup candidate; a bare claim
+     *   shell (no definition and no run) whose orchestration is `NotFound` becomes a cleanup candidate after the grace
+     *   period. A failed read of the store is `unreadable`, like a failed status read. `controllers` names its runs'
+     *   controller instances, the ones a cleanup deletes.
      */
     async function readOrchestrationStatus(session: { sessionId: string; sessionKind?: string; serviceKind?: string | null;
         orchestrationId?: string | null; state?: string }): Promise<OrchestrationRead> {
@@ -100,7 +101,22 @@ export function createSweeperTools(opts: {
         if (active) return { activeRun: { runId: active.runId, status: active.status } };
         const bench = session.serviceKind === WORKFLOW_TEST_BENCH_KIND;
         const own = bench ? runs : runs.filter(run => run.mode === "live");
-        if (own.length === 0) return { noRun: true };
+        if (own.length === 0) {
+            if (!bench && runs.length === 0) {
+                const store = catalog.workflowStore();
+                let definition: unknown;
+                try {
+                    definition = typeof store.readDefinition === "function" ? await store.readDefinition(session.sessionId) : true;
+                } catch (err: any) {
+                    return { unreadable: `the Workflow definition of ${session.sessionId}: ${String(err?.message ?? err)}` };
+                }
+                if (!definition) {
+                    const read = await readInstanceStatus(`session-${session.sessionId}`);
+                    if ("unreadable" in read || read.status === "NotFound") return read;
+                }
+            }
+            return { noRun: true };
+        }
         const latest = own[own.length - 1];
         const read = await readInstanceStatus(latest.controllerInstanceId);
         if ("unreadable" in read) return read;
