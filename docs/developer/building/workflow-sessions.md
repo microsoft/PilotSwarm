@@ -44,7 +44,8 @@ typed messages, requests for an answer, agent steps and fan-out.
 Models learn the details from the Workflow skills in
 `packages/sdk/plugins/workflow/skills/`: `workflow-authoring`,
 `workflow-reference` (every field, and what the engine guarantees on retries,
-restarts, timers, joins and stops), `workflow-tools` and `workflow-patterns`.
+restarts, timers, joins and stops), `workflow-tools`, `workflow-patterns` and
+`workflow-limits` (one table of the size limits a run meets).
 
 How Workflows compare with GitHub Actions, GitHub Agentic Workflows and
 Copilot dynamic workflows: [Workflows and GitHub Copilot](./workflows-and-github-copilot.md).
@@ -868,7 +869,8 @@ states:
 | Data | By default each state's output is the next state's input. With `carry`, every route gets `{ carry, result }` instead. A binding is one whole string, such as `"${input.count}"` or `"${inputs.keyPattern}"`. |
 | Carry | Optional object template on a nonterminal, for example `carry: { loop: "${input.loop}" }`. Admission freezes it before input mapping; replay and later KV changes cannot replace it. All routes retain it, including errors and receipts. |
 | Inputs | `inputs.schema` is a JSON Schema 2020-12 document. A start whose inputs do not match is refused. |
-| Size limits | YAML and a state's output at most 256 KiB. Carry at most 64 KiB; the combined `{ carry, result }` at most 256 KiB of canonical UTF-8 JSON. An oversized wrapper fails the receiver with `invalid_input` before input mapping. Store larger data as a fact or artifact and pass its key. |
+| Size limits | YAML and a state's output at most 256 KiB. Carry at most 64 KiB; the combined `{ carry, result }` at most 256 KiB of canonical UTF-8 JSON. An oversized wrapper fails the receiver with `invalid_input` before input mapping. Store larger data as a fact or artifact and pass its key. The `workflow-limits` skill lists every limit a run meets. |
+| Child results | A child's `WorkflowEnded@1` carries its whole output up to 195,584 bytes (outputs from about 16 KiB up used to arrive as metadata only, `outputTruncated: true`). The received value, passed on as is with a carry of up to 64 KiB, fits the next state's 256 KiB input; the next state's own input mapping and later limits are still checked as usual. A fan-out parent that passes whole outputs on can fail a parallel join (256 KiB, `invalid_output`), a collecting script's output (256 KiB), a `send` (16 KiB, `invalid_input`) or its run output (256 KiB). Keep only what you need from each child; a script reads the whole result with `child_workflows` `read` `full_output: true`. Saving warns `WORKFLOW_ENDED_WHOLE_OUTPUT` (`compiler.ts` `warnWholeChildOutputs`) when a whole output reaches a `send` or `request` message, a branch output joined with others, or (two or more) a root terminal's output with no mapping in between: through waits with no `input:` or carry, and through `${states.<receive>.output}` of a single-contract receive. |
 | Run limits | `limits.maxNodeExecutions` (default 1,000, at most 10,000) bounds the visits of a run, so a loop cannot run forever. `limits.timeoutSeconds` is an optional deadline of up to 30 days. |
 
 The `workflow-reference` skill has every field of every state type. A type

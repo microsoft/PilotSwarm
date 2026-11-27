@@ -8,7 +8,10 @@
  * - after the test cleans that child up, the next script reads it whole again through the outcome kept with its parent, and the
  *   preview read carries no whole copy;
  * - a JSON null output reads as the text "null", live and kept; a run with no stored output reads null;
- * - a notice of the older shape (no runId) still works for a receiving state.
+ * - a notice of the older shape (no runId) still works for a receiving state;
+ * - later limits still apply to a whole output: a fan-out of two 150 KiB children whose branches end with the notice as it
+ *   arrived fails at the join (invalid_output, 256 KiB), a 20 KiB child output sent on as it arrived fails the send
+ *   (invalid_input, 16 KiB), and the same fan-out keeping only what it needs from each child joins.
  *
  * Run: npx vitest run test/local/workflow-child-whole-result.test.js
  */
@@ -286,6 +289,76 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
 
+/**
+ * Downstream limits still apply to a whole child output (owner decision i6-downstream): two children of about 150 KiB each,
+ * each branch ending with the notice as it arrived, join to about 300 KiB, past the joined output's 256 KiB.
+ */
+const fanOutYaml = (name, branchOutput) => `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: ${name}, version: "1.0.0" }
+initial: fan
+states:
+  fan:
+    type: parallel
+    forEach: [150, 150]
+    concurrency: 2
+    body:
+      initial: launch
+      states:
+        launch:
+          type: spawn
+          definition: big-child
+          inputs: { kib: "\${branch.item}" }
+          transition: { next: { started: collect, failure: branch_failed } }
+        collect:
+          type: messaging
+          mode: receive
+          contract: WorkflowEnded@1
+          from: "\${states.launch.output.workflowId}"
+          wait: { seconds: 60 }
+          transition: { next: { received: branch_done, elapsed: branch_failed, failure: branch_failed } }
+        branch_done: { type: terminal, outcome: succeeded, output: ${branchOutput} }
+        branch_failed: { type: terminal, outcome: failed }
+    transition: { next: { joined: done, blocked: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  failed: { type: terminal, outcome: failed, output: "\${runtime.error}" }
+`;
+const PARENT_JOIN_WHOLE_YAML = fanOutYaml("parent-join-whole", '"${input}"');
+/** The same fan-out, each branch keeping only what it needs: it joins. */
+const PARENT_JOIN_MAPPED_YAML = fanOutYaml("parent-join-mapped", '{ outcome: "${input.outcome}", truncated: "${input.outputTruncated}" }');
+
+/** A 20 KiB child output forwarded with send as it arrived: past a message's 16 KiB. */
+const PARENT_SEND_WHOLE_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: parent-send-whole, version: "1.0.0" }
+contracts:
+  ChildDone@1: { schema: { type: object } }
+initial: spawn_big
+states:
+  spawn_big:
+    type: spawn
+    definition: big-child
+    inputs: { kib: 20 }
+    transition: { next: { started: collect, failure: failed } }
+  collect:
+    type: messaging
+    mode: receive
+    contract: WorkflowEnded@1
+    from: "\${states.spawn_big.output.workflowId}"
+    wait: { seconds: 60 }
+    transition: { next: { received: tell, elapsed: failed, failure: failed } }
+  tell:
+    type: messaging
+    mode: send
+    contract: ChildDone@1
+    recipient: { parent: true }
+    transition: { next: { sent: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed, output: "\${runtime.error}" }
+`;
+
 /** A receive and the next state, for a notice delivered by hand in the older shape (no runId). */
 const PARENT_LEGACY_YAML = `
 apiVersion: pilotswarm.dev/v1
@@ -407,6 +480,43 @@ describe("I6: a child Workflow's whole result reaches its Workflow parent", () =
             const legacyEnd = await h.waitForRunStatus(legacy.runId, ["completed", "failed"]);
             expect(legacyEnd.status, JSON.stringify(legacyEnd.terminalError)).toBe("completed");
             expect(legacyEnd.terminalOutput).toEqual({ workflowId: sender, status: "completed", summary: "older notice", runId: null });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("a whole child output still meets the limits after the receive: a join and a send fail clearly; a mapped fan-out joins", { timeout: TIMEOUT }, async () => {
+        const h = await startHarness(getEnv());
+        try {
+            const chat = randomUUID();
+            await h.catalog.createSession(chat, { owner: OWNER });
+            for (const [name, yaml] of [["big-child", BIG_CHILD_YAML], ["parent-join-whole", PARENT_JOIN_WHOLE_YAML],
+                ["parent-join-mapped", PARENT_JOIN_MAPPED_YAML], ["parent-send-whole", PARENT_SEND_WHOLE_YAML]]) {
+                const saved = await saveSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: chat, name, yaml, expected: null,
+                    actor: { kind: "session", sessionId: chat }, operationId: `save-${name}`, by: "session",
+                });
+                expect(saved.receipt.valid, `${name}: ${JSON.stringify(saved.receipt.diagnostics)}`).toBe(true);
+            }
+            const start = (name) => startSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, definition: { name }, inputs: {}, actor: ENGINE, operationId: `start-${name}`, owner: OWNER,
+            });
+            const endOf = async (name) => h.waitForRunStatus((await start(name)).runId, ["completed", "failed"], 120_000);
+
+            // Two 150 KiB children, each branch ending with the notice as it arrived: each branch fits, the join does not.
+            const joinWhole = await endOf("parent-join-whole");
+            expect(joinWhole.terminalOutput?.code, JSON.stringify(joinWhole.terminalOutput)).toBe("invalid_output");
+            expect(joinWhole.terminalOutput.message).toMatch(/The joined output is \d+ bytes; the limit is 262144\./);
+
+            // A 20 KiB child output forwarded as it arrived: a message is at most 16 KiB.
+            const sendWhole = await endOf("parent-send-whole");
+            expect(sendWhole.terminalOutput?.code, JSON.stringify(sendWhole.terminalOutput)).toBe("invalid_input");
+            expect(sendWhole.terminalOutput.message).toMatch(/The message of state 'tell' is \d+ bytes; the limit is 16384\./);
+
+            // The same fan-out keeping only what each branch needs: whole outputs arrived, and the join passes.
+            const joinMapped = await endOf("parent-join-mapped");
+            expect(joinMapped.status, JSON.stringify(joinMapped.terminalError)).toBe("completed");
+            expect(joinMapped.terminalOutput).toEqual([{ outcome: "succeeded", truncated: false }, { outcome: "succeeded", truncated: false }]);
         } finally {
             await h.stop();
         }

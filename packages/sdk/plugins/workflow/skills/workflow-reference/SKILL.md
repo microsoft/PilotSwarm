@@ -177,8 +177,7 @@ Exact semantic outputs (`qualified` is the effective `provider:model`):
 | `noul` | `{ questionType: "noul", outcome: "yes" \| "no" \| "uncertain", selection: "yes" \| "no", confidence, probability, probabilities: { yes, no }, policy: { minimumProbability: number \| null, uncertain }, model: { qualified } }` |
 | `score` | `{ questionType: "score", outcome: "scored", score, levels: [{ label, probability }], model: { qualified } }` |
 
-Score intentionally has no selection, confidence, raw probability object or
-policy. Transport IDs/status/timing/usage/hashes/raw bodies never enter output;
+Transport IDs/status/timing/usage/hashes/raw bodies never enter output;
 scripts and agents receive the semantic result unchanged.
 
 The Cluster Decision Default is a hard gate, not a fallback: without an
@@ -274,6 +273,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 ### spawn
 
 `definition` (name or `<package>/<name>`), `inputs` (object), `revision` (fixed int; else newest), `agentModels`, `carry`; `started` outputs `{ workflowId, runId, definition, revision }`. Child end: `WorkflowEnded@1` `{ workflowId, runId, definition, revision, spawnedBy, status, outcome, stateId, output, outputTruncated, error }` to an active parent, no correlation: match with `from: "${states.<spawn>.output.workflowId}"` (never `correlate:`) and a `wait`. Over ~190 KiB, `output` is left out (`outputTruncated`); `child_workflows` `read` `full_output: true` gets it. Never declare or `send` it. Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
+Fan-out: keep only what you need from each child; size limits: `workflow-limits`.
 
 ### terminal
 

@@ -15,6 +15,21 @@ retrying), then stop every worker, deploy the older release, and start them.
 See "Upgrading to whole child Workflow results" in
 [`docs/developer/deploy/aks.md`](docs/developer/deploy/aks.md).
 
+**Behaviour change for existing Workflow parents.** Child outputs from about
+16 KiB to 195,584 bytes, which `0.8.19` left out of `WorkflowEnded@1`
+(`outputTruncated: true`), now arrive whole. The notice's budget covers only
+the receiving state's own input. Later limits still apply and can now be hit: a
+parallel join's output (256 KiB, the parallel state fails `invalid_output`), a
+collecting script's output (256 KiB), a `send` state's message (16 KiB, the
+state fails `invalid_input`), and the run's output (256 KiB). Review fan-out
+parents that end branches with a received `WorkflowEnded@1` or forward it with
+`send`, and test them with realistic child output sizes before the upgrade.
+Keep only what you need from each child (for example
+`output: { outcome: "${input.outcome}" }`); a script reads the whole result
+with `child_workflows` `read` `full_output: true`. Saving now warns
+`WORKFLOW_ENDED_WHOLE_OUTPUT` where a child's whole output reaches one of those
+limits as it arrived.
+
 ### Workflows: every session above a Workflow reads and controls it
 
 `read_workflow` and `update_workflow` now work on Workflows nested below the
@@ -40,7 +55,13 @@ output was left out; then `child_workflows` `read` with `full_output: true`
 returns it whole, also after the child was cleaned up. Saving a receive of
 `WorkflowEnded@1` with a non-empty `correlate:` now warns
 `WORKFLOW_ENDED_CORRELATE`: the message has no correlation; match a child with
-`from:`.
+`from:`. The received value, passed on as is with a carry of up to 64 KiB,
+fits the next state's 256 KiB input; the next state's own input mapping and
+later limits (a join, a `send`, the run's output) are still checked as usual.
+Saving warns `WORKFLOW_ENDED_WHOLE_OUTPUT` when a child's whole output reaches
+a `send` or `request` message, a parallel branch's output that is joined with
+others, or (two or more of them) the run's output, with no mapping in between.
+The new `workflow-limits` skill lists the size limits a run meets.
 
 ### Workflows: an agent step remembers its earlier visits
 
