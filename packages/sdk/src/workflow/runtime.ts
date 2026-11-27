@@ -88,7 +88,7 @@ import {
     type WorkflowIRScript,
     type WorkflowIRSend,
 } from "./compiler.js";
-import { carryArrival, evaluateCarry } from "./carry.js";
+import { carryArrival, evaluateCarry, WORKFLOW_CARRY_MAX_BYTES } from "./carry.js";
 import { WORKFLOW_AGENT_SLEEP_WORDS } from "./agent-scheduling.js";
 import {
     boundedCanonicalJson,
@@ -1657,6 +1657,23 @@ export const WORKFLOW_NOTICE_LOCK_WAIT_MS = 20_000;
 const WORKFLOW_NOTICE_LOCK_POLL_MS = 500;
 const WORKFLOW_NOTICE_ATTEMPT_BUDGET_MS = 27_000;
 
+/**
+ * I6: the most a WorkflowEnded@1 notice may weigh in the widest form a receiving state hands on: a list receive's
+ * `{ contract, from, payload }` inside a carry's `{ carry, result }`. A state's input may be 256 KiB and a carry 64 KiB; 1 KiB is
+ * left for the wrapping keys. 195,584 bytes.
+ */
+export const WORKFLOW_ENDED_NOTICE_MAX_BYTES = WORKFLOW_PAYLOAD_MAX_BYTES - WORKFLOW_CARRY_MAX_BYTES - 1024;
+
+/**
+ * Whether a WorkflowEnded@1 payload reaches the parent's next state whole, whatever receive takes it: its widest form (the
+ * carry itself left out: it has its own limit) is within WORKFLOW_ENDED_NOTICE_MAX_BYTES and the JSON nesting limit. Throws
+ * when the payload is not JSON within the nesting limit.
+ */
+export function workflowEndedNoticeFits(childWorkflowSessionId: string, payload: JsonValue): boolean {
+    const widest = canonicalJson({ carry: null, result: { contract: WORKFLOW_ENDED_CONTRACT, from: childWorkflowSessionId, payload } });
+    return utf8ByteLength(widest) <= WORKFLOW_ENDED_NOTICE_MAX_BYTES;
+}
+
 /** The owed agent invocations read at a time when a run's children are ended (RT-5). */
 export const WORKFLOW_OWED_AGENT_PAGE = 200;
 
@@ -2970,6 +2987,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     : null;
                 const basePayload: Record<string, JsonValue> = {
                     workflowId: run.workflowSessionId,
+                    runId: run.runId,
                     definition: defName,
                     revision: definition.sessionRevision ?? run.revision,
                     spawnedBy,
@@ -2979,15 +2997,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     outputTruncated: false,
                     error: errObj,
                 };
-                // Enforce the 16 KB notice output budget; omit output and fall back to metadata-only if larger or unserializable.
-                const WORKFLOW_ENDED_NOTICE_MAX_BYTES = 16 * 1024;
+                // I6: the output goes whole when the widest form a receiving state takes still fits (workflowEndedNoticeFits);
+                // otherwise, or when it cannot be wrapped, it is left out and the parent reads it with child_workflows read.
                 let payloadText: string;
                 try {
                     const candidateObj = { ...basePayload, output: run.terminalOutput };
-                    const candidate = canonicalJson(candidateObj);
-                    const envelope = canonicalJson({ contract: WORKFLOW_ENDED_CONTRACT, from: run.workflowSessionId, payload: candidateObj });
-                    payloadText = utf8ByteLength(envelope) <= WORKFLOW_ENDED_NOTICE_MAX_BYTES
-                        ? candidate
+                    payloadText = workflowEndedNoticeFits(run.workflowSessionId, candidateObj)
+                        ? canonicalJson(candidateObj)
                         : canonicalJson({ ...basePayload, outputTruncated: true });
                 } catch {
                     payloadText = canonicalJson({ ...basePayload, outputTruncated: true });
