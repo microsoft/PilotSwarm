@@ -38,6 +38,22 @@ returns it whole, also after the child was cleaned up. Saving a receive of
 `WORKFLOW_ENDED_CORRELATE`: the message has no correlation; match a child with
 `from:`.
 
+### Workflows: an agent step remembers its earlier visits
+
+A `session: continue` agent step now remembers what it did in earlier visits.
+When the agent reports its result (`complete_workflow_node`) while the run is
+active, its turn is no longer stopped: it finishes its reply and is saved, and
+the next visit's prompt starts a new turn after it ("what you did in earlier
+cycles is above" is now true). A time limit, a cancel and the run's end still
+stop the turn. Once the result is recorded, every tool call of that turn is
+refused, the shell, file edits and sub-agents included. A reply still running
+5 minutes after the result is stopped (also with `turnTimeoutMs: 0`), and the
+run's end stops a reply that still runs before it ends the session. A turn whose
+result is recorded is never run again: not after a lost Copilot session or a
+corrupted transcript, and not when a worker retries it (also for
+`session: new` steps). A turn that is stopped or lost before it is saved is not
+remembered; its result is kept.
+
 ## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start
