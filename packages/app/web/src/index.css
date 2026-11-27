@@ -14736,5 +14736,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-workflow-join[data-lit-age="2"] .ps-workflow-join-bar { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 50%, transparent); }
 .ps-workflow-join[data-lit-age="3"] .ps-workflow-join-bar { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 35%, transparent); }
 .ps-workflow-join[data-current="true"] .ps-workflow-join-bar { background: var(--ps-wf-lit, var(--ps-warning)); }
-.ps-workflow-step.is-join > .ps-workflow-mark { top: -3px; bottom: auto; margin-right: var(--ps-join-bar-inset, 0px); }
-.ps-workflow-step.is-join > .ps-workflow-chips { top: -6px; margin-left: calc(-1 * var(--ps-join-bar-inset, 0px)); }
+/* --ps-join-bar-inset: from the box's right edge to the bar's right end (set on the element; none without a bar). */
+.ps-workflow-step.is-join { --ps-join-bar-inset: 0px; }
+.ps-workflow-step.is-join > .ps-workflow-mark { top: -3px; bottom: auto; margin-right: var(--ps-join-bar-inset); }
+.ps-workflow-step.is-join > .ps-workflow-chips { top: -6px; margin-left: calc(-1 * var(--ps-join-bar-inset)); }
