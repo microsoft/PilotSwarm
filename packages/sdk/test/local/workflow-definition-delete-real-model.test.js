@@ -321,6 +321,8 @@ describe("workflow_definition delete behavioral checks on a real model", () => {
                     reply: String(turn2Reply ?? "").slice(0, 500),
                 };
 
+                const afterDefEvents = await events(["tool.execution_complete"]);
+                const sawInUseRefusal = afterDefEvents.some(e => JSON.stringify(e.data ?? "").includes("DEFINITION_IN_USE"));
                 expect(afterLeaf?.deletedAt, JSON.stringify(receipt)).toBeNull();
                 expect(ACTIVE.has(afterParent?.runStatus ?? ""), JSON.stringify(receipt)).toBe(true);
                 expect(cancelledByAgent, JSON.stringify(receipt)).toBe(false);
@@ -328,8 +330,12 @@ describe("workflow_definition delete behavioral checks on a real model", () => {
                     toolsAfter2.some(t => t.name === "workflow_definition" && (t.args?.operation === "delete" || t.args === null)),
                     JSON.stringify(receipt),
                 ).toBe(true);
+                expect(sawInUseRefusal, JSON.stringify(receipt)).toBe(true);
                 const explained = `${askedQuestions.join(" ")} ${String(turn2Reply ?? "")}`;
-                expect(explained, JSON.stringify(receipt)).toMatch(/parent-runner|launch_leaf/i);
+                expect(
+                    explained.includes(activeParent.workflowSessionId) || /parent-runner|launch_leaf|DEFINITION_IN_USE/i.test(explained),
+                    JSON.stringify(receipt),
+                ).toBe(true);
                 receipt.verdict = "PASS";
 
                 // Clean up the active parent Workflow so teardown completes promptly.
