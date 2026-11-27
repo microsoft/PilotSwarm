@@ -34,7 +34,8 @@
  *   ordinary child owns a finished Workflow stays, and the Workflow stays in its owner's Terminated row of the session
  *   list; the final check refuses (WorkflowBelow) whatever the Workflow's run. A prune that leaves only ordinary sessions
  *   and test benches under its target deletes it as before, but holds them (NOWAIT): a held one refuses it (Busy), and
- *   one created under them between the read and the locks refuses it (Changed).
+ *   one created under them between the read and the locks refuses it (Changed). After a prune, a Start of a saved
+ *   definition under a session it left in place is refused (review round 3): no Workflow is created where no list reaches it.
  * - Issue 412 (review R2-2): a purge that fails deletes nothing (its two passes are one transaction).
  *
  * Run: npx vitest run test/local/sweeper-final-check.test.js
@@ -52,6 +53,8 @@ import { createResourceManagerTools } from "../../src/resourcemgr-tools.ts";
 import { WorkflowStore } from "../../src/workflow/store.ts";
 import { PilotSwarmClient } from "../../src/index.ts";
 import { buildSessionTree } from "../../../app/ui/core/src/session-tree.js";
+import { startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
+import { CASCADE_ACTOR, CASCADE_OWNER, openOwnerCascadeRuntime, saveCascadeDefinition } from "./workflow-owner-cascade-fixture.js";
 
 const { Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const TIMEOUT = 120_000;
@@ -732,6 +735,33 @@ describe("the Sweeper's final check and delete under concurrency", () => {
         } finally {
             held.open();
             await sweeperPool.end();
+        }
+    });
+
+    // Issue 412 (review round 3): a prune leaves its target's ordinary children in place, so a Workflow started later under
+    // one of them would be kept but never shown. A Start refuses while a session above its owner is deleted.
+    it("issue 412 (prune): a Start of a saved definition under a session whose ancestor was pruned is refused; no Workflow is created", { timeout: TIMEOUT }, async () => {
+        const h = await openOwnerCascadeRuntime(env);
+        try {
+            const root = randomUUID();
+            const owner = randomUUID();
+            await catalog.createSession(root, { owner: CASCADE_OWNER });
+            await catalog.createSession(owner, { parentSessionId: root, owner: CASCADE_OWNER });
+            await setState(db, schema, owner, "idle");
+            const saved = await saveCascadeDefinition(h.host, owner, "after-prune");
+            await ageSessions(db, schema, [root, owner], 60);
+            const tools = createSweeperTools({ catalog, duroxideClient: stubDuroxide(new Map([[`session-${root}`, { status: "NotFound" }]])), factStore: null });
+            const pruned = await findTool(tools, "prune_orchestrations").handler({ deleteTerminalOlderThanMinutes: 5 });
+            expect(pruned, JSON.stringify(pruned)).toMatchObject({ ok: true, cmsCleanedUp: 1 });
+            expect(await rowState(db, schema, root)).toBe("soft-deleted");
+            expect(await rowState(db, schema, owner)).toBe("kept");
+            const start = startSessionWorkflowDefinition(h.host, { ownerSessionId: owner, definition: { definitionId: saved.definitionId },
+                inputs: {}, actor: CASCADE_ACTOR, operationId: `start-${randomUUID()}`, notifyParent: false });
+            await expect(start).rejects.toMatchObject({ code: "SESSION_NOT_FOUND", message: expect.stringContaining(root) });
+            const { rows } = await db.query(`SELECT session_id FROM ${schema}.sessions WHERE parent_session_id = $1 AND session_kind = 'workflow'`, [owner]);
+            expect(rows, "no Workflow session is created under the owner").toEqual([]);
+        } finally {
+            await h.stop();
         }
     });
 

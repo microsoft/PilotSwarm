@@ -500,6 +500,23 @@ export class SessionDefinitionStore {
         if (count >= max) {
             throw new WorkflowStoreError("CHILD_LIMIT", `${childBudgetWords(count, max)} Nothing was started.`, { running: count, max });
         }
+        // Issue 412 (review round 3): lists and the portal reach a session through its parent, so a Workflow under a session
+        // whose ancestor was deleted (a Sweeper prune leaves its target's children in place) would be kept but never shown.
+        // Read after the lock above: a prune locks every session it leaves under its target (NOWAIT) before it deletes, so it
+        // refused, or it committed before this read.
+        const { rows: deleted } = await client.query(
+            `WITH RECURSIVE up AS (
+                 SELECT parent_session_id AS session_id FROM ${this.t.sessions} WHERE session_id = $1
+                 UNION
+                 SELECT p.parent_session_id FROM ${this.t.sessions} AS p JOIN up ON p.session_id = up.session_id
+             )
+             SELECT s.session_id FROM ${this.t.sessions} AS s
+              WHERE s.session_id IN (SELECT session_id FROM up WHERE session_id IS NOT NULL) AND s.deleted_at IS NOT NULL
+              LIMIT 1`, [ownerSessionId]);
+        if (deleted[0]) {
+            throw new WorkflowStoreError("SESSION_NOT_FOUND", `Session ${String(deleted[0].session_id)} above this session was deleted, so a Workflow `
+                + "started here would not be shown. Nothing was started.");
+        }
     }
 
     /**
