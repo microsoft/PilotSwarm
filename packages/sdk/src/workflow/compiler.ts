@@ -1102,6 +1102,13 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
         if (!isJsonObject(raw.correlate)) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.correlate`, "correlate must map correlation keys to values or bindings.");
         else correlate = bindingValue(raw.correlate, `${path}.correlate`, diagnostics);
     }
+    // UX round 2 (A1): a child's end message is sent with an empty correlation, so a receive that correlates never takes it.
+    const receivesEnded = contract === WORKFLOW_ENDED_CONTRACT || (Array.isArray(contract) && contract.includes(WORKFLOW_ENDED_CONTRACT));
+    if (receivesEnded && isJsonObject(raw.correlate) && Object.keys(raw.correlate).length > 0) {
+        diagnostics.warning("WORKFLOW_ENDED_CORRELATE", `${path}.correlate`,
+            `${WORKFLOW_ENDED_CONTRACT} carries no correlation, so this receive never takes a child's end message. Match one child with `
+            + `from: "\${states.<spawn>.output.workflowId}" instead of correlate, and give the receive a wait.`);
+    }
     let waitSeconds: number | string | null = null;
     let waitTotalSeconds: number | string | null = null;
     if (raw.wait !== undefined) {

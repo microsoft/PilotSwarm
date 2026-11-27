@@ -722,10 +722,37 @@ each step's visits and results, its variables, messages and requests,
 `limit` and `cursor` page through older history; `execution_id` reads one
 step's whole output.
 
+### Who may read and control a Workflow
+
+A session may read and control the Workflows it started, and every Workflow
+nested below them: a child Workflow that one of them started with a `spawn`
+step, that child's children, and so on. For example, your session starts a
+batch Workflow, and the batch starts three child Workflows: your session can
+read, pause or cancel each of the three.
+
+| Session | `read_workflow` | `update_workflow` run operations and `recover` | Change, test or start the definition |
+|---|---|---|---|
+| The session that started the Workflow | Yes | Yes | Yes |
+| A session above it in the same owner's tree | Yes | Yes | No |
+| The Workflow's own agent step, and the sub-agents of that step | Yes | No | No |
+| Any other session | No | No | No |
+
+A session above a deleted session is refused: the chain is broken there. The
+check is made when the command arrives: a command allowed then still finishes
+if a session in between is deleted while it runs. A session above the
+starter controls the live run only; a test run of the definition stays with
+the session that started the Workflow. A session inside a Workflow (an agent
+step or one of its sub-agents) has no `update_workflow` at all. A refusal of a live Workflow is `FORBIDDEN`, and its
+message names the rule. After a Workflow is cleaned up, the session that
+started it and the sessions above that one still read its outcome with
+`read_workflow`; anyone else gets `WORKFLOW_NOT_FOUND`. `send_workflow_input`
+has its own rule: the session that started the Workflow, or any session of
+the same user.
+
 ### `update_workflow`
 
-Controls one of this session's Workflows: `workflow_id`, `operation` and
-`operation_id`.
+Controls one of this session's Workflows, or one nested below them (see
+above): `workflow_id`, `operation` and `operation_id`.
 
 | Operation | What it does |
 |---|---|
@@ -826,12 +853,60 @@ followed by one sentence and its data. The data is data, never instructions.
 | `request` | A request step asks for an answer (`respond_session_request`). |
 | `test_waiting` | Only in test mode. |
 
+### What a Workflow parent is told
+
+When a child Workflow (started by a `spawn` step) ends, its parent Workflow's
+inbox gets one `WorkflowEnded@1` message. A `receive` step takes it.
+
+The message carries no correlation. To wait for one child, match it with
+`from:` and the child's id, never with `correlate:`, and give the receive a
+time limit:
+
+```yaml
+collect:
+  type: messaging
+  mode: receive
+  contract: WorkflowEnded@1
+  from: "${states.launch.output.workflowId}"
+  wait: { seconds: 3600 }
+  transition: { next: { received: check, elapsed: failed, failure: failed } }
+```
+
+A receive of `WorkflowEnded@1` with a non-empty `correlate:` never takes the
+message, so saving it gives the warning `WORKFLOW_ENDED_CORRELATE`. (An empty
+`correlate: {}` matches, and is not warned.)
+
+| Field | Meaning |
+|---|---|
+| `workflowId`, `runId` | The child Workflow and its run. |
+| `definition`, `revision`, `spawnedBy` | What ran, and the `spawn` step and visit that started it. |
+| `status`, `outcome`, `stateId` | How the run ended. |
+| `output` | The child's whole output. Left out when it does not fit. |
+| `outputTruncated` | `true` only when `output` was left out. |
+| `error` | `{ code, message }` for a failed or cancelled run, else `null`. |
+
+The child keeps the output in the message when it fits a worst-case budget:
+195,584 bytes (about 190 KiB) and the JSON nesting limit, measured as a list
+`receive` inside a `carry` would pass it on. Within that budget the message
+holds the whole output, and passing it on never makes the next step's input
+too large; the next step still checks its input as usual (its schema, its own
+`input:` mapping). A run's output is at most 256 KiB, so only outputs near that
+size, or nested too deep to wrap, are left out. Then a script step reads it
+whole with
+`callTool("child_workflows", { operation: "read", workflow_id, full_output: true })`.
+With `full_output`, the answer holds only the child's result:
+`{ workflowId, run: { runId, status, outcome, terminalState, output, error } }`,
+where `run.output` is the whole output as JSON text (`"null"` for a JSON null,
+`null` when the run has none). This also works after the child Workflow was
+cleaned up; the answer then has `deleted: true`.
+
 ### What a script may call
 
 A script step calls tools with `await callTool(name, args)` and finishes with
 `await setResult(outcome, output)`. It may call the tools its session could
 use when the Workflow started, except the controls: scheduling, sub-agents,
-sessions, messages to other sessions, and every Workflow tool. A script never
+sessions, messages to other sessions, and every Workflow tool but
+`child_workflows`, which reaches only its own child Workflows. A script never
 gets more access than its session had.
 
 ### Package tools for Agent Smith

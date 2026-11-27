@@ -14,6 +14,10 @@ import {
     type WorkflowReadCursor, type WorkflowReadSection,
 } from "./read-pages.js";
 import { describeWorkflowStates, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
+import {
+    authorizeWorkflowAccess, decideWorkflowAccess, mayReadRetainedWorkflow, WORKFLOW_ACCESS_REFUSALS,
+    type WorkflowAccess, type WorkflowAccessDecision, type WorkflowRelation,
+} from "./access.js";
 import { workflowStoreFailure } from "./failure.js";
 import { redactWorkflowErrorValue } from "./redact.js";
 import { workflowErrorWords } from "./error-words.js";
@@ -87,7 +91,7 @@ export function operationWords(operations: readonly string[]): string {
  * (runUpdateWorkflowCommand): a person's commands use them.
  */
 function updateWorkflowDescription(options: { stop: boolean; test: boolean }): string {
-    return "Control one of your Workflows: workflow_id, operation, and a new operation_id for each change (a retry reuses it). "
+    return "Control one of your Workflows, or a child Workflow below one (started by its spawn steps, at any depth): workflow_id, operation, and a new operation_id for each change (a retry reuses it). "
         + "pause, resume, cancel; "
         + (options.stop ? "stop (grace_seconds 0 to 3600, default 60: nothing new starts, started work may finish, then the run ends stopped); " : "")
         + "set_vars (set, delete, and expected_kv_revision from read_workflow: one atomic change to the run's variables); recover (when "
@@ -123,7 +127,8 @@ const READ_WORKFLOW_RECOVER_WORDS = " A run that shows needsRecovery needs updat
 
 export const READ_WORKFLOW_TOOL_SPEC = {
     description:
-        "Read one of your Workflows; reading changes nothing. Returns JSON: its definition, graph and runs, and one run (run_id, default the "
+        "Read one of your Workflows, or a child Workflow below one (started by its spawn steps, at any depth; an agent step reads its own); "
+        + "reading changes nothing. Returns JSON: its definition, graph and runs, and one run (run_id, default the "
         + "live run) with its step executions, variables (kv, kvRevision), the inputs it received (inbox) and the messages it sent (outbox). "
         + "Its lastControl says who last paused, resumed, stopped or cancelled it or set its variables, and when. "
         + `Use it, not list_sessions, for a Workflow's status.${READ_WORKFLOW_RECOVER_WORDS}`,
@@ -281,15 +286,23 @@ function receiptJson(receipt: WorkflowDefinitionReceipt, replayed: boolean): { [
     };
 }
 
-/** The calling agent must be the workflow's parent, by catalog lineage and the definition's own record. */
-async function authorizeParent(host: WorkflowToolHost, workflowSessionId: string, callerSessionId: string): Promise<void> {
-    const [row, definition] = await Promise.all([host.catalog.getSession(workflowSessionId), host.store.readDefinition(workflowSessionId)]);
-    if (!row || row.deletedAt || row.sessionKind !== "workflow" || !definition) {
-        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId} is visible to this session.`);
+/** The default reason of a cancel by a session above the Workflow's parent (the parent's own reads "Cancelled by its parent"). */
+const ANCESTOR_CANCEL_REASON = "Cancelled by a session above it";
+
+/**
+ * I2: control of a Workflow for the session that asks, by the access rule (access.ts). A test run belongs to the work on its
+ * definition, so only the parent controls one: a session above the parent that names a test run is refused.
+ */
+async function authorizeRunControl(host: WorkflowToolHost, workflowSessionId: string, callerSessionId: string, runId: string | null)
+    : Promise<WorkflowRelation> {
+    const relation = await authorizeWorkflowAccess(host, workflowSessionId, callerSessionId, "control");
+    if (relation === "ancestor" && runId !== null) {
+        const run = await host.store.readRun(runId);
+        if (run?.workflowSessionId === workflowSessionId && run.mode === "test") {
+            throw new WorkflowStoreError("FORBIDDEN", WORKFLOW_ACCESS_REFUSALS.definition);
+        }
     }
-    if (row.parentSessionId !== callerSessionId || definition.parentSessionId !== callerSessionId) {
-        throw new WorkflowStoreError("FORBIDDEN", "Only the agent that created this workflow may change or read it with this tool.");
-    }
+    return relation;
 }
 
 function optionalString(args: Record<string, unknown>, name: string): string | null {
@@ -610,9 +623,9 @@ async function recoverWorkflowFromTool(args: Record<string, unknown>, context: {
     const workflowSessionId = requiredString(args, "workflow_id");
     const operationId = requiredString(args, "operation_id");
     refuseAgentModelsArg(args, "recover");
-    await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
-    const runs = await context.host.store.listRuns(workflowSessionId);
     const requested = optionalString(args, "run_id");
+    await authorizeRunControl(context.host, workflowSessionId, context.callerSessionId, requested);
+    const runs = await context.host.store.listRuns(workflowSessionId);
     const run = requested ? runs.find(item => item.runId === requested) : runs.find(item => item.mode === "live");
     if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", requested ? `Run ${requested} is not a run of this workflow.` : "This workflow has no live run.");
     const recovered = await recoverWorkflowRun(context.host, run.runId, { requestedBy: context.callerSessionId, operationId });
@@ -663,8 +676,21 @@ export async function updateWorkflowFromTool(args: Record<string, unknown>, cont
     try {
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
-        const result = await runUpdateWorkflowCommand(args, context.host, actor,
-            workflowSessionId => authorizeParent(context.host, workflowSessionId, context.callerSessionId));
+        // I2: a run command (pause, resume, stop, cancel, set_vars) is control, which every session above the Workflow has; the
+        // definition and test operations stay with its parent.
+        const operation = typeof args.operation === "string" ? args.operation : "";
+        const access: WorkflowAccess = RUN_COMMANDS.has(operation) || operation === "stop" ? "control" : "definition";
+        // A cancel by a session above the parent says so, unless it gives its own reason.
+        if (operation === "cancel" && (args.reason === undefined || args.reason === null) && typeof args.workflow_id === "string") {
+            // Its refusals are left to the authorization below, after the arguments are checked.
+            const decision = await decideWorkflowAccess(context.host, args.workflow_id, context.callerSessionId).catch(() => null);
+            if (decision?.allowed && decision.relation === "ancestor") args = { ...args, reason: ANCESTOR_CANCEL_REASON };
+        }
+        const runId = typeof args.run_id === "string" ? args.run_id : null;
+        const result = await runUpdateWorkflowCommand(args, context.host, actor, async workflowSessionId => {
+            if (access === "control") await authorizeRunControl(context.host, workflowSessionId, context.callerSessionId, runId);
+            else await authorizeWorkflowAccess(context.host, workflowSessionId, context.callerSessionId, access);
+        });
         return payload({ ok: true, ...result });
     } catch (error) {
         return errorPayload(error);
@@ -1858,12 +1884,15 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
         try {
-            await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+            await authorizeWorkflowAccess(context.host, workflowSessionId, context.callerSessionId, "read");
         } catch (error) {
             if (!(error instanceof WorkflowStoreError) || error.code !== "WORKFLOW_NOT_FOUND"
                 || typeof context.host.catalog.getChildOutcome !== "function") throw error;
+            // A cleaned-up Workflow: its outcome kept with its parent, for the parent and every session above it (I2).
             const retained = await context.host.catalog.getChildOutcome(workflowSessionId);
-            if (!retained || retained.parentSessionId !== context.callerSessionId) throw error;
+            if (!retained?.parentSessionId || !await mayReadRetainedWorkflow(context.host, retained.parentSessionId, context.callerSessionId)) {
+                throw error;
+            }
             return payload({ ok: true, ...retainedWorkflowReadModel(workflowSessionId, retained, args) });
         }
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
@@ -1887,9 +1916,11 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
 
 /**
  * send_workflow_input: the calling session (from the host) gives a run typed
- * input. Unlike update_workflow it is not limited to the parent: the
- * service also allows a live session owned by the same user as the
- * workflow (authority.ts); unknown or system ownership allows nothing.
+ * input. Its rule is the typed-input rule (authority.ts), which the store
+ * decides again under its locks: the parent, or a live session owned by the
+ * same user as the workflow; unknown or system ownership allows nothing. So
+ * every session above a Workflow in a user's tree may send to it (I2), as it
+ * may read and control it.
  */
 export async function sendWorkflowInputFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
@@ -1930,6 +1961,7 @@ export const CHILD_WORKFLOWS_TOOL_SPEC = {
             limit: { type: "number", description: "For list: max rows 1..100 (default: 50)." },
             cursor: { type: "string", description: "For list: pagination cursor from a previous call." },
             workflow_id: { type: "string", description: "For read/stop/cancel: child Workflow session id." },
+            full_output: { type: "boolean", description: "For read: only the child's result, run.output its whole output (JSON text), not a preview." },
             operation_id: { type: "string", description: "For stop/cancel: stable idempotency key." },
             grace_seconds: { type: "number", description: "For stop: grace period 0..3600 seconds (default: 60)." },
             reason: { type: "string", description: "For stop/cancel: optional reason." },
@@ -1938,13 +1970,40 @@ export const CHILD_WORKFLOWS_TOOL_SPEC = {
     },
 } as const;
 
-/** Strict parent-only authorization for child_workflows: anything other than a live child of callerWorkflowSessionId answers WORKFLOW_NOT_FOUND. */
+const childNotFound = (workflowSessionId: string): WorkflowStoreError =>
+    new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No child Workflow ${workflowSessionId} belongs to this Workflow.`);
+
+/**
+ * child_workflows reaches the calling Workflow's own children only: the parent relation of the Workflow access rule
+ * (access.ts). Anything else, a grandchild included, answers WORKFLOW_NOT_FOUND.
+ */
 async function authorizeChildOfWorkflow(host: WorkflowToolHost, workflowSessionId: string, callerWorkflowSessionId: string): Promise<void> {
-    const [row, definition] = await Promise.all([host.catalog.getSession(workflowSessionId), host.store.readDefinition(workflowSessionId)]);
-    if (!row || row.deletedAt || row.sessionKind !== "workflow" || !definition
-        || row.parentSessionId !== callerWorkflowSessionId || definition.parentSessionId !== callerWorkflowSessionId) {
-        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No child Workflow ${workflowSessionId} belongs to this Workflow.`);
-    }
+    const decision = await decideWorkflowAccess(host, workflowSessionId, callerWorkflowSessionId).catch(error => {
+        if (error instanceof WorkflowStoreError && error.code === "WORKFLOW_NOT_FOUND") throw childNotFound(workflowSessionId);
+        throw error;
+    });
+    if (!decision.allowed || decision.relation !== "parent") throw childNotFound(workflowSessionId);
+}
+
+/**
+ * child_workflows read with `full_output` (I6): the child's result only, so the answer stays small whatever its graph and
+ * history: `run.output` is the whole output as its stored canonical JSON text (at most 256 KiB, the most a run's output may
+ * be; JSON null is the text "null", no output is null), once.
+ */
+function childResultView(workflowSessionId: string, deleted: boolean, run: { [key: string]: JsonValue }, outputText: string | null)
+    : { [key: string]: JsonValue } {
+    return {
+        workflowId: workflowSessionId, ...(deleted ? { deleted: true } : {}),
+        run: { runId: run.runId ?? null, status: run.status ?? null, outcome: run.outcome ?? null, terminalState: run.terminalState ?? null,
+            output: outputText, error: run.error ?? null },
+    };
+}
+
+function fullOutputArg(args: Record<string, unknown>): boolean {
+    const value = args.full_output;
+    if (value === undefined || value === null) return false;
+    if (typeof value !== "boolean") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "full_output must be true or false.");
+    return value;
 }
 
 /**
@@ -1983,6 +2042,8 @@ export async function childWorkflowsFromTool(
                 limit: limit + 1,
                 offset,
                 includeDeleted: false,
+                // The parent relation of the access rule: the child's session row and its definition both name this Workflow.
+                requireDefinitionParent: true,
             });
             const hasMore = rows.length > limit;
             const slice = hasMore ? rows.slice(0, limit) : rows;
@@ -2010,7 +2071,39 @@ export async function childWorkflowsFromTool(
         }
         if (op === "read") {
             const workflowSessionId = requiredString(args, "workflow_id");
-            await authorizeChildOfWorkflow(context.host, workflowSessionId, context.callerWorkflowSessionId);
+            const fullOutput = fullOutputArg(args);
+            // Null: the Workflow is gone (deleted or missing). Only then is its kept outcome read; a live Workflow that this one
+            // may not read stays not found (review r1).
+            let decision: WorkflowAccessDecision | null;
+            try {
+                decision = await decideWorkflowAccess(context.host, workflowSessionId, context.callerWorkflowSessionId);
+            } catch (error) {
+                if (!(error instanceof WorkflowStoreError) || error.code !== "WORKFLOW_NOT_FOUND") throw error;
+                decision = null;
+            }
+            if (decision !== null && (!decision.allowed || decision.relation !== "parent")) throw childNotFound(workflowSessionId);
+            if (decision === null) {
+                // I6: a cleaned-up child, through the outcome kept with this Workflow, as read_workflow reads one.
+                const retained = typeof context.host.catalog.getChildOutcome === "function"
+                    ? await context.host.catalog.getChildOutcome(workflowSessionId) : null;
+                if (!retained || retained.parentSessionId !== context.callerWorkflowSessionId) throw childNotFound(workflowSessionId);
+                const kept = retainedWorkflowReadModel(workflowSessionId, retained);
+                const keptRun = isJsonObject(kept.run) ? kept.run : {};
+                const outputText = typeof keptRun.output === "string" ? keptRun.output : null;
+                if (fullOutput) return payload({ ok: true, ...childResultView(workflowSessionId, true, keptRun, outputText) });
+                // The preview carries no whole copy: the kept outcome's own record is left out.
+                const view: { [key: string]: JsonValue } = { ...kept, run: { ...keptRun, output: outputText === null ? null : jsonbSafeText(outputText, 2_000) } };
+                delete view.retainedOutcome;
+                return payload({ ok: true, ...view });
+            }
+            if (fullOutput) {
+                const run = await context.host.store.readLiveRunResult(workflowSessionId);
+                if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", "This workflow has no live run.");
+                return payload({ ok: true, ...childResultView(workflowSessionId, false, {
+                    runId: run.runId, status: run.status, outcome: run.outcome, terminalState: run.terminalState,
+                    error: run.error === null ? null : previewJson(run.error, 2_000),
+                }, run.outputText) });
+            }
             const view = await readWorkflowModel(context.host, workflowSessionId, {}, "tool", {
                 callerSessionId: context.callerWorkflowSessionId,
             });

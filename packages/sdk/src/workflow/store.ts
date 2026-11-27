@@ -3586,6 +3586,8 @@ export class WorkflowStore {
         limit?: number | null;
         offset?: number;
         includeDeleted?: boolean;
+        /** Only children whose definition also names this parent (child_workflows; I2 review r1). */
+        requireDefinitionParent?: boolean;
     } = {}): Promise<Array<{
         workflowSessionId: string;
         deletedAt: Date | null;
@@ -3605,6 +3607,7 @@ export class WorkflowStore {
         const params: unknown[] = [parentWorkflowSessionId];
         const where: string[] = ["s.parent_session_id = $1", "s.session_kind = 'workflow'"];
         if (options.includeDeleted === false) where.push("s.deleted_at IS NULL");
+        if (options.requireDefinitionParent === true) where.push("d.parent_session_id = $1");
         if (options.status === "active") {
             params.push(ACTIVE_RUN_STATUSES);
             where.push(`r.status = ANY($${params.length}::text[])`);
@@ -4878,11 +4881,17 @@ export class WorkflowStore {
             const decided = await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
             if (!decided.live) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             const { rows: priorRows } = await client.query(
-                `SELECT run_id, request_sha256, receipt FROM ${this.t.inbox}
+                `SELECT run_id, request_sha256, receipt, contract FROM ${this.t.inbox}
                   WHERE workflow_session_id = $1 AND sender_session_id = $2 AND operation_id = $3`,
                 [input.workflowSessionId, input.senderSessionId, input.operationId]);
             if (priorRows[0]) {
-                if (str(priorRows[0], "request_sha256") !== input.requestSha256) {
+                // I6: a child's end notice is one message per child run, whatever its form. A retry by a newer runtime may build
+                // it in a newer form (runId, a whole output) than the one an older runtime already stored under the same
+                // operation id; it is the same notice from the same child to the same parent, so the stored one is its receipt.
+                const sameEndNotice = input.bypassInboxLimits === true && input.contract === WORKFLOW_ENDED_CONTRACT
+                    && input.operationId.startsWith("ended:") && str(priorRows[0], "contract") === WORKFLOW_ENDED_CONTRACT
+                    && decided.senderParentSessionId === input.workflowSessionId;
+                if (str(priorRows[0], "request_sha256") !== input.requestSha256 && !sameEndNotice) {
                     throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${input.operationId} was already used for a different input.`,
                         { operationId: input.operationId });
                 }
@@ -6643,6 +6652,52 @@ export class WorkflowStore {
             isAgentStep: strOrNull(row, "node_execution_id") !== null,
         })));
         return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
+    }
+
+    /**
+     * I6: a Workflow's newest live run and its result, read in one statement so its status and its output are of the same
+     * moment (review r2): the output is the stored canonical JSON text exactly, "null" for a JSON null output and null when
+     * the run has none (readRun parses both to null). Null when the Workflow has no live run.
+     */
+    async readLiveRunResult(workflowSessionId: string): Promise<{
+        runId: string; status: WorkflowRunStatus; outcome: string | null; terminalState: string | null; outputText: string | null; error: JsonValue;
+    } | null> {
+        const { rows } = await this.pool.query(
+            `SELECT run_id, status, terminal_outcome, terminal_node_id, terminal_output, terminal_error FROM ${this.t.runs}
+              WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC, run_id DESC LIMIT 1`, [workflowSessionId]);
+        if (!rows[0]) return null;
+        const status = str(rows[0], "status");
+        if (!isRunStatus(status)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Unknown run status ${status}.`);
+        return {
+            runId: str(rows[0], "run_id"), status, outcome: strOrNull(rows[0], "terminal_outcome"), terminalState: strOrNull(rows[0], "terminal_node_id"),
+            outputText: strOrNull(rows[0], "terminal_output"), error: redactWorkflowErrorValue(jsonOrNull(rows[0], "terminal_error")),
+        };
+    }
+
+    /**
+     * I2: a session and the sessions above it, nearest first, in one recursive read of the session rows (soft-deleted rows
+     * included, so a deleted link is seen as deleted, not as missing), each with its owner as the typed-input rule reads it.
+     * At most WORKFLOW_LINEAGE_MAX_DEPTH sessions above it; empty when the session row does not exist. A cycle repeats rows:
+     * the caller stops at the first repeat.
+     */
+    async readSessionAncestry(sessionId: string): Promise<Array<AuthoritySession & { sessionId: string }>> {
+        if (!storableId(sessionId)) return [];
+        const { rows } = await this.pool.query(`
+            WITH RECURSIVE chain AS (
+                SELECT session_id, parent_session_id, 0 AS distance FROM ${this.t.sessions} WHERE session_id = $1
+                UNION ALL
+                SELECT parent.session_id, parent.parent_session_id, chain.distance + 1
+                  FROM ${this.t.sessions} parent JOIN chain ON parent.session_id = chain.parent_session_id
+                 WHERE chain.distance < ${WORKFLOW_LINEAGE_MAX_DEPTH}
+            )
+            SELECT s.session_id, s.deleted_at, s.is_system, s.session_kind, s.parent_session_id,
+                   u.provider AS owner_provider, u.subject AS owner_subject
+              FROM chain
+              JOIN ${this.t.sessions} s ON s.session_id = chain.session_id
+              LEFT JOIN ${this.t.sessionOwners} so ON so.session_id = s.session_id
+              LEFT JOIN ${this.t.users} u ON u.user_id = so.user_id
+             ORDER BY chain.distance`, [sessionId]);
+        return rows.map(row => ({ sessionId: str(row, "session_id"), ...authoritySessionFrom(row) }));
     }
 
     // ─── Agent states (migration 0088) ──

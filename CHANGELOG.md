@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: stop every worker, deploy, then start them. Do not roll the
+workers.** No CMS migration, and no session orchestration or Workflow
+controller version change. Why: a child Workflow's `WorkflowEnded@1` notice to
+its parent now has a new form (`runId`, and outputs up to 195,584 bytes). An
+old worker that replays a new-style `WorkflowEnded@1` notice fails with
+`OPERATION_CONFLICT`, because the stored notice differs from the one it
+builds; the parent still has the message. **Rollback:** drain child end
+notices first. Let running child Workflows finish and keep the new workers up
+until every ended child has told its parent (no child end notice pending or
+retrying), then stop every worker, deploy the older release, and start them.
+See "Upgrading to whole child Workflow results" in
+[`docs/developer/deploy/aks.md`](docs/developer/deploy/aks.md).
+
+### Workflows: every session above a Workflow reads and controls it
+
+`read_workflow` and `update_workflow` now work on Workflows nested below the
+session's own: a grandparent reads, pauses, resumes, stops, cancels, recovers
+and sets the variables of a child Workflow of its batch, through any number of
+nested Workflows, when every session between is live and has the same owner.
+Changing, testing and starting a definition, and controlling a test run, stay
+with the session that started the Workflow. A Workflow's own agent step, and
+its sub-agents, read the Workflow but do not control it. Each refusal names its
+rule. A cleaned-up Workflow's kept outcome is readable by the same sessions
+above it.
+
+### Workflows: whole child results
+
+A child Workflow's `WorkflowEnded@1` message now carries its whole output up to
+195,584 bytes (was 16 KiB), measured on the widest form a receiving state passes
+on, and names the child's `runId`. `outputTruncated` is `true` only when the
+output was left out; then `child_workflows` `read` with `full_output: true`
+returns it whole, also after the child was cleaned up. Saving a receive of
+`WorkflowEnded@1` with a non-empty `correlate:` now warns
+`WORKFLOW_ENDED_CORRELATE`: the message has no correlation; match a child with
+`from:`.
+
 ## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

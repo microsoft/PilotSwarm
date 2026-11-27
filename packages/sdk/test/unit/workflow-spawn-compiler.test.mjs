@@ -169,3 +169,51 @@ states:
     assert.equal(decl.valid, false);
     assert.ok(decl.diagnostics.some(d => d.code === "WORKFLOW_CONTRACT_RESERVED" && d.path === "contracts.WorkflowEnded@1"));
 });
+
+// UX round 2, A1: a receive of WorkflowEnded@1 with `correlate:` waited forever, because a child's end carries no correlation.
+test("a receive of WorkflowEnded@1 with correlate is saved with a warning that names from; without correlate it has none", () => {
+    const yamlOf = (contract, correlate) => `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: batch, version: "1.0.0" }
+contracts:
+  Progress@1: { schema: { type: object } }
+initial: launch
+states:
+  launch:
+    type: spawn
+    definition: child
+    transition: { next: { started: collect, failure: failed } }
+  collect:
+    type: messaging
+    mode: receive
+    contract: ${contract}
+${correlate}    wait: { seconds: 600 }
+    transition:
+      next: { ${contract.startsWith("[") ? "Progress@1: collect, WorkflowEnded@1: done" : "received: done"}, elapsed: failed, failure: failed }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+    const CORRELATE = '    correlate: { workflowId: "${states.launch.output.workflowId}" }\n';
+    const FROM = '    from: "${states.launch.output.workflowId}"\n';
+    const warningsOf = result => result.diagnostics.filter(item => item.code === "WORKFLOW_ENDED_CORRELATE");
+    for (const contract of ["WorkflowEnded@1", "[Progress@1, WorkflowEnded@1]"]) {
+        const correlated = compileWorkflow(yamlOf(contract, CORRELATE));
+        assert.equal(correlated.valid, true, JSON.stringify(correlated.diagnostics));
+        const warned = warningsOf(correlated);
+        assert.equal(warned.length, 1, `${contract}: ${JSON.stringify(correlated.diagnostics)}`);
+        assert.equal(warned[0].severity, "warning");
+        assert.equal(warned[0].path, "states.collect.correlate");
+        assert.match(warned[0].message, /WorkflowEnded@1 carries no correlation/);
+        assert.match(warned[0].message, /from:/);
+        // Matched by sender, as the skill says: no warning.
+        const byFrom = compileWorkflow(yamlOf(contract, FROM));
+        assert.equal(byFrom.valid, true, JSON.stringify(byFrom.diagnostics));
+        assert.deepEqual(warningsOf(byFrom), [], contract);
+    }
+    // An empty correlate matches the notice's empty correlation: no warning. Another contract's correlate: no warning.
+    assert.deepEqual(warningsOf(compileWorkflow(yamlOf("WorkflowEnded@1", "    correlate: {}\n"))), []);
+    const progress = compileWorkflow(yamlOf("Progress@1", CORRELATE));
+    assert.equal(progress.valid, true, JSON.stringify(progress.diagnostics));
+    assert.deepEqual(warningsOf(progress), []);
+});

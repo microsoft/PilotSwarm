@@ -169,7 +169,7 @@ example, the 30-day wait limit and visit-budget arithmetic.
 
 ## Spawning child Workflows
 
-`spawn` (max 50; outputs `{ workflowId, runId, definition, revision }`) + `receive` `[Progress@1, WorkflowEnded@1]` (declared), `from: "${states.<spawn>.output.workflowId}"`, `wait: { totalSeconds: 120 }`; `child_workflows`.
+`spawn` (max 50; outputs `{ workflowId, runId, definition, revision }`) + `receive` `[Progress@1, WorkflowEnded@1]` (declared), `from: "${states.<spawn>.output.workflowId}"` (never `correlate:`), `wait: { totalSeconds: 120 }`; `child_workflows`.
 
 ## Testing these patterns
 

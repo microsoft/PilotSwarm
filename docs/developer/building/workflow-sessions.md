@@ -1367,15 +1367,17 @@ A Workflow belongs to the session that coordinates it, and it cannot move to ano
 
 ### The model: a Workflow belongs to its session
 
-- A Workflow belongs to the session that coordinates it. That session starts it and is told when it ends. Of all sessions, only that one can read it or control it.
+- A Workflow belongs to the session that coordinates it. That session starts it and is told when it ends. Of all sessions, only that one and the sessions above it can read it or control it; its own agent steps can read it.
 - Sessions are meant to be long-lived. When the work is done, leave the session idle. Do not complete it, and do not delete it. An idle session runs no turns, and the Sweeper never cleans it up: it cleans up only a session whose own orchestration ended (`sweeper-tools.ts:170-176, 224-256`, this release).
 - A finished live Workflow records its complete terminal outcome under its owning session before the run can end successfully. The Workflow session is then an ordinary Sweeper candidate after its terminal grace period, like a completed sub-agent. Definition test benches keep their separate retention. The owner-scoped outcome remains readable after the Workflow session is gone and is removed with the owning session (`workflow/store.ts`, `sweeper-tools.ts`, migration 0096).
 
 | Who | Can read or control a Workflow | Source |
 |---|---|---|
-| The parent session | Yes. `read_workflow` gives the status, the output and the record of each step. `update_workflow` changes variables, pauses, resumes, cancels and recovers | `workflow/tools.ts:548-552, 601-606, 1570-1573` |
+| The parent session | Yes. `read_workflow` gives the status, the output and the record of each step. `update_workflow` changes variables, pauses, resumes, stops, cancels and recovers, and changes, tests and starts the definition | `workflow/access.ts` |
+| A session above the parent in the same owner's tree (a grandparent of a child Workflow, and up), when no session between them is deleted | Yes: `read_workflow`, and the `update_workflow` run operations and `recover`. Not the definition operations | `workflow/access.ts` |
+| The Workflow's own agent step, and the sub-agents of that step | Read only: `read_workflow` | `workflow/access.ts` |
 | A person who can use the session | Yes: the Workflow tab of the portal, or `readWorkflow` and `updateWorkflow` of the management API | `management-client.ts:2008, 2079`; `workflow/human-commands.ts:217-249` |
-| Every other session, also one of the same user, also a replacement coordinator | No. The call is refused `FORBIDDEN`: "Only the agent that created this workflow may change or read it with this tool." | `workflow/tools.ts:283-291`; for `read_workflow` in this release, `workflow/tools.ts:1594-1597` |
+| Every other session, also one of the same user, also a replacement coordinator | No. The call is refused `FORBIDDEN`, with a message that names the rule, for example "Only a session above this Workflow (the session that started it, or one above that) may read or control it with this tool; its own agent steps may read it." | `workflow/access.ts` |
 
 The notice of a run's end carries only a preview of the output, at most 1,000 characters (`workflow/runtime.ts`). The owning session's child-outcome row keeps the exact canonical terminal output/error text (`outputText` and `errorText`), including escaped NUL and lone surrogates. `read_workflow` returns that retained outcome after the Workflow session is swept and gives the whole execution record while it still exists.
 
