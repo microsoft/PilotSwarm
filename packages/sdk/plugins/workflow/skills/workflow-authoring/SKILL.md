@@ -88,10 +88,10 @@ freeze entry data across failures; load `workflow-carry`.
   with `input:`, or let its `inputSchema` take those fields: a closed schema
   (`additionalProperties: false`) refuses extra ones, such as `ciState`.
   Call `load_skill` with name `workflow-patterns` for a polling loop.
-- Only the parent (`vars` at start, `set_vars`) and the person (Variables)
-  set KV; no state writes it. Read a KV key with a default (`kv.x ?? 30`),
-  and only keys they set: name the person's keys in the description. A value
-  the run needs is a required input, not KV.
+- The parent (`vars` at start, `set_vars`), its ancestors (`set_vars`)
+  and the person (Variables) set KV; no state does. Read keys with a
+  default (`kv.x ?? 30`), only keys they set; name the person's keys in the
+  description. A value the run needs is a required input, not KV.
 
 ## 5. Write scripts
 
@@ -263,7 +263,7 @@ decision itself into the graph:
 
 - Direct human consent: load `workflow-approval`; never answer it.
 - An agent's decision: a `request` state to `{ parent: true }` whose response contract
-  carries the decision (for example `approved: boolean`), with routes for
+  carries the decision (`approved: boolean`), with routes for
   `responded`, `declined` and `timed_out`; a script reads the decision and
   routes `approved` or `rejected`.
 - Rework: route a review's "changes required" outcome to a `request` for

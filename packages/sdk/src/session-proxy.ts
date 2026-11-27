@@ -9,6 +9,8 @@ import {
     BoundAgentPackageUnavailableError,
     isSessionLockAcquireTimeoutError,
     PackageToolBindingError,
+    STOP_TASK_CANCEL_DEADLINE_MS,
+    withWorkspaceDeadline,
     type SessionManager,
 } from "./session-manager.js";
 import { findCanvasApp } from "./canvas-app-catalog.js";
@@ -675,6 +677,9 @@ const DROPPED_TURN_DESTROY_DEADLINE_MS = 5_000;
 
 /** Issue I1 (review R3-1): how long the read of a turn's Workflow visit waits for a decision still in flight. */
 const WORKFLOW_VISIT_READ_LOCK_MS = 10_000;
+
+/** Issue I1 (whole-PR review P-1): when the report's second task cancel runs, for work the report's own message started. */
+const WORKFLOW_REPORT_TASK_RECHECK_MS = 2_000;
 
 function isToolCallTranscriptCorruptionErrorMessage(message?: string): boolean {
     const normalized = String(message || "");
@@ -2163,15 +2168,27 @@ export function registerActivities(
             visitDecidedThisTurn = true;
             if (replySettleTimer) return;
             // Review D-1: the background work this turn started before the report (a shell the turn waits for) ends now, as a
-            // Stop ends it, so the reply can finish and its snapshot be committed. Tasks of earlier turns are kept.
+            // Stop ends it, so the reply can finish and its snapshot be committed. Tasks of earlier turns are kept. Each pass
+            // runs only while this same turn still runs, so its window (the turn's start until now) holds this turn's tasks only;
+            // it is bounded as the Stop's own cancel is.
             const active = managed.getActiveTurn();
-            if (active) {
-                void managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedWithin: { since: active.startedAt, until: Date.now() } })
-                    .then((cancelled) => { if (cancelled > 0) activityCtx.traceInfo(`[runTurn] session=${input.sessionId}: the report ended ${cancelled} background task(s) of its turn`); })
-                    .catch((err: any) => traceWarn(`[runTurn] session=${input.sessionId}: the report could not end its turn's background tasks: ${err?.message ?? err}`));
-            }
+            const cancelTurnTasks = (when: string): void => {
+                if (!active || managed.getActiveTurn() !== active) return;
+                void withWorkspaceDeadline(
+                    managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedWithin: { since: active.startedAt, until: Date.now() } }),
+                    "the report's task cancel", STOP_TASK_CANCEL_DEADLINE_MS,
+                ).then((cancelled) => { if (cancelled > 0) activityCtx.traceInfo(`[runTurn] session=${input.sessionId}: ${when} ended ${cancelled} background task(s) of its turn`); })
+                    .catch((err: any) => traceWarn(`[runTurn] session=${input.sessionId}: ${when} could not end its turn's background tasks: ${err?.message ?? err}`));
+            };
+            cancelTurnTasks("the report");
+            // Whole-PR review P-1: a call in the report's own model message is not refused (the CLI runs a message's pre-tool
+            // hooks before any handler), so it may start background work just after the report. A second pass takes it.
+            const recheck = setTimeout(() => cancelTurnTasks("the check after the report"), WORKFLOW_REPORT_TASK_RECHECK_MS);
+            (recheck as any).unref?.();
             const reason = "The workflow step's result is recorded, and its turn did not finish its reply in time.";
             replySettleTimer = setTimeout(() => {
+                // Whole-PR review P-9: a reply that already ended is not stopped, nor counted as stopped at the limit.
+                if (!active || managed.getActiveTurn() !== active) return;
                 replyLimitHit = true;
                 sessionManager.abortWarmSessionTurn(input.sessionId, {
                     reason, cancelTurnTasks: true, ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
@@ -5689,6 +5706,8 @@ export function registerActivities(
         const fullBodyResult: TurnResult = (runConfig as ManagedSessionConfig).workspaceAttach
             ? { ...(await runBody()), workspaceAttached: true }
             : await runBody();
+        // Whole-PR review P-9: the model run has returned, so the reply limit has nothing left to stop.
+        if (replySettleTimer) { clearTimeout(replySettleTimer); replySettleTimer = null; }
 
         // The result is stored durably twice: as this activity's result (the
         // orchestration history) and in .ps-turn-commit.json (the session

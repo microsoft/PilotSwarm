@@ -34,8 +34,9 @@ two (the mark, the command), so that other steps can run between them; `CheckAll
 header). `Inv_OneLive` does not count an agent session whose end command is on its way.
 `RecheckSeesEnding` says whether the spawn's check sees an agent session whose end was asked while one of its turns
 runs (the code: no, its orchestration reads Running until the turn ends). `cases.tsv`, `cases.json` and
-`tlc-templates.json` (89 cases) are written by
+`tlc-templates.json` (134 cases: 89 before tf1 and i1) are written by
 
+    I1_AFIX_HEAD=1e0ea856 I1_MERGE_HEAD=58e4d056 \
     G1B_HEAD=7024ef6f DRR1_HEAD=69d07073 DRR2_HEAD=5451a22e DRR1B_HEAD=7bd79a46 \
       DRR1C_HEAD=9b2ca643 DR2FIX_HEAD=781441bf python3 gen-cases.py 9a8d0f66
 
@@ -113,7 +114,7 @@ Runs of the implementation cases (TLC 2.19, two workers):
 | cc9 | `781441bf` (the code at `0df9e8a4`) | 83, 600 s | 83 of 83 as expected; `limit.cc-dr2-001-turn-before-delete` violates `Inv_NoTurnOnDeleted` and `limit.cc-dr2-003-mark-notfound` `Inv_NoFailOnLive` (the code before those fixes); every fix case passes, `fix.cc-dr2-safety` with 1,644,649 distinct states |
 | cc9l | `781441bf` | `cc.drr2-crash-live` and `impl.cc-final-live`, 3,600 s | 2 of 2 PASS: `impl.cc-final-live` (every fix, 659,197 distinct states, 371 s); `cc.drr2-crash-live` (1,771,490 distinct states, 3,356 s) |
 
-Every one of the 89 cases has a TLC result as expected; none is left unchecked (`cc.drr2-crash-live`, not checked
+Every one of the 89 cases of that time has a TLC result as expected; none is left unchecked (`cc.drr2-crash-live`, not checked
 within 1,800 s in cc6l, passed at 3,600 s in cc9l).
 
 ## tf1 (2026-11-10): a turn that fails terminally (bound to 069eca30)
@@ -244,9 +245,9 @@ visit in one step, ordered with the decisions, so it could not show that interle
 model: admission reads the turn's visit under a row lock that waits for a decision in flight.
 `CORRESPONDENCE-i1-r4-88681dd1.md` gives the mapping. The model does not change.
 
-### Full run on the final model
+### Full run on the review R5 model (before D-2)
 
-All 128 cases on the final model (sha256 `f517c705cc65...`; TLC 2.19, OpenJDK 21, two workers, 3,600 s per case),
+All 128 cases on the model of review R5 (sha256 `f517c705cc65...`, superseded by D-2 below; TLC 2.19, OpenJDK 21, two workers, 3,600 s per case),
 2026-11-27: every case ended as expected (72 PASS, 48 safety violations and 8 liveness violations where the case
 expects one, including every finding, fault and witness). The cases from before i1 keep their results with the new
 constants `FALSE` (for example `cc.safety` 3,142 distinct states, `fix.all` 78,282, `impl.cc-final-live` 659,197), and
@@ -258,8 +259,11 @@ the i1 cases keep their batch results (`i1.fix-safety` 445,565, `i1.fix-live` 23
 D-2: a completed visit whose turn then ends without a commit (the reply limit, a lost session, a Stop while the run is
 stopping) left the next cycle's prompt saying "what you did in earlier cycles is above". The fix (`NoteLoss`) marks such a
 visit `lost` in the same step as that turn's end, while the run has not ended, and the next cycle's `TurnStart` checks
-the claim: `Inv_NoFalseMemoryClaim` (no later cycle's turn starts with the claim while an earlier completed cycle of its
-session did not commit and is not recorded lost) and `Inv_LostNotCommitted` (only a visit that did not commit is marked).
+the claim: `Inv_NoFalseMemoryClaim` (no later cycle's turn starts with the claim while an earlier cycle of its session
+that its agent completed did not commit and is not recorded lost) and `Inv_LostNotCommitted` (only a visit that did not
+commit is marked). The invariant ranges over visits their agent completed (`how = "result"`) only: a visit decided by its
+time limit or a cancel, whose Stop ends its turn unsaved, and a recovery that starts a fresh conversation are not
+recorded in the code either (documented known limits), and the model does not claim them.
 A visit whose turn failed for good after its report (`TurnFails`, its activity's retries spent) records nothing in the
 code; it is outside the invariant and shown by the limit case. D-1 (the turn's background tasks cancelled at the report)
 changes no modelled step: a reply that never ends by itself is already a choice (`AllowStall`).

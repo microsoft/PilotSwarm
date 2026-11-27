@@ -1050,7 +1050,8 @@ admitted controller version.
   most 256 KiB. An oversized wrapper fails the receiver with `invalid_input`
   before its input mapping. Source output schemas still check the raw result.
   Keep large data outside the run and carry its key. Scripts cannot write variables;
-  only the session (`set_vars`) and the person change them.
+  only the session that started the Workflow and the sessions above it
+  (`set_vars`), and the person, change them.
 - **Every state needs a failure route.** Route `failure` (or a runtime code
   such as `timed_out`) to a terminal or a recovery step. An error with no
   route goes to `catchAll`, else it fails the run. An agent step whose

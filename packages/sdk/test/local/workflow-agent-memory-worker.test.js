@@ -554,6 +554,99 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
         }
     });
 
+    it("a background shell started in the report's own message ends too, and the next cycle recalls the reply (whole-PR review P-1)", { timeout: TIMEOUT }, async () => {
+        const heartbeat = path.join(getEnv().baseDir, `heartbeat-same-${randomUUID()}.txt`);
+        const state = {};
+        const respond = async (body, position) => {
+            const nx = visitOf(position);
+            if (cycleOf(position) === 1) {
+                // The result and a shell in the background in one message: the CLI runs both calls' pre-tool hooks first.
+                if (position.step === 0) {
+                    state.reportedAt = Date.now();
+                    return { tools: [complete(nx, "again", "op-1", { said: "zebra-42" }), { name: "bash", args: {
+                        command: `while true; do date +%s%N >> ${heartbeat}; sleep 0.2; done`, description: "heartbeat", mode: "async" } }] };
+                }
+                if (position.step === 1) {
+                    state.step1Results = position.toolResults;
+                    return { content: MEMO };
+                }
+                return { content: "ok" };
+            }
+            if (position.step === 0) {
+                state.visit2At ??= Date.now();
+                state.visit2SawMemo = body.messages.some(message => message.role === "assistant" && textOf(message).includes(MEMO));
+                return { tools: [complete(nx, "finish", "op-2", { recalled: state.visit2SawMemo ? "zebra-42" : "nothing" })] };
+            }
+            return { content: "Cycle 2 done." };
+        };
+        const before = WORKFLOW_AGENT_REPLY_SETTLE.ms;
+        WORKFLOW_AGENT_REPLY_SETTLE.ms = 30_000;
+        try {
+            await withFixture(respond, async ctx => {
+                const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", [], { turnTimeoutMs: 0 });
+                try {
+                    const { runId, workflowSessionId } = await startStep(ctx, stepYaml("continue"));
+                    const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId), heartbeat: fs.existsSync(heartbeat) });
+                    const run = await runEnded(ctx, runId, evidence);
+                    expect(run, JSON.stringify(await evidence())).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                    // The shell ran (its call was admitted with the result) and was ended shortly after the report.
+                    expect(fs.existsSync(heartbeat), JSON.stringify(await evidence())).toBe(true);
+                    const size = fs.statSync(heartbeat).size;
+                    await pause(1_500);
+                    expect(fs.statSync(heartbeat).size, "the background shell still runs").toBe(size);
+                    // The reply finished well before the reply limit, was saved, and the second cycle recalled it.
+                    expect(state.visit2At - state.reportedAt, JSON.stringify(await evidence())).toBeLessThan(20_000);
+                    expect(state.visit2SawMemo).toBe(true);
+                    expect(await memoryLostOf(ctx, workflowSessionId)).toEqual({});
+                } finally {
+                    await worker.stop();
+                }
+            });
+        } finally {
+            WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
+        }
+    });
+
+    it("the reply limit of a visit never stops the next visit's turn (whole-PR review P-5)", { timeout: TIMEOUT }, async () => {
+        const state = {};
+        const respond = async (body, position) => {
+            const nx = visitOf(position);
+            if (cycleOf(position) === 1) {
+                if (position.step === 0) return { tools: [complete(nx, "again", "op-1", { said: "zebra-42" })] };
+                return { content: MEMO };
+            }
+            if (position.step === 0) {
+                // The second visit works for twice the first visit's reply limit before it reports.
+                state.visit2SawMemo = body.messages.some(message => message.role === "assistant" && textOf(message).includes(MEMO));
+                await pause(6_000);
+                return { tools: [complete(nx, "finish", "op-2", { recalled: state.visit2SawMemo ? "zebra-42" : "nothing" })] };
+            }
+            return { content: "Cycle 2 done." };
+        };
+        const before = WORKFLOW_AGENT_REPLY_SETTLE.ms;
+        WORKFLOW_AGENT_REPLY_SETTLE.ms = 3_000;
+        try {
+            await withFixture(respond, async ctx => {
+                const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", [], { turnTimeoutMs: 0 });
+                try {
+                    const { runId, workflowSessionId } = await startStep(ctx, stepYaml("continue"));
+                    const agentSession = workflowAgentSessionId(runId, "talk");
+                    const evidence = async () => ({ state, agent: await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished", "session.turn_started"]) });
+                    expect(await runEnded(ctx, runId, evidence)).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { recalled: "zebra-42" } });
+                    // No Stop and no unsaved snapshot before the run's end: neither visit's turn was stopped.
+                    const agent = await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished", "session.turn_started"]);
+                    const stops = agent.filter(event => event.type === "user.stop" && event.data?.requestId !== `workflow-session-stop:${agentSession}`);
+                    expect(stops, JSON.stringify(agent)).toEqual([]);
+                    expect(await memoryLostOf(ctx, workflowSessionId)).toEqual({});
+                } finally {
+                    await worker.stop();
+                }
+            });
+        } finally {
+            WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
+        }
+    });
+
     it("a continued visit's reply lost with its Copilot session after the report: the visit records it, and the next cycle is told", { timeout: TIMEOUT }, async () => {
         const state = { failed: 0, afterFault: 0 };
         const respond = (_body, position) => {

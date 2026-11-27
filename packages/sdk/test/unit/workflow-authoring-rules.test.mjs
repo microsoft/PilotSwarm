@@ -41,8 +41,9 @@ test("E1 to E3: the authoring skill says loops get the previous output, KV needs
             + "fields: a closed schema (`additionalProperties: false`) refuses extra ones, such as `ciState`.",
         "Call `load_skill` with name `workflow-patterns` for a polling loop.",
         // E2
-        "Only the parent (`vars` at start, `set_vars`) and the person (Variables) set KV; no state writes it.",
-        "Read a KV key with a default (`kv.x ?? 30`), and only keys they set: name the person's keys in the description.",
+        // I2: the sessions above the parent set variables too (set_vars).
+        "The parent (`vars` at start, `set_vars`), its ancestors (`set_vars`) and the person (Variables) set KV; no state does.",
+        "Read keys with a default (`kv.x ?? 30`), only keys they set; name the person's keys in the description.",
         "A value the run needs is a required input, not KV.",
         "context.kv.pollLimit ?? 12; // KV, with a default",
         // E3, and Andrew's TEST runs at 420af66a: a send or a request ends the data path.

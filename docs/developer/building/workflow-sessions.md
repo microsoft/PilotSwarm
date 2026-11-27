@@ -185,17 +185,22 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   visit its agent completed (`complete_workflow_node`) while the run is active
   sends no Stop (issue I1): the turn that reported goes on to write its reply,
   ends by itself, and its snapshot is committed, so the next visit remembers
-  it ("what you did in earlier cycles is above" is true). A stopped turn
+  it ("what you did in earlier cycles is above" is true for a visit its agent
+  completed; see the known limits for the cases where it is not). A stopped turn
   commits nothing, so a Stop there would lose the visit's work. Once the
   visit is decided, the turn's later model messages cannot start a tool: the
   Workflow tools and wrapped user tools refuse as before, and the CLI's own
   tools (shell, file edits, sub-agents) are refused by a pre-tool hook
   (`withWorkflowVisitDeny`); the model can only finish its reply. A call
   already admitted in the same model message as the report may still
-  finish. The background tasks the turn started before the report (a shell
-  or a sub-agent still running, which keep the turn open) are cancelled when
-  the visit is decided, as a Stop cancels them, so the reply can finish and
-  its snapshot be committed; tasks of earlier turns are kept. A completion whose write
+  run. The background tasks the turn started (a shell or a sub-agent still
+  running, which keep the turn open) are cancelled when the visit is
+  decided, as a Stop cancels them, and again 2 seconds later for work a
+  call in the report's own message started, each pass bounded at 1.5
+  seconds and only while the same turn runs; so the reply can finish and
+  its snapshot be committed. Tasks of earlier turns are kept. All of this
+  applies to every agent step, `session: new` included, as does the reply
+  limit below. A completion whose write
   failed with anything but a store refusal may have committed: the worker
   reads the turn's visit under a row lock that waits for a decision still in
   flight (its COMMIT, up to 10 seconds), and a visit that reads decided, or
@@ -207,7 +212,8 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   report (`WORKFLOW_AGENT_REPLY_SETTLE`, also when `turnTimeoutMs` is 0) a
   reply still running is stopped as a Stop stops it. Each stage of that stop
   is bounded on its own: the turn's task cancel (1.5 seconds) and grace (8
-  seconds) before the turn is settled by force, then, when the warm session
+  seconds) before the turn is settled by force, the wait for that settle (2
+  seconds), then, when the warm session
   is dropped, the workspace-task cancel (20 seconds) and the disconnect (5
   seconds), so the session lock is released even when the CLI no longer
   answers. Dropping the handle does not repair a CLI runtime that stopped
@@ -235,7 +241,10 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   stored prompt keeps the original words. The session ends when the run ends, and a
   graceful stop ends an idle one at once; before it sends the session's end,
   the run's end stops whichever turn still runs (request id
-  `workflow-session-stop:<session>`, which names no visit). If the session ended on its own, the next open visit
+  `workflow-session-stop:<session>`, which names no visit), except on the
+  later retry of an end that was owed because the session was not visible
+  yet at the run's end (that retry sends no Stop; the reply limit bounds the
+  wait). If the session ended on its own, the next open visit
   starts a new agent session and says so. `workflow_agent_invocations` has one
   row per visit (`child_session_id` is not unique).
   Each turn of a continued agent session works for one visit, its turn visit:
@@ -262,14 +271,19 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   Results stay correct: each binds to its own visit. A tool call made in the
   same model message as the report is not refused (the CLI runs a message's
   pre-tool hooks before any handler), so an agent should call
-  `complete_workflow_node` alone in its message. The session remembers a
+  `complete_workflow_node` alone in its message; the tool's description
+  says so. The session remembers a
   visit once that visit's turn has committed its snapshot: a reply that is
   stopped (the run's end, the reply limit), lost with its Copilot session, or
   cut by a worker crash before the commit is not remembered (while the run
   is active the visit records it, above). A turn whose activity fails for
   good after the report (its retries spent, for example a store that cannot
   be reached) records nothing, and the next cycle's prompt then still says
-  the earlier cycles are above. Accepted by the owner (26 Nov): a visit its
+  the earlier cycles are above. Two older cases are not recorded either, and
+  the prompt says the same: a visit decided by its time limit or a cancel
+  while its turn runs (its cycle Stop ends that turn unsaved, as before I1),
+  and a recovery that starts a fresh conversation (a corrupted transcript's
+  reset, a missing snapshot), which drops every earlier cycle. Accepted by the owner (26 Nov): a visit its
   agent completes before its spawn is recorded (a very fast finish) gets no
   Stop from the spawn's re-check either, and its turn ends by itself as any
   completed visit's does; the run's end stops whichever turn still runs, so
@@ -1574,7 +1588,7 @@ This is a design principle, not a missing feature.
 - A session's parent is set when the session is created. No update changes it (`cms.ts:258-281` has no parent field).
 - A Workflow's definition, inputs, owner, parent and tool grant are fixed at its first Start (see [Starting a workflow](#starting-a-workflow)). The parent is recorded then in the Workflow's definition, in its tool grant and in each agent step's record, and none of these is updated (`workflow/store.ts:2557-2563, 3972-3979`; `workflow/service.ts:810`).
 - A Workflow's tools are its parent's tools, captured at Start (`session-manager.ts:3862-3896`). Each tool call checks the parent again: a parent that is missing, deleted or ended stops the call (`session-manager.ts:3906-3915`).
-- Only the parent session reads or controls a Workflow with the agent tools. `read_workflow` and `update_workflow` refuse every other session (`workflow/tools.ts:283-291`). A person can do both, in the portal or through the management API.
+- With the agent tools, the parent session and every session above it in the same owner's tree read and control a Workflow, and its own agent step and that step's sub-agents read it (`workflow/access.ts`; the table in [The model: a Workflow belongs to its session](#the-model-a-workflow-belongs-to-its-session)). `read_workflow` and `update_workflow` refuse every other session. A person can do both, in the portal or through the management API.
 - A start key is scoped to the session that starts, so a new session cannot adopt a Workflow by its key.
 - No operation moves a Workflow, an agent session or a sub-agent to another parent.
 

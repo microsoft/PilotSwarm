@@ -835,13 +835,13 @@ const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
  */
 const WORKSPACE_RELEASE_DEADLINE_MS = 20_000;
 
-/** Bound on the task cancel a V4 Stop runs before it waits for the turn to unwind. */
-const STOP_TASK_CANCEL_DEADLINE_MS = 1_500;
+/** Bound on the task cancel a V4 Stop runs before it waits for the turn to unwind (and the one a Workflow report runs). */
+export const STOP_TASK_CANCEL_DEADLINE_MS = 1_500;
 
 /** Bound on the disconnect of a session whose turn a Stop settled by force (issue I1, review R3-3). */
 const FORCED_STOP_DESTROY_DEADLINE_MS = 5_000;
 
-function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
+export function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms} ms`)), ms);

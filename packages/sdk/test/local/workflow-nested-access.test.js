@@ -19,7 +19,9 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
-import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/runtime.ts";
+import { WORKFLOW_CONTROLLER_VERSION, WORKFLOW_ENDED_NOTICE_MAX_BYTES, workflowEndedNoticeFits, workflowLiveControllerInstanceId,
+    workflowTestControllerInstanceId } from "../../src/workflow/runtime.ts";
+import { canonicalJson, utf8ByteLength } from "../../src/workflow/json.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { resolveEffectiveSpawnOwner } from "../../src/cms.ts";
 import { childWorkflowsFromTool, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
@@ -217,6 +219,10 @@ describe("I2: nested Workflows are read and controlled by every session above th
             expect(w2Run.status).toBe("cancelled");
             expect((await read(top, w2.workflowSessionId)).run.lastControl)
                 .toMatchObject({ operation: "cancel", by: "this session", reason: "Cancelled by a session above it" });
+            // Whole-PR review P-2: the default reason is chosen after the request is hashed, so the same cancel again is a replay.
+            const again = await update(top, w2.workflowSessionId, { operation: "cancel", operation_id: "cancel-w2" });
+            expect(again.ok, JSON.stringify(again.error)).toBe(true);
+            expect(again.replayed).toBe(true);
             // The parent's own cancel keeps its words.
             const w1Cancel = await update(top, w1.workflowSessionId, { operation: "cancel", operation_id: "cancel-w1" });
             expect(w1Cancel.ok, JSON.stringify(w1Cancel.error)).toBe(true);
@@ -464,6 +470,47 @@ describe("I2: nested Workflows are read and controlled by every session above th
         } finally {
             await h.stop();
         }
+    });
+
+    // Whole-PR review P-7: I2 makes a grandparent an ancestor for read_workflow and update_workflow; child_workflows stays
+    // with the direct parent Workflow, so a grandchild is not found for read, stop and cancel.
+    it("child_workflows does not reach a grandchild Workflow (read, stop and cancel)", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const host = hostOf(h);
+            const top = randomUUID();
+            await h.catalog.createSession(top, { owner: OWNER_A });
+            const w1 = await workflowOf(h, top, OWNER_A);
+            const w2 = await workflowOf(h, w1.workflowSessionId, OWNER_A);
+            const w3 = await workflowOf(h, w2.workflowSessionId, OWNER_A);
+            for (const args of [{ operation: "read" }, { operation: "read", full_output: true }, { operation: "stop", operation_id: "stop-grandchild" },
+                { operation: "cancel", operation_id: "cancel-grandchild" }]) {
+                const res = JSON.parse(await childWorkflowsFromTool({ ...args, workflow_id: w3.workflowSessionId },
+                    { callerWorkflowSessionId: w1.workflowSessionId, host }));
+                expect([res.ok, res.error?.code], JSON.stringify(args)).toEqual([false, "WORKFLOW_NOT_FOUND"]);
+            }
+            expect((await h.store.readRun(w3.runId)).status).not.toBe("cancelled");
+            // Its own parent still reaches it.
+            const own = JSON.parse(await childWorkflowsFromTool({ operation: "read", workflow_id: w3.workflowSessionId },
+                { callerWorkflowSessionId: w2.workflowSessionId, host }));
+            expect(own.ok, JSON.stringify(own.error)).toBe(true);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    // Whole-PR review P-7: the WorkflowEnded@1 limit at its edge, measured on the widest form a receive hands on.
+    it("a WorkflowEnded@1 notice fits at exactly 195,584 bytes in its widest form, and not one byte more", () => {
+        expect(WORKFLOW_ENDED_NOTICE_MAX_BYTES).toBe(256 * 1024 - 64 * 1024 - 1024);
+        expect(WORKFLOW_ENDED_NOTICE_MAX_BYTES).toBe(195_584);
+        const child = randomUUID();
+        const payloadOf = filler => ({ workflowId: child, runId: "r", status: "completed", output: { text: filler }, outputTruncated: false });
+        const widest = filler => utf8ByteLength(canonicalJson({ carry: null, result: { contract: "WorkflowEnded@1", from: child, payload: payloadOf(filler) } }));
+        const base = widest("");
+        const exact = "x".repeat(WORKFLOW_ENDED_NOTICE_MAX_BYTES - base);
+        expect(widest(exact)).toBe(WORKFLOW_ENDED_NOTICE_MAX_BYTES);
+        expect(workflowEndedNoticeFits(child, payloadOf(exact))).toBe(true);
+        expect(workflowEndedNoticeFits(child, payloadOf(`${exact}x`))).toBe(false);
     });
 
     it("child_workflows needs both parent records, and reads a kept outcome only for a Workflow that is gone", { timeout: TIMEOUT }, async () => {

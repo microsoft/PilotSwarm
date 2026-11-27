@@ -288,9 +288,6 @@ function receiptJson(receipt: WorkflowDefinitionReceipt, replayed: boolean): { [
     };
 }
 
-/** The default reason of a cancel by a session above the Workflow's parent (the parent's own reads "Cancelled by its parent"). */
-const ANCESTOR_CANCEL_REASON = "Cancelled by a session above it";
-
 /**
  * I2: control of a Workflow for the session that asks, by the access rule (access.ts). A test run belongs to the work on its
  * definition, so only the parent controls one: a session above the parent that names a test run is refused.
@@ -524,7 +521,7 @@ export function workflowTestModeAbsentError(operation: unknown, host: Pick<Workf
     return workflowTestModeRefusal(operation, host) ? unknownOperationError(null, { milestone: true, testing: false }) : null;
 }
 
-async function testOperation(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor, authorize: (workflowSessionId: string) => Promise<void>)
+async function testOperation(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor, authorize: (workflowSessionId: string) => Promise<unknown>)
     : Promise<{ [key: string]: JsonValue }> {
     const workflowSessionId = requiredString(args, "workflow_id");
     const operationId = requiredString(args, "operation_id");
@@ -651,7 +648,7 @@ async function recoverWorkflowFromTool(args: Record<string, unknown>, context: {
  * throws the refusal.
  */
 export async function runUpdateWorkflowCommand(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor,
-    authorize: (workflowSessionId: string) => Promise<void>): Promise<{ [key: string]: JsonValue }> {
+    authorize: (workflowSessionId: string) => Promise<WorkflowRelation | void>): Promise<{ [key: string]: JsonValue }> {
     // Stop, and the test operations while workflow test mode is on (WorkflowHost.testMode, or else the deployment flag;
     // test-mode-switch.ts).
     const testing = resolveWorkflowTestMode(host.testMode);
@@ -662,8 +659,9 @@ export async function runUpdateWorkflowCommand(args: Record<string, unknown>, ho
     }
     if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || args.operation === "stop")) {
         const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop: true });
-        await authorize(workflowSessionId);
-        const stored = await controlWorkflowRun(host, workflowSessionId, command, { actor, operationId });
+        const relation = await authorize(workflowSessionId);
+        const stored = await controlWorkflowRun(host, workflowSessionId, command,
+            { actor, operationId, ...(relation === "ancestor" ? { aboveParent: true } : {}) });
         return runCommandJson(stored.receipt, stored.replayed);
     }
     const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone: true, testing });
@@ -682,17 +680,12 @@ export async function updateWorkflowFromTool(args: Record<string, unknown>, cont
         // definition and test operations stay with its parent.
         const operation = typeof args.operation === "string" ? args.operation : "";
         const access: WorkflowAccess = RUN_COMMANDS.has(operation) || operation === "stop" ? "control" : "definition";
-        // A cancel by a session above the parent says so, unless it gives its own reason.
-        if (operation === "cancel" && (args.reason === undefined || args.reason === null) && typeof args.workflow_id === "string") {
-            // Its refusals are left to the authorization below, after the arguments are checked.
-            const decision = await decideWorkflowAccess(context.host, args.workflow_id, context.callerSessionId).catch(() => null);
-            if (decision?.allowed && decision.relation === "ancestor") args = { ...args, reason: ANCESTOR_CANCEL_REASON };
-        }
+        // A cancel by a session above the parent says so, unless it gives its own reason: the relation the authorization
+        // returns picks the default after the request is hashed (controlWorkflowRun's aboveParent).
         const runId = typeof args.run_id === "string" ? args.run_id : null;
-        const result = await runUpdateWorkflowCommand(args, context.host, actor, async workflowSessionId => {
-            if (access === "control") await authorizeRunControl(context.host, workflowSessionId, context.callerSessionId, runId);
-            else await authorizeWorkflowAccess(context.host, workflowSessionId, context.callerSessionId, access);
-        });
+        const result = await runUpdateWorkflowCommand(args, context.host, actor, async workflowSessionId =>
+            access === "control" ? await authorizeRunControl(context.host, workflowSessionId, context.callerSessionId, runId)
+                : await authorizeWorkflowAccess(context.host, workflowSessionId, context.callerSessionId, access));
         return payload({ ok: true, ...result });
     } catch (error) {
         return errorPayload(error);

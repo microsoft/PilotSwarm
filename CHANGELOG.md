@@ -69,11 +69,15 @@ A `session: continue` agent step now remembers what it did in earlier visits.
 When the agent reports its result (`complete_workflow_node`) while the run is
 active, its turn is no longer stopped: it finishes its reply and is saved, and
 the next visit's prompt starts a new turn after it ("what you did in earlier
-cycles is above" is now true). A time limit, a cancel and the run's end still
-stop the turn. Once the result is recorded, every tool call of that turn is
-refused, the shell, file edits and sub-agents included, and the background
-tasks the turn started before the result (a shell or a sub-agent still running)
-are cancelled, so the reply can finish and be saved. A reply still running
+cycles is above" is now true for a visit its agent completed). A time limit, a
+cancel and the run's end still stop the turn. Once the result is recorded, every
+tool call of that turn is refused, the shell, file edits and sub-agents
+included, and the background tasks the turn started (a shell or a sub-agent
+still running, also one started in the result's own message) are cancelled, so
+the reply can finish and be saved. This applies to every agent step,
+`session: new` included: the refusal, the cancel and the reply limit below
+(before, a `session: new` step's reply was bounded only by `turnTimeoutMs`).
+`complete_workflow_node` tells the agent to call it alone and last. A reply still running
 5 minutes after the result is stopped (also with `turnTimeoutMs: 0`), and the
 run's end stops a reply that still runs before it ends the session. A turn whose
 result is recorded is never run again: not after a lost Copilot session or a
@@ -86,9 +90,14 @@ visit's conversation is not available instead of saying it is above.
 
 Known limits, accepted: a visit that finishes before its spawn is recorded gets
 no Stop either (its turn ends by itself, as any finished visit's does); the
-run's end can cut the last visit's reply; and the reply limit is a fixed
-5 minutes. A turn whose activity fails for good after the result records no
-lost memory.
+run's end can cut the last visit's reply, and an end retried later for a
+session that was not visible yet at the run's end sends no Stop (the reply
+limit bounds it); and the reply limit is a fixed 5 minutes. A turn whose
+activity fails for good after the result records no lost memory. Two older
+cases are not recorded either, and the next cycle's prompt still says the
+earlier cycles are above: a visit decided by its time limit or a cancel (its
+Stop ends its turn unsaved), and a recovery that starts a fresh conversation
+(a corrupted transcript, a missing snapshot).
 
 ### Decision cleanups
 

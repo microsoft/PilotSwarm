@@ -30,7 +30,7 @@ export const COMPLETE_WORKFLOW_NODE_TOOL_SPEC = {
         + "completions are taken), OUTPUT_ATTEMPTS_EXHAUSTED (the state failed invalid_output), NODE_EXPIRED (its deadline passed), "
         + "NODE_CLOSED (the workflow ended the state), COMPLETION_CONFLICT (it was completed with another result), OPERATION_CONFLICT "
         + "(this operation_id gave another result), COMPLETION_INVALID (the call's shape) or AGENT_NODE_NOT_FOUND (this session runs no "
-        + "workflow state).",
+        + "workflow state). Call it alone and last: after it no tool runs in this turn, and background work this turn started is stopped.",
     parameters: {
         type: "object",
         properties: {

@@ -26,16 +26,17 @@ fact and pass its key.
 | `correlate` | 4 KiB | the state fails `invalid_input` |
 | A request's response or decline | 16 KiB | `RESPONSE_INVALID` |
 | Typed input (`send_workflow_input`); for a list receive, its `{ contract, from, payload }` too | 256 KiB | refused |
-| A child's output in its `WorkflowEnded@1` | 195,584 bytes (about 190 KiB) | left out: `outputTruncated: true` |
+| A child's `WorkflowEnded@1`, measured whole as a list receive inside a carry passes it on (the output is a little less) | 195,584 bytes (about 190 KiB) | the output is left out: `outputTruncated: true` |
 | `child_workflows` `read` | 2,000-character preview; `full_output: true` gives the whole output | |
 | Variables (KV) | 1,000 keys of at most 128 characters; 256 KiB a value; 1 MiB in all | refused |
 | A script's tool call: its arguments / its result | 1 MiB each | the call fails |
 | Tool calls in one script visit (a live run) | 500 | the call fails |
-| `read_workflow` value | whole up to 256 KiB, else a 4,000-character preview | |
+| `read_workflow` with `execution_id`: one step's value | whole up to 256 KiB, else a 4,000-character preview | |
+| `read_workflow` without it: `run.output` / `kv` and `inputs` | 2,000 / 4,000-character previews | |
 
 ## Fan-out: keep only what you need from each child
 
-A child's output (up to 195,584 bytes) arrives whole. It fits the receiving
+A child's output (up to about 190 KiB) arrives whole. It fits the receiving
 state's input, but a later limit still applies: two 150 KiB children whose
 branches end with `output: "${input}"` fail the join (256 KiB); a 20 KiB child
 output sent on as it arrived fails the `send` (16 KiB); a run output or a

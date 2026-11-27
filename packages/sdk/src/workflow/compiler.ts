@@ -2342,7 +2342,8 @@ export function compileWorkflow(yaml: string): WorkflowCompileResult {
     checkFixedInputs(nodes, contracts, schemas.defs, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
     warnInputMismatches(nodes, schemas.defs, diagnostics);
-    warnWholeChildOutputs(nodes, diagnostics);
+    // A warning is advice: it never fails a save or a load (whole-PR review P-14).
+    try { warnWholeChildOutputs(nodes, diagnostics); } catch { /* no warning */ }
     if (runDeadline !== null) {
         for (const node of Object.values(nodes)) {
             if (node.type === "wait" && typeof node.seconds === "number" && node.seconds > runDeadline.timeoutSeconds) {

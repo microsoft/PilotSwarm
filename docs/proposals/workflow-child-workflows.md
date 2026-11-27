@@ -124,7 +124,7 @@ Running `deep_analysis` inline as an agent step inside the loop causes three lim
 | Child-to-parent addressing | `{ parent: true }` resolves to definition's `parent_session_id` | `workflow/runtime.ts` |
 | Typed inbox delivery | `recipientDecision` and `workflow_inbox` | `workflow/store.ts` |
 | Timed receive preserving loop state | `receive` with `wait` and `carry` | `workflow/compiler.ts` |
-| Parent-only read/control | `authorizeParent` | `workflow/tools.ts` |
+| Read/control by the parent and the sessions above it (I2; its agent step reads) | `decideWorkflowAccess` | `workflow/access.ts` |
 | Running-child cap (50) | Counted by `parent_session_id` | `workflow/child-budget.ts` |
 | Non-blocking effect execution | `workflow-effect` helper orchestration | `workflow/controller/index.ts`, `workflow/effect_1_2_0/index.ts` |
 | Per-step tool grant derivation | Root grant inheritance at Start | `workflow/service.ts` |
