@@ -630,6 +630,7 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     let seenCsfwOpts = null;
     const csfw = toolsWith({
         webMode: true,
+        workflowsAdvert: { validate: true, card: true, skills: true },
         originatingSessionId: "bound-wf-child",
         mgmt: {
             createSessionForWorkflow: async (_ref, opts) => {
@@ -733,6 +734,24 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
         assert.equal(JSON.parse(res.content[0].text).status, 501);
     }
     assert.equal(skewReachedMgmt, false, "older-portal fail-closed guard must stop before hitting mgmt");
+
+    // Missing (null) advert in web mode fails closed (501 WORKFLOW_API_UNAVAILABLE) on mutations
+    let nullAdvertReachedMgmt = false;
+    const nullAdvertTools = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        workflowsAdvert: null,
+        mgmt: {
+            deleteSessionWorkflowDefinition: async () => { nullAdvertReachedMgmt = true; return {}; },
+        },
+    });
+    const nullAdvertDel = await nullAdvertTools.get("workflow_definition")({
+        operation: "delete", owner_session_id: OWNER_SID, name: "by-name-only", operation_id: "op-null-advert",
+    });
+    assert.equal(nullAdvertDel.isError, true, "null advert in web mode must fail closed on mutation");
+    assert.equal(JSON.parse(nullAdvertDel.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(JSON.parse(nullAdvertDel.content[0].text).status, 501);
+    assert.equal(nullAdvertReachedMgmt, false);
 }
 
 console.log("✅ Phase 4 MCP workflow tools unit suite passed");

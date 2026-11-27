@@ -29,7 +29,8 @@ function updateOperationIdFor(opId: string, key?: string): string {
 }
 
 function isOlderPortalWithoutPhase4Definitions(ctx: ServerContext): boolean {
-    if (!ctx.webMode || !ctx.workflowsAdvert || typeof ctx.workflowsAdvert !== "object") return false;
+    if (!ctx.webMode) return false;
+    if (!ctx.workflowsAdvert || typeof ctx.workflowsAdvert !== "object") return true;
     return !ctx.workflowsAdvert.validate || !ctx.workflowsAdvert.card;
 }
 

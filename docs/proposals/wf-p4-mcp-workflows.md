@@ -1,7 +1,7 @@
 # Workflows Over MCP — Picker, Skills, Session Kind, Definition Lifecycle & Validate
 
 **Date:** 2026-11-27
-**Status:** Proposed (built ahead of owner design sign-off)
+**Status:** Signed off by the owner, 27 Nov
 **Target Repository:** `microsoft/PilotSwarm`
 
 ---

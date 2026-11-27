@@ -30,6 +30,8 @@ with `child_workflows` `read` `full_output: true`. Saving now warns
 `WORKFLOW_ENDED_WHOLE_OUTPUT` where a child's whole output reaches one of those
 limits as it arrived.
 
+**Behaviour change for `workflow_definition`.** `workflow_definition` (and the Web API it uses) now refuses a `definition_id` together with a different `name` with `WORKFLOW_COMMAND_INVALID`; before, the id won.
+
 ### Workflows over MCP
 
 An external LLM connected only through `pilotswarm-mcp` can now discover and
