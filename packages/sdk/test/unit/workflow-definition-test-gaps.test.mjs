@@ -30,6 +30,7 @@ import { WORKFLOW_TEST_BENCH_KIND } from "../../dist/workflow/test-bench.js";
 import { WORKFLOW_TOOL_POLICY } from "../../dist/workflow/tool-policy.js";
 import { createWorkflow, previewWorkflowAgentVersions, sendTypedWorkflowInput } from "../../dist/workflow/service.js";
 import { workflowSessionGuidance, WORKFLOW_SESSION_GUIDANCE } from "../../dist/workflow/guidance.js";
+import { normalizeDecisionResponse } from "../../dist/decision-provider.js";
 import fs from "node:fs";
 
 const sha = text => createHash("sha256").update(text).digest("hex");
@@ -606,6 +607,22 @@ test("G5: an unanswered call's fixture skeleton is exact: parsed and matched, it
     assert.equal(Object.hasOwn(definitionTestFixtureSkeleton({ operation: "send" }, { nodeId: "s", ordinal: 1, input: { big: "y".repeat(3_000) } }), "arguments"), false);
     assert.deepEqual(definitionTestFixtureSkeleton({ operation: "request" }, { nodeId: "ask", ordinal: 3, input: null }).response.value,
         { response: "<the answer, as its contract's response schema says>" });
+});
+
+test("a Decision call's fixture skeleton is an answer the parser takes; noul carries only noul, as the live service sends it", () => {
+    const questions = {
+        choice: { type: "choice", instructions: "Which team?", criteria: { engineering: "Bugs", billing: "Invoices" } },
+        noul: { type: "noul", instructions: "Does it need production access?" },
+        score: { type: "score", instructions: "How severe?", criteria: ["Minor", "Major", "Critical"] },
+    };
+    const values = {};
+    for (const [type, question] of Object.entries(questions)) {
+        const skeleton = definitionTestFixtureSkeleton({ operation: "decision" }, { nodeId: "decide", ordinal: 1, input: null },
+            { type: "decision", question });
+        values[type] = skeleton.response.value;
+        assert.equal(normalizeDecisionResponse(question, values[type]).answer.questionType, type, type);
+    }
+    assert.deepEqual(values.noul, { answers: { decision: { type: "noul", noul: 1 } } });
 });
 
 // ─── What the session reads: the tool, the guidance, the skills, the service's words ───

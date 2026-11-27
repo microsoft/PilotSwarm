@@ -17,7 +17,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    agentModelsDigestPart, parseWorkflowAgentModels, readWorkflowAgentModels, requireAgentModelsForRevision, requireUsableAgentModels,
+    agentModelsDigestPart, parseWorkflowAgentModels, parseWorkflowDecisionModels, readWorkflowAgentModels, requireAgentModelsForRevision, requireUsableAgentModels,
     workflowAgentModelsText, workflowAgentModelWords, workflowChosenModelsWords, workflowDecisionModelsForRevision, readStoredAgentModels,
 } from "../../dist/workflow/agent-models.js";
 import { ModelProviderRegistry } from "../../dist/model-providers.js";
@@ -25,7 +25,7 @@ import { resolveRuntimeModelSelection } from "../../dist/provider-catalog.js";
 import { parseRunCommandArgs, parseUpdateWorkflowArgs, updateWorkflowFromTool } from "../../dist/workflow/tools.js";
 import { PilotSwarmClient } from "../../dist/client.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
-import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { compileWorkflow, WORKFLOW_MAX_NODES } from "../../dist/workflow/compiler.js";
 import { createWorkflowAgentNodeHost } from "../../dist/workflow/agent-host.js";
 import { startAgentModelsOf } from "../../dist/workflow/session-definitions.js";
 import { workflowTestAgentModels } from "../../dist/workflow/service.js";
@@ -159,6 +159,21 @@ test("checked against the owning session's catalog: a model it cannot use refuse
         error => error.code === "AGENT_MODEL_UNAVAILABLE" && error.message === "The model chosen for review, a:gone · long context, cannot be used "
             + "with the owning session's catalog: no provider serves it. Choose one from list_available_models, or leave the node out so it uses the session's model.");
     assert.deepEqual(asked, [["a:b", "alice"], ["a:b", null], ["a:gone", null]]);
+});
+
+test("a request map names at most 64 nodes; a stored map at most WORKFLOW_MAX_NODES, read back the same way", () => {
+    const map = length => Object.fromEntries(Array.from({ length }, (_, i) => [`n${i}`, { model: "a:b" }]));
+    const refused = (read, length) => assert.throws(read, error => error.code === "AGENT_MODELS_INVALID"
+        && error.message.includes(`names ${length + 1} nodes; at most ${length}.`));
+    assert.equal(Object.keys(parseWorkflowAgentModels(map(64))).length, 64);
+    refused(() => parseWorkflowAgentModels(map(65)), 64);
+    assert.equal(Object.keys(parseWorkflowDecisionModels(map(64))).length, 64);
+    refused(() => parseWorkflowDecisionModels(map(65)), 64);
+    assert.equal(WORKFLOW_MAX_NODES, 100);
+    assert.equal(Object.keys(parseWorkflowAgentModels(map(100), { stored: true })).length, 100);
+    refused(() => parseWorkflowAgentModels(map(101), { stored: true }), 100);
+    assert.equal(Object.keys(readStoredAgentModels(JSON.stringify(map(100))).models).length, 100);
+    assert.match(readStoredAgentModels(JSON.stringify(map(101))).error, /names 101 nodes; at most 100\./);
 });
 
 test("stored as canonical JSON with the run, read back without throwing; the digest is unchanged without a map", () => {
