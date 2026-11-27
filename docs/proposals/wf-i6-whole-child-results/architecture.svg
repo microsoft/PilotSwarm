@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="370" viewBox="0 0 760 370" role="img" aria-label="Child Workflow result delivery budget and full_output fallback flow" style="background:#0d1117">
+  <defs>
+    <marker id="i6-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10z" fill="#56d364"/></marker>
+    <marker id="i6-alt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10z" fill="#ffa657"/></marker>
+    <marker id="i6-blu" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10z" fill="#79c0ff"/></marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="370" fill="#0d1117"/>
+  <g font-family="system-ui,-apple-system,'Segoe UI',sans-serif">
+    <rect x="16" y="20" width="210" height="84" rx="6" fill="#161b22" stroke="#79c0ff" stroke-width="1.5"/>
+    <text x="28" y="42" font-size="12.5" font-weight="700" fill="#e6edf3">Child Run Ends (≤ 256 KiB)</text>
+    <text x="28" y="60" font-size="11" fill="#9aa4af">workflow_runs.terminal_output</text>
+    <text x="28" y="76" font-size="11" fill="#9aa4af">+ session_child_outcomes copy</text>
+    <text x="28" y="92" font-size="11" fill="#79c0ff">notifyParent(runId)</text>
+    <rect x="266" y="20" width="236" height="84" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+    <text x="278" y="42" font-size="12.5" font-weight="700" fill="#e6edf3">workflowEndedNoticeFits()</text>
+    <text x="278" y="60" font-size="11" fill="#9aa4af">canonicalJson({ carry: null, result:</text>
+    <text x="278" y="76" font-size="11" fill="#9aa4af">  { contract, from, payload } })</text>
+    <text x="278" y="92" font-size="11" fill="#56d364">≤ 195,584 B &amp; ≤ 61 output depth?</text>
+    <path d="M226 62 L265 62" fill="none" stroke="#79c0ff" stroke-width="1.8" marker-end="url(#i6-blu)"/>
+    <rect x="542" y="16" width="202" height="92" rx="6" fill="#161b22" stroke="#56d364" stroke-width="1.6"/>
+    <text x="554" y="37" font-size="12" font-weight="700" fill="#56d364">YES: Inline Whole Notice</text>
+    <text x="554" y="55" font-size="11" fill="#e6edf3">runId + output (whole)</text>
+    <text x="554" y="71" font-size="11" fill="#e6edf3">outputTruncated: false</text>
+    <text x="554" y="89" font-size="10.5" fill="#9aa4af">+ up to 64 KiB carry ≤ 256 KiB</text>
+    <path d="M502 52 L541 52" fill="none" stroke="#56d364" stroke-width="1.8" marker-end="url(#i6-ok)"/>
+    <rect x="542" y="132" width="202" height="92" rx="6" fill="#161b22" stroke="#ffa657" stroke-width="1.6"/>
+    <text x="554" y="153" font-size="12" font-weight="700" fill="#ffa657">NO: Metadata Notice (~190–256K)</text>
+    <text x="554" y="171" font-size="11" fill="#e6edf3">runId (no output key)</text>
+    <text x="554" y="187" font-size="11" fill="#e6edf3">outputTruncated: true</text>
+    <text x="554" y="205" font-size="10.5" fill="#9aa4af">stored as op ended:&lt;runId&gt;</text>
+    <path d="M384 104 L384 178 L541 178" fill="none" stroke="#ffa657" stroke-width="1.8" marker-end="url(#i6-alt)"/>
+    <rect x="16" y="252" width="340" height="98" rx="6" fill="#161b22" stroke="#79c0ff" stroke-width="1.5"/>
+    <text x="28" y="274" font-size="12.5" font-weight="700" fill="#e6edf3">Parent Receive -&gt; Next State</text>
+    <text x="28" y="292" font-size="11" fill="#9aa4af">Match with from: "${states.&lt;spawn&gt;.output.workflowId}"</text>
+    <text x="28" y="308" font-size="11" fill="#ffa657">Non-empty correlate: -&gt; WORKFLOW_ENDED_CORRELATE warn</text>
+    <text x="28" y="326" font-size="11" fill="#56d364">If outputTruncated: call child_workflows read full_output</text>
+    <rect x="404" y="252" width="340" height="98" rx="6" fill="#161b22" stroke="#56d364" stroke-width="1.5"/>
+    <text x="416" y="274" font-size="12.5" font-weight="700" fill="#e6edf3">child_workflows read (full_output: true)</text>
+    <text x="416" y="292" font-size="11" fill="#9aa4af">• Live child: 1 SQL query readLiveRunResult() -&gt; raw TEXT</text>
+    <text x="416" y="308" font-size="11" fill="#9aa4af">• Cleaned-up child: getChildOutcome() -&gt; deleted: true</text>
+    <text x="416" y="326" font-size="11" fill="#56d364">Compact result-only JSON (&lt; 1 MiB even when escaped)</text>
+    <path d="M356 301 L403 301" fill="none" stroke="#56d364" stroke-width="1.8" marker-end="url(#i6-ok)"/>
+  </g>
+</svg>

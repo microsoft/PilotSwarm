@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" role="img" aria-label="Continued agent step visit completion, snapshot commit, and queued next visit" style="background:#0d1117">
+  <defs>
+    <marker id="i1-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10z" fill="#56d364"/></marker>
+    <marker id="i1-blu" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10z" fill="#79c0ff"/></marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="380" fill="#0d1117"/>
+  <g font-family="system-ui,-apple-system,'Segoe UI',sans-serif">
+    <rect x="16" y="18" width="224" height="104" rx="6" fill="#161b22" stroke="#79c0ff" stroke-width="1.5"/>
+    <text x="28" y="39" font-size="12.5" font-weight="700" fill="#e6edf3">1. Visit 1 Turn Reports</text>
+    <text x="28" y="57" font-size="11" fill="#79c0ff">complete_workflow_node()</text>
+    <text x="28" y="74" font-size="11" fill="#9aa4af">• decideWorkflowVisit() = true</text>
+    <text x="28" y="90" font-size="11" fill="#9aa4af">• withWorkflowVisitDeny blocks CLI</text>
+    <text x="28" y="106" font-size="11" fill="#ffa657">• 5-min replySettleTimer armed</text>
+    <rect x="276" y="18" width="224" height="104" rx="6" fill="#161b22" stroke="#56d364" stroke-width="1.5"/>
+    <text x="288" y="39" font-size="12.5" font-weight="700" fill="#56d364">2. Controller Ends Visit 1</text>
+    <text x="288" y="57" font-size="11" fill="#e6edf3">endContinuedVisit(end="done")</text>
+    <text x="288" y="74" font-size="11" fill="#9aa4af">• Active &amp; !run.stop -&gt; NO Stop</text>
+    <text x="288" y="90" font-size="11" fill="#9aa4af">• Enqueues Visit 2 prompt</text>
+    <text x="288" y="106" font-size="11" fill="#9aa4af">  (waits in session queue)</text>
+    <path d="M240 68 L275 68" fill="none" stroke="#79c0ff" stroke-width="1.8" marker-end="url(#i1-blu)"/>
+    <rect x="536" y="18" width="208" height="104" rx="6" fill="#161b22" stroke="#56d364" stroke-width="1.6"/>
+    <text x="548" y="39" font-size="12.5" font-weight="700" fill="#56d364">3. Reply Settles &amp; Commits</text>
+    <text x="548" y="57" font-size="11" fill="#e6edf3">Model finishes short reply</text>
+    <text x="548" y="74" font-size="11" fill="#9aa4af">• session.idle -&gt; snapshot saved</text>
+    <text x="548" y="90" font-size="11" fill="#56d364">• Visit 2 Turn 2 starts next:</text>
+    <text x="548" y="106" font-size="11" fill="#e6edf3">  tools reset, Visit 1 recalled</text>
+    <path d="M500 68 L535 68" fill="none" stroke="#56d364" stroke-width="1.8" marker-end="url(#i1-ok)"/>
+    <rect x="16" y="156" width="728" height="206" rx="8" fill="none" stroke="#30363d" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text x="28" y="176" font-size="11.5" fill="#9aa4af">Safety Fences &amp; Fault Bounds (Reviews R1–R5)</text>
+    <rect x="28" y="190" width="224" height="72" rx="6" fill="#161b22" stroke="#ffa657" stroke-width="1.4"/>
+    <text x="40" y="210" font-size="11.5" font-weight="700" fill="#ffa657">Run End / Stop (R1-1)</text>
+    <text x="40" y="227" font-size="10.5" fill="#9aa4af">workflow-session-stop:&lt;session&gt;</text>
+    <text x="40" y="243" font-size="10.5" fill="#9aa4af">stops active reply before end cmd</text>
+    <rect x="268" y="190" width="224" height="72" rx="6" fill="#161b22" stroke="#ffa657" stroke-width="1.4"/>
+    <text x="280" y="210" font-size="11.5" font-weight="700" fill="#ffa657">Fenced Reply Abort (R1-2, R2-2)</text>
+    <text x="280" y="227" font-size="10.5" fill="#9aa4af">5-min cap; turnIndex + handle/turn</text>
+    <text x="280" y="243" font-size="10.5" fill="#9aa4af">(+ runGeneration); 5s disconnect</text>
+    <rect x="508" y="190" width="224" height="72" rx="6" fill="#161b22" stroke="#79c0ff" stroke-width="1.4"/>
+    <text x="520" y="210" font-size="11.5" font-weight="700" fill="#79c0ff">Lost Ack Read-Back (R2-3, R3-1)</text>
+    <text x="520" y="227" font-size="10.5" fill="#9aa4af">readNodeStateAfterWriters(FOR SHARE)</text>
+    <text x="520" y="243" font-size="10.5" fill="#9aa4af">waits ≤10s for held FOR UPDATE</text>
+    <rect x="28" y="276" width="704" height="70" rx="6" fill="#161b22" stroke="#56d364" stroke-width="1.4"/>
+    <text x="40" y="296" font-size="11.5" font-weight="700" fill="#56d364">No Decided-Visit Replay at Recovery or Retry Admission (R1-3, R2-1, R3-2, R4-1)</text>
+    <text x="40" y="314" font-size="10.5" fill="#e6edf3">• Turn admission (decidedAtAdmission) checks turnVisit or oneShotVisit under FOR SHARE -&gt; returns stopped if decided.</text>
+    <text x="40" y="330" font-size="10.5" fill="#e6edf3">• Session-lost &amp; corrupted-transcript recoveries check visitDecidedNow() before reset and before send -&gt; notRunAgain().</text>
+  </g>
+</svg>
