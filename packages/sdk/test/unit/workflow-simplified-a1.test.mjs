@@ -91,8 +91,9 @@ test("an agent node too deep is refused in words naming its node and the levels"
     const answer = await host.spawn({ workflowSessionId: "D", childSessionId: "X", stateId: "summarize", controllingSessionId: "C",
         prompt: "p", clientMessageId: "m", task: { source: "prompt", prompt: "p" } });
     assert.equal(answer.refused.code, "forbidden");
-    assert.equal(answer.refused.message, "Node summarize cannot start its agent: its session would be at level 3 (the top-level session is level 0), "
-        + "and sessions inside a Workflow stop at level 2. Start this Workflow from a session nearer the top.");
+    assert.equal(answer.refused.message, "Node summarize cannot start its agent: its session would be at level 3, and nothing goes past level 2 "
+        + "(each sub-agent or Workflow is one level below whoever started it, the first Workflow in a chain is free, and an agent step sits at its Workflow's level). "
+        + "Start this Workflow from a session nearer the top.");
 });
 
 test("the base guidance hands prescriptive work to a Workflow (O3)", () => {

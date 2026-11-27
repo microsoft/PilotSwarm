@@ -3659,12 +3659,12 @@ export function registerActivities(
                     if (args.lock_title === true && !catalog) {
                         return "[SYSTEM: spawn_agent failed: session title storage is unavailable.]";
                     }
-                    // Workflow agent states (rule 5): an agent step is at its Workflow's level; no session nests deeper than
-                    // level 2, counted on the stored lineage. Elsewhere the ordinary limit applies.
+                    // I9 depth rule: nothing goes past level 2; first Workflow is free; an agent step is at its Workflow's level.
                     const { childNestingLevel, maxNestingLevel } = spawnNesting(input.nestingLevel ?? 0, MAX_NESTING_LEVEL, workflowLineage);
                     if (childNestingLevel > maxNestingLevel) {
-                        // Spec 14: inside a Workflow the refusal says so, with the levels, in words.
-                        return spawnNestingRefusal(childNestingLevel - 1, maxNestingLevel, workflowDefinitionToolsRefused(workflowLineage));
+                        const callerLevel = workflowLineage === null ? (input.nestingLevel ?? 0) : workflowLineage.level;
+                        const insideWorkflow = Boolean(workflowLineage?.agentRoot || workflowLineage?.hasWorkflow);
+                        return spawnNestingRefusal(callerLevel, maxNestingLevel, insideWorkflow);
                     }
 
                     // S2RT-F3: the shared budget's own count (sub-agents pending or running, and active Workflows), as Start

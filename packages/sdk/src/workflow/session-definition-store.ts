@@ -22,7 +22,8 @@ import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 import { canonicalJson, sha256Hex, type JsonValue } from "./json.js";
 import type { WorkflowCompileResult, WorkflowDiagnostic, WorkflowIR } from "./compiler.js";
-import { WorkflowStoreError, revisionIrFrom } from "./store.js";
+import { WorkflowStoreError, WORKFLOW_LINEAGE_MAX_DEPTH, revisionIrFrom, type WorkflowLineage } from "./store.js";
+import { effectiveLevel } from "./input-policy.js";
 import { packageVersionIsNewer } from "./session-packages.js";
 import { childBudgetCountSql, childBudgetWords } from "../child-budget.js";
 
@@ -248,7 +249,11 @@ export function sessionActorWords(actor: SessionDefinitionActor): string {
 export class SessionDefinitionStore {
     private readonly t: { definitions: string; revisions: string; operations: string; seen: string; notes: string; sessions: string; wfDefinitions: string; runs: string };
 
-    constructor(private readonly pool: Pool, readonly schema: string) {
+    constructor(
+        private readonly pool: Pool,
+        readonly schema: string,
+        private readonly readLineage?: (sessionId: string) => Promise<WorkflowLineage | null>,
+    ) {
         const s = `"${schema}"`;
         this.t = {
             definitions: `${s}.session_workflow_definitions`, revisions: `${s}.session_workflow_revisions`, operations: `${s}.session_workflow_operations`,
@@ -503,18 +508,28 @@ export class SessionDefinitionStore {
     }
 
     /**
-     * S2RT-F4: a session's nesting level from its stored lineage (0 the root, 1 its child, 2 a grandchild), as spawn_agent
-     * counts it; at most 16 levels are followed.
+     * S2RT-F4 / I9: a session's effective level from its stored lineage, delegated to `effectiveLevel` via
+     * `readWorkflowLineage` in TypeScript (never duplicating the depth formula in SQL).
      */
-    async nestingLevel(sessionId: string): Promise<number> {
+    async nestingLevel(sessionId: string): Promise<number | null> {
+        if (this.readLineage) {
+            return (await this.readLineage(sessionId))?.level ?? null;
+        }
         const { rows } = await this.pool.query(
-            `WITH RECURSIVE up(session_id, parent_session_id, depth) AS (
-                 SELECT session_id, parent_session_id, 0 FROM ${this.t.sessions} WHERE session_id = $1
+            `WITH RECURSIVE up(session_id, parent_session_id, session_kind, is_system, depth) AS (
+                 SELECT session_id, parent_session_id, session_kind, is_system, 0 FROM ${this.t.sessions} WHERE session_id = $1
                  UNION ALL
-                 SELECT p.session_id, p.parent_session_id, up.depth + 1 FROM ${this.t.sessions} p JOIN up ON p.session_id = up.parent_session_id
-                  WHERE up.depth < 16)
-             SELECT max(depth)::int AS level FROM up`, [sessionId]);
-        return Number(rows[0]?.level ?? 0);
+                 SELECT p.session_id, p.parent_session_id, p.session_kind, p.is_system, up.depth + 1
+                   FROM ${this.t.sessions} p JOIN up ON p.session_id = up.parent_session_id
+                  WHERE up.depth < ${WORKFLOW_LINEAGE_MAX_DEPTH})
+             SELECT session_id, parent_session_id, session_kind, is_system FROM up ORDER BY depth`, [sessionId]);
+        if (!rows[0]) return null;
+        return effectiveLevel(rows.map((row: Row) => ({
+            sessionId: String(row.session_id),
+            parentSessionId: row.parent_session_id === null || row.parent_session_id === undefined ? null : String(row.parent_session_id),
+            isWorkflow: row.session_kind === "workflow",
+            isSystem: row.is_system === true,
+        })));
     }
 
     /** The newest revision of a definition the session itself has seen (its saves and reads), or null (Q2). */

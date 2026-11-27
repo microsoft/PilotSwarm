@@ -32,7 +32,7 @@ import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLock
 import { workflowAgentSessionContinues } from "./agent-ids.js";
 import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
 import { workflowControllerFeatures } from "./controller-features.js";
-import { computeSessionLevel } from "./input-policy.js";
+import { effectiveLevelDetail } from "./input-policy.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -1893,7 +1893,7 @@ export class WorkflowStore {
 
     /** Stage 2.1: the session-owned Workflow Definitions (migration 0088), on this store's pool and schema. */
     get sessionDefinitions(): SessionDefinitionStore {
-        if (!this.definitionStore) this.definitionStore = new SessionDefinitionStore(this.pool, this.schema);
+        if (!this.definitionStore) this.definitionStore = new SessionDefinitionStore(this.pool, this.schema, id => this.readWorkflowLineage(id));
         return this.definitionStore;
     }
     private readonly t: {
@@ -6624,13 +6624,13 @@ export class WorkflowStore {
         if (!storableId(sessionId)) return null;
         const lineageSql = (withInvocations: boolean) => `
             WITH RECURSIVE lineage AS (
-                SELECT session_id, parent_session_id, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
+                SELECT session_id, parent_session_id, session_kind, is_system, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
                 UNION ALL
-                SELECT parent.session_id, parent.parent_session_id, lineage.distance + 1, parent.deleted_at IS NOT NULL
+                SELECT parent.session_id, parent.parent_session_id, parent.session_kind, parent.is_system, lineage.distance + 1, parent.deleted_at IS NOT NULL
                   FROM ${this.t.sessions} parent JOIN lineage ON parent.session_id = lineage.parent_session_id
                  WHERE lineage.distance < ${WORKFLOW_LINEAGE_MAX_DEPTH}
             )
-            SELECT lineage.session_id, lineage.parent_session_id, lineage.distance, lineage.deleted,
+            SELECT lineage.session_id, lineage.parent_session_id, lineage.session_kind, lineage.is_system, lineage.distance, lineage.deleted,
                    ${withInvocations ? "invocation.node_execution_id, invocation.workflow_session_id, invocation.controlling_session_id"
                        : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
               FROM lineage
@@ -6666,14 +6666,14 @@ export class WorkflowStore {
                     controllingSessionId: strOrNull(row, "controlling_session_id"), distance: int(row, "distance") };
             }
         }
-        const level = cyclic ? null : computeSessionLevel(rows.map(row => ({
+        const detail = cyclic ? null : effectiveLevelDetail(rows.map(row => ({
             sessionId: str(row, "session_id"),
             parentSessionId: strOrNull(row, "parent_session_id"),
-            isWorkflow: false,
-            isSystem: false,
+            isWorkflow: strOrNull(row, "session_kind") === "workflow",
+            isSystem: row.is_system === true,
             isAgentStep: strOrNull(row, "node_execution_id") !== null,
         })));
-        return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
+        return { sessionId, level: detail?.level ?? null, hasWorkflow: detail?.hasWorkflow ?? false, agentRoot, deleted: rows[0].deleted === true };
     }
 
     /**

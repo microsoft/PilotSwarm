@@ -27,7 +27,7 @@ import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, readWorkflowToolBinding, type WorkflowToolBinding } from "./tool-policy.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
 import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
-import { SESSION_MAX_NESTING_LEVEL, WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
+import { effectiveChildLevel, SESSION_MAX_NESTING_LEVEL, WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
     requireAgentModelsForRevision, workflowAgentModelsText, workflowDecisionModelRequestDigest, workflowDecisionModelsForRevision, workflowDecisionNodes,
     workflowDecisionSaveDiagnostics, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE, type WorkflowAgentModels } from "./agent-models.js";
@@ -63,12 +63,26 @@ export const WORKFLOW_START_MAX_RUNNING_CHILDREN = WORKFLOW_CHILD_BUDGET_MAX;
  */
 export async function requireWorkflowStartLimits(host: Pick<WorkflowHost, "store">, ownerSessionId: string, given: number | null = null,
     options: { claimedWorkflowSessionId?: string } = {}): Promise<void> {
-    const derived = await host.store.sessionDefinitions.nestingLevel(ownerSessionId);
-    const nestingLevel = Math.max(derived, Number.isSafeInteger(given) ? given as number : 0);
-    if (nestingLevel + 1 > WORKFLOW_START_MAX_NESTING_LEVEL) {
-        throw new WorkflowStoreError("WORKFLOW_NESTING_LIMIT", `This session is at nesting level ${nestingLevel} (max ${WORKFLOW_START_MAX_NESTING_LEVEL}), `
-            + "and a Workflow it starts would be one level deeper than any session may be. Ask a session nearer the top to start it. Nothing was started.",
-        { nestingLevel, maxNestingLevel: WORKFLOW_START_MAX_NESTING_LEVEL });
+    const lineage = await host.store.readWorkflowLineage(ownerSessionId);
+    if (lineage === null || lineage.level === null) {
+        throw new WorkflowStoreError(
+            "WORKFLOW_NESTING_LIMIT",
+            `This session's delegation chain cannot be verified, and nothing goes past level ${WORKFLOW_START_MAX_NESTING_LEVEL}. Nothing was started.`,
+            { nestingLevel: null, maxNestingLevel: WORKFLOW_START_MAX_NESTING_LEVEL },
+        );
+    }
+    const hasWorkflow = lineage.hasWorkflow === true;
+    const callerLevel = Math.max(lineage.level, Number.isSafeInteger(given) ? given as number : 0);
+    const workflowLevel = effectiveChildLevel({ level: callerLevel, hasWorkflow }, "workflow");
+    if (workflowLevel > WORKFLOW_START_MAX_NESTING_LEVEL) {
+        throw new WorkflowStoreError(
+            "WORKFLOW_NESTING_LIMIT",
+            `This session is at level ${callerLevel}, and the Workflow it starts would be at level ${workflowLevel}. `
+            + `Nothing goes past level ${WORKFLOW_START_MAX_NESTING_LEVEL}: each sub-agent or Workflow is one level below whoever started it, `
+            + "but the first Workflow in a chain is free, and an agent step sits at its Workflow's level. "
+            + "Start this Workflow from a session nearer the top. Nothing was started.",
+            { nestingLevel: callerLevel, workflowLevel, maxNestingLevel: WORKFLOW_START_MAX_NESTING_LEVEL },
+        );
     }
     const running = options.claimedWorkflowSessionId
         ? await host.store.sessionDefinitions.runningChildren(ownerSessionId, options.claimedWorkflowSessionId)
