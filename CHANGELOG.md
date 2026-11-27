@@ -66,6 +66,23 @@ The new `workflow-limits` skill lists the size limits a run meets.
 (`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`;
 `outcome` is the terminal state's, else `null`.
 
+### Workflows: `session: continue` in named parallel branches
+
+Agent states inside named parallel `branches:` may now declare `session: continue`,
+keeping one durable agent session per `(runId, stateId)` across both
+intra-branch loops and outer-loop re-entries of the enclosing `parallel` state
+(building on continued-session memory commits). Omitting `session:` inside a
+named branch still defaults to `session: new` so existing definitions recompile
+unchanged at Start; `forEach` bodies remain `session: new` only (enforced by the
+compiler and a `WORKFLOW_STORE_CORRUPT` guard on non-named branch scopes in
+`enter`). Continued-session store queries and Portal Agent Log / Node Summary
+views now rank visits by composite `(enclosing parallel ordinal, node ordinal)`
+so outer-loop re-entries that reset per-scope ordinals preserve cycle order,
+replacement numbering, and graceful-stop `Q5` semantics, and the Agent Log
+displays ` · cycle N` on re-entered forks. Previously saved invalid revisions
+that used `session: continue` in `branches:` must be saved as a new revision to
+start; worker rollouts remain stop-all.
+
 ### Workflows: an agent step remembers its earlier visits
 
 A `session: continue` agent step now remembers what it did in earlier visits.
