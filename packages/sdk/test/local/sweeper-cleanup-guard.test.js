@@ -768,6 +768,7 @@ async function testKeptWhileOwnerIdle(env) {
         const listed = scanned.sessions.map(s => s.sessionId);
         assertEqual(listed.includes(workflow.id), false, "the scan does not list the finished Workflow of an idle owner");
         assertEqual(listed.includes(agent), false, "the scan does not list the agent session of that Workflow");
+        assertEqual(scanned.keptCount, 2, "the scan counts the two sessions it keeps");
         for (const id of [workflow.id, agent]) {
             for (const grace of [undefined, 0]) {
                 const refused = await findTool(tools, "cleanup_session").handler({ sessionId: id, ...(grace === undefined ? {} : { graceMinutes: grace }) });

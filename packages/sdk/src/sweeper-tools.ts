@@ -335,6 +335,8 @@ export function createSweeperTools(opts: {
             }> = [];
             // Sessions whose status read failed: not candidates (nothing is deleted on a failed read).
             const unreadable: string[] = [];
+            // Issue 412: stale terminal sessions skipped because their cleanup would delete a kept session.
+            let keptCount = 0;
 
             try {
                 const allSessions = await catalog.listSessions();
@@ -372,7 +374,10 @@ export function createSweeperTools(opts: {
                                 unreadable.push(session.sessionId);
                                 continue;
                             }
-                            if (kept.kept) continue;
+                            if (kept.kept) {
+                                keptCount++;
+                                continue;
+                            }
                             results.push({
                                 sessionId: session.sessionId,
                                 parentSessionId: session.parentSessionId ?? undefined,
@@ -391,6 +396,7 @@ export function createSweeperTools(opts: {
                     graceMinutes,
                     sessions: results,
                     ...(unreadable.length ? { unreadableCount: unreadable.length, unreadable: unreadable.slice(0, 20) } : {}),
+                    ...(keptCount ? { keptCount } : {}),
                     guidance:
                         "Only terminal sessions are returned. Clean the returned sessions by their own sessionId — " +
                         "batch them via cleanup_session(sessionIds=[...]) or clean one at a time. " +
