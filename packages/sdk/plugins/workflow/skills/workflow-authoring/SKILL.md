@@ -40,12 +40,12 @@ For a `decision` state, call `load_skill` with name `workflow-decision`.
 
 ## 3. Design a bounded graph
 
-- Keep graphs small and straight. Give judgment to agents, work to scripts.
 - Every reachable state must reach a terminal.
 - Route every outcome; handle errors by code (`workflow-reference`) or `failure`.
 - Root `catchAll` takes unhandled errors once per run; otherwise they fail the run.
 - Bound loops with `maxVisits` (route `exhausted` out; doesn't bound one wait) or receive `wait: { totalSeconds: 120 }` (route `elapsed` out); not interchangeable. `limits.maxNodeExecutions` (default 1,000) is the visit budget.
 - Child Workflows: `spawn` (`started`) outputs `{ workflowId, runId, definition, revision }`; `from: "${states.<spawn>.output.workflowId}"`; end sends `WorkflowEnded@1`; `child_workflows`; max level 2.
+- Fan-out: keep only what you need per child; size limits: `workflow-limits`.
 - A deadline (`limits: { timeoutSeconds: 3600 }`) cancels pending work and
   fails the run with `timed_out`, paused or not.
 - Terminal `output` is null unless bound. Root `outputSchema` checks
@@ -88,10 +88,10 @@ freeze entry data across failures; load `workflow-carry`.
   with `input:`, or let its `inputSchema` take those fields: a closed schema
   (`additionalProperties: false`) refuses extra ones, such as `ciState`.
   Call `load_skill` with name `workflow-patterns` for a polling loop.
-- Only the parent (`vars` at start, `set_vars`) and the person (Variables)
-  set KV; no state writes it. Read a KV key with a default (`kv.x ?? 30`),
-  and only keys they set: name the person's keys in the description. A value
-  the run needs is a required input, not KV.
+- The parent (`vars` at start, `set_vars`), its ancestors (`set_vars`)
+  and the person (Variables) set KV; no state does. Read keys with a
+  default (`kv.x ?? 30`), only keys they set; name the person's keys in the
+  description. A value the run needs is a required input, not KV.
 
 ## 5. Write scripts
 
@@ -106,7 +106,7 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
   Save checks syntax without running it; syntax errors prevent Start.
 - `setResult(outcome, output)`: a declared outcome, and plain JSON (at most
   256 KB) that matches the state's `outputSchema`; else `invalid_output`.
-- `callTool(name, args)`: one call at a time, at most 100 calls in one state,
+- `callTool(name, args)`: one call at a time, capped (`workflow-limits`),
   only the tools your session could use when the workflow was created (not
   scheduling, delegation, `ask_user` or workflow tools). Await calls in
   sequence (`for...of`), never with `Promise.all`; the runtime refuses overlap.
@@ -263,7 +263,7 @@ decision itself into the graph:
 
 - Direct human consent: load `workflow-approval`; never answer it.
 - An agent's decision: a `request` state to `{ parent: true }` whose response contract
-  carries the decision (for example `approved: boolean`), with routes for
+  carries the decision (`approved: boolean`), with routes for
   `responded`, `declined` and `timed_out`; a script reads the decision and
   routes `approved` or `rejected`.
 - Rework: route a review's "changes required" outcome to a `request` for

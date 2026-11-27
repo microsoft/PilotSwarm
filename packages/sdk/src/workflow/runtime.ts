@@ -90,7 +90,7 @@ import {
     type WorkflowIRScript,
     type WorkflowIRSend,
 } from "./compiler.js";
-import { carryArrival, evaluateCarry } from "./carry.js";
+import { carryArrival, evaluateCarry, WORKFLOW_CARRY_MAX_BYTES } from "./carry.js";
 import { WORKFLOW_AGENT_SLEEP_WORDS } from "./agent-scheduling.js";
 import {
     boundedCanonicalJson,
@@ -119,7 +119,7 @@ import {
 } from "./parent-messages.js";
 
 export { promptSafeJson };
-import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS } from "./agent-node-service.js";
 import {
     matchTestFixture, storedTestFixtures, testResultFor, toolCallResultOf, WORKFLOW_TEST_POLL_MS, workflowTestAnsweredProjection,
     workflowTestNoticePrompt, type WorkflowTestFixture,
@@ -1361,7 +1361,7 @@ export async function endWorkflowRunAgentSessions(store: WorkflowStore, client: 
         errors.push(error);
     }
     try {
-        await endWorkflowContinuedSessions(store, client, runId);
+        await endWorkflowContinuedSessions(store, client, runId, options.stopTurn ? { stopTurn: options.stopTurn } : {});
     } catch (error) {
         errors.push(error);
     }
@@ -1403,11 +1403,16 @@ export function workflowTurnStopOf(catalog: Partial<Pick<SessionCatalog, "turnCo
 /**
  * A decided visit of a state that continues its session (session: continue; owner decision agent-node-continue-20261106;
  * formal Q2 and Q5; the turn-to-visit fence, review RT-1..RT-3):
- * - the visit's turn is stopped if it still runs (a time limit, a cancel of the visit or of the run, the run's end, or the
- *   agent's own result that its turn goes on after; review G5: also when the run is no longer active), never the session. The Stop names the visit (its request id); the session's
+ * - the visit's turn is stopped if it still runs (a time limit, a cancel of the visit or of the run; review G5: also when the
+ *   run is stopping or no longer active), never the session. The Stop names the visit (its request id); the session's
  *   worker applies it only to a turn of that visit, so a later visit's turn is never stopped by it, and a turn of this
  *   visit that starts later does not run (its visit is decided: the fence checked at turn start). A spawn that sent the
  *   prompt after the visit was decided (a stale send) asks again (afterSpawn);
+ * - the agent's own result (done) while the run is active sends no Stop (issue I1, owner decision 2026-11-26): the turn that
+ *   reported goes on to write its reply, ends by itself, and its snapshot (the session's memory) is committed; a stopped
+ *   turn commits nothing, so the next visit would not remember this one. Its tools refuse once the visit is decided, and
+ *   the next visit's prompt waits behind it and starts a new turn. A send after such a visit is no stale send: the agent
+ *   decided it in a turn of this visit, so its prompt was sent before, and any later turn of the visit is not run (the fence);
  * - the visit's end is settled without a command (WORKFLOW_AGENT_SESSION_CONTINUES): the session stays open for the next visit;
  * - when the run is stopping or has ended, the session gets no more visits and is ended now (endContinuedSession), whichever
  *   of its visits this is: an older visit's late send can be the one that finds the session open (review RT-1, t2).
@@ -1417,8 +1422,9 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowAgentEndC
     : Promise<{ end: "done" | "cancel"; sent: boolean }> {
     const run = await store.readRun(invocation.runId);
     const active = run !== null && ACTIVE_RUN_STATUSES.includes(run.status);
+    const turnEnds = end === "cancel" || !active || Boolean(run?.stop);
     let turnStopped = false;
-    if (options.stopTurn && (invocation.endSentAt === null || options.afterSpawn === true)) {
+    if (options.stopTurn && turnEnds && (invocation.endSentAt === null || options.afterSpawn === true)) {
         await options.stopTurn(invocation.childSessionId, `The workflow ended this cycle of step ${node.nodeId} (${node.outcome ?? end}).`,
             // A stale send's stop is another Stop: the first may have been recorded for an earlier turn.
             `workflow-cycle-stop:${invocation.nodeExecutionId}${options.afterSpawn === true ? ":sent" : ""}`);
@@ -1435,7 +1441,7 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowAgentEndC
         }
     }
     if (run !== null && (!active || Boolean(run.stop))) {
-        const agentSessionEnd = await endContinuedSession(store, client, run, invocation.childSessionId);
+        const agentSessionEnd = await endContinuedSession(store, client, run, invocation.childSessionId, options.stopTurn);
         if (agentSessionEnd !== null) return agentSessionEnd;
     }
     return { end, sent: false };
@@ -1452,10 +1458,14 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowAgentEndC
  * it), keeps its end owed: its newest visit is marked NotFound, as a session: new child's is, so the after-spawn and
  * after-send checks of every visit, the run's cleanup and recovery look again and end it once it exists. AgentSessionEnded is
  * marked only after the end was sent, or when no attempt began (nothing can create the session later).
+ *
+ * Issue I1: a visit its agent completed while the run was active sent no Stop, so its turn may still be writing its reply
+ * when the run ends or stops (and a later visit's own Stop, which names that visit, does not end it). `stopTurn` stops
+ * whatever turn of the session still runs before the end command, which a session takes only between turns.
  */
-async function endContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
-    : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
-    const looked = await lookAtContinuedSession(store, client, run, childSessionId);
+async function endContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string,
+    stopTurn?: WorkflowAgentTurnStop): Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
+    const looked = await lookAtContinuedSession(store, client, run, childSessionId, stopTurn);
     return looked.busy ? null : looked.result;
 }
 
@@ -1464,10 +1474,12 @@ async function endContinuedSession(store: WorkflowStore, client: WorkflowAgentEn
  * looker at a time sends the end (formal t3): the look, the command and its mark are one critical section. A looker that
  * finds another holding it looks again later (the end stays owed until the holder marks it).
  */
-async function lookAtContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
-    : Promise<{ busy: true } | { busy: false; result: { end: "done" | "cancel"; sent: boolean } | null }> {
-    if (typeof store.withAgentSessionEndLock !== "function") return { busy: false, result: await endContinuedSessionLocked(store, client, run, childSessionId) };
-    const held = await store.withAgentSessionEndLock(childSessionId, () => endContinuedSessionLocked(store, client, run, childSessionId),
+async function lookAtContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string,
+    stopTurn?: WorkflowAgentTurnStop): Promise<{ busy: true } | { busy: false; result: { end: "done" | "cancel"; sent: boolean } | null }> {
+    if (typeof store.withAgentSessionEndLock !== "function") {
+        return { busy: false, result: await endContinuedSessionLocked(store, client, run, childSessionId, stopTurn) };
+    }
+    const held = await store.withAgentSessionEndLock(childSessionId, () => endContinuedSessionLocked(store, client, run, childSessionId, stopTurn),
         { waitMs: WORKFLOW_AGENT_SESSION_END_LOCK_WAIT_MS, pollMs: 100 });
     return held.locked ? { busy: false, result: held.value } : { busy: true };
 }
@@ -1475,8 +1487,8 @@ async function lookAtContinuedSession(store: WorkflowStore, client: WorkflowAgen
 /** How long a looker waits for a continued session's end lock before it leaves the end to the holder and looks again later. */
 const WORKFLOW_AGENT_SESSION_END_LOCK_WAIT_MS = 2_000;
 
-async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
-    : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
+async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string,
+    stopTurn?: WorkflowAgentTurnStop): Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
     const last = await store.readAgentInvocationByChild(childSessionId);
     if (!last || last.endChildStatus === WORKFLOW_AGENT_SESSION_ENDED) return null;
     const node = await store.readNodeExecution(last.nodeExecutionId);
@@ -1499,6 +1511,9 @@ async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowA
     }
     if (sent) {
         const why = ACTIVE_RUN_STATUSES.includes(run.status) ? "is stopping, so this session gets no more cycles" : `ended (${run.status})`;
+        // Issue I1: the turn still running (a completed visit's reply) is stopped first, with a Stop that names no visit, so
+        // the session's worker applies it to whichever turn runs; a repeat is the same Stop.
+        if (stopTurn) await stopTurn(childSessionId, `The workflow run this session served ${why}.`, `workflow-session-stop:${childSessionId}`);
         // G1 residual: the Workflow's own end is marked on the session too, before its command (session-end-mark.ts).
         await store.recordSessionEvents(childSessionId, [{ eventType: SESSION_END_REQUESTED_EVENT,
             data: { cmd: end, id: `workflow-agent-session-end:${childSessionId}`, requestedBy: last.workflowSessionId } }]);
@@ -1524,7 +1539,8 @@ async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowA
  * (endContinuedSession), and each on its own (review G3): a session that cannot be ended now does not keep the others from
  * being ended; the call fails after them, so its activity (or the next recover) looks at it again.
  */
-export async function endWorkflowContinuedSessions(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string): Promise<void> {
+export async function endWorkflowContinuedSessions(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string,
+    options: { stopTurn?: WorkflowAgentTurnStop } = {}): Promise<void> {
     const run = await store.readRun(runId);
     if (!run || (ACTIVE_RUN_STATUSES.includes(run.status) && !run.stop)) return;
     const agentSessions = new Set<string>();
@@ -1534,7 +1550,7 @@ export async function endWorkflowContinuedSessions(store: WorkflowStore, client:
     const failed: string[] = [];
     for (const childSessionId of agentSessions) {
         try {
-            await endContinuedSession(store, client, run, childSessionId);
+            await endContinuedSession(store, client, run, childSessionId, options.stopTurn);
             // Formal t3 (1): a session whose end is still owed (created but not visible yet, or not created yet by an attempt in
             // flight) is looked at again by a detached retry, so the run's own end, and its notice to the parent after it,
             // never wait for it.
@@ -1658,6 +1674,23 @@ const WORKFLOW_NOTICE_DELIVERY_QUERY_MS = 2_000;
 export const WORKFLOW_NOTICE_LOCK_WAIT_MS = 20_000;
 const WORKFLOW_NOTICE_LOCK_POLL_MS = 500;
 const WORKFLOW_NOTICE_ATTEMPT_BUDGET_MS = 27_000;
+
+/**
+ * I6: the most a WorkflowEnded@1 notice may weigh in the widest form a receiving state hands on: a list receive's
+ * `{ contract, from, payload }` inside a carry's `{ carry, result }`. A state's input may be 256 KiB and a carry 64 KiB; 1 KiB is
+ * left for the wrapping keys. 195,584 bytes.
+ */
+export const WORKFLOW_ENDED_NOTICE_MAX_BYTES = WORKFLOW_PAYLOAD_MAX_BYTES - WORKFLOW_CARRY_MAX_BYTES - 1024;
+
+/**
+ * Whether a WorkflowEnded@1 payload reaches the parent's next state whole, whatever receive takes it: its widest form (the
+ * carry itself left out: it has its own limit) is within WORKFLOW_ENDED_NOTICE_MAX_BYTES and the JSON nesting limit. Throws
+ * when the payload is not JSON within the nesting limit.
+ */
+export function workflowEndedNoticeFits(childWorkflowSessionId: string, payload: JsonValue): boolean {
+    const widest = canonicalJson({ carry: null, result: { contract: WORKFLOW_ENDED_CONTRACT, from: childWorkflowSessionId, payload } });
+    return utf8ByteLength(widest) <= WORKFLOW_ENDED_NOTICE_MAX_BYTES;
+}
 
 /** The owed agent invocations read at a time when a run's children are ended (RT-5). */
 export const WORKFLOW_OWED_AGENT_PAGE = 200;
@@ -1812,8 +1845,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         return agentSessionEndedOnItsOwn(client, previous);
     };
     /**
-     * Review G2: end the earlier visits of `invocation`'s session whose end is not sent yet (endAgentChild: their turn's Stop,
-     * then the visit's end). A visit that cannot be ended yet throws, and so fails the calling attempt.
+     * Review G2: end the earlier visits of `invocation`'s session whose end is not sent yet (endAgentChild: the turn's Stop of
+     * one its agent did not complete, then the visit's end). A visit that cannot be ended yet throws, and so fails the calling attempt.
      */
     const endEarlierVisitsOf = async (client: WorkflowAgentEndClient, runId: string, invocation: WorkflowAgentInvocation): Promise<void> => {
         let after: string | null = null;
@@ -2616,7 +2649,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         if (ACTIVE_RUN_STATUSES.includes(run.status) && Boolean(run.stop)) {
             const client = typeof actx?.getClient === "function" ? actx.getClient() : null;
             if (client) {
-                await endWorkflowContinuedSessions(store, client, runId).catch(error =>
+                await endWorkflowContinuedSessions(store, client, runId, stopAgentSessionTurn ? { stopTurn: stopAgentSessionTurn } : {}).catch(error =>
                     actx.traceWarn?.(`[workflow] run=${runId} an idle agent session was not ended yet: ${workflowErrorMessage(error)}`));
             }
         }
@@ -2972,6 +3005,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     : null;
                 const basePayload: Record<string, JsonValue> = {
                     workflowId: run.workflowSessionId,
+                    runId: run.runId,
                     definition: defName,
                     revision: definition.sessionRevision ?? run.revision,
                     spawnedBy,
@@ -2981,15 +3015,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     outputTruncated: false,
                     error: errObj,
                 };
-                // Enforce the 16 KB notice output budget; omit output and fall back to metadata-only if larger or unserializable.
-                const WORKFLOW_ENDED_NOTICE_MAX_BYTES = 16 * 1024;
+                // I6: the output goes whole when the widest form a receiving state takes still fits (workflowEndedNoticeFits);
+                // otherwise, or when it cannot be wrapped, it is left out and the parent reads it with child_workflows read.
                 let payloadText: string;
                 try {
                     const candidateObj = { ...basePayload, output: run.terminalOutput };
-                    const candidate = canonicalJson(candidateObj);
-                    const envelope = canonicalJson({ contract: WORKFLOW_ENDED_CONTRACT, from: run.workflowSessionId, payload: candidateObj });
-                    payloadText = utf8ByteLength(envelope) <= WORKFLOW_ENDED_NOTICE_MAX_BYTES
-                        ? candidate
+                    payloadText = workflowEndedNoticeFits(run.workflowSessionId, candidateObj)
+                        ? canonicalJson(candidateObj)
                         : canonicalJson({ ...basePayload, outputTruncated: true });
                 } catch {
                     payloadText = canonicalJson({ ...basePayload, outputTruncated: true });
@@ -4658,7 +4690,7 @@ export function workflowAgentCyclePrompt(invocation: Parameters<typeof workflowA
     const task = invocation.task.source === "prompt" ? invocation.task.prompt
         : `Apply your role (agent ${invocation.task.name}${invocation.task.package ? ` from package ${invocation.task.package}` : ""}) to the input above.`;
     return `[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE ${invocation.cycle}. This is cycle ${invocation.cycle} of the same workflow state in this run, `
-        + "in this same agent session: what you did in earlier cycles is above. Work on this cycle's input and the variables as they are now; "
+        + WORKFLOW_AGENT_CYCLE_MEMORY_WORDS + " Work on this cycle's input and the variables as they are now; "
         + "changedVariables names the variables that changed since your last cycle. Do not repeat earlier work unless the task asks for it. "
         + "Finish this cycle only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool, as before: give outcome and output, or error with code "
         + "needs_input or execution_failed, a new operation_id, and node_execution_id " + invocation.nodeExecutionId + " (this cycle's). "

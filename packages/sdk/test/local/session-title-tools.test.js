@@ -37,6 +37,8 @@ function activities({ row = { sessionId: "parent", title: "Old", owner }, lineag
                 readNodeExecution: async () => ({ nodeType: "agent", runId: "run" }),
                 readRun: async () => ({ runId: "run", mode: "live" }),
                 readTurnVisit: async () => null,
+                // Issue I1: an agent state's own session reads its visit at admission; it is open here.
+                readNodeStateAfterWriters: async () => "pending",
             }),
             listChildren: async () => [],
         },

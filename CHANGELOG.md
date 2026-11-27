@@ -2,7 +2,105 @@
 
 ## Unreleased
 
-**Upgrade: deploy the workers.** No migration and no orchestration version.
+**Upgrade: stop every worker, deploy, then start them. Do not roll the
+workers.** No CMS migration, and no session orchestration or Workflow
+controller version change. Why: a child Workflow's `WorkflowEnded@1` notice to
+its parent now has a new form (`runId`, and outputs up to 195,584 bytes). An
+old worker that replays a new-style `WorkflowEnded@1` notice fails with
+`OPERATION_CONFLICT`, because the stored notice differs from the one it
+builds; the parent still has the message. **Rollback:** drain child end
+notices first. Let running child Workflows finish and keep the new workers up
+until every ended child has told its parent (no child end notice pending or
+retrying), then stop every worker, deploy the older release, and start them.
+See "Upgrading to whole child Workflow results" in
+[`docs/developer/deploy/aks.md`](docs/developer/deploy/aks.md).
+
+**Behaviour change for existing Workflow parents.** Child outputs from about
+16 KiB to 195,584 bytes, which `0.8.19` left out of `WorkflowEnded@1`
+(`outputTruncated: true`), now arrive whole. The notice's budget covers only
+the receiving state's own input. Later limits still apply and can now be hit: a
+parallel join's output (256 KiB, the parallel state fails `invalid_output`), a
+collecting script's output (256 KiB), a `send` state's message (16 KiB, the
+state fails `invalid_input`), and the run's output (256 KiB). Review fan-out
+parents that end branches with a received `WorkflowEnded@1` or forward it with
+`send`, and test them with realistic child output sizes before the upgrade.
+Keep only what you need from each child (for example
+`output: { outcome: "${input.outcome}" }`); a script reads the whole result
+with `child_workflows` `read` `full_output: true`. Saving now warns
+`WORKFLOW_ENDED_WHOLE_OUTPUT` where a child's whole output reaches one of those
+limits as it arrived.
+
+### Workflows: every session above a Workflow reads and controls it
+
+`read_workflow` and `update_workflow` now work on Workflows nested below the
+session's own: a grandparent reads, pauses, resumes, stops, cancels, recovers
+and sets the variables of a child Workflow of its batch, through any number of
+nested Workflows, when every session between is live and has the same owner.
+Changing, testing and starting a definition, and controlling a test run, stay
+with the session that started the Workflow. A Workflow's own agent step, and
+its sub-agents, read the Workflow (its definition, variables and step outputs)
+but do not control it. Each refusal names its rule. A cleaned-up Workflow's
+kept outcome is readable by the same sessions above it. Owners compare exactly:
+in a tree of sessions without an owner, a session above a nested Workflow may
+read and cancel it; a system session is refused on the Workflows below its
+direct child, as another owner is, because the sessions it spawns belong to
+the System user.
+
+### Workflows: whole child results
+
+A child Workflow's `WorkflowEnded@1` message now carries its whole output up to
+195,584 bytes (was 16 KiB), measured on the widest form a receiving state passes
+on, and names the child's `runId`. `outputTruncated` is `true` only when the
+output was left out; then `child_workflows` `read` with `full_output: true`
+returns it whole, also after the child was cleaned up. Saving a receive of
+`WorkflowEnded@1` with a non-empty `correlate:` now warns
+`WORKFLOW_ENDED_CORRELATE`: the message has no correlation; match a child with
+`from:`. The received value, passed on as is with a carry of up to 64 KiB,
+fits the next state's 256 KiB input; the next state's own input mapping and
+later limits (a join, a `send`, the run's output) are still checked as usual.
+Saving warns `WORKFLOW_ENDED_WHOLE_OUTPUT` when a child's whole output reaches
+a `send` or `request` message, a parallel branch's output that is joined with
+others, or (two or more of them) the run's output, with no mapping in between.
+The new `workflow-limits` skill lists the size limits a run meets.
+`workflow-reference` now gives the message's values: `status` is `completed`
+(`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`;
+`outcome` is the terminal state's, else `null`.
+
+### Workflows: an agent step remembers its earlier visits
+
+A `session: continue` agent step now remembers what it did in earlier visits.
+When the agent reports its result (`complete_workflow_node`) while the run is
+active, its turn is no longer stopped: it finishes its reply and is saved, and
+the next visit's prompt starts a new turn after it ("what you did in earlier
+cycles is above" is now true for a visit its agent completed). A time limit, a
+cancel and the run's end still stop the turn. Once the result is recorded, every
+tool call of that turn is refused, the shell, file edits and sub-agents
+included, and the background tasks the turn started (a shell or a sub-agent
+still running, also one started in the result's own message) are cancelled, so
+the reply can finish and be saved. This applies to every agent step,
+`session: new` included: the refusal, the cancel and the reply limit below
+(before, a `session: new` step's reply was bounded only by `turnTimeoutMs`).
+`complete_workflow_node` tells the agent to call it alone and last. A reply still running
+5 minutes after the result is stopped (also with `turnTimeoutMs: 0`), and the
+run's end stops a reply that still runs before it ends the session. A turn whose
+result is recorded is never run again: not after a lost Copilot session or a
+corrupted transcript, and not when a worker retries it (also for
+`session: new` steps). A turn that is stopped or lost before it is saved is not
+remembered; its result is kept. While the run is active, such a visit records
+it (event `workflow.agent_cycle_memory_lost`, shown by `read_workflow` as the
+visit's `agent.memoryLost` with a reason), and the next visit's prompt says that
+visit's conversation is not available instead of saying it is above.
+
+Known limits, accepted: a visit that finishes before its spawn is recorded gets
+no Stop either (its turn ends by itself, as any finished visit's does); the
+run's end can cut the last visit's reply, and an end retried later for a
+session that was not visible yet at the run's end sends no Stop (the reply
+limit bounds it); and the reply limit is a fixed 5 minutes. A turn whose
+activity fails for good after the result records no lost memory. Two older
+cases are not recorded either, and the next cycle's prompt still says the
+earlier cycles are above: a visit decided by its time limit or a cancel (its
+Stop ends its turn unsaved), and a recovery that starts a fresh conversation
+(a corrupted transcript, a missing snapshot).
 
 ### Decision cleanups
 

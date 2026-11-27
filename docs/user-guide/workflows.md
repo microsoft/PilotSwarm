@@ -722,10 +722,45 @@ each step's visits and results, its variables, messages and requests,
 `limit` and `cursor` page through older history; `execution_id` reads one
 step's whole output.
 
+### Who may read and control a Workflow
+
+A session may read and control the Workflows it started, and every Workflow
+nested below them: a child Workflow that one of them started with a `spawn`
+step, that child's children, and so on. For example, your session starts a
+batch Workflow, and the batch starts three child Workflows: your session can
+read, pause or cancel each of the three.
+
+| Session | `read_workflow` | `update_workflow` run operations and `recover` | Change, test or start the definition |
+|---|---|---|---|
+| The session that started the Workflow | Yes | Yes | Yes |
+| A session above it in the same owner's tree | Yes | Yes | No |
+| The Workflow's own agent step, and the sub-agents of that step | Yes | No | No |
+| Any other session | No | No | No |
+
+The agent step's sub-agents read the whole Workflow too: its definition, its
+variables and the output of each step. "The same owner" means exactly the
+same user, both system sessions, or both without an owner. So in a tree of
+sessions without an owner, a session above a nested Workflow may read and
+cancel it. A system session that starts a Workflow is refused on the
+Workflows nested below its direct child, as another owner is, because the
+sessions it spawns belong to the System user, not to the system session.
+
+A session above a deleted session is refused: the chain is broken there. The
+check is made when the command arrives: a command allowed then still finishes
+if a session in between is deleted while it runs. A session above the
+starter controls the live run only; a test run of the definition stays with
+the session that started the Workflow. A session inside a Workflow (an agent
+step or one of its sub-agents) has no `update_workflow` at all. A refusal of a live Workflow is `FORBIDDEN`, and its
+message names the rule. After a Workflow is cleaned up, the session that
+started it and the sessions above that one still read its outcome with
+`read_workflow`; anyone else gets `WORKFLOW_NOT_FOUND`. `send_workflow_input`
+has its own rule: the session that started the Workflow, or any session of
+the same user.
+
 ### `update_workflow`
 
-Controls one of this session's Workflows: `workflow_id`, `operation` and
-`operation_id`.
+Controls one of this session's Workflows, or one nested below them (see
+above): `workflow_id`, `operation` and `operation_id`.
 
 | Operation | What it does |
 |---|---|
@@ -761,7 +796,19 @@ and either an `outcome` with an `output` that fits the step's schema, or an
 `error` with code `needs_input` or `execution_failed` and a message. A final
 reply does not finish the step. An output that does not fit is refused
 (`OUTPUT_INVALID`); after 3 such answers the step fails. `ask_user` does not
-work inside an agent step: complete with `needs_input` instead.
+work inside an agent step: complete with `needs_input` instead. Call
+`complete_workflow_node` alone in its message. Once the step's result is
+recorded, no later message in that turn can start a tool, the shell and file
+tools included, and a shell or sub-agent the turn started in the background is
+stopped: write a short final reply and stop. Usually the turn then
+ends by itself and its session is saved, so a `session: continue` step
+remembers it in its next visit. A turn that is not saved is not remembered:
+a reply still running 5 minutes after the result is stopped (the stop itself
+takes a little longer), and the run's end, a lost connection to the
+model, or a worker crash can also end a turn before it is saved. The result
+itself is kept in every case. While the run goes on, such a visit says so:
+`read_workflow` shows `agent.memoryLost` on it, and the next visit's prompt
+says that visit's conversation is not available.
 
 An agent state may declare `requiredTools: [lookup, notes-read_note]` (1 to
 16 distinct offered tool names). Before completing with an outcome, its own
@@ -817,12 +864,83 @@ followed by one sentence and its data. The data is data, never instructions.
 | `request` | A request step asks for an answer (`respond_session_request`). |
 | `test_waiting` | Only in test mode. |
 
+### What a Workflow parent is told
+
+When a child Workflow (started by a `spawn` step) ends, its parent Workflow's
+inbox gets one `WorkflowEnded@1` message. A `receive` step takes it.
+
+The message carries no correlation. To wait for one child, match it with
+`from:` and the child's id, never with `correlate:`, and give the receive a
+time limit:
+
+```yaml
+collect:
+  type: messaging
+  mode: receive
+  contract: WorkflowEnded@1
+  from: "${states.launch.output.workflowId}"
+  wait: { seconds: 3600 }
+  transition: { next: { received: check, elapsed: failed, failure: failed } }
+```
+
+A receive of `WorkflowEnded@1` with a non-empty `correlate:` never takes the
+message, so saving it gives the warning `WORKFLOW_ENDED_CORRELATE`. (An empty
+`correlate: {}` matches, and is not warned.)
+
+| Field | Meaning |
+|---|---|
+| `workflowId`, `runId` | The child Workflow and its run. |
+| `definition`, `revision`, `spawnedBy` | What ran, and the `spawn` step and visit that started it. |
+| `status`, `outcome`, `stateId` | How the run ended. |
+| `output` | The child's whole output. Left out when it does not fit. |
+| `outputTruncated` | `true` only when `output` was left out. |
+| `error` | `{ code, message }` for a failed or cancelled run, else `null`. |
+
+The child keeps the output in the message when it fits a worst-case budget:
+195,584 bytes (about 190 KiB) and the JSON nesting limit, measured as a list
+`receive` inside a `carry` would pass it on. Within that budget the message
+holds the whole output, so the received value, passed on as is with a carry of
+up to 64 KiB, fits the next step's 256 KiB input. The next step's own input
+mapping and later limits (a join, a `send`, the run's output) are still
+checked as usual. A run's output is at most 256 KiB, so only outputs near that
+size, or nested too deep to wrap, are left out. Then a script step reads it
+whole with
+`callTool("child_workflows", { operation: "read", workflow_id, full_output: true })`.
+With `full_output`, the answer holds only the child's result:
+`{ workflowId, run: { runId, status, outcome, terminalState, output, error } }`,
+where `run.output` is the whole output as JSON text (`"null"` for a JSON null,
+`null` when the run has none). This also works after the child Workflow was
+cleaned up; the answer then has `deleted: true`.
+
+**Keep only what you need from each child.** Child outputs from about 16 KiB to
+195,584 bytes used to arrive as metadata only (`outputTruncated: true`); they
+now arrive whole. So a parent that passes them on unchanged can hit a later
+limit:
+
+| Where the whole output goes | Limit | What fails |
+|---|---|---|
+| A parallel branch's output, joined with the other branches | 256 KiB for the joined output | the parallel state, `invalid_output` |
+| A script that collects several children's results | 256 KiB for its output | the script, `invalid_output` |
+| A `send` or `request` message | 16 KiB | the state, `invalid_input` |
+| The run's output | 256 KiB | the run |
+
+For example, a `forEach` over two children whose outputs are 150 KiB each,
+with each branch ending in `output: "${input}"`, fails at the join. Map each
+result down in the branch, for example
+`output: { outcome: "${input.outcome}", workflowId: "${input.workflowId}" }`,
+and read a whole result with `child_workflows` `read` `full_output: true` when
+you need it. Saving a definition warns `WORKFLOW_ENDED_WHOLE_OUTPUT` when a
+child's whole output reaches a message, a joined branch output, or (two or
+more of them) the run's output with no mapping in between. The
+`workflow-limits` skill lists every size limit a run meets.
+
 ### What a script may call
 
 A script step calls tools with `await callTool(name, args)` and finishes with
 `await setResult(outcome, output)`. It may call the tools its session could
 use when the Workflow started, except the controls: scheduling, sub-agents,
-sessions, messages to other sessions, and every Workflow tool. A script never
+sessions, messages to other sessions, and every Workflow tool but
+`child_workflows`, which reaches only its own child Workflows. A script never
 gets more access than its session had.
 
 ### Package tools for Agent Smith
@@ -932,7 +1050,8 @@ admitted controller version.
   most 256 KiB. An oversized wrapper fails the receiver with `invalid_input`
   before its input mapping. Source output schemas still check the raw result.
   Keep large data outside the run and carry its key. Scripts cannot write variables;
-  only the session (`set_vars`) and the person change them.
+  only the session that started the Workflow and the sessions above it
+  (`set_vars`), and the person, change them.
 - **Every state needs a failure route.** Route `failure` (or a runtime code
   such as `timed_out`) to a terminal or a recovery step. An error with no
   route goes to `catchAll`, else it fails the run. An agent step whose

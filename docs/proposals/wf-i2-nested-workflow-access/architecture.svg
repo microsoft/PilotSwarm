@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="390" viewBox="0 0 760 390" role="img" aria-label="Nested Workflow access hierarchy and authorization paths" style="background:#0d1117">
+  <defs>
+    <marker id="i2-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10z" fill="#56d364"/></marker>
+    <marker id="i2-ro" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10z" fill="#79c0ff"/></marker>
+    <marker id="i2-no" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L10 5L0 10z" fill="#f85149"/></marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="390" fill="#0d1117"/>
+  <g font-family="system-ui,-apple-system,'Segoe UI',sans-serif">
+    <rect x="14" y="14" width="462" height="362" rx="8" fill="none" stroke="#30363d" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text x="26" y="34" font-size="11.5" fill="#9aa4af">Owner A live session tree (unbroken chain)</text>
+    <rect x="40" y="48" width="230" height="46" rx="6" fill="#161b22" stroke="#56d364" stroke-width="1.5"/>
+    <text x="52" y="68" font-size="12.5" font-weight="700" fill="#e6edf3">top (User Session)</text>
+    <text x="52" y="84" font-size="11" fill="#9aa4af">relation to W3: ancestor (read + live control)</text>
+    <rect x="40" y="116" width="230" height="44" rx="6" fill="#161b22" stroke="#56d364" stroke-width="1.5"/>
+    <text x="52" y="135" font-size="12.5" font-weight="700" fill="#e6edf3">W1 (Batch Workflow)</text>
+    <text x="52" y="151" font-size="11" fill="#9aa4af">parent of W2 · ancestor of W3</text>
+    <rect x="40" y="182" width="230" height="44" rx="6" fill="#161b22" stroke="#56d364" stroke-width="1.5"/>
+    <text x="52" y="201" font-size="12.5" font-weight="700" fill="#e6edf3">W2 (Child Workflow)</text>
+    <text x="52" y="217" font-size="11" fill="#9aa4af">trusted parent of W3 (read + control + def)</text>
+    <rect x="40" y="248" width="230" height="48" rx="6" fill="#161b22" stroke="#ffa657" stroke-width="1.8"/>
+    <text x="52" y="268" font-size="12.5" font-weight="700" fill="#ffa657">W3 (Target Grandchild Workflow)</text>
+    <text x="52" y="285" font-size="11" fill="#e6edf3">session row + definition agree on W2</text>
+    <rect x="40" y="318" width="230" height="46" rx="6" fill="#161b22" stroke="#79c0ff" stroke-width="1.5"/>
+    <text x="52" y="337" font-size="12" font-weight="700" fill="#e6edf3">C (Agent Step) -&gt; G (Sub-agent)</text>
+    <text x="52" y="353" font-size="11" fill="#79c0ff">relation to W3: agent_step (read only)</text>
+    <path d="M155 94 L155 115 M155 160 L155 181 M155 226 L155 247 M155 296 L155 317" fill="none" stroke="#30363d" stroke-width="1.5"/>
+    <path d="M270 71 L325 71 L325 264 L272 264" fill="none" stroke="#56d364" stroke-width="1.8" marker-end="url(#i2-ok)"/>
+    <text x="333" y="168" font-size="11" fill="#56d364">read + control</text>
+    <text x="333" y="183" font-size="10.5" fill="#9aa4af">(no def / test run)</text>
+    <path d="M270 341 L310 341 L310 282 L272 282" fill="none" stroke="#79c0ff" stroke-width="1.8" marker-end="url(#i2-ro)"/>
+    <text x="318" y="318" font-size="11" fill="#79c0ff">read W3 only</text>
+    <rect x="498" y="48" width="246" height="92" rx="6" fill="#161b22" stroke="#f85149" stroke-width="1.4"/>
+    <text x="510" y="68" font-size="12" font-weight="700" fill="#e6edf3">Broken or Cross-Owner Ancestor</text>
+    <text x="510" y="86" font-size="11" fill="#9aa4af">• Deleted session between caller &amp; W3</text>
+    <text x="510" y="102" font-size="11" fill="#9aa4af">• Different owner (Owner B above A)</text>
+    <text x="510" y="118" font-size="11" fill="#9aa4af">• Cycle or root &gt;32 up -&gt; chain = null</text>
+    <rect x="498" y="168" width="246" height="76" rx="6" fill="#161b22" stroke="#f85149" stroke-width="1.4"/>
+    <text x="510" y="188" font-size="12" font-weight="700" fill="#e6edf3">Sibling / Stranger / C -&gt; W2</text>
+    <text x="510" y="206" font-size="11" fill="#9aa4af">• Sibling under top or Owner B session</text>
+    <text x="510" y="222" font-size="11" fill="#9aa4af">• Step C reading W2 (not C's Workflow)</text>
+    <path d="M498 96 L445 96 L445 272 L272 272" fill="none" stroke="#f85149" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#i2-no)"/>
+    <path d="M498 206 L445 206" fill="none" stroke="#f85149" stroke-width="1.6" stroke-dasharray="6 4"/>
+    <rect x="498" y="274" width="246" height="88" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.4"/>
+    <text x="510" y="294" font-size="12" font-weight="700" fill="#e6edf3">All FORBIDDEN Refusals</text>
+    <text x="510" y="312" font-size="11" fill="#9aa4af">decideWorkflowAccess() -&gt; reason key</text>
+    <text x="510" y="328" font-size="11" fill="#9aa4af">authorizeWorkflowAccess() throws</text>
+    <text x="510" y="344" font-size="11" fill="#f85149">WorkflowStoreError("FORBIDDEN", msg)</text>
+  </g>
+</svg>

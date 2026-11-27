@@ -1,10 +1,11 @@
 /**
- * Child Workflows ended-message tests (T8, T9/T17 real notifier twice, T10, A6 legacy IR, A7 16KB + unwrappable depth):
+ * Child Workflows ended-message tests (T8, T9/T17 real notifier twice, T10, A6 legacy IR, A7 notice limit + unwrappable depth):
  * - T8: WorkflowEnded@1 with a pending receive completes in the same tx; without one, next receive takes it at once.
  * - T9/T17: Running the real workflow.notifyParent activity twice (even after clearing workflow.parent_notified) creates 1 inbox row.
  * - T10: WorkflowEnded@1 accepted at 100 waiting regular messages.
  * - A6: Legacy pinned IR declaring WorkflowEnded@1 still refuses direct sendTypedWorkflowInput (UNSUPPORTED_CONTRACT).
- * - A7: Child output >16 KB sets outputTruncated: true with no output; unwrappable deep output falls back cleanly without throwing.
+ * - A7 (I6): a 20 KiB child output arrives whole with the child's runId; an output the receiving state could not take whole sets
+ *   outputTruncated: true with no output (runId kept); unwrappable deep output falls back cleanly without throwing.
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -51,7 +52,7 @@ states:
 `;
 
 describe("Child Workflows WorkflowEnded@1 inbox delivery, A6, A7 & T9/T17", () => {
-    it("T8, T9/T17 real notifier dedupe, T10 cap bypass, A6 legacy IR guard, and A7 16KB/depth fallback", { timeout: TIMEOUT }, async () => {
+    it("T8, T9/T17 real notifier dedupe, T10 cap bypass, A6 legacy IR guard, and A7 notice limit/depth fallback", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
             const wakes = [];
@@ -133,14 +134,47 @@ describe("Child Workflows WorkflowEnded@1 inbox delivery, A6, A7 & T9/T17", () =
             await notifyParent(actx, { runId: child1.runId });
             expect((await h.q("SELECT count(*)::int AS c FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND operation_id = $2", [parent.runId, `ended:${child1.runId}`]))[0].c).toBe(1);
 
-            // A7a: Child output > 16 KB (20 KB) -> delivered with outputTruncated: true and no output field!
+            // A7a (I6): a 20 KiB output is delivered whole, with the child's run id.
             const bigOutput = JSON.stringify({ blob: "x".repeat(20 * 1024) });
             await h.q("UPDATE SCHEMA.workflow_runs SET status = 'completed', terminal_outcome = 'succeeded', terminal_node_id = 'done', terminal_output = $2, finished_at = now() WHERE run_id = $1", [childLarge.runId, bigOutput]);
             await notifyParent(actx, { runId: childLarge.runId });
             const bigRow = (await h.q("SELECT payload FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND operation_id = $2", [parent.runId, `ended:${childLarge.runId}`]))[0];
             const bigMsg = JSON.parse(bigRow.payload);
-            expect(bigMsg.outputTruncated).toBe(true);
-            expect(Object.hasOwn(bigMsg, "output")).toBe(false);
+            expect(bigMsg.outputTruncated).toBe(false);
+            expect(bigMsg.output.blob).toHaveLength(20 * 1024);
+            expect(bigMsg.runId).toBe(childLarge.runId);
+
+            // A7c (I6): an output the receiving state could not take whole (240 KiB) -> outputTruncated: true, no output, the run id.
+            const childHuge = await spawnChildDirect(5);
+            const hugeOutput = JSON.stringify({ blob: "x".repeat(240 * 1024) });
+            await h.q("UPDATE SCHEMA.workflow_runs SET status = 'completed', terminal_outcome = 'succeeded', terminal_node_id = 'done', terminal_output = $2, finished_at = now() WHERE run_id = $1", [childHuge.runId, hugeOutput]);
+            await notifyParent(actx, { runId: childHuge.runId });
+            const hugeRow = (await h.q("SELECT payload FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND operation_id = $2", [parent.runId, `ended:${childHuge.runId}`]))[0];
+            const hugeMsg = JSON.parse(hugeRow.payload);
+            expect(hugeMsg.outputTruncated).toBe(true);
+            expect(Object.hasOwn(hugeMsg, "output")).toBe(false);
+            expect(hugeMsg.runId).toBe(childHuge.runId);
+
+            // A7d (I6, upgrade): an older runtime stored the notice in the older form (no runId, output over 16 KiB left out) and
+            // stopped before recording that it told the parent. This runtime's retry builds the newer form under the same
+            // operation id: the stored notice is its receipt (one row, no OPERATION_CONFLICT), and the retry records the notice.
+            const childOld = await spawnChildDirect(6);
+            await h.q("UPDATE SCHEMA.workflow_runs SET status = 'completed', terminal_outcome = 'succeeded', terminal_node_id = 'done', terminal_output = $2, finished_at = now() WHERE run_id = $1", [childOld.runId, bigOutput]);
+            const olderText = canonicalJson({ workflowId: childOld.workflowId, definition: "child-job", revision: 1, spawnedBy: null, status: "completed",
+                outcome: "succeeded", stateId: "done", outputTruncated: true, error: null });
+            await h.store.acceptInput({
+                workflowSessionId: parent.workflowId, runId: parent.runId, messageId: `ended:${childOld.runId}`, senderSessionId: childOld.workflowId,
+                operationId: `ended:${childOld.runId}`, contract: WORKFLOW_ENDED_CONTRACT, correlationText: "{}", payloadText: olderText,
+                requestSha256: typedInputRequestSha256({ runId: parent.runId, contract: WORKFLOW_ENDED_CONTRACT, correlationText: "{}",
+                    payloadText: olderText, ttlSeconds: WORKFLOW_INPUT_TTL_SECONDS }),
+                ttlSeconds: WORKFLOW_INPUT_TTL_SECONDS, limits: WORKFLOW_INBOX_LIMITS, bypassInboxLimits: true,
+            });
+            await notifyParent(actx, { runId: childOld.runId });
+            const oldRows = await h.q("SELECT payload FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND operation_id = $2", [parent.runId, `ended:${childOld.runId}`]);
+            expect(oldRows).toHaveLength(1);
+            expect(JSON.parse(oldRows[0].payload)).not.toHaveProperty("runId");
+            expect((await h.q("SELECT count(*)::int AS c FROM SCHEMA.session_events WHERE session_id = $1 AND event_type = 'workflow.parent_notified'",
+                [childOld.workflowId]))[0].c).toBe(1);
 
             // A7b: Output at max JSON nesting depth (cannot be wrapped inside payload) -> falls back to metadata-only notice, never throws!
             let deep = "leaf";

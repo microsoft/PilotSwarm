@@ -177,8 +177,7 @@ Exact semantic outputs (`qualified` is the effective `provider:model`):
 | `noul` | `{ questionType: "noul", outcome: "yes" \| "no" \| "uncertain", selection: "yes" \| "no", confidence, probability, probabilities: { yes, no }, policy: { minimumProbability: number \| null, uncertain }, model: { qualified } }` |
 | `score` | `{ questionType: "score", outcome: "scored", score, levels: [{ label, probability }], model: { qualified } }` |
 
-Score intentionally has no selection, confidence, raw probability object or
-policy. Transport IDs/status/timing/usage/hashes/raw bodies never enter output;
+Transport IDs/status/timing/usage/hashes/raw bodies never enter output;
 scripts and agents receive the semantic result unchanged.
 
 The Cluster Decision Default is a hard gate, not a fallback: without an
@@ -187,8 +186,7 @@ eligible default Save marks the revision invalid and fresh Start refuses with
 Decision catalog, cannot bypass the default, and never falls back to chat or
 first available. Start persists one effective map for every Decision node;
 Run again reuses and revalidates it. `decision_models` is the additive,
-Decision-only `{ model }` Start alias; the existing `agent_models` map can carry
-the same shape for compatibility. Decision entries never take reasoning/context.
+Decision-only `{ model }` Start alias. Decision entries never take reasoning/context.
 See workflow-tools for merge rules.
 
 ### agent
@@ -273,7 +271,8 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 ### spawn
 
-`definition` (literal name or `<package>/<name>`), `inputs` (object template), `revision` (fixed positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (use `from: "${states.<spawn>.output.workflowId}"`). Child end sends built-in `WorkflowEnded@1` while parent is active (inbox order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; >16 KiB sets `outputTruncated: true`). Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
+`definition` (name or `<package>/<name>`), `inputs` (object), `revision` (fixed int; else newest), `agentModels`, `carry`; `started` outputs `{ workflowId, runId, definition, revision }`. Child end: `WorkflowEnded@1` `{ workflowId, runId, definition, revision, spawnedBy, status, outcome, stateId, output, outputTruncated, error }` to an active parent, no correlation: match with `from: "${states.<spawn>.output.workflowId}"` (never `correlate:`) and a `wait`. `status`: `completed` (`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`; `outcome`: the terminal state's, else `null`. Over ~190 KiB, `output` is left out (`outputTruncated`); `child_workflows` `read` `full_output: true` gets it. Never declare or `send` it. Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
+Fan-out: keep only what you need from each child; size limits: `workflow-limits`.
 
 ### terminal
 
@@ -312,7 +311,6 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 | wait | Elapses once, by the store's clock. |
 
 - **Timers.** Deadlines are durable from start; restarts and pauses do not stop them.
-- **Joins.** `forEach` runs up to `concurrency` branches; only timely successes count.
 - **Pause / Stop / Cancel.** Pause holds new admissions; stop drains active work until grace expiry; cancel/delete end pending work and active child Workflows.
 - **Failure.** Errors route by code, then `failure`, then `catchAll` once, else fail the run.
 - **Versions.** Started revisions and agent pins stay fixed; only variables (`set_vars`) change.

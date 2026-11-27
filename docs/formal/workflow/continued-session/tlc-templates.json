@@ -33,7 +33,17 @@
       "AllowTurnFail",
       "FailReport",
       "TimeoutFair",
-      "AllowRecover"
+      "AllowRecover",
+      "SplitTurn",
+      "NoStopOnDone",
+      "SessionEndStop",
+      "AllowStall",
+      "ReplyLimit",
+      "AsyncAbort",
+      "AckLost",
+      "Reconcile",
+      "AllowLoss",
+      "NoteLoss"
     ],
     "lists": "block",
     "deadlockFirst": false

@@ -38,6 +38,8 @@ function fenceStore({ visit, requestIds = new Map(), failIds = false }) {
         dropped,
         // The turn visit readTurnVisit answers now (a test may change it between attempts).
         visit,
+        // The state of a session: new step's own visit (NX2).
+        nodeState: "pending",
         store: {
             readWorkflowLineage: async sessionId => ({ sessionId, level: 2,
                 agentRoot: { childSessionId: AGENT_SESSION, nodeExecutionId: NX2, workflowSessionId: "wf-1", controllingSessionId: "parent", distance: 0 } }),
@@ -49,6 +51,8 @@ function fenceStore({ visit, requestIds = new Map(), failIds = false }) {
             readAgentRequiredTools: async () => [],
             readAgentMissingTools: async () => [],
             readTurnVisit: async (sessionId, ids) => { reads.push(["readTurnVisit", sessionId, ids]); return fence.visit; },
+            // Issue I1 (review R3-2): a session: new step's turn reads its own visit's state at admission.
+            readNodeStateAfterWriters: async nx => { reads.push(["readNodeStateAfterWriters", nx]); return fence.nodeState; },
             readControlRequestIds: async (sessionId, seqs) => {
                 reads.push(["readControlRequestIds", sessionId, seqs]);
                 if (failIds) throw new Error("the stops' ids could not be read");
@@ -179,6 +183,43 @@ describe("the turn-to-visit fence of a session that continues", () => {
         expect(plain.fence.reads.filter(([name]) => name === "readControlRequestIds")).toEqual([]);
     });
 
+    // Issue I1, review R4-1: readTurnVisit's plain read can see an open visit while a decision of it commits (a retry whose
+    // earlier attempt's completion was still committing when its worker was lost). Admission reads the fixed visit again,
+    // ordered after that decision: nothing reaches the model before it lands, and a decided visit's turn does not run.
+    it("a continued turn whose open visit is being decided waits for the decision: decided, it does not run; rolled back, it runs", async () => {
+        for (const [landed, runs] of [["completed", 0], ["pending", 1]]) {
+            const { h, fence } = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false }, writeback: true });
+            let commit = null;
+            fence.store.readNodeStateAfterWriters = nx => {
+                fence.reads.push(["readNodeStateAfterWriters", nx]);
+                return new Promise(resolve => { commit = () => resolve(landed); });
+            };
+            const turn = h.runTurn(AGENT_SESSION, { turnIndex: 21, clientMessageIds: [promptId(NX2)] }, "runTurnV5");
+            await vi.waitFor(() => expect(commit).toBeTypeOf("function"));
+            expect(fence.reads).toContainEqual(["readNodeStateAfterWriters", NX2]);
+            expect(h.session.runTurn).not.toHaveBeenCalled();
+            commit();
+            const result = await turn;
+            expect(h.session.runTurn).toHaveBeenCalledTimes(runs);
+            if (runs === 0) expect(result.type).toBe("stopped");
+        }
+    });
+
+    // Issue I1, review R3-2: a session: new step's turn (a retry after its result was recorded, or a prompt after it) whose
+    // own visit is decided does not run; one whose visit cannot be read fails (it is retried).
+    it("a session that does not continue: a turn whose own visit is decided does not run; an unreadable visit fails the turn", async () => {
+        const decided = harness({ visit: null });
+        decided.fence.nodeState = "completed";
+        const result = await decided.h.runTurn("agent-new", { turnIndex: 1, clientMessageIds: [promptId(NX2)] }, "runTurnV5");
+        expect(result).toMatchObject({ type: "stopped" });
+        expect(decided.h.session.runTurn).not.toHaveBeenCalled();
+        expect(decided.fence.reads).toContainEqual(["readNodeStateAfterWriters", NX2]);
+        const unreadable = harness({ visit: null });
+        unreadable.fence.store.readNodeStateAfterWriters = async () => { throw new Error("the visit could not be read"); };
+        await expect(unreadable.h.runTurn("agent-new", { turnIndex: 1, clientMessageIds: [promptId(NX2)] }, "runTurnV5")).rejects.toThrow(/could not be read/);
+        expect(unreadable.h.session.runTurn).not.toHaveBeenCalled();
+    });
+
     // Review RT-D2 (C1): turn end gets the visit fence, exactly the turn visit live admission used (inherited included;
     // a null visit when the session names none), and only for a continued session's turn.
     describe("RT-D2 (C1): turn end carries the turn's visit fence", () => {
@@ -267,7 +308,8 @@ describe("the turn-to-visit fence of a session that continues", () => {
             expect(h.session.takeUnsettledRun).toHaveBeenCalledTimes(1);
             expect(h.sessionManager.invalidateWarmSession).toHaveBeenCalledTimes(dropped);
             if (dropped) expect(order.map(([name]) => name)).toEqual(["invalidateWarmSession", "turnEnd"]);
-            if (dropped) expect(order[0].slice(1)).toEqual([AGENT_SESSION, { lockHeld: true }]);
+            // Issue I1, review R3-3: bounded, so a disconnect the CLI never answers does not hold the session lock.
+            if (dropped) expect(order[0].slice(1)).toEqual([AGENT_SESSION, { lockHeld: true, destroyDeadlineMs: 5_000 }]);
         }
     });
 

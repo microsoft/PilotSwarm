@@ -208,7 +208,7 @@ test("the handler takes the milestone operations and reads each added argument",
     for (const operation of [...PRODUCTION_OPERATIONS, ...MILESTONE_OPERATIONS]) assert.ok(unknown.error.message.includes(operation), operation);
 });
 
-test("the milestone operations keep the production authorization: only the agent that created the workflow uses them", async () => {
+test("the milestone operations keep the production authorization: an unrelated session is refused them", async () => {
     const as = async (callerSessionId, workflowId, args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowId, operation_id: "op-1", ...args },
         { callerSessionId, host: hostOf() }));
     // Each with arguments that parse, so only authorization can refuse it; pause is a production operation, for comparison.
@@ -222,7 +222,7 @@ test("the milestone operations keep the production authorization: only the agent
     for (const [operation, args] of Object.entries(valid)) {
         const other = await as("someone-else", "wf", args);
         assert.deepEqual([other.ok, other.error.code], [false, "FORBIDDEN"], operation);
-        assert.equal(other.error.message, "Only the agent that created this workflow may change or read it with this tool.", operation);
+        assert.match(other.error.message, /^Only a session above this Workflow \(the session that started it, or one above that\) may read or control it/, operation);
         const missing = await as("parent", "nope", args);
         assert.deepEqual([missing.ok, missing.error.code], [false, "WORKFLOW_NOT_FOUND"], operation);
     }

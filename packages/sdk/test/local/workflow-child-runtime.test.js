@@ -472,6 +472,85 @@ states:
         }
     });
 
+    it("WorkflowEnded@1 gives the status and outcome workflow-reference states: completed/blocked, failed/null, stopped/null, cancelled/null", { timeout: TIMEOUT }, async () => {
+        const h = await startHarness(getEnv());
+        try {
+            const chat = randomUUID();
+            await h.catalog.createSession(chat, { owner: OWNER });
+            const blockedChild = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: blocked-child, version: "1.0.0" }
+initial: pause
+states:
+  pause:
+    type: wait
+    seconds: 1
+    transition: { next: { elapsed: done } }
+  done: { type: terminal, outcome: blocked }
+`;
+            const spawn = (id, def, inputs, next) => `  ${id}:
+    type: spawn
+    definition: ${def}
+    inputs: ${inputs}
+    transition: { next: { started: ${next}, failure: failed } }
+`;
+            const parent = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: parent-four-ends, version: "1.0.0" }
+initial: s1
+states:
+${spawn("s1", "blocked-child", "{}", "s2")}${spawn("s2", "sleep-child", "{ id: 2, seconds: 0 }", "s3")}${spawn("s3", "sleep-child", "{ id: 3, seconds: 300 }", "s4")}${spawn("s4", "sleep-child", "{ id: 4, seconds: 300 }", "hold")}  hold:
+    type: wait
+    seconds: 300
+    transition: { next: { elapsed: end_state } }
+  end_state: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+            for (const [name, yaml] of [["sleep-child", SLEEP_CHILD_YAML], ["blocked-child", blockedChild], ["parent-four-ends", parent]]) {
+                const s = await saveSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: chat, name, yaml, expected: null,
+                    actor: { kind: "session", sessionId: chat }, operationId: `save-${name}`, by: "session",
+                });
+                expect(s.receipt.valid, JSON.stringify(s.receipt.diagnostics)).toBe(true);
+            }
+            const p = await startSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, definition: { name: "parent-four-ends" }, inputs: {},
+                actor: ENGINE, operationId: "start-four-ends", owner: OWNER,
+            });
+            await h.waitChildren(p.workflowId, 4);
+            const listed = JSON.parse(await childWorkflowsFromTool({ operation: "list", status: "all" },
+                { callerWorkflowSessionId: p.workflowId, host: h.host }));
+            const byState = Object.fromEntries(listed.children.map(child => [child.spawnedBy.stateId, child.workflowId]));
+            // s3 is stopped, s4 cancelled; s1 ends at its blocked terminal and s2 fails at entry (seconds 0 is invalid_input, unrouted).
+            for (const [stateId, operation] of [["s3", "stop"], ["s4", "cancel"]]) {
+                const ans = JSON.parse(await childWorkflowsFromTool({
+                    operation, workflow_id: byState[stateId], operation_id: `${operation}-${stateId}`,
+                    ...(operation === "stop" ? { grace_seconds: 0 } : {}),
+                }, { callerWorkflowSessionId: p.workflowId, host: h.host }));
+                expect(ans.ok, JSON.stringify(ans)).toBe(true);
+            }
+            const deadline = Date.now() + 30_000;
+            let rows = [];
+            while (Date.now() < deadline) {
+                rows = await h.q("SELECT payload FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND contract = 'WorkflowEnded@1'", [p.runId]);
+                if (rows.length >= 4) break;
+                await new Promise(r => setTimeout(r, 80));
+            }
+            const ended = Object.fromEntries(rows.map(row => JSON.parse(row.payload))
+                .map(notice => [notice.spawnedBy.stateId, { status: notice.status, outcome: notice.outcome }]));
+            expect(ended).toEqual({
+                s1: { status: "completed", outcome: "blocked" },
+                s2: { status: "failed", outcome: null },
+                s3: { status: "stopped", outcome: null },
+                s4: { status: "cancelled", outcome: null },
+            });
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("C2 (T14 all 6 parent end modes) & C4 (T15 real chat-end trigger): children end and parent gets zero WorkflowEnded@1 after end", { timeout: TIMEOUT }, async () => {
         const h = await startHarness(getEnv());
         try {
