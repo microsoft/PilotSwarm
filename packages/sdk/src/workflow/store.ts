@@ -4057,8 +4057,10 @@ export class WorkflowStore {
      * One transaction (review R2-2), as the single DELETE before it: a failed statement rolls the whole purge back, so a
      * failure deletes nothing.
      * 1. Events of sessions that are not in a Workflow's tree (a Workflow session that is not a test bench, and the
-     *    sessions under it) are deleted in one statement, as before. Whether a session is in such a tree never changes
-     *    while it exists, so this needs no lock. It runs first, so the locks of step 2 are held only for its own statements.
+     *    sessions under it, also through a deleted session, as sweeperKeptAmong climbs) are deleted in one statement, as
+     *    before. Whether a session is in such a tree never changes while it exists, so this needs no lock. It runs first,
+     *    so the locks of step 2 are held only for its own statements. A deleted session's own events are never kept:
+     *    step 2 deletes those in a tree.
      * 2. Each Workflow session of such a tree that has not finished (a draft, or an active run) is held FOR SHARE, SKIP
      *    LOCKED: every writer of a Workflow's runs holds its session row first (FOR NO KEY UPDATE), so a held Workflow
      *    cannot admit or end a run until this commits, and one a writer holds now is skipped. Then the old events of those
@@ -4072,7 +4074,6 @@ export class WorkflowStore {
                   WHERE s.session_kind = 'workflow' AND s.deleted_at IS NULL AND s.service_kind IS DISTINCT FROM $2
                  UNION
                  SELECT c.session_id FROM ${this.t.sessions} AS c JOIN workflow_trees AS w ON c.parent_session_id = w.session_id
-                  WHERE c.deleted_at IS NULL
              )`;
         const finished = (activeStatuses: string) => `(EXISTS (SELECT 1 FROM ${this.t.runs} AS run WHERE run.workflow_session_id = s.session_id AND run.mode = 'live')
                  AND NOT EXISTS (SELECT 1 FROM ${this.t.runs} AS run WHERE run.workflow_session_id = s.session_id AND run.status = ANY(${activeStatuses}::text[])))`;
@@ -4092,17 +4093,16 @@ export class WorkflowStore {
             const inside = await client.query(
                 `WITH RECURSIVE ${workflowTrees},
                  kept AS (
-                     SELECT s.session_id FROM ${this.t.sessions} AS s
+                     SELECT s.session_id, s.deleted_at FROM ${this.t.sessions} AS s
                       WHERE s.session_kind = 'workflow' AND s.deleted_at IS NULL AND s.service_kind IS DISTINCT FROM $2
                         AND (${finished("$3")} OR NOT (s.session_id = ANY($4::text[])))
                      UNION
-                     SELECT c.session_id FROM ${this.t.sessions} AS c JOIN kept AS k ON c.parent_session_id = k.session_id
-                      WHERE c.deleted_at IS NULL
+                     SELECT c.session_id, c.deleted_at FROM ${this.t.sessions} AS c JOIN kept AS k ON c.parent_session_id = k.session_id
                  )
                  DELETE FROM ${this.t.sessionEvents} AS e
                   WHERE e.created_at < $1
                     AND EXISTS (SELECT 1 FROM workflow_trees AS w WHERE w.session_id = e.session_id)
-                    AND NOT EXISTS (SELECT 1 FROM kept AS k WHERE k.session_id = e.session_id)`,
+                    AND NOT EXISTS (SELECT 1 FROM kept AS k WHERE k.session_id = e.session_id AND k.deleted_at IS NULL)`,
                 [cutoff, WORKFLOW_TEST_BENCH_KIND, ACTIVE_RUN_STATUSES, held]);
             return (outside.rowCount ?? 0) + (inside.rowCount ?? 0);
         });

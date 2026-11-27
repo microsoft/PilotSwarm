@@ -871,6 +871,27 @@ describe("the Sweeper's final check and delete under concurrency", () => {
         for (const id of kept) expect(await eventTypes(db, schema, id), `${id.slice(0, 8)} after its Workflow was deleted`).toEqual(["test.fresh"]);
     });
 
+    // PR 415 review round 4: a session under a finished Workflow whose own parent was deleted alone (a prune while the run was
+    // active) is kept by the Sweeper's rule, which climbs through deleted sessions; the purge reads the tree the same way.
+    it("issue 412: purge_old_events keeps the old events of a session under a finished Workflow through a deleted session between them", { timeout: TIMEOUT }, async () => {
+        const owner = randomUUID();
+        await catalog.createSession(owner);
+        await setState(db, schema, owner, "idle");
+        const finished = await makeLiveWorkflow(catalog, db, schema, owner);
+        const agent = randomUUID();
+        const child = randomUUID();
+        await catalog.createSession(agent, { parentSessionId: finished.id });
+        await catalog.createSession(child, { parentSessionId: agent });
+        await addEvents(catalog, db, schema, [agent, child]);
+        await catalog.softDeleteSession(agent);
+        expect(await rowState(db, schema, child)).toBe("kept");
+        expect(await catalog.workflowStore().sweeperKeptSession({ sessionId: child, cascade: true }), "the Sweeper keeps it").toMatchObject({ workflowSessionId: finished.id });
+        const result = await purgeEvents(catalog, env);
+        expect(result.error, JSON.stringify(result)).toBeUndefined();
+        expect(await eventTypes(db, schema, child), "its Log stays whole").toEqual(["test.fresh", "test.old"]);
+        expect(await eventTypes(db, schema, agent), "the deleted session's own old events go, as before").toEqual(["test.fresh"]);
+    });
+
     it("issue 412: a run end that holds an active Workflow keeps its old events for that purge (the purge never waits); once ended, they are kept", { timeout: TIMEOUT }, async () => {
         const owner = randomUUID();
         await catalog.createSession(owner);
