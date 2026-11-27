@@ -1,6 +1,6 @@
 /** A separate, initially unset Decision default; ordinary defaults keep their existing contract. */
 export function clusterDecisionDefaultMigration(schema: string): string {
-    const s = `"${schema}"`;
+    const s = `"${schema.replace(/"/g, '""')}"`;
     return `
 ALTER TABLE ${s}.provider_cluster_settings
     ADD COLUMN IF NOT EXISTS decision_default_provider TEXT,
