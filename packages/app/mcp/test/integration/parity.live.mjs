@@ -76,6 +76,14 @@ async function main() {
                 `mcp=${JSON.stringify(caps.facts)}/g:${caps.graph} api=${JSON.stringify(apiFlags)}`);
             record("capabilities: no-auth ⇒ admin", caps.admin === true ? "PASS" : "FAIL");
             record("capabilities: mode=web", caps.mode === "web" ? "PASS" : "FAIL");
+            record("capabilities: workflow_tools all true",
+                caps.workflow_tools?.read === true
+                && caps.workflow_tools?.catalog === true
+                && caps.workflow_tools?.session_for_workflow === true
+                && caps.workflow_tools?.skills === true
+                && caps.workflow_tools?.commands === true
+                && caps.workflow_tools?.definitions === true ? "PASS" : "FAIL",
+                JSON.stringify(caps.workflow_tools));
         } catch (err) { fail("capabilities", err); }
 
         // Tool presence must be consistent with flags.
@@ -176,6 +184,7 @@ async function main() {
 
                 const listed = parse(await client.callTool({ name: "list_sessions", arguments: {} }));
                 const row = (listed?.sessions ?? []).find((s) => s.session_id === sessionId);
+                record("list_sessions carries session_kind=agent", row?.session_kind === "agent" ? "PASS" : "FAIL", `session_kind=${row?.session_kind}`);
                 record("list_sessions carries viewer_group_id", row?.viewer_group_id === groupId ? "PASS" : "FAIL", `viewer_group_id=${row?.viewer_group_id}`);
                 record("list_sessions has no legacy group field", row && !("group_id" in row) && !("groupId" in row) ? "PASS" : "FAIL");
 
