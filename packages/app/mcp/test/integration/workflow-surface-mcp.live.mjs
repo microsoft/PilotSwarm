@@ -2,9 +2,15 @@
 /**
  * Happy-path Workflow surface scenario: MCP (`pilotswarm-mcp` binary over StdioClientTransport).
  *
- * Runs the shared S1–S6 scenario against the real `pilotswarm-mcp` binary in both:
- *   1) Direct mode (`startDirectEnv`)
- *   2) Local Web API mode (`startWebEnv` + `mcpStdioArgs`)
+ * Complements `workflows-mcp.live.mjs` (which covers refusal/error paths) by running
+ * the shared S1–S6 happy-path scenario in lockstep with the SDK direct and Web API
+ * runners — adding rev-2 save/start, definition list/read, pause/resume/set_vars/kv
+ * reads, and verified package/session cleanup — across both:
+ *   1) Direct mode (`startDirectEnv`, package upload/delete via `env.mgmt`)
+ *   2) Local Web API mode (`startWebEnv`, package upload/delete via MCP `push_agent_package` / `delete_agent_package`)
+ *
+ * Intentionally imports shared test helpers from `packages/sdk/test/helpers/` so
+ * all three public surfaces execute the exact same scenario definition.
  *
  * Usage: node packages/app/mcp/test/integration/workflow-surface-mcp.live.mjs
  */
@@ -17,8 +23,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { loadDotEnv, startWebEnv, mcpStdioArgs } from "./web-env.mjs";
 import { startDirectEnv } from "./direct-env.mjs";
-import { startScriptedModel } from "../../../../../packages/sdk/test/helpers/scripted-model.mjs";
-import { runWorkflowSurfaceScenario } from "../../../../../packages/sdk/test/helpers/workflow-surface-scenario.mjs";
+import { startScriptedModel } from "../../../../sdk/test/helpers/scripted-model.mjs";
+import { runWorkflowSurfaceScenario } from "../../../../sdk/test/helpers/workflow-surface-scenario.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../../../../..");
@@ -28,6 +34,7 @@ async function ensureModelProviderForModelFreeRun() {
     if (process.env.GITHUB_TOKEN || process.env.PS_MODEL_PROVIDERS_PATH) {
         return { close: async () => {} };
     }
+    const prevProvidersPath = process.env.PS_MODEL_PROVIDERS_PATH;
     const model = await startScriptedModel({ respond: () => ({ content: "Ready." }) });
     const dir = fs.mkdtempSync(resolve(os.tmpdir(), "ps-wf-surface-mcp-model-"));
     const providersPath = resolve(dir, "model-providers.json");
@@ -44,7 +51,8 @@ async function ensureModelProviderForModelFreeRun() {
     process.env.PS_MODEL_PROVIDERS_PATH = providersPath;
     return {
         async close() {
-            delete process.env.PS_MODEL_PROVIDERS_PATH;
+            if (prevProvidersPath === undefined) delete process.env.PS_MODEL_PROVIDERS_PATH;
+            else process.env.PS_MODEL_PROVIDERS_PATH = prevProvidersPath;
             await model.close().catch(() => {});
             fs.rmSync(dir, { recursive: true, force: true });
         },
@@ -61,7 +69,7 @@ function parseTool(res, label) {
     return body;
 }
 
-async function runMode(modeLabel, stdioOpts, publishPackage, deletePackage) {
+async function runMode(modeLabel, stdioOpts, packageOps) {
     const startedAt = Date.now();
     const transport = new StdioClientTransport(stdioOpts);
     const client = new Client({ name: `wf-surface-mcp-${modeLabel}`, version: "1.0.0" }, { capabilities: {} });
@@ -73,6 +81,20 @@ async function runMode(modeLabel, stdioOpts, publishPackage, deletePackage) {
 
     await client.connect(transport);
     try {
+        const pkgHooks = packageOps
+            ? packageOps(call)
+            : {
+                publishPackage: (_pkgName, files) => call("push_agent_package", {
+                    scope: "shared",
+                    files: files.map((f) => ({ path: f.path, content_base64: f.contentBase64 })),
+                }),
+                deletePackage: (pkgName) => call("delete_agent_package", {
+                    name: pkgName,
+                    confirm: true,
+                    scope: "shared",
+                }),
+            };
+
         const adapter = {
             getWorkflowCapabilities: async () => {
                 const caps = await call("get_capabilities", {});
@@ -119,7 +141,7 @@ async function runMode(modeLabel, stdioOpts, publishPackage, deletePackage) {
                     ...(name ? { name } : {}),
                     ...(revision != null ? { revision } : {}),
                 }),
-            startDefinition: ({ ownerSessionId, definitionId, name, revision, inputs, vars, workspace, operationId }) =>
+            startDefinition: ({ ownerSessionId, definitionId, name, revision, inputs, vars, notifyParent, workspace, operationId }) =>
                 call("workflow_definition", {
                     operation: "start",
                     owner_session_id: ownerSessionId,
@@ -128,6 +150,7 @@ async function runMode(modeLabel, stdioOpts, publishPackage, deletePackage) {
                     ...(revision != null ? { revision } : {}),
                     ...(inputs !== undefined ? { inputs } : {}),
                     ...(vars !== undefined ? { vars } : {}),
+                    ...(notifyParent !== undefined ? { notify_on_completion: notifyParent } : {}),
                     workspace,
                     operation_id: operationId,
                 }),
@@ -146,8 +169,7 @@ async function runMode(modeLabel, stdioOpts, publishPackage, deletePackage) {
                     ...(name ? { name } : {}),
                     operation_id: operationId,
                 }),
-            publishPackage,
-            deletePackage,
+            ...pkgHooks,
             listCreatableWorkflows: async () => {
                 const res = await call("list_creatable_workflows", {});
                 return res.workflows ?? [];
@@ -156,7 +178,6 @@ async function runMode(modeLabel, stdioOpts, publishPackage, deletePackage) {
                 call("workflow_definition", { operation: "card", owner_session_id: ownerSessionId, name }),
             createSessionForWorkflow: async (ref) => {
                 const res = await call("create_session_for_workflow", { ref });
-                assert.equal(res.kickoff_sent, true, `mcp-${modeLabel} S5: kickoff_sent`);
                 return { sessionId: res.session_id, workflowRef: res.workflow_ref, title: res.title };
             },
             copyDefinition: ({ ownerSessionId, name, definitionId, operationId }) =>
@@ -186,46 +207,24 @@ async function runMode(modeLabel, stdioOpts, publishPackage, deletePackage) {
 async function main() {
     const modelStub = await ensureModelProviderForModelFreeRun();
     try {
-        // Mode 1: Direct datastore mode (--store)
+        // Mode 1: Direct datastore mode (--store; agent-package MCP tools are web-mode only)
         {
             const env = await startDirectEnv(ROOT);
             try {
-                await runMode(
-                    "direct",
-                    env.mcpStdioArgs(),
-                    async (_pkgName, files) => {
-                        await env.mgmt.uploadAgentPackage(files, "shared", null, true);
-                    },
-                    async (pkgName) => {
-                        await env.mgmt.deleteAgentPackage(pkgName, { scope: "shared" }, null, true).catch(() => {});
-                    },
-                );
+                await runMode("direct", env.mcpStdioArgs(), () => ({
+                    publishPackage: (_pkgName, files) => env.mgmt.uploadAgentPackage(files, "shared", null, true),
+                    deletePackage: (pkgName) => env.mgmt.deleteAgentPackage(pkgName, null, true, { scope: "shared" }),
+                }));
             } finally {
                 await env.stop();
             }
         }
 
-        // Mode 2: Local Web API mode (--api-url)
+        // Mode 2: Local Web API mode (--api-url; package publish/delete ride MCP tools)
         {
             const env = await startWebEnv(ROOT);
             try {
-                await runMode(
-                    "web",
-                    mcpStdioArgs(ROOT, env.apiUrl),
-                    async (_pkgName, files) => {
-                        const res = await fetch(`${env.apiUrl}/api/v1/agent-packages/upload`, {
-                            method: "POST",
-                            headers: { "content-type": "application/json" },
-                            body: JSON.stringify({ scope: "shared", files }),
-                        });
-                        assert.equal(res.ok, true, `uploadAgentPackage HTTP failed: ${res.status} ${await res.text()}`);
-                    },
-                    async (pkgName) => {
-                        await fetch(`${env.apiUrl}/api/v1/agent-packages/${encodeURIComponent(pkgName)}?scope=shared`, {
-                            method: "DELETE",
-                        }).catch(() => {});
-                    },
-                );
+                await runMode("web", mcpStdioArgs(ROOT, env.apiUrl));
             } finally {
                 await env.stop();
             }

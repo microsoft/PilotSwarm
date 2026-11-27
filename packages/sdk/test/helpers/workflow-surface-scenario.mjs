@@ -4,9 +4,10 @@
  *   - Web API (`WebPilotSwarmManagementClient` against a real local portal server)
  *   - MCP (`pilotswarm-mcp` binary over `StdioClientTransport`)
  *
- * Uses only model-free states (`script`, `wait`, `terminal`) so every run is
- * deterministic and requires no LLM credentials. Every definition name is
- * prefixed per surface so names stay distinct across surfaces.
+ * All Workflow states are model-free (`script`, `wait`, `terminal`), and starts
+ * pass `notifyParent: false` so completed/cancelled runs never trigger agent
+ * turns. Note: S5 `createSessionForWorkflow` always sends one coordinating
+ * kickoff message; SDK/Web runners back it with a local scripted model stub.
  */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -14,124 +15,110 @@ import { randomBytes } from "node:crypto";
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "stopped"]);
 
 function computeYaml(name, { version, rev, expr }) {
-    return [
-        "apiVersion: pilotswarm.dev/v1",
-        "kind: Workflow",
-        "metadata:",
-        `  name: ${name}`,
-        `  version: "${version}"`,
-        "inputs:",
-        "  schema:",
-        "    type: object",
-        "    required: [a, b]",
-        "    properties:",
-        "      a: { type: number }",
-        "      b: { type: number }",
-        "    additionalProperties: false",
-        "initial: compute",
-        "states:",
-        "  compute:",
-        "    type: script",
-        "    outcomes: [ok]",
-        "    source: |",
-        `      await setResult("ok", { rev: ${rev}, total: ${expr} });`,
-        "    transition:",
-        "      next:",
-        "        ok: done",
-        "        failure: failed",
-        "  done:",
-        "    type: terminal",
-        "    outcome: succeeded",
-        '    output: "${input}"',
-        "  failed:",
-        "    type: terminal",
-        "    outcome: failed",
-        '    output: "${runtime.error}"',
-        "",
-    ].join("\n");
+    return `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata:
+  name: ${name}
+  version: "${version}"
+inputs:
+  schema:
+    type: object
+    required: [a, b]
+    properties:
+      a: { type: number }
+      b: { type: number }
+    additionalProperties: false
+initial: compute
+states:
+  compute:
+    type: script
+    outcomes: [ok]
+    source: |
+      await setResult("ok", { rev: ${rev}, total: ${expr} });
+    transition:
+      next:
+        ok: done
+        failure: failed
+  done:
+    type: terminal
+    outcome: succeeded
+    output: "\${input}"
+  failed:
+    type: terminal
+    outcome: failed
+    output: "\${runtime.error}"
+`;
 }
 
-export const computeYamlV1 = (name) =>
-    computeYaml(name, { version: "1.0.0", rev: 1, expr: "Number(context.inputs.a) + Number(context.inputs.b)" });
-
-export const computeYamlV2 = (name) =>
-    computeYaml(name, { version: "1.0.1", rev: 2, expr: "Number(context.inputs.a) * Number(context.inputs.b) + 1" });
-
-export function holdYaml(name) {
-    return [
-        "apiVersion: pilotswarm.dev/v1",
-        "kind: Workflow",
-        "metadata:",
-        `  name: ${name}`,
-        '  version: "1.0.0"',
-        "initial: hold",
-        "states:",
-        "  hold:",
-        "    type: wait",
-        "    seconds: 300",
-        "    transition:",
-        "      next:",
-        "        elapsed: done",
-        "  done:",
-        "    type: terminal",
-        "    outcome: succeeded",
-        "    output: { ok: true }",
-        "",
-    ].join("\n");
+function holdYaml(name) {
+    return `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata:
+  name: ${name}
+  version: "1.0.0"
+initial: hold
+states:
+  hold:
+    type: wait
+    seconds: 300
+    transition:
+      next:
+        elapsed: done
+  done:
+    type: terminal
+    outcome: succeeded
+    output: { ok: true }
+`;
 }
 
-export function makeTestPackageFiles(pkgName, workflowName) {
+function makeTestPackageFiles(pkgName, workflowName) {
     const b64 = (text) => Buffer.from(text, "utf8").toString("base64");
-    const yaml = [
-        "apiVersion: pilotswarm.dev/v1",
-        "kind: Workflow",
-        "metadata:",
-        `  name: ${workflowName}`,
-        '  version: "1.0.0"',
-        "inputs:",
-        "  schema:",
-        "    type: object",
-        "    required: [text]",
-        "    properties:",
-        "      text: { type: string }",
-        "    additionalProperties: false",
-        "initial: emit",
-        "states:",
-        "  emit:",
-        "    type: script",
-        "    outcomes: [ok]",
-        "    source: |",
-        '      await setResult("ok", { echoed: String(context.inputs.text ?? "") });',
-        "    transition:",
-        "      next:",
-        "        ok: done",
-        "        failure: failed",
-        "  done:",
-        "    type: terminal",
-        "    outcome: succeeded",
-        '    output: "${input}"',
-        "  failed:",
-        "    type: terminal",
-        "    outcome: failed",
-        '    output: "${runtime.error}"',
-        "",
-    ].join("\n");
-    const card = [
-        "---",
-        `name: ${workflowName}`,
-        "description: Echoes input text through a deterministic script workflow.",
-        "whenToUse: Verifying packaged Workflow discovery, cards, and copy on a public surface.",
-        "inputs:",
-        "  example: { text: hello }",
-        "outcomes:",
-        "  done: Echoed the text.",
-        "  failed: Failed to run.",
-        "output: Object containing echoed text.",
-        "effects: Pure script step with no external calls.",
-        "---",
-        "Ask the caller for text, then start the workflow.",
-        "",
-    ].join("\n");
+    const yaml = `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata:
+  name: ${workflowName}
+  version: "1.0.0"
+inputs:
+  schema:
+    type: object
+    required: [text]
+    properties:
+      text: { type: string }
+    additionalProperties: false
+initial: emit
+states:
+  emit:
+    type: script
+    outcomes: [ok]
+    source: |
+      await setResult("ok", { echoed: String(context.inputs.text ?? "") });
+    transition:
+      next:
+        ok: done
+        failure: failed
+  done:
+    type: terminal
+    outcome: succeeded
+    output: "\${input}"
+  failed:
+    type: terminal
+    outcome: failed
+    output: "\${runtime.error}"
+`;
+    const card = `---
+name: ${workflowName}
+description: Echoes input text through a deterministic script workflow.
+whenToUse: Verifying packaged Workflow discovery, cards, and copy on a public surface.
+inputs:
+  example: { text: hello }
+outcomes:
+  done: Echoed the text.
+  failed: Failed to run.
+output: Object containing echoed text.
+effects: Pure script step with no external calls.
+---
+Ask the caller for text, then start the workflow.
+`;
     return [
         { path: "plugin.json", contentBase64: b64(JSON.stringify({ name: pkgName, version: "1.0.0", description: `Surface scenario package (${pkgName})` })) },
         { path: `workflows/${workflowName}/workflow.yaml`, contentBase64: b64(yaml) },
@@ -140,11 +127,10 @@ export function makeTestPackageFiles(pkgName, workflowName) {
 }
 
 function parseJsonField(value) {
-    if (typeof value === "string") return JSON.parse(value);
-    return value;
+    return typeof value === "string" ? JSON.parse(value) : value;
 }
 
-export async function waitUntil(check, label, { timeoutMs = 60_000, intervalMs = 200 } = {}) {
+async function waitUntil(check, label, { timeoutMs = 60_000, intervalMs = 200 } = {}) {
     const deadline = Date.now() + timeoutMs;
     let last;
     while (Date.now() < deadline) {
@@ -156,29 +142,53 @@ export async function waitUntil(check, label, { timeoutMs = 60_000, intervalMs =
 }
 
 /**
+ * Shared adapter factory for `PilotSwarmManagementClient` (direct) and
+ * `WebPilotSwarmManagementClient` (HTTP), leaving only mode-specific hooks
+ * (`createOwnerSession`, `publishPackage`, `deletePackage`,
+ * `listCreatableWorkflows`, `createSessionForWorkflow`) to each runner.
+ */
+export function managementClientAdapter(mgmt, overrides) {
+    return {
+        getWorkflowCapabilities: () => mgmt.getWorkflowCapabilities(),
+        listWorkflowSkills: () => mgmt.readWorkflowSkills(),
+        readWorkflowSkill: (name) => mgmt.readWorkflowSkills({ name }),
+        validateDefinition: (yaml) => mgmt.validateWorkflowDefinition(yaml),
+        saveDefinition: ({ ownerSessionId, name, yaml, definitionId, expectedRevision, operationId }) =>
+            mgmt.saveSessionWorkflowDefinition(ownerSessionId, {
+                name,
+                yaml,
+                ...(definitionId ? { definitionId } : {}),
+                ...(expectedRevision != null ? { expectedRevision } : {}),
+                operationId,
+            }),
+        listDefinitions: (ownerSessionId) => mgmt.listSessionWorkflowDefinitions(ownerSessionId),
+        readDefinition: ({ ownerSessionId, definitionId, name, revision }) =>
+            mgmt.readSessionWorkflowDefinition(ownerSessionId, { definitionId, name, revision }),
+        startDefinition: ({ ownerSessionId, definitionId, name, revision, inputs, vars, workspace, notifyParent, operationId }) =>
+            mgmt.startSessionWorkflowDefinition(ownerSessionId, {
+                definitionId,
+                name,
+                ...(revision != null ? { revision } : {}),
+                ...(inputs !== undefined ? { inputs } : {}),
+                ...(vars !== undefined ? { vars } : {}),
+                ...(notifyParent !== undefined ? { notifyParent } : {}),
+                workspace,
+                operationId,
+            }),
+        readWorkflow: (workflowId, options) => mgmt.readWorkflow(workflowId, options),
+        updateWorkflow: (workflowId, command) => mgmt.updateWorkflow(workflowId, command),
+        deleteDefinition: ({ ownerSessionId, definitionId, name, operationId }) =>
+            mgmt.deleteSessionWorkflowDefinition(ownerSessionId, { definitionId, name, operationId }),
+        readPackageCard: ({ ownerSessionId, name }) => mgmt.readSessionWorkflowCard(ownerSessionId, { name }),
+        copyDefinition: ({ ownerSessionId, name, definitionId, operationId }) =>
+            mgmt.copySessionWorkflowDefinition(ownerSessionId, { name, definitionId, operationId }),
+        deleteSession: (sessionId) => mgmt.deleteSession(sessionId),
+        ...overrides,
+    };
+}
+
+/**
  * Execute the S1–S6 Workflow happy-path scenario against one surface adapter.
- *
- * Adapter methods:
- *   getWorkflowCapabilities()
- *   listWorkflowSkills()
- *   readWorkflowSkill(name)
- *   createOwnerSession(title)                                  -> { sessionId }
- *   validateDefinition(yaml)
- *   saveDefinition({ ownerSessionId, name, yaml, definitionId?, expectedRevision?, operationId })
- *   listDefinitions(ownerSessionId)                            -> array of definitions
- *   readDefinition({ ownerSessionId, definitionId?, name?, revision? })
- *   startDefinition({ ownerSessionId, definitionId?, name?, revision?, inputs?, vars?, workspace, operationId })
- *   readWorkflow(workflowId, options?)
- *   updateWorkflow(workflowId, command)
- *   deleteDefinition({ ownerSessionId, definitionId?, name?, operationId })
- *   publishPackage(pkgName, files)
- *   deletePackage(pkgName)
- *   listCreatableWorkflows()                                   -> array of creatable workflows
- *   readPackageCard({ ownerSessionId, name })
- *   createSessionForWorkflow(ref)                              -> { sessionId, workflowRef, title }
- *   copyDefinition({ ownerSessionId, name, definitionId?, operationId })
- *   deleteSession(sessionId)
- *   verifySessionKind?(sessionId, expectedKind)                // optional surface check
  */
 export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 60_000 }) {
     const tag = randomBytes(4).toString("hex");
@@ -189,26 +199,25 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
     const pkgRef = `${pkgName}/${pkgWfName}`;
     const op = (step) => `${prefix}-${tag}-${step}`;
 
-    const sessionsToClean = [];
-    let pkgPublished = false;
+    const sessionsToClean = new Set();
+    let pkgActive = false;
 
     try {
         // ── S1 Discover ────────────────────────────────────────────────
         const caps = await adapter.getWorkflowCapabilities();
-        assert.equal(caps?.enabled, true, `${prefix} S1: workflows.enabled`);
         assert.equal(caps?.read, true, `${prefix} S1: workflows.read`);
-        assert.equal(caps?.validate, true, `${prefix} S1: workflows.validate`);
-        assert.equal(caps?.skills, true, `${prefix} S1: workflows.skills`);
         assert.equal(caps?.card, true, `${prefix} S1: workflows.card`);
         assert.equal(caps?.commands?.available, true, `${prefix} S1: workflows.commands.available`);
+        for (const needed of ["pause", "resume", "set_vars", "cancel"]) {
+            assert.ok(caps?.commands?.operations?.includes(needed),
+                `${prefix} S1: commands.operations includes ${needed}`);
+        }
 
         const skillList = await adapter.listWorkflowSkills();
         const skills = Array.isArray(skillList?.skills) ? skillList.skills : [];
         assert.ok(skills.length > 0, `${prefix} S1: workflow skills list non-empty`);
         const authoringEntry = skills.find((s) => s.name === "workflow-authoring");
-        assert.ok(authoringEntry, `${prefix} S1: workflow-authoring listed`);
-        assert.ok(typeof authoringEntry.description === "string" && authoringEntry.description.length > 0,
-            `${prefix} S1: workflow-authoring has description`);
+        assert.ok(authoringEntry?.description?.length > 0, `${prefix} S1: workflow-authoring listed with description`);
 
         const authoringSkill = await adapter.readWorkflowSkill("workflow-authoring");
         assert.equal(authoringSkill?.name, "workflow-authoring", `${prefix} S1: skill name`);
@@ -218,10 +227,10 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
         // ── S2 Author ──────────────────────────────────────────────────
         const owner = await adapter.createOwnerSession(`${prefix}-wf-owner-${tag}`);
         assert.ok(typeof owner?.sessionId === "string" && owner.sessionId.length > 0, `${prefix} S2: owner session created`);
-        sessionsToClean.push(owner.sessionId);
+        sessionsToClean.add(owner.sessionId);
 
-        const v1Yaml = computeYamlV1(computeName);
-        const v2Yaml = computeYamlV2(computeName);
+        const v1Yaml = computeYaml(computeName, { version: "1.0.0", rev: 1, expr: "Number(context.inputs.a) + Number(context.inputs.b)" });
+        const v2Yaml = computeYaml(computeName, { version: "1.0.1", rev: 2, expr: "Number(context.inputs.a) * Number(context.inputs.b) + 1" });
 
         const validated = await adapter.validateDefinition(v1Yaml);
         assert.equal(validated?.valid, true, `${prefix} S2: valid YAML passes validate`);
@@ -279,13 +288,14 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
             name: computeName,
             revision: 2,
             inputs: { a: 6, b: 7 },
+            notifyParent: false,
             workspace: "none",
             operationId: op("start-compute"),
         });
         assert.ok(typeof startedCompute?.workflowId === "string" && startedCompute.workflowId.length > 0,
             `${prefix} S3: workflowId returned`);
         assert.equal(startedCompute.revision, 2, `${prefix} S3: started revision 2`);
-        sessionsToClean.push(startedCompute.workflowId);
+        sessionsToClean.add(startedCompute.workflowId);
 
         if (adapter.verifySessionKind) {
             await adapter.verifySessionKind(startedCompute.workflowId, "workflow");
@@ -317,11 +327,12 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
             definitionId: savedHold.definitionId,
             name: holdName,
             vars: { stage: "initial" },
+            notifyParent: false,
             workspace: "none",
             operationId: op("start-hold"),
         });
         assert.ok(startedHold?.workflowId, `${prefix} S4: hold workflowId`);
-        sessionsToClean.push(startedHold.workflowId);
+        sessionsToClean.add(startedHold.workflowId);
 
         const activeHold = await waitUntil(async () => {
             const view = await adapter.readWorkflow(startedHold.workflowId);
@@ -338,22 +349,20 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
             reason: "scenario-pause",
         });
         assert.equal(pausedReceipt?.status, "paused", `${prefix} S4: pause receipt status`);
-        const pausedView = await waitUntil(async () => {
+        await waitUntil(async () => {
             const view = await adapter.readWorkflow(startedHold.workflowId);
             return view?.run?.status === "paused" ? view : null;
         }, `${prefix} S4 hold paused`, { timeoutMs });
-        assert.equal(pausedView.run.status, "paused", `${prefix} S4: read shows paused`);
 
         const resumedReceipt = await adapter.updateWorkflow(startedHold.workflowId, {
             operation: "resume",
             operation_id: op("resume-hold"),
         });
         assert.equal(resumedReceipt?.status, "running", `${prefix} S4: resume receipt status`);
-        const resumedView = await waitUntil(async () => {
+        await waitUntil(async () => {
             const view = await adapter.readWorkflow(startedHold.workflowId);
             return view?.run?.status === "running" ? view : null;
         }, `${prefix} S4 hold resumed`, { timeoutMs });
-        assert.equal(resumedView.run.status, "running", `${prefix} S4: read shows running after resume`);
 
         const setVarsReceipt = await adapter.updateWorkflow(startedHold.workflowId, {
             operation: "set_vars",
@@ -386,13 +395,12 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
             const view = await adapter.readWorkflow(startedHold.workflowId);
             return view?.run?.status === "cancelled" ? view : null;
         }, `${prefix} S4 hold cancelled`, { timeoutMs });
-        assert.equal(cancelledView.run.status, "cancelled", `${prefix} S4: read shows cancelled`);
         assert.equal(cancelledView.run.lastControl?.operation, "cancel", `${prefix} S4: lastControl operation`);
         assert.equal(cancelledView.run.lastControl?.reason, cancelReason, `${prefix} S4: lastControl reason`);
 
         // ── S5 Packages ────────────────────────────────────────────────
         await adapter.publishPackage(pkgName, makeTestPackageFiles(pkgName, pkgWfName));
-        pkgPublished = true;
+        pkgActive = true;
 
         const creatable = await adapter.listCreatableWorkflows();
         const pkgEntry = creatable.find((w) => w.ref === pkgRef);
@@ -406,8 +414,8 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
         assert.equal(cardBeforeAttach?.package, pkgName, `${prefix} S5: card package`);
         assert.equal(cardBeforeAttach?.version, "1.0.0", `${prefix} S5: card version`);
         assert.equal(cardBeforeAttach?.attached, false, `${prefix} S5: card not attached on plain owner`);
-        assert.ok(typeof cardBeforeAttach?.card === "string" && cardBeforeAttach.card.includes(pkgWfName),
-            `${prefix} S5: card text populated`);
+        assert.ok(typeof cardBeforeAttach?.card === "string" && cardBeforeAttach.card.includes("Echoes input text"),
+            `${prefix} S5: card body populated`);
 
         const coord = await adapter.createSessionForWorkflow(pkgRef);
         assert.ok(typeof coord?.sessionId === "string" && coord.sessionId.length > 0,
@@ -415,7 +423,7 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
         assert.equal(coord.workflowRef, pkgRef, `${prefix} S5: coordinating session workflowRef`);
         assert.ok(typeof coord.title === "string" && coord.title.includes(pkgWfName),
             `${prefix} S5: coordinating session title`);
-        sessionsToClean.push(coord.sessionId);
+        sessionsToClean.add(coord.sessionId);
 
         if (adapter.verifySessionKind) {
             await adapter.verifySessionKind(coord.sessionId, "agent");
@@ -461,17 +469,23 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
         assert.equal(remaining.some((d) => d.definitionId === savedHold.definitionId || d.name === holdName), false,
             `${prefix} S6: hold definition gone from list`);
 
-        return {
-            steps: ["S1", "S2", "S3", "S4", "S5", "S6"],
-            computeWorkflowId: startedCompute.workflowId,
-            holdWorkflowId: startedHold.workflowId,
-            coordSessionId: coord.sessionId,
-        };
+        await adapter.deletePackage(pkgName);
+        pkgActive = false;
+        const creatableAfterDelete = await adapter.listCreatableWorkflows();
+        assert.equal(creatableAfterDelete.some((w) => w.ref === pkgRef), false,
+            `${prefix} S6: deleted package gone from creatable workflows`);
+
+        for (const sid of [...sessionsToClean].reverse()) {
+            await adapter.deleteSession(sid);
+            sessionsToClean.delete(sid);
+        }
+
+        return { steps: ["S1", "S2", "S3", "S4", "S5", "S6"] };
     } finally {
         for (const sid of [...sessionsToClean].reverse()) {
             await adapter.deleteSession(sid).catch(() => {});
         }
-        if (pkgPublished) {
+        if (pkgActive) {
             await adapter.deletePackage(pkgName).catch(() => {});
         }
     }

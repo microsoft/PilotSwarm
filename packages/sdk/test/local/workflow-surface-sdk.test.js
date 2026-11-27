@@ -10,10 +10,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { useSuiteEnv, testTime } from "../helpers/local-env.js";
 import { startScriptedModel } from "../helpers/scripted-model.mjs";
 import { registerScriptedProvider } from "../helpers/scripted-workers.js";
-import { runWorkflowSurfaceScenario } from "../helpers/workflow-surface-scenario.mjs";
+import { managementClientAdapter, runWorkflowSurfaceScenario } from "../helpers/workflow-surface-scenario.mjs";
 import {
     PilotSwarmClient,
     PilotSwarmManagementClient,
@@ -23,11 +23,10 @@ import {
 } from "../../src/index.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
-const TIMEOUT = 120_000;
 const OWNER = { provider: "test", subject: "wf-surface-sdk" };
 
 describe("Workflow surface scenario: SDK direct (PilotSwarmManagementClient)", () => {
-    it("runs S1–S6 happy paths end to end", { timeout: TIMEOUT }, async () => {
+    it("runs S1–S6 happy paths end to end", async () => {
         const env = getEnv();
         const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-wf-surface-sdk-artifacts-"));
         const artifactStore = new FilesystemArtifactStore(artifactDir);
@@ -71,51 +70,21 @@ describe("Workflow surface scenario: SDK direct (PilotSwarmManagementClient)", (
         await mgmt.start();
 
         try {
-            const adapter = {
-                getWorkflowCapabilities: () => mgmt.getWorkflowCapabilities(),
-                listWorkflowSkills: () => mgmt.readWorkflowSkills(),
-                readWorkflowSkill: (name) => mgmt.readWorkflowSkills({ name }),
+            const adapter = managementClientAdapter(mgmt, {
                 createOwnerSession: async () => {
                     const session = await client.createSession({ owner: OWNER });
                     return { sessionId: session.sessionId };
                 },
-                validateDefinition: (yaml) => mgmt.validateWorkflowDefinition(yaml),
-                saveDefinition: ({ ownerSessionId, name, yaml, definitionId, expectedRevision, operationId }) =>
-                    mgmt.saveSessionWorkflowDefinition(ownerSessionId, {
-                        name,
-                        yaml,
-                        ...(definitionId ? { definitionId } : {}),
-                        ...(expectedRevision != null ? { expectedRevision } : {}),
-                        operationId,
-                    }),
-                listDefinitions: (ownerSessionId) => mgmt.listSessionWorkflowDefinitions(ownerSessionId),
-                readDefinition: ({ ownerSessionId, definitionId, name, revision }) =>
-                    mgmt.readSessionWorkflowDefinition(ownerSessionId, { definitionId, name, revision }),
-                startDefinition: ({ ownerSessionId, definitionId, name, revision, inputs, vars, workspace, operationId }) =>
-                    mgmt.startSessionWorkflowDefinition(ownerSessionId, {
-                        definitionId,
-                        name,
-                        ...(revision != null ? { revision } : {}),
-                        ...(inputs !== undefined ? { inputs } : {}),
-                        ...(vars !== undefined ? { vars } : {}),
-                        workspace,
-                        operationId,
-                    }),
-                readWorkflow: (workflowId, options) => mgmt.readWorkflow(workflowId, options),
-                updateWorkflow: (workflowId, command) => mgmt.updateWorkflow(workflowId, command),
-                deleteDefinition: ({ ownerSessionId, definitionId, name, operationId }) =>
-                    mgmt.deleteSessionWorkflowDefinition(ownerSessionId, { definitionId, name, operationId }),
-                publishPackage: (pkgName, files) => mgmt.uploadAgentPackage(files, "shared", null, true),
-                deletePackage: (pkgName) => mgmt.deleteAgentPackage(pkgName, { scope: "shared" }, null, true),
+                publishPackage: (_pkgName, files) => mgmt.uploadAgentPackage(files, "shared", null, true),
+                deletePackage: (pkgName) => mgmt.deleteAgentPackage(pkgName, null, true, { scope: "shared" }),
                 listCreatableWorkflows: () => mgmt.listCreatableWorkflows(OWNER),
-                readPackageCard: ({ ownerSessionId, name }) => mgmt.readSessionWorkflowCard(ownerSessionId, { name }),
                 createSessionForWorkflow: (ref) => mgmt.createSessionForWorkflow(ref, { client, owner: OWNER }),
-                copyDefinition: ({ ownerSessionId, name, definitionId, operationId }) =>
-                    mgmt.copySessionWorkflowDefinition(ownerSessionId, { name, definitionId, operationId }),
-                deleteSession: (sessionId) => mgmt.deleteSession(sessionId),
-            };
+            });
 
-            const outcome = await runWorkflowSurfaceScenario(adapter, { prefix: "sdk" });
+            const outcome = await runWorkflowSurfaceScenario(adapter, {
+                prefix: "sdk",
+                timeoutMs: testTime.ms(60_000),
+            });
             expect(outcome.steps).toEqual(["S1", "S2", "S3", "S4", "S5", "S6"]);
         } finally {
             await mgmt.stop().catch(() => {});
