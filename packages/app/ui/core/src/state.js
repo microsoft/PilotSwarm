@@ -579,9 +579,11 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Per-session chat scroll memory. While following, the offset is
             // distance from the bottom; once the reader scrolls up it becomes
             // a stable viewport offset from the top. The paired follow flag
-            // disambiguates the two modes across session switches.
+            // disambiguates the two modes across session switches, and the
+            // anchor pins a visible block across view transitions and resizes.
             chatScrollBySession: {},
             chatFollowBottomBySession: {},
+            chatScrollAnchorBySession: {},
             followBottom: {
                 chat: true,
                 inspector: true,
@@ -683,6 +685,13 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Selection to restore when leaving a chat-opened preview, so
             // following a chat link never disturbs the list.
             restoreArtifactId: null,
+            // Mobile pane to restore when leaving a chat-opened overlay
+            // (e.g. chat workspace, or canvas/diagnostics if show_artifact
+            // fired while viewing another phone surface).
+            restoreMobilePane: null,
+            // Inspector tab to restore when leaving a chat-origin fullscreen
+            // overlay (which switches inspectorTab to "files" while open).
+            restoreInspectorTab: null,
             // The portal's artifact takeover pane: a full-height reader that
             // replaces the inspector AND activity panes in the right column.
             // Opened by chat artifact cards and artifact deep links; the Files
