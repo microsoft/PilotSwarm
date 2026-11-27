@@ -584,7 +584,8 @@ describe("the default session mode on the controller", () => {
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.session, data.cycle]))
                 .toEqual([[agentSession, "continue", 1], [agentSession, "continue", 2]]);
             // Issue I1: a visit its agent completed sends its turn no Stop; the turn ends by itself and its memory is committed.
-            expect(h.stops).toEqual([]);
+            // The run's end stops whatever turn of the session still runs, with a Stop that names no visit, before its end.
+            expect(h.stops.map(stop => stop.requestId)).toEqual([`workflow-session-stop:${agentSession}`]);
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_cycle_ended")).map(data => [data.end, data.turnStopped]))
                 .toEqual([["done", false], ["done", false]]);
             expect((await readWorkflowView(h.store, run.workflowSessionId)).graph.states.find(state => state.id === "talk")).toMatchObject({ session: "continue" });
@@ -1279,9 +1280,12 @@ describe("session: continue on the controller", () => {
                 expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
                 const end = await until(async () => (await commandsOf(h, child))[0] ?? null, `the end of ${child}`, 30_000);
                 expect(end).toMatchObject({ type: "cmd", cmd: "cancel" });
-                expect(h.stops.filter(stop => stop.sessionId === child))
-                    .toEqual([expect.objectContaining({ kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` })]);
-                expect(commandsAtStop).toEqual([0]);
+                // A continued session's end also stops whatever turn of it still runs (issue I1: a completed visit's reply).
+                expect(h.stops.filter(stop => stop.sessionId === child)).toEqual([
+                    expect.objectContaining({ kind: "stop", requestId: `workflow-cycle-stop:${first.nodeExecutionId}` }),
+                    ...(session === "continue" ? [expect.objectContaining({ kind: "stop", requestId: `workflow-session-stop:${child}` })] : []),
+                ]);
+                expect(commandsAtStop).toEqual(session === "continue" ? [0, 0] : [0]);
             } finally {
                 await h.stop();
             }

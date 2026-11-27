@@ -1359,7 +1359,7 @@ export async function endWorkflowRunAgentSessions(store: WorkflowStore, client: 
         errors.push(error);
     }
     try {
-        await endWorkflowContinuedSessions(store, client, runId);
+        await endWorkflowContinuedSessions(store, client, runId, options.stopTurn ? { stopTurn: options.stopTurn } : {});
     } catch (error) {
         errors.push(error);
     }
@@ -1439,7 +1439,7 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowAgentEndC
         }
     }
     if (run !== null && (!active || Boolean(run.stop))) {
-        const agentSessionEnd = await endContinuedSession(store, client, run, invocation.childSessionId);
+        const agentSessionEnd = await endContinuedSession(store, client, run, invocation.childSessionId, options.stopTurn);
         if (agentSessionEnd !== null) return agentSessionEnd;
     }
     return { end, sent: false };
@@ -1456,10 +1456,14 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowAgentEndC
  * it), keeps its end owed: its newest visit is marked NotFound, as a session: new child's is, so the after-spawn and
  * after-send checks of every visit, the run's cleanup and recovery look again and end it once it exists. AgentSessionEnded is
  * marked only after the end was sent, or when no attempt began (nothing can create the session later).
+ *
+ * Issue I1: a visit its agent completed while the run was active sent no Stop, so its turn may still be writing its reply
+ * when the run ends or stops (and a later visit's own Stop, which names that visit, does not end it). `stopTurn` stops
+ * whatever turn of the session still runs before the end command, which a session takes only between turns.
  */
-async function endContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
-    : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
-    const looked = await lookAtContinuedSession(store, client, run, childSessionId);
+async function endContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string,
+    stopTurn?: WorkflowAgentTurnStop): Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
+    const looked = await lookAtContinuedSession(store, client, run, childSessionId, stopTurn);
     return looked.busy ? null : looked.result;
 }
 
@@ -1468,10 +1472,12 @@ async function endContinuedSession(store: WorkflowStore, client: WorkflowAgentEn
  * looker at a time sends the end (formal t3): the look, the command and its mark are one critical section. A looker that
  * finds another holding it looks again later (the end stays owed until the holder marks it).
  */
-async function lookAtContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
-    : Promise<{ busy: true } | { busy: false; result: { end: "done" | "cancel"; sent: boolean } | null }> {
-    if (typeof store.withAgentSessionEndLock !== "function") return { busy: false, result: await endContinuedSessionLocked(store, client, run, childSessionId) };
-    const held = await store.withAgentSessionEndLock(childSessionId, () => endContinuedSessionLocked(store, client, run, childSessionId),
+async function lookAtContinuedSession(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string,
+    stopTurn?: WorkflowAgentTurnStop): Promise<{ busy: true } | { busy: false; result: { end: "done" | "cancel"; sent: boolean } | null }> {
+    if (typeof store.withAgentSessionEndLock !== "function") {
+        return { busy: false, result: await endContinuedSessionLocked(store, client, run, childSessionId, stopTurn) };
+    }
+    const held = await store.withAgentSessionEndLock(childSessionId, () => endContinuedSessionLocked(store, client, run, childSessionId, stopTurn),
         { waitMs: WORKFLOW_AGENT_SESSION_END_LOCK_WAIT_MS, pollMs: 100 });
     return held.locked ? { busy: false, result: held.value } : { busy: true };
 }
@@ -1479,8 +1485,8 @@ async function lookAtContinuedSession(store: WorkflowStore, client: WorkflowAgen
 /** How long a looker waits for a continued session's end lock before it leaves the end to the holder and looks again later. */
 const WORKFLOW_AGENT_SESSION_END_LOCK_WAIT_MS = 2_000;
 
-async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string)
-    : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
+async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowAgentEndClient, run: WorkflowRunRow, childSessionId: string,
+    stopTurn?: WorkflowAgentTurnStop): Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
     const last = await store.readAgentInvocationByChild(childSessionId);
     if (!last || last.endChildStatus === WORKFLOW_AGENT_SESSION_ENDED) return null;
     const node = await store.readNodeExecution(last.nodeExecutionId);
@@ -1503,6 +1509,9 @@ async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowA
     }
     if (sent) {
         const why = ACTIVE_RUN_STATUSES.includes(run.status) ? "is stopping, so this session gets no more cycles" : `ended (${run.status})`;
+        // Issue I1: the turn still running (a completed visit's reply) is stopped first, with a Stop that names no visit, so
+        // the session's worker applies it to whichever turn runs; a repeat is the same Stop.
+        if (stopTurn) await stopTurn(childSessionId, `The workflow run this session served ${why}.`, `workflow-session-stop:${childSessionId}`);
         // G1 residual: the Workflow's own end is marked on the session too, before its command (session-end-mark.ts).
         await store.recordSessionEvents(childSessionId, [{ eventType: SESSION_END_REQUESTED_EVENT,
             data: { cmd: end, id: `workflow-agent-session-end:${childSessionId}`, requestedBy: last.workflowSessionId } }]);
@@ -1528,7 +1537,8 @@ async function endContinuedSessionLocked(store: WorkflowStore, client: WorkflowA
  * (endContinuedSession), and each on its own (review G3): a session that cannot be ended now does not keep the others from
  * being ended; the call fails after them, so its activity (or the next recover) looks at it again.
  */
-export async function endWorkflowContinuedSessions(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string): Promise<void> {
+export async function endWorkflowContinuedSessions(store: WorkflowStore, client: WorkflowAgentEndClient, runId: string,
+    options: { stopTurn?: WorkflowAgentTurnStop } = {}): Promise<void> {
     const run = await store.readRun(runId);
     if (!run || (ACTIVE_RUN_STATUSES.includes(run.status) && !run.stop)) return;
     const agentSessions = new Set<string>();
@@ -1538,7 +1548,7 @@ export async function endWorkflowContinuedSessions(store: WorkflowStore, client:
     const failed: string[] = [];
     for (const childSessionId of agentSessions) {
         try {
-            await endContinuedSession(store, client, run, childSessionId);
+            await endContinuedSession(store, client, run, childSessionId, options.stopTurn);
             // Formal t3 (1): a session whose end is still owed (created but not visible yet, or not created yet by an attempt in
             // flight) is looked at again by a detached retry, so the run's own end, and its notice to the parent after it,
             // never wait for it.
@@ -2620,7 +2630,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         if (ACTIVE_RUN_STATUSES.includes(run.status) && Boolean(run.stop)) {
             const client = typeof actx?.getClient === "function" ? actx.getClient() : null;
             if (client) {
-                await endWorkflowContinuedSessions(store, client, runId).catch(error =>
+                await endWorkflowContinuedSessions(store, client, runId, stopAgentSessionTurn ? { stopTurn: stopAgentSessionTurn } : {}).catch(error =>
                     actx.traceWarn?.(`[workflow] run=${runId} an idle agent session was not ended yet: ${workflowErrorMessage(error)}`));
             }
         }
