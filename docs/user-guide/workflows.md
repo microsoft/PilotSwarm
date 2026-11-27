@@ -333,9 +333,11 @@ graph, timeline and panels:
   shows only its last result.
 - **Agent nodes remember by default.** An agent node that is visited again in
   a loop continues the same agent session, so it remembers earlier visits. Ask
-  for "a fresh agent each time" when you want independent answers. Inside a
-  For each, and in named parallel branches, each item always gets its own
-  agent session.
+  for "a fresh agent each time" when you want independent answers. Inside
+  named parallel branches, `session: new` is the default, and you can set
+  `session: continue` to keep one agent session per branch and state across
+  intra-branch and outer-loop cycles. Inside a For each, each item always gets
+  its own agent session (`session: new` only).
 - **Parallel scripts need free worker slots.** Each running script holds one
   of a worker's slots (`PILOTSWARM_WORKER_CONCURRENCY`, 2 by default). With
   fewer slots than parallel checks, the checks run in turn, not all at once.
@@ -1062,9 +1064,11 @@ admitted controller version.
 - **Scripts run at least once.** A lost worker lock runs a script again from
   its start. Make tool calls safe to repeat, or check before you change
   something.
-- **Agent steps:** `session: continue` (the default outside a For each) keeps
+- **Agent steps:** `session: continue` (the default outside parallel states;
+  explicit opt-in inside named `branches:`) keeps
   one agent session across a state's visits, so it remembers earlier
-  visits. `session: new` gives each visit a fresh one. Give an agent state an
+  visits. `session: new` gives each visit a fresh one (the default in named
+  `branches:` and the only choice inside `forEach`). Give an agent state an
   `outputSchema`, a `timeoutSeconds` and, when it needs no tools, `tools:
   none`.
 - **An agent that lives long and sleeps:** keep `session: continue`, do one

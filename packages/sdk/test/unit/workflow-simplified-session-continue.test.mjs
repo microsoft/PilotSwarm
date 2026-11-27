@@ -273,21 +273,20 @@ test("the graph shows the mode only when the session continues; the reminder nam
 test("the skills every Workflow author reads explain both session modes and when to choose each", () => {
     const skill = name => fs.readFileSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
     assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("call `load_skill` with name `workflow-authoring`"));
-    // Owner 2026-11-09T05:38Z: continue is the default; new only when the person asks; For each and branches use new.
+    // Owner 2026-11-09T05:38Z + I8: continue is the default outside parallel; named branches default new and allow continue; For each uses new only.
     const authoring = skill("workflow-authoring");
-    assert.ok(authoring.includes("`session: continue` (default): one agent session keeps the step's memory across visits. `session: new` (a fresh "
-        + "one each visit) only if the person asks; For each and branches: `new`. Session lifecycle: workflow-reference."));
+    assert.ok(authoring.includes("`session: continue` (default): keeps step memory across visits (allowed in `branches:`, default `new`). "
+        + "`session: new` (fresh visit) only if asked, and only choice in `forEach`. Session lifecycle: workflow-reference."));
     // The formal review's known limit, in plain words.
     assert.ok(authoring.includes("Limit: after a visit times out, the next visit's prompt can wait behind the old turn until its abort lands, "
         + "and the next visit's time limit runs during that wait."));
     const reference = skill("workflow-reference");
-    assert.ok(reference.includes("| `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |"));
+    assert.ok(reference.includes("| `session` | Optional. `continue` (default outside parallel) or `new`. Named `branches:` default `new` (`continue` allowed); `forEach` only `new`. |"));
     assert.ok(reference.includes("`session: continue` (the default) keeps one agent session across the state's visits in a Workflow"));
     assert.ok(reference.includes("The step remembers earlier cycles (no repeats, incremental work); its context grows, so it costs more."));
     assert.ok(reference.includes("Use `session: new` (a fresh agent session each visit: clean, cheaper, no drift) only when the person asks for it, "
         + "or the visits are independent and the person wants that."));
-    assert.ok(reference.includes("In a For each or a parallel branch each visit has its own agent session: `new` is the default there and "
-        + "`continue` is refused."));
+    assert.ok(reference.includes("In named `branches:`, `new` is default and `continue` is allowed (one session per run and state); `forEach` allows only `new`."));
     assert.ok(reference.includes("Another Workflow (Run again) starts new agent sessions."));
     assert.ok(reference.includes("Each completion gives `node_execution_id` from its prompt."));
     assert.ok(reference.includes("Session lifecycle: the time limit is per visit; the agent session ends with the Workflow"));

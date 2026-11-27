@@ -198,7 +198,7 @@ See workflow-tools for merge rules.
 | `input` | Optional template; checked against `inputSchema`. |
 | `inputSchema`, `outputSchema` | Optional. |
 | `outcomes` | Optional list of business outcomes; default: its routes that are not runtime routes. |
-| `session` | Optional. `continue` (default) or `new`. In a parallel body (For each or branch) only `new`, its default there. (`chat` is no longer a field.) |
+| `session` | Optional. `continue` (default outside parallel) or `new`. Named `branches:` default `new` (`continue` allowed); `forEach` only `new`. |
 | `tools` | `none`/tool names: the whole subtree's ceiling (plus `complete_workflow_node`). |
 | `requiredTools` | Optional 1-16 exact tool names; call each per visit. See workflow-tools. |
 | `grant` | `all`/`none`/selectors (tool, `package:`, `mcp:`); default named `none`, inline `all`. See workflow-tools. |
@@ -213,9 +213,9 @@ the variables now, which changed, and the previous result. The step
 remembers earlier cycles (no repeats, incremental work); its context grows,
 so it costs more. Use `session: new` (a fresh agent session each visit: clean,
 cheaper, no drift) only when the person asks for it, or the visits are
-independent and the person wants that. In a For each or a parallel branch
-each visit has its own agent session: `new` is the default there and
-`continue` is refused. Another Workflow (Run again) starts new agent
+independent and the person wants that. In named `branches:`, `new` is
+default and `continue` is allowed (one session per run and state);
+`forEach` allows only `new`. Another Workflow (Run again) starts new agent
 sessions. Each completion gives `node_execution_id` from its prompt.
 Session lifecycle: the time limit is per visit; the agent session ends with
 the Workflow (a stop ends an idle one at once). An agent session that ended

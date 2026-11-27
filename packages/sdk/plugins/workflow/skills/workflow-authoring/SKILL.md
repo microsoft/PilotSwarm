@@ -151,9 +151,9 @@ An agent state runs one task and waits for its typed result.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
 - For long work, use short visits with a sleep outcome and a Workflow wait
   between them. Call `load_skill` with name `workflow-long-agent`.
-- `session: continue` (default): one agent session keeps the step's memory
-  across visits. `session: new` (a fresh one each visit) only if the
-  person asks; For each and branches: `new`. Session lifecycle:
+- `session: continue` (default): keeps step memory across visits (allowed
+  in `branches:`, default `new`). `session: new` (fresh visit) only if
+  asked, and only choice in `forEach`. Session lifecycle:
   workflow-reference. Limit: after a visit times out, the next visit's
   prompt can wait behind the old turn until its abort lands, and the next
   visit's time limit runs during that wait.

@@ -166,13 +166,25 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   (`execution.input` beside `execution.result`). The TUI's details show the
   same visit's `Input:` line beside its `Output:` line, and `f` reads a cut
   input whole.
-- **Agent sessions: `session: continue | new`** (owner 2026-11-09). `continue`
-  (the default) keeps one agent session per run and state (its id derived
-  from the run and the state): each later visit's prompt arrives in that
-  session as cycle N, with the input, the variables now, which changed and the
-  previous result. `new` gives each visit of an agent node a new agent
-  session; inside a For each or a parallel branch it is the default and the
-  only choice (`session: continue` is refused there). The compiler writes the
+- **Agent sessions: `session: continue | new`** (owner 2026-11-09; I8). `continue`
+  (the default outside parallel states) keeps one agent session per run and
+  state (its id derived from the run and the state): each later visit's prompt
+  arrives in that session as cycle N, with the input, the variables now, which
+  changed and the previous result. `new` gives each visit of an agent node a
+  new agent session. Inside named parallel `branches:`, `new` remains the
+  default when `session` is omitted (so existing definitions re-compile with
+  identical hashes at Start), while explicit `session: continue` is allowed
+  (one continued session per run and state across both intra-branch loops and
+  outer-loop re-entries of the enclosing `parallel` state). Inside a `forEach`
+  body, `new` is still the only choice (`session: continue` is refused, and
+  `enter` rejects corrupt non-named branch scopes with `WORKFLOW_STORE_CORRUPT`).
+  Because per-scope `n.ordinal` resets to `1` on outer-loop `parallel`
+  re-entry, continued-session store queries and Portal views rank visits by
+  composite `(COALESCE(p.ordinal, 0), n.ordinal)` joining the enclosing
+  parallel execution parsed from `scope_id`. Upgrade and rollback: any revision
+  saved invalid before I8 must be saved again as a new revision to start;
+  worker rollouts remain stop-all because pre-I8 workers lack composite visit
+  ordering and refuse `session: continue` in `branches:`. The compiler writes the
   default into the IR (an agent state outside a parallel state's body that does
   not set `session` compiles to `session: "continue"`; absent is `new`). A Start, Run again or test compiles
   the revision's YAML again, so a revision saved without the key before the
