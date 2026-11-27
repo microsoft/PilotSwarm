@@ -826,8 +826,10 @@ export type WorkflowAgentCompletionResult =
  */
 export interface WorkflowLineage {
     sessionId: string;
-    /** Its distance from the root (0 for a root); null when its lineage is cyclic, has a missing parent, or is deeper than any allowed. */
+    /** Its effective level from the segment root (0 for a root/system session); null when its lineage is cyclic, has a missing parent, or is deeper than any allowed. */
     level: number | null;
+    /** True when the active delegation segment (at or below its root/system reset) contains at least one Workflow session. */
+    hasWorkflow?: boolean;
     /**
      * The nearest of the session and its ancestors that is an agent state's
      * child (distance 0: the session itself), with that state's workflow and
@@ -6667,6 +6669,8 @@ export class WorkflowStore {
         const level = cyclic ? null : computeSessionLevel(rows.map(row => ({
             sessionId: str(row, "session_id"),
             parentSessionId: strOrNull(row, "parent_session_id"),
+            isWorkflow: false,
+            isSystem: false,
             isAgentStep: strOrNull(row, "node_execution_id") !== null,
         })));
         return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };

@@ -141,7 +141,7 @@ export async function sessionLevel(getSession: WorkflowAgentHostDeps["getSession
         const row = await getSession(cursor);
         if (!row) return null;
         const parent = row.parentSessionId ?? null;
-        chain.push({ sessionId: cursor, parentSessionId: parent });
+        chain.push({ sessionId: cursor, parentSessionId: parent, isWorkflow: false, isSystem: false });
         if (parent === null) return computeSessionLevel(chain);
         cursor = parent;
     }
