@@ -19,20 +19,26 @@
  * definition (copySessionPackageWorkflow). A2: a save, and a Start, of a definition whose agent state uses an agent that
  * brings definitions is refused.
  */
+import { randomUUID } from "node:crypto";
 import { systemChildAgentUUID } from "../agent-loader.js";
 import { WORKFLOW_CHILD_BUDGET_MAX } from "../child-budget.js";
 import type { SessionOwnerInfo, SessionWorkspace, WorkflowWorkspace, WorkspaceDefaultsRecord } from "../types.js";
 import { readWorkflowWorkspace, sameDefaultsRecord, workflowWorkspaceSnapshot } from "../workspace.js";
 import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, readWorkflowToolBinding, type WorkflowToolBinding } from "./tool-policy.js";
+import { EMPTY_CAPABILITY_STATE } from "../capability-catalog.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
-import { WorkflowStoreError, parseDefinitionReceipt, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
+import { WorkflowStoreError, parseDefinitionReceipt, type RerunAdmissionSpec, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
+import {
+    buildRerunResume, checkRerunCompatibility, mapRerunExecutions, mapRerunSuppliedExecution, partitionRerunVisits,
+    pickRerunTarget, validateRerunSupply, type WorkflowRerunMode,
+} from "./rerun.js";
 import { effectiveChildLevel, SESSION_MAX_NESTING_LEVEL, WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
     requireAgentModelsForRevision, workflowAgentModelsText, workflowDecisionModelRequestDigest, workflowDecisionModelsForRevision, workflowDecisionNodes,
     workflowDecisionSaveDiagnostics, workflowSaveCompilation, WORKFLOW_DECISION_MODEL_UNAVAILABLE, type WorkflowAgentModels } from "./agent-models.js";
 import { createWorkflow, dispatchWorkflowRun, readWorkflowCreateReceipt, requireNoAgentBringsWorkflows, workflowCreateRequestSha256, workflowAgentOffers,
-    type CreateWorkflowRequest, type WorkflowHost } from "./service.js";
+    type CreateWorkflowRequest, type RerunClaimPin, type WorkflowHost } from "./service.js";
 import { requireWorkflowScripts, workflowScriptNodes } from "./scripts-gate.js";
 import { compileWorkflow, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { workflowGraphJson } from "./tools.js";
@@ -97,6 +103,16 @@ export async function requireWorkflowStartLimits(host: Pick<WorkflowHost, "store
 /** A definition name: as metadata.name allows (1–128 characters: letters, digits, dot, dash, underscore). */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+export interface SessionStartRerunFrom {
+    workflowId: string;
+    executionId?: string | null;
+    mode?: WorkflowRerunMode | null;
+    result?: unknown;
+    note?: unknown;
+    /** Test-only hook: skip the pre-admission C1..C9 fit check to verify runtime divergence guards. */
+    _skipFitCheckForTest?: boolean;
+}
+
 export interface SessionStartReceipt {
     operation: "start";
     definitionId: string;
@@ -111,6 +127,16 @@ export interface SessionStartReceipt {
     /** Additive presentation field: the Decision-only subset of agentModels, identified from the exact revision. */
     decisionModels?: WorkflowAgentModels;
     delegated?: JsonObject[];
+    /** Phase 3 I7: present on re-runs started with rerunFrom. */
+    rerun?: {
+        ofWorkflowId: string;
+        ofRunId: string;
+        fromExecutionId: string;
+        mode: WorkflowRerunMode;
+        reused: number;
+        grant?: "inherited";
+        supplied?: { outcome: string; outputSha256: string; note: string };
+    };
 }
 
 function startReceiptModelFields(models: WorkflowAgentModels | null, ir: WorkflowIR | null | undefined)
@@ -372,27 +398,214 @@ export async function saveSessionWorkflowDefinition(host: WorkflowHost, request:
  * before anything else: the session's tool binding (`binding`, a value or the function that captures it) is captured only
  * after it, so a host that runs no scripts refuses a script node without asking the session for anything.
  */
+function parseRerunClaimPin(value: unknown): RerunClaimPin | null {
+    if (!isJsonObject(value)) return null;
+    if (typeof value.sourceWorkflowId !== "string" || typeof value.sourceRunId !== "string"
+        || typeof value.fromExecutionId !== "string"
+        || (value.mode !== "run_again" && value.mode !== "continue" && value.mode !== "supply")
+        || !Number.isSafeInteger(value.revision) || !Number.isSafeInteger(value.reusedCount)) {
+        return null;
+    }
+    const sup = isJsonObject(value.supplied)
+        && typeof value.supplied.outcome === "string"
+        && typeof value.supplied.outputSha256 === "string"
+        && typeof value.supplied.noteSha256 === "string"
+        && typeof value.supplied.note === "string"
+        ? {
+            outcome: value.supplied.outcome,
+            outputSha256: value.supplied.outputSha256,
+            noteSha256: value.supplied.noteSha256,
+            note: value.supplied.note,
+        }
+        : undefined;
+    return {
+        sourceWorkflowId: value.sourceWorkflowId,
+        sourceRunId: value.sourceRunId,
+        fromExecutionId: value.fromExecutionId,
+        mode: value.mode,
+        revision: Number(value.revision),
+        reusedCount: Number(value.reusedCount),
+        ...(value.grant === "inherited" ? { grant: "inherited" as const } : {}),
+        ...(sup ? { supplied: sup } : {}),
+    };
+}
+
+function rerunReceiptFromPin(pin: RerunClaimPin): NonNullable<SessionStartReceipt["rerun"]> {
+    return {
+        ofWorkflowId: pin.sourceWorkflowId,
+        ofRunId: pin.sourceRunId,
+        fromExecutionId: pin.fromExecutionId,
+        mode: pin.mode,
+        reused: pin.reusedCount,
+        ...(pin.grant === "inherited" ? { grant: "inherited" as const } : {}),
+        ...(pin.supplied ? { supplied: { outcome: pin.supplied.outcome, outputSha256: pin.supplied.outputSha256, note: pin.supplied.note } } : {}),
+    };
+}
+
+function validateRerunStartArguments(request: Parameters<typeof startSessionWorkflowDefinition>[1]): SessionStartRerunFrom {
+    const rf = request.rerunFrom!;
+    if (!rf || typeof rf !== "object" || typeof rf.workflowId !== "string" || !rf.workflowId.trim()) {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "rerunFrom.workflowId must name a Workflow of this definition.");
+    }
+    if (request.runAgainOf) {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "rerunFrom cannot be combined with runAgainOf.");
+    }
+    if (request.spawn) {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "rerunFrom cannot be used on a spawned child Workflow.");
+    }
+    if (request.parentSessionId && request.parentSessionId !== request.ownerSessionId) {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "rerunFrom must start directly under the owning session.");
+    }
+    if (request.inputs !== undefined && request.inputs !== null) {
+        if (!isJsonObject(request.inputs) || Object.keys(request.inputs).length > 0) {
+            throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "rerunFrom inherits the source Workflow's inputs and does not accept inputs.");
+        }
+    }
+    if (request.workspace !== undefined && request.workspaceInherited !== true) {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "rerunFrom inherits the source Workflow's workspace and does not accept workspace.");
+    }
+    if (rf.mode !== undefined && rf.mode !== null && rf.mode !== "run_again" && rf.mode !== "continue" && rf.mode !== "supply") {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", `rerunFrom.mode must be 'run_again', 'continue', or 'supply' (got '${String(rf.mode)}').`);
+    }
+    if (rf.mode !== "supply" && (rf.result !== undefined && rf.result !== null || rf.note !== undefined && rf.note !== null)) {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "rerunFrom.result and rerunFrom.note are only allowed when mode is 'supply'.");
+    }
+    if (rf.mode === "supply") {
+        if (!isJsonObject(rf.result) || typeof rf.result.outcome !== "string" || !rf.result.outcome.trim()) {
+            throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "mode 'supply' requires result: { outcome, output? } with a non-empty string outcome.");
+        }
+        if (typeof rf.note !== "string" || !rf.note.trim()) {
+            throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "mode 'supply' requires a non-empty note.");
+        }
+    }
+    return rf;
+}
+
+function sameRerunPinRequest(pin: RerunClaimPin, rf: SessionStartRerunFrom | null | undefined): boolean {
+    if (!rf) return false;
+    if (rf.workflowId !== pin.sourceWorkflowId) return false;
+    if (rf.executionId != null && rf.executionId !== pin.fromExecutionId) return false;
+    if (rf.mode != null && rf.mode !== pin.mode) return false;
+    if (pin.mode === "supply") {
+        if (!pin.supplied || !isJsonObject(rf.result) || typeof rf.result.outcome !== "string" || typeof rf.note !== "string") return false;
+        const outVal = rf.result.output === undefined ? null : rf.result.output as JsonValue;
+        if (rf.result.outcome !== pin.supplied.outcome) return false;
+        if (sha256Hex(canonicalJson(outVal)) !== pin.supplied.outputSha256) return false;
+        if (sha256Hex(rf.note.trim()) !== pin.supplied.noteSha256) return false;
+    }
+    return true;
+}
+
+function capabilitiesCoverSelections(current: { selections: Array<{ sourceId: string; sourceRef?: string; tools: string[]; mcpServers: string[] }> },
+    required: Array<{ sourceId: string; sourceRef?: string; tools: string[]; mcpServers: string[] }>): boolean {
+    for (const req of required) {
+        const cur = current.selections.find(sel => sel.sourceId === req.sourceId);
+        if (!cur) return false;
+        if (req.sourceRef !== undefined && cur.sourceRef !== req.sourceRef) return false;
+        const curTools = new Set(cur.tools);
+        for (const t of req.tools) if (!curTools.has(t)) return false;
+        const curMcps = new Set(cur.mcpServers);
+        for (const m of req.mcpServers) if (!curMcps.has(m)) return false;
+    }
+    return true;
+}
+
+async function resolveRerunToolBinding(host: WorkflowHost, request: Parameters<typeof startSessionWorkflowDefinition>[1],
+    sourceWorkflowId: string, targetIr: WorkflowIR, defName: string)
+    : Promise<{ binding: WorkflowToolBinding | null; inherited: boolean; sourceWorkspace: WorkflowWorkspace | null }> {
+    const sourceCreation = await host.catalog.getSessionCreationConfig?.(sourceWorkflowId) ?? null;
+    const sourceWorkspace = readWorkflowWorkspace(sourceCreation);
+    if (request.binding !== undefined && request.binding !== null) {
+        const captured = await startToolBinding(request.binding, targetIr, defName);
+        return { binding: captured ? { ...captured, agentStepTools: "selections" as const } : null, inherited: false, sourceWorkspace };
+    }
+    const sourceBinding = readWorkflowToolBinding(sourceCreation?.workflowToolBinding);
+    if (!sourceBinding) {
+        return { binding: null, inherited: false, sourceWorkspace };
+    }
+    const needsGrant = workflowToolDiagnostics(targetIr, null, true, {}).some(d =>
+        d.code === "WORKFLOW_TOOL_NOT_GRANTED" || d.code === "WORKFLOW_TOOLS_DYNAMIC" || d.code === "WORKFLOW_TOOLS_UNCHECKED");
+    // OQ1 narrow 5-condition owner tool-grant inheritance:
+    const deny = (why: string): { binding: null; inherited: false; sourceWorkspace: WorkflowWorkspace | null } => {
+        if (needsGrant) {
+            throw new WorkflowStoreError("WORKFLOW_TOOLS_UNAVAILABLE",
+                `${defName} cannot inherit the source Workflow's tool grant (${why}). Nothing was started.`);
+        }
+        return { binding: null, inherited: false, sourceWorkspace };
+    };
+    if (request.actor.kind !== "user") return deny("only the owning person may inherit a tool grant");
+    if (request.originatingSessionId != null) return deny("proxied agent calls cannot inherit a tool grant");
+    const ownerSession = await host.catalog.getSession(request.ownerSessionId);
+    if (!ownerSession || ownerSession.deletedAt || ownerSession.isSystem) return deny("the owning session is not live");
+    if (!ownerSession.owner || ownerSession.owner.provider !== request.actor.provider || ownerSession.owner.subject !== request.actor.subject) {
+        return deny("the caller is not the owning session's owner");
+    }
+    if (sourceBinding.owner.provider !== request.actor.provider || sourceBinding.owner.subject !== request.actor.subject) {
+        return deny("the source binding belongs to another owner");
+    }
+    if (sourceBinding.parentSessionId !== request.ownerSessionId) {
+        return deny("spawned-child bindings cannot be inherited");
+    }
+    if (sourceBinding.inMemory !== undefined) {
+        return deny("in-memory worker tool bindings cannot be inherited");
+    }
+    const [ownerCaps, ownerCreation] = await Promise.all([
+        host.catalog.getSessionCapabilities ? host.catalog.getSessionCapabilities(request.ownerSessionId) : Promise.resolve(EMPTY_CAPABILITY_STATE),
+        host.catalog.getSessionCreationConfig ? host.catalog.getSessionCreationConfig(request.ownerSessionId) : Promise.resolve(null),
+    ]);
+    if (!capabilitiesCoverSelections(ownerCaps, sourceBinding.capabilities.selections)) {
+        return deny("the owning session's capability selections no longer cover the source grant");
+    }
+    if (isJsonObject(ownerCreation)) {
+        const ceiling = Array.isArray(ownerCreation.toolCeiling)
+            ? ownerCreation.toolCeiling.filter((x): x is string => typeof x === "string") : null;
+        if (ceiling !== null) {
+            const allowed = new Set(ceiling);
+            for (const tool of sourceBinding.tools) {
+                if (!allowed.has(tool.name) && !allowed.has(`custom:${tool.name}`)) {
+                    return deny(`tool '${tool.name}' is outside the owning session's tool ceiling`);
+                }
+            }
+        }
+        const excluded = Array.isArray(ownerCreation.excludedTools)
+            ? ownerCreation.excludedTools.filter((x): x is string => typeof x === "string") : null;
+        if (excluded !== null) {
+            const blocked = new Set(excluded);
+            for (const tool of sourceBinding.tools) {
+                if (blocked.has(tool.name)) {
+                    return deny(`tool '${tool.name}' is now excluded on the owning session`);
+                }
+            }
+        }
+    }
+    const { agentStepBindings: _dropOldSnapshots, ...cleanSourceBinding } = sourceBinding;
+    return { binding: { ...cleanSourceBinding, agentStepTools: "selections" as const }, inherited: true, sourceWorkspace };
+}
+
 /**
  * S2RT-F5: the definition and revision a Start operation pinned when it first ran: from its Workflow's stored definition
  * (the pin written with it), else from its claim (the creation marker records the pin, for a Start interrupted between its
  * claim and its admission); null when the operation has not run.
  */
 export async function storedStartPin(host: Pick<WorkflowHost, "store" | "catalog">, workflowSessionId: string)
-    : Promise<{ definitionId: string; revision: number } | null> {
-    const row = await host.store.readDefinition(workflowSessionId);
-    if (row && typeof row.sessionDefinitionId === "string" && Number.isSafeInteger(row.sessionRevision)) {
-        return { definitionId: row.sessionDefinitionId, revision: row.sessionRevision as number };
-    }
-    const creation = await host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? null;
+    : Promise<{ definitionId: string; revision: number; rerunPin?: RerunClaimPin | null } | null> {
+    const [row, creation] = await Promise.all([
+        host.store.readDefinition(workflowSessionId),
+        host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? Promise.resolve(null),
+    ]);
     const marker = isJsonObject(creation) && isJsonObject((creation as JsonObject).workflow) ? (creation as JsonObject).workflow as JsonObject : null;
+    const rerunPin = marker ? parseRerunClaimPin(marker.rerunPin) : null;
+    if (row && typeof row.sessionDefinitionId === "string" && Number.isSafeInteger(row.sessionRevision)) {
+        return { definitionId: row.sessionDefinitionId, revision: row.sessionRevision as number, ...(rerunPin ? { rerunPin } : {}) };
+    }
     const pin = marker && isJsonObject(marker.sessionPin) ? marker.sessionPin as JsonObject : null;
     return pin && typeof pin.definitionId === "string" && Number.isSafeInteger(pin.revision)
-        ? { definitionId: pin.definitionId, revision: Number(pin.revision) } : null;
+        ? { definitionId: pin.definitionId, revision: Number(pin.revision), ...(rerunPin ? { rerunPin } : {}) } : null;
 }
 
 /** A Start operation that already ran: its pinned revision again (refused when the request names another), then its receipt. */
 async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof startSessionWorkflowDefinition>[1], workflowSessionId: string,
-    prior: { definitionId: string; revision: number }): Promise<SessionStartReceipt> {
+    prior: { definitionId: string; revision: number; rerunPin?: RerunClaimPin | null }): Promise<SessionStartReceipt> {
     const parentSessionId = request.parentSessionId ?? request.ownerSessionId;
     const createOpId = request.spawn ? `spawn:${request.spawn.nodeExecutionId}` : `start:${request.operationId}`;
     const pinned = await host.store.sessionDefinitions.readDefinition(prior.definitionId);
@@ -413,6 +626,23 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     // is (the build or the session may have changed since): the revision compiles in this version, the scripts gate, and the
     // depth limit and budget, its own claim not counted. One whose Workflow was stored is answered from what it made.
     const admitted = await host.store.readDefinition(workflowSessionId);
+    // R2-M1 / R3-S1: a bare claim shell swept before admission ends as WORKFLOW_DELETED (404), never SESSION_EXISTS.
+    if (!admitted && (prior.rerunPin || request.rerunFrom)) {
+        const liveShell = await host.catalog.getSession(workflowSessionId);
+        if (!liveShell || liveShell.deletedAt) {
+            throw new WorkflowStoreError("WORKFLOW_DELETED",
+                "The Workflow for this key was deleted before it started. Use a new key or operationId for another attempt.");
+        }
+    }
+    if (prior.rerunPin) {
+        if (!request.rerunFrom) throw conflict("a fresh Start without rerunFrom");
+        validateRerunStartArguments(request);
+        if (!sameRerunPinRequest(prior.rerunPin, request.rerunFrom)) {
+            throw conflict(`a different re-run request (${request.rerunFrom.workflowId})`);
+        }
+    } else if (request.rerunFrom) {
+        throw conflict("a re-run Start");
+    }
     const replayCompile = admitted ? compileWorkflow(saved.yaml) : null;
     const pinnedIr = admitted
         ? replayCompile?.valid && replayCompile.ir
@@ -440,6 +670,57 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         requireWorkflowScripts(host, again.ir, "start");
         await requireWorkflowStartLimits(host, parentSessionId, request.nestingLevel ?? null, { claimedWorkflowSessionId: workflowSessionId });
         resumedIr = again.ir;
+    }
+    let replayRerunSpec: RerunAdmissionSpec | null = null;
+    let replayRunId: string | undefined;
+    let replayStartInputs: JsonValue = request.inputs;
+    if (prior.rerunPin) {
+        if (admitted) {
+            const runs = await host.store.listRuns(workflowSessionId);
+            const admittedRun = runs[0] ?? null;
+            if (admittedRun) replayStartInputs = admittedRun.inputs;
+            const rf = request.rerunFrom!;
+            const supObj = prior.rerunPin.mode === "supply" && isJsonObject(rf.result)
+                ? {
+                    newExecutionId: "",
+                    newPredecessorId: null,
+                    sourceExecutionId: prior.rerunPin.fromExecutionId,
+                    outcome: String(rf.result.outcome),
+                    outputText: canonicalJson(rf.result.output === undefined ? null : rf.result.output as JsonValue),
+                    note: String(rf.note ?? "").trim(),
+                    at: new Date(),
+                }
+                : null;
+            replayRerunSpec = {
+                sourceWorkflowSessionId: prior.rerunPin.sourceWorkflowId,
+                sourceRunId: prior.rerunPin.sourceRunId,
+                fromExecutionId: prior.rerunPin.fromExecutionId,
+                mode: prior.rerunPin.mode,
+                resume: admittedRun?.rerunResume ?? {
+                    v: 1, mode: prior.rerunPin.mode, stateId: "", ordinal: 1, scopeId: "root",
+                    arrivalRoute: null, predecessorId: null, cutKvRevision: 1, sameIr: true,
+                    expectedInputSha256: null, expectedCarrySha256: null, recordedInputSha256: null,
+                    supplied: null, fromStateId: "", fromVisit: 1, sourceRevision: prior.revision,
+                },
+                actor: request.actor,
+                mapped: [],
+                unwalkedCount: 0,
+                supplied: supObj,
+                cutKvRevision: 1,
+                inboxCutAt: new Date(),
+                reusedSpawnChildIds: [],
+                approvalOwnerCheck: null,
+            };
+        } else {
+            const prepared = await prepareRerunStart(host, request, pinned, request.rerunFrom!, {
+                revision: prior.revision,
+                executionId: prior.rerunPin.fromExecutionId,
+                mode: prior.rerunPin.mode,
+            });
+            replayRerunSpec = prepared.rerunSpec;
+            replayRunId = prepared.newRunId;
+            replayStartInputs = prepared.sourceInputs;
+        }
     }
     // FB-008: a resumed claim has started nothing yet, so its grant is required as a first Start's is; a stored Workflow is
     // answered from what it made, and its grant is only compared.
@@ -501,9 +782,12 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     const createRequest: CreateWorkflowRequest = {
         workflowSessionId, parentSessionId, ...(request.owner ? { owner: request.owner } : {}), yaml: saved.yaml,
         actor: request.actor, operationId: createOpId, publish: true,
-        start: { inputs: request.inputs, ...(request.vars ? { vars: request.vars } : {}),
+        start: { inputs: replayStartInputs, ...(request.vars ? { vars: request.vars } : {}),
             ...(agentModels ? { agentModels, ...(modelsFromRunAgain ? { agentModelsFromRunAgain: true } : {}) } : {}),
-            ...(modelRequest ? { modelRequest } : {}) },
+            ...(modelRequest ? { modelRequest } : {}),
+            ...(replayRunId ? { runId: replayRunId } : {}),
+            ...(replayRerunSpec ? { rerun: replayRerunSpec } : {}) },
+        ...(prior.rerunPin ? { rerunPin: prior.rerunPin } : {}),
         notifyParent: request.notifyParent !== false, ...(binding ? { binding } : {}),
         ...(workspace ? { workspace } : {}),
         sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: prior.definitionId, revision: prior.revision },
@@ -523,7 +807,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
             throw new WorkflowStoreError("WORKFLOW_EXISTS", "The Workflow for this key no longer belongs to this session and owner.");
         }
         const yamlSha256 = sha256Hex(saved.yaml);
-        const digest = workflowCreateRequestSha256(createRequest, yamlSha256, true, request.inputs);
+        const digest = workflowCreateRequestSha256(createRequest, yamlSha256, true, replayStartInputs);
         let recorded;
         try { recorded = await readWorkflowCreateReceipt(host, createRequest, yamlSha256, digest); }
         catch (error) {
@@ -538,6 +822,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
         const effectiveModels = admittedDecision && receipt.run ? await runAgainAgentModels(host, workflowSessionId) : agentModels;
         return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision,
             workflowId: receipt.workflowSessionId, runId: receipt.run?.runId ?? null, replayed: true,
+            ...(prior.rerunPin ? { rerun: rerunReceiptFromPin(prior.rerunPin) } : {}),
             ...startReceiptModelFields(effectiveModels, decisionIr ?? compileWorkflow(saved.yaml).ir),
             ...(await delegatedAnswer(host, workflowSessionId)) };
     }
@@ -552,8 +837,222 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     const effectiveModels = stored.receipt.run ? await runAgainAgentModels(host, stored.receipt.workflowSessionId) : null;
     return { operation: "start", definitionId: prior.definitionId, name: pinned.name, revision: prior.revision, workflowId: stored.receipt.workflowSessionId,
         runId: stored.receipt.run?.runId ?? null, replayed: stored.replayed, ...(warnings.length ? { warnings } : {}),
+        ...(prior.rerunPin ? { rerun: rerunReceiptFromPin(prior.rerunPin) } : {}),
         ...(await delegatedAnswer(host, workflowSessionId)),
         ...startReceiptModelFields(effectiveModels, decisionIr ?? compileWorkflow(saved.yaml).ir) };
+}
+
+async function prepareRerunStart(
+    host: WorkflowHost,
+    request: Parameters<typeof startSessionWorkflowDefinition>[1],
+    definition: SessionDefinitionRow,
+    rf: SessionStartRerunFrom,
+    pinned?: { revision: number; executionId: string; mode: WorkflowRerunMode },
+): Promise<{
+    newRunId: string;
+    revision: number;
+    saved: SessionRevisionRow;
+    targetIr: WorkflowIR;
+    sourceInputs: JsonValue;
+    rerunSpec: RerunAdmissionSpec;
+    rerunPin: RerunClaimPin;
+}> {
+    const sourceDef = await host.store.readDefinition(rf.workflowId);
+    if (!sourceDef || sourceDef.sessionDefinitionId !== definition.definitionId || !Number.isSafeInteger(sourceDef.sessionRevision)) {
+        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Workflow ${rf.workflowId} was not started from ${definition.name}.`);
+    }
+    const srcSession = await host.catalog.getSession(rf.workflowId);
+    if (!srcSession || srcSession.deletedAt || sourceDef.state === "deleted") {
+        throw new WorkflowStoreError("RERUN_SOURCE_GONE", `Source Workflow ${rf.workflowId} has been deleted and cannot be re-run.`);
+    }
+    const sourceRuns = await host.store.listRuns(rf.workflowId);
+    const sourceRun = sourceRuns.find(r => r.mode === "live") ?? null;
+    if (!sourceRun) {
+        throw new WorkflowStoreError("RERUN_NOT_A_WORKFLOW", `Workflow ${rf.workflowId} has no live run to re-run.`);
+    }
+    if (!sourceRun.finishedAt || sourceRun.status === "admitted" || sourceRun.status === "running" || sourceRun.status === "paused") {
+        throw new WorkflowStoreError("RERUN_SOURCE_ACTIVE", `Source Workflow ${rf.workflowId} is still ${sourceRun.status}; wait for it to finish before re-running.`);
+    }
+    // Decision 8: default revision is the source run's revision (NOT newestValidRevision).
+    const sourceRevision = sourceDef.sessionRevision as number;
+    const revision = pinned?.revision ?? (request.revision != null ? request.revision : sourceRevision);
+    if (!Number.isSafeInteger(revision) || revision < 1) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "revision must be a revision number.");
+    }
+    const saved = await host.store.sessionDefinitions.readRevision(definition.definitionId, revision);
+    if (!saved) throw new WorkflowStoreError("REVISION_NOT_FOUND", `${definition.name} has no revision ${revision}.`);
+    if (!saved.valid) {
+        throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} is not valid, so it cannot start. Save a fixed revision first.`);
+    }
+    const targetCompile = compileWorkflow(saved.yaml);
+    if (!targetCompile.valid || !targetCompile.ir) {
+        const first = targetCompile.diagnostics.find(item => item.severity !== "warning");
+        throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} of ${definition.name} does not compile in this version`
+            + `${first ? ` (${first.path}): ${first.message}` : "."} Save it again with that change. Nothing was started.`, { revision });
+    }
+    const targetIr = targetCompile.ir;
+    const sourceSaved = sourceRevision === revision
+        ? saved
+        : await host.store.sessionDefinitions.readRevision(definition.definitionId, sourceRevision);
+    const sourceCompile = sourceRevision === revision
+        ? targetCompile
+        : (sourceSaved ? compileWorkflow(sourceSaved.yaml) : null);
+    const sourceIr = sourceCompile?.ir ?? await host.store.sessionDefinitions.readRevisionIr(definition.definitionId, sourceRevision);
+    const sourceIrSha256 = sourceCompile?.irSha256 ?? sourceSaved?.irSha256 ?? targetCompile.irSha256 ?? "";
+    if (!sourceIr) {
+        throw new WorkflowStoreError("RERUN_INCOMPATIBLE", `Source revision ${sourceRevision} of ${definition.name} cannot be loaded for re-run compatibility.`);
+    }
+    const keys = await host.store.listRerunKeys(sourceRun.runId);
+    const picked = pickRerunTarget(sourceRun, keys, {
+        executionId: pinned?.executionId ?? rf.executionId ?? null,
+        mode: pinned?.mode ?? rf.mode ?? null,
+        sourceIr,
+        targetIr,
+    });
+    const part = partitionRerunVisits(keys, picked.chosen.nodeExecutionId, picked.mode);
+    const supplyCheck = picked.mode === "supply"
+        ? validateRerunSupply({
+            chosen: picked.chosen,
+            reused: part.reused,
+            sourceIr,
+            targetIr,
+            result: rf.result,
+            note: rf.note,
+            requireResultAndNote: true,
+        })
+        : null;
+    const validatedSupply = supplyCheck?.validated ?? null;
+    if (rf._skipFitCheckForTest !== true) {
+        const fit = checkRerunCompatibility({
+            sourceIr,
+            targetIr,
+            reused: part.reused,
+            reusedTop: part.reusedTop,
+            chosen: picked.chosen,
+            mode: picked.mode,
+            sourceControllerVersion: sourceRun.controllerVersion,
+            suppliedOutcome: validatedSupply?.outcome ?? null,
+        });
+        if (!fit.fits) {
+            throw new WorkflowStoreError("RERUN_INCOMPATIBLE",
+                `Revision ${revision} of ${definition.name} is not compatible with the reused history (${fit.problems[0]?.message ?? "incompatible graph"}).`,
+                { revision, problems: fit.problems.map(p => ({ ...p })) as unknown as JsonValue });
+        }
+    }
+    // OQ5 / M3 / R2-N8: answered approval reuse gate.
+    const reusedApprovals = part.reused.filter(v => v.nodeType === "approval" && (v.outcome === "approved" || v.outcome === "rejected"));
+    const directOwner = request.actor.kind === "user" && request.originatingSessionId == null && request.viaMcp !== true
+        ? { provider: request.actor.provider, subject: request.actor.subject } : null;
+    if (reusedApprovals.length > 0) {
+        if (!directOwner) {
+            throw new WorkflowStoreError("RERUN_APPROVAL_REUSED",
+                "Re-running past a decided approval is only allowed for the owning person directly (not via MCP or an agent).");
+        }
+        const ownerSession = await host.catalog.getSession(request.ownerSessionId);
+        if (!ownerSession || !ownerSession.owner
+            || ownerSession.owner.provider !== directOwner.provider || ownerSession.owner.subject !== directOwner.subject) {
+            throw new WorkflowStoreError("RERUN_APPROVAL_REUSED",
+                "Re-running past a decided approval requires the owning person of the session.");
+        }
+        const approvalRows = await host.store.readReusedApprovalsForRerun(sourceRun.runId, reusedApprovals.map(a => a.nodeExecutionId));
+        if (approvalRows.length !== reusedApprovals.length) {
+            throw new WorkflowStoreError("RERUN_APPROVAL_REUSED",
+                "Cannot verify approver provenance for every reused approval.");
+        }
+        for (const app of approvalRows) {
+            if (!app.decidedBy || app.decidedBy.provider !== directOwner.provider || app.decidedBy.subject !== directOwner.subject) {
+                throw new WorkflowStoreError("RERUN_APPROVAL_REUSED",
+                    "Every reused approval must have been decided by the person starting this re-run.");
+            }
+        }
+    }
+    const newRunId = randomUUID();
+    const mapped = mapRerunExecutions(newRunId, part.reused);
+    const cutKvRevision = part.reused.reduce((maxRev, v) => Math.max(maxRev, v.kvRevision ?? 1), 1);
+    const now = new Date();
+    const nowIso = now.toISOString();
+    let suppliedSpec: RerunAdmissionSpec["supplied"] = null;
+    let resumeSupplied: Parameters<typeof buildRerunResume>[0]["supplied"] = null;
+    if (picked.mode === "supply" && validatedSupply) {
+        const mappedSup = mapRerunSuppliedExecution(newRunId, picked.chosen, mapped);
+        const nextEntry = supplyCheck?.contract.nextByOutcome[validatedSupply.outcome] ?? null;
+        const nextStateId = nextEntry?.stateId ?? null;
+        const nextOrdinal = nextEntry?.visit ?? null;
+        const outputText = validatedSupply.outputText ?? "null";
+        const outputSha256 = validatedSupply.outputSha256 ?? sha256Hex(outputText);
+        const note = validatedSupply.note ?? "";
+        suppliedSpec = {
+            newExecutionId: mappedSup.newId,
+            newPredecessorId: mappedSup.newPredecessorId,
+            sourceExecutionId: picked.chosen.nodeExecutionId,
+            outcome: validatedSupply.outcome,
+            outputText,
+            note,
+            at: now,
+        };
+        resumeSupplied = {
+            mappedSuppliedId: mappedSup.newId,
+            outcome: validatedSupply.outcome,
+            outputSha256,
+            note,
+            at: nowIso,
+            nextStateId,
+            nextOrdinal,
+        };
+    }
+    const mappedPredecessorId = picked.chosen.predecessorId === null
+        ? null
+        : (mapped.find(m => m.source.nodeExecutionId === picked.chosen.predecessorId)?.newId ?? null);
+    const resume = buildRerunResume({
+        mode: picked.mode,
+        chosen: picked.chosen,
+        mappedPredecessorId,
+        cutKvRevision,
+        sourceRevision,
+        sourceIrSha256,
+        targetIrSha256: targetCompile.irSha256 ?? "",
+        supplied: resumeSupplied,
+    });
+    const lastReusedAt = part.reused.length > 0
+        ? (part.reused[part.reused.length - 1].completedAt ?? part.reused[part.reused.length - 1].enteredAt)
+        : (picked.chosen.enteredAt ?? sourceRun.createdAt);
+    const inboxCutAt = new Date(lastReusedAt);
+    const reusedSpawnChildIds = part.reused
+        .filter(v => v.nodeType === "spawn" && typeof v.spawnChildWorkflowId === "string" && v.spawnChildWorkflowId.length > 0)
+        .map(v => v.spawnChildWorkflowId!);
+    const rerunSpec: RerunAdmissionSpec = {
+        sourceWorkflowSessionId: rf.workflowId,
+        sourceRunId: sourceRun.runId,
+        fromExecutionId: picked.chosen.nodeExecutionId,
+        mode: picked.mode,
+        resume,
+        actor: request.actor,
+        mapped,
+        unwalkedCount: part.reused.length - part.reusedTop.length,
+        supplied: suppliedSpec,
+        cutKvRevision,
+        varsOverlay: request.vars ?? null,
+        inboxCutAt,
+        reusedSpawnChildIds,
+        approvalOwnerCheck: reusedApprovals.length > 0 ? directOwner : null,
+    };
+    const rerunPin: RerunClaimPin = {
+        sourceWorkflowId: rf.workflowId,
+        sourceRunId: sourceRun.runId,
+        fromExecutionId: picked.chosen.nodeExecutionId,
+        mode: picked.mode,
+        revision,
+        reusedCount: part.reused.length,
+        ...(suppliedSpec ? {
+            supplied: {
+                outcome: suppliedSpec.outcome,
+                outputSha256: sha256Hex(suppliedSpec.outputText),
+                noteSha256: sha256Hex(suppliedSpec.note),
+                note: suppliedSpec.note,
+            },
+        } : {}),
+    };
+    return { newRunId, revision, saved, targetIr, sourceInputs: sourceRun.inputs, rerunSpec, rerunPin };
 }
 
 /**
@@ -635,6 +1134,12 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     agentModels?: unknown;
     /** Additive Decision-only tool alias, merged with explicit agentModels before revision validation. */
     decisionModels?: unknown;
+    /** Phase 3 I7: re-run from a chosen visit of an ended Workflow of this definition. */
+    rerunFrom?: SessionStartRerunFrom | null;
+    /** Phase 3 I7 (OQ5): true when invoked through MCP; refuses reusing answered approvals even for the owner. */
+    viaMcp?: boolean;
+    /** Phase 3 I7 (M3): set when proxied through an agent session; refuses OQ1 grant inheritance and approval reuse. */
+    originatingSessionId?: string | null;
 }): Promise<SessionStartReceipt> {
     const parentSessionId = request.parentSessionId ?? request.ownerSessionId;
     request = { ...request, operationId: workflowStartOperationId(request.operationId, request.key) };
@@ -647,6 +1152,78 @@ export async function startSessionWorkflowDefinition(host: WorkflowHost, request
     // (a later save would otherwise select another revision); a request that names another one is refused.
     const prior = await storedStartPin(host, workflowSessionId);
     if (prior) return replaySessionStart(host, request, workflowSessionId, prior);
+    if (request.rerunFrom) {
+        const rf = validateRerunStartArguments(request);
+        const definition = await definitionOf(host, request.ownerSessionId, request.definition);
+        const prepared = await prepareRerunStart(host, request, definition, rf);
+        if (host.scripts === false) {
+            requireWorkflowScripts(host, prepared.targetIr, "start");
+        }
+        await requireWorkflowStartLimits(host, parentSessionId, request.nestingLevel ?? null);
+        const resolvedGrant = await resolveRerunToolBinding(host, request, rf.workflowId, prepared.targetIr, definition.name);
+        const binding = resolvedGrant.binding;
+        const workspace = resolvedGrant.sourceWorkspace ?? startWorkspaceSelection(binding, {
+            ...(request.workspaceDefaults !== undefined ? { workspaceDefaults: request.workspaceDefaults } : {}),
+            ...(request.workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory: request.workspaceWorkingDirectory } : {}),
+            ...(request.workspaceInherited !== undefined ? { workspaceInherited: request.workspaceInherited } : {}),
+        });
+        if (binding) binding.workspace = workspace;
+        const offers = await workflowAgentOffers(host, prepared.targetIr, binding, request.ownerSessionId);
+        const warnings = requireWorkflowToolRequirements(prepared.targetIr, binding, definition.name, offers);
+        const rerunPin: RerunClaimPin = {
+            ...prepared.rerunPin,
+            ...(resolvedGrant.inherited ? { grant: "inherited" as const } : {}),
+        };
+        const agentModels = await startAgentModelsOf(host, request, prepared.targetIr, `revision ${prepared.revision} of ${definition.name}`);
+        const modelRequest = decisionModelRequestDigest(request, prepared.targetIr, agentModels);
+        const createOpId = `start:${request.operationId}`;
+        let stored;
+        try {
+            stored = await createWorkflow(host, {
+                workflowSessionId,
+                parentSessionId,
+                ...(request.owner ? { owner: request.owner } : {}),
+                yaml: prepared.saved.yaml,
+                actor: request.actor,
+                operationId: createOpId,
+                publish: true,
+                start: {
+                    inputs: prepared.sourceInputs,
+                    ...(request.vars ? { vars: request.vars } : {}),
+                    ...(agentModels ? { agentModels } : {}),
+                    ...(modelRequest ? { modelRequest } : {}),
+                    runId: prepared.newRunId,
+                    rerun: prepared.rerunSpec,
+                },
+                rerunPin,
+                notifyParent: request.notifyParent !== false,
+                ...(binding ? { binding } : {}),
+                workspace,
+                sessionPin: { ownerSessionId: request.ownerSessionId, definitionId: definition.definitionId, revision: prepared.revision },
+                childBudget: { max: WORKFLOW_START_MAX_RUNNING_CHILDREN },
+            });
+        } catch (error) {
+            if (request.key !== undefined && error instanceof WorkflowStoreError && error.code === "WORKFLOW_EXISTS") {
+                throw new WorkflowStoreError("OPERATION_CONFLICT", "This key was used for a different Workflow start. Use a new key for another attempt.");
+            }
+            throw error;
+        }
+        const receipt: WorkflowDefinitionReceipt = stored.receipt;
+        const effectiveModels = receipt.run ? await runAgainAgentModels(host, receipt.workflowSessionId) : null;
+        return {
+            operation: "start",
+            definitionId: definition.definitionId,
+            name: definition.name,
+            revision: prepared.revision,
+            workflowId: receipt.workflowSessionId,
+            runId: receipt.run?.runId ?? null,
+            replayed: stored.replayed,
+            rerun: rerunReceiptFromPin(rerunPin),
+            ...(warnings.length ? { warnings } : {}),
+            ...(await delegatedAnswer(host, workflowSessionId)),
+            ...startReceiptModelFields(effectiveModels, prepared.targetIr),
+        };
+    }
     const definition = await definitionOf(host, request.ownerSessionId, request.definition);
     let revision: number | null = request.revision ?? null;
     if (request.runAgainOf) {
