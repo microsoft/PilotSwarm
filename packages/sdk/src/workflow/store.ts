@@ -4785,10 +4785,20 @@ export class WorkflowStore {
                 const node = nodeFrom(existing.rows[0]);
                 // An input evaluated with another KV revision may differ; the stored admission stands.
                 const sameBasis = node.kvRevision === input.kvRevision;
-                if (node.runId !== input.runId || node.scopeId !== input.scopeId || node.nodeId !== input.nodeId || node.ordinal !== input.ordinal
-                    || node.predecessorId !== input.predecessorId || node.arrivalRoute !== input.arrivalRoute
-                    || (sameBasis && (node.inputSha256 !== inputSha256
-                        || (node.carrySnapshot === null ? null : canonicalJson(node.carrySnapshot)) !== carryText))) {
+                const coordMismatch = node.runId !== input.runId || node.scopeId !== input.scopeId || node.nodeId !== input.nodeId || node.ordinal !== input.ordinal
+                    || node.predecessorId !== input.predecessorId || node.arrivalRoute !== input.arrivalRoute;
+                const payloadMismatch = sameBasis && (node.inputSha256 !== inputSha256
+                    || (node.carrySnapshot === null ? null : canonicalJson(node.carrySnapshot)) !== carryText);
+                if (coordMismatch || payloadMismatch) {
+                    if (coordMismatch && run.rerunResume && run.rerunResumedAt === null && live && ACTIVE_RUN_STATUSES.includes(run.status)) {
+                        const ended = await this.failRerunDivergedIn(client, run, {
+                            reason: "pre_cut_coord_mismatch",
+                            nodeExecutionId: input.nodeExecutionId,
+                            expected: { predecessorId: node.predecessorId, arrivalRoute: node.arrivalRoute },
+                            actual: { predecessorId: input.predecessorId, arrivalRoute: input.arrivalRoute },
+                        });
+                        return { admitted: false as const, reason: "inactive" as const, run: ended };
+                    }
                     throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Node execution ${input.nodeExecutionId} was admitted with different coordinates.`);
                 }
                 return { admitted: true as const, inserted: false, node };
@@ -4814,6 +4824,24 @@ export class WorkflowStore {
                       WHERE parallel.node_execution_id = $1`, [branchScope.parallelNodeExecutionId]);
                 if (parents[0] && (str(parents[0], "state") === "completed" || (parents[0].past === true && input.nodeType !== "terminal"))) {
                     return { admitted: false as const, reason: "cut" as const, run };
+                }
+            }
+            // I7 §5.2: First new visit cut guard — placed strictly AFTER expired/stopping/inactive/kv_changed/cut
+            // and BEFORE any insert so a mismatch fails rerun_diverged with 0 rows or side effects written.
+            if (run.rerunResume && run.rerunResumedAt === null) {
+                const mismatch = this.checkRerunCutGuardMismatch(run.rerunResume, {
+                    scopeId: input.scopeId,
+                    nodeId: input.nodeId,
+                    ordinal: input.ordinal,
+                    predecessorId: input.predecessorId,
+                    arrivalRoute: input.arrivalRoute,
+                    kvRevision: input.kvRevision,
+                    inputSha256,
+                    carrySha256: carryText === null ? null : sha256Hex(carryText),
+                });
+                if (mismatch !== null) {
+                    const ended = await this.failRerunDivergedIn(client, run, mismatch);
+                    return { admitted: false as const, reason: "inactive" as const, run: ended };
                 }
             }
             let immediate = input.immediate;
@@ -5076,6 +5104,13 @@ export class WorkflowStore {
                     run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null, clockDeadline, carryText],
             );
             const node = nodeFrom(rows[0]);
+            if (run.rerunResume && run.rerunResumedAt === null) {
+                await client.query(
+                    `UPDATE ${this.t.runs} SET rerun_resumed_at = clock_timestamp(), updated_at = now()
+                      WHERE run_id = $1 AND rerun_resumed_at IS NULL`,
+                    [input.runId],
+                );
+            }
             if (approval !== null && approvalOwner !== null && node.state === "pending") {
                 await recordApprovalIn(client, this.schema, run, node, approval.question, approvalOwner);
             }
@@ -8266,6 +8301,88 @@ export class WorkflowStore {
      * and active: the run's terminal columns, its terminal node, its pending node executions and its pending sends to
      * workflows, and the projection. Returns the ended run.
      */
+    /**
+     * Ends an active pre-cut re-run run with `code: "rerun_diverged"` (zero new rows or effects started).
+     * Called by enterNode on cut-guard mismatch and by runtime.enterNodeActivity on pre-cut coordinate mismatch.
+     */
+    async failRerunDiverged(runId: string, details: JsonObject): Promise<WorkflowRunRow> {
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, runId));
+            const run = await this.lockRun(client, runId);
+            if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return run;
+            return this.failRerunDivergedIn(client, run, details);
+        });
+    }
+
+    private checkRerunCutGuardMismatch(
+        resume: WorkflowRerunResume,
+        actual: {
+            scopeId: string;
+            nodeId: string;
+            ordinal: number;
+            predecessorId: string | null;
+            arrivalRoute: string | null;
+            kvRevision: number;
+            inputSha256: string;
+            carrySha256: string | null;
+        },
+    ): JsonObject | null {
+        if (actual.scopeId !== "root") {
+            return { reason: "scope_mismatch", mode: resume.mode, expectedScope: "root", actualScope: actual.scopeId };
+        }
+        if (actual.predecessorId !== resume.predecessorId) {
+            return { reason: "predecessor_mismatch", mode: resume.mode, expectedPredecessorId: resume.predecessorId, actualPredecessorId: actual.predecessorId };
+        }
+        if (resume.mode === "run_again" || resume.mode === "supply") {
+            if (actual.nodeId !== resume.stateId || actual.ordinal !== resume.ordinal || actual.arrivalRoute !== resume.arrivalRoute) {
+                return {
+                    reason: "cut_coord_mismatch",
+                    mode: resume.mode,
+                    expected: { stateId: resume.stateId, ordinal: resume.ordinal, arrivalRoute: resume.arrivalRoute },
+                    actual: { stateId: actual.nodeId, ordinal: actual.ordinal, arrivalRoute: actual.arrivalRoute },
+                };
+            }
+        }
+        if (resume.mode === "run_again" && resume.sameIr && actual.kvRevision === resume.cutKvRevision && resume.expectedInputSha256 !== null) {
+            if (actual.inputSha256 !== resume.expectedInputSha256 || actual.carrySha256 !== resume.expectedCarrySha256) {
+                return {
+                    reason: "same_ir_input_hash_mismatch",
+                    mode: resume.mode,
+                    expectedInputSha256: resume.expectedInputSha256,
+                    actualInputSha256: actual.inputSha256,
+                    expectedCarrySha256: resume.expectedCarrySha256,
+                    actualCarrySha256: actual.carrySha256,
+                };
+            }
+        }
+        return null;
+    }
+
+    private async failRerunDivergedIn(client: PoolClient, run: WorkflowRunRow, details: JsonObject): Promise<WorkflowRunRow> {
+        const message = "Re-run pass-over diverged from the expected cut point; stopped before starting new work.";
+        return this.endRunIn(client, run, {
+            status: "failed",
+            terminalNodeId: null,
+            terminalOutcome: null,
+            outputText: null,
+            errorText: canonicalJson({ code: "rerun_diverged", message, details }),
+            endPending: { winner: "controller", message },
+            projection: {
+                sessionId: run.workflowSessionId,
+                events: [{
+                    eventType: "workflow.failed",
+                    data: jsonbSafeValue(redactWorkflowEventData({
+                        runId: run.runId,
+                        code: "rerun_diverged",
+                        message,
+                        details,
+                    })) as JsonObject,
+                }],
+                update: { state: "failed", lastError: message, touch: true },
+            },
+        });
+    }
+
     private async endRunIn(client: PoolClient, run: WorkflowRunRow, input: {
         status: "completed" | "failed" | "cancelled";
         terminalNodeId: string | null;

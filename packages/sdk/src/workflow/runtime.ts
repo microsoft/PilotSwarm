@@ -2182,6 +2182,15 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         if (admitted) {
             if (admitted.runId !== runId || admitted.scopeId !== scopeId || admitted.nodeId !== nodeId || admitted.ordinal !== ordinal
                 || admitted.predecessorId !== predecessorId || admitted.arrivalRoute !== arrivalRoute) {
+                if (run.rerunResume && run.rerunResumedAt === null) {
+                    const ended = await store.failRerunDiverged(runId, {
+                        reason: "pre_cut_coord_mismatch",
+                        nodeExecutionId,
+                        expected: { predecessorId: admitted.predecessorId, arrivalRoute: admitted.arrivalRoute },
+                        actual: { predecessorId, arrivalRoute },
+                    });
+                    return { admitted: false, status: ended.status, outcome: ended.terminalOutcome };
+                }
                 throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Node execution ${nodeExecutionId} was admitted with different coordinates.`);
             }
             return { admitted: true, nodeExecutionId, state: admitted.state, deadlineMs: admitted.deadlineAt === null ? null : admitted.deadlineAt.getTime(),

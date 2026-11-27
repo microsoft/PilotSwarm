@@ -679,3 +679,135 @@ describe("Task 4b: KV revisions 1..R (+ vars R+1), copyRerunInboxIn (TTL restart
         });
     });
 });
+
+describe("Task 4c: 3-mode enterNode cut guard (run_again, continue, supply) & failRerunDiverged", () => {
+    it("enforces cut guard across all 3 modes (incl. supply -> terminal & same-IR byte check), respects stopping/kv_changed/paused precedence, and fails rerun_diverged with 0 rows on mismatch", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const store = client._catalog.workflowStore();
+            const src = await seedEndedSourceWorkflow(client);
+            const srcKeys = await store.listRerunKeys(src.runId);
+            const step1Key = srcKeys.find(k => k.nodeId === "step1");
+            const step2Key = srcKeys.find(k => k.nodeId === "step2");
+
+            const makeRerun = async (mode, resumeOverrides = {}, opts = {}) => {
+                const wfId = randomUUID();
+                const runId = randomUUID();
+                const part = partitionRerunVisits(srcKeys, step2Key.nodeExecutionId, mode);
+                const mapped = mapRerunExecutions(runId, part.reused);
+                const mappedV = mode === "supply" ? mapRerunSuppliedExecution(runId, step2Key, mapped) : null;
+                const baseResume = mode === "supply"
+                    ? buildRerunResume({
+                        mode: "supply", chosen: step2Key, mappedPredecessorId: mappedV.newPredecessorId,
+                        cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256, targetIrSha256: src.compiled.irSha256,
+                        supplied: { mappedSuppliedId: mappedV.newId, outcome: "ok", outputSha256: sha256Hex("{}"), note: "ok", at: new Date().toISOString(), nextStateId: "done", nextOrdinal: 1 },
+                    })
+                    : buildRerunResume({
+                        mode, chosen: step2Key, mappedPredecessorId: mapped.at(-1).newId,
+                        cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256,
+                        targetIrSha256: opts.changedIr ? "different-ir" : src.compiled.irSha256,
+                    });
+                const resume = { ...baseResume, ...resumeOverrides };
+                await client._catalog.createWorkflowSession(wfId, { parentSessionId: src.ownerId, title: `guard-${mode}` });
+                await store.createDefinition({
+                    workflowSessionId: wfId, parentSessionId: src.ownerId, notifyParent: true,
+                    yaml: SIMPLE_YAML, compiled: src.compiled, actor: ACTOR,
+                    operationId: `guard-${wfId}`, requestSha256: sha256Hex(`guard-${wfId}`),
+                    publish: true,
+                    start: { runId, mode: "live", inputsText: "{}", kvText: "{}", controllerInstanceId: `session-${wfId}`, controllerVersion: "1.3.0", testAgentMode: null },
+                    title: `guard-${mode}`,
+                    rerun: {
+                        sourceWorkflowSessionId: src.wfId, sourceRunId: src.runId,
+                        fromExecutionId: step2Key.nodeExecutionId, mode, resume, actor: ACTOR,
+                        mapped, unwalkedCount: 0,
+                        supplied: mappedV ? { newExecutionId: mappedV.newId, newPredecessorId: mappedV.newPredecessorId, sourceExecutionId: step2Key.nodeExecutionId, outcome: "ok", outputText: "{}", note: "ok", at: new Date() } : null,
+                        cutKvRevision: 1, inboxCutAt: new Date(), reusedSpawnChildIds: [], approvalOwnerCheck: null,
+                    },
+                });
+                await store.beginRun(runId);
+                return { wfId, runId, mapped, mappedV, resume };
+            };
+
+            // 1. run_again: same-IR inputSha256 mismatch -> rerun_diverged with 0 rows inserted!
+            const r1 = await makeRerun("run_again");
+            const badEnter = await store.enterNode({
+                runId: r1.runId,
+                nodeExecutionId: nodeExecutionIdFor(r1.runId, "root", "step2", 1),
+                scopeId: "root", nodeId: "step2", ordinal: 1, nodeType: "script",
+                predecessorId: r1.mapped[0].newId, arrivalRoute: "ok",
+                inputText: canonicalJson({ v: 999 }), kvRevision: 1, waitSeconds: null, immediate: null,
+            });
+            expect(badEnter.admitted).toBe(false);
+            expect(badEnter.reason).toBe("inactive");
+            expect(badEnter.run.status).toBe("failed");
+            expect(badEnter.run.terminalError?.code).toBe("rerun_diverged");
+            expect(await store.readNodeExecution(nodeExecutionIdFor(r1.runId, "root", "step2", 1))).toBeNull();
+
+            // 2. run_again: matching same-IR input -> admits and stamps rerun_resumed_at!
+            const r2 = await makeRerun("run_again");
+            const okEnter = await store.enterNode({
+                runId: r2.runId,
+                nodeExecutionId: nodeExecutionIdFor(r2.runId, "root", "step2", 1),
+                scopeId: "root", nodeId: "step2", ordinal: 1, nodeType: "script",
+                predecessorId: r2.mapped[0].newId, arrivalRoute: "ok",
+                inputText: canonicalJson({ v: 1 }), kvRevision: 1, waitSeconds: null, immediate: null,
+            });
+            expect(okEnter.admitted).toBe(true);
+            expect((await store.readRun(r2.runId)).rerunResumedAt).not.toBeNull();
+
+            // 3. Precedence: kv_changed returns reason "kv_changed" WITHOUT failing rerun_diverged!
+            const rPrec = await makeRerun("run_again");
+            const kvRefused = await store.enterNode({
+                runId: rPrec.runId,
+                nodeExecutionId: nodeExecutionIdFor(rPrec.runId, "root", "wrong_node", 1),
+                scopeId: "root", nodeId: "wrong_node", ordinal: 1, nodeType: "script",
+                predecessorId: rPrec.mapped[0].newId, arrivalRoute: "wrong",
+                inputText: "{}", kvRevision: 99, waitSeconds: null, immediate: null,
+            });
+            expect(kvRefused.admitted).toBe(false);
+            expect(kvRefused.reason).toBe("kv_changed");
+            expect((await store.readRun(rPrec.runId)).status).toBe("running");
+
+            // 4. supply -> terminal: matching successor stamps rerun_resumed_at; mismatched route fails rerun_diverged with 0 rows
+            const rSupOk = await makeRerun("supply");
+            const supEnterOk = await store.enterNode({
+                runId: rSupOk.runId,
+                nodeExecutionId: nodeExecutionIdFor(rSupOk.runId, "root", "done", 1),
+                scopeId: "root", nodeId: "done", ordinal: 1, nodeType: "terminal",
+                predecessorId: rSupOk.mappedV.newId, arrivalRoute: "ok",
+                inputText: "{}", kvRevision: 1, waitSeconds: null, immediate: null,
+            });
+            expect(supEnterOk.admitted).toBe(true);
+            expect((await store.readRun(rSupOk.runId)).rerunResumedAt).not.toBeNull();
+
+            const rSupBad = await makeRerun("supply");
+            const supEnterBad = await store.enterNode({
+                runId: rSupBad.runId,
+                nodeExecutionId: nodeExecutionIdFor(rSupBad.runId, "root", "failed", 1),
+                scopeId: "root", nodeId: "failed", ordinal: 1, nodeType: "terminal",
+                predecessorId: rSupBad.mappedV.newId, arrivalRoute: "failure",
+                inputText: "{}", kvRevision: 1, waitSeconds: null, immediate: null,
+            });
+            expect(supEnterBad.admitted).toBe(false);
+            expect(supEnterBad.run.terminalError?.code).toBe("rerun_diverged");
+            expect(await store.readNodeExecution(nodeExecutionIdFor(rSupBad.runId, "root", "failed", 1))).toBeNull();
+
+            // 5. continue: mismatched predecessor fails rerun_diverged; matching predecessor stamps rerun_resumed_at
+            const rContBad = await makeRerun("continue");
+            const contBad = await store.enterNode({
+                runId: rContBad.runId,
+                nodeExecutionId: nodeExecutionIdFor(rContBad.runId, "root", "failed", 1),
+                scopeId: "root", nodeId: "failed", ordinal: 1, nodeType: "terminal",
+                predecessorId: rContBad.mapped[0].newId, arrivalRoute: "ok",
+                inputText: "{}", kvRevision: 1, waitSeconds: null, immediate: null,
+            });
+            expect(contBad.admitted).toBe(false);
+            expect(contBad.run.terminalError?.code).toBe("rerun_diverged");
+
+            // 6. failRerunDiverged ends active pre-cut rerun immediately
+            const rDiv = await makeRerun("run_again");
+            const ended = await store.failRerunDiverged(rDiv.runId, { reason: "pre_cut_coord_mismatch", stateId: step1Key.nodeId });
+            expect(ended.status).toBe("failed");
+            expect(ended.terminalError?.code).toBe("rerun_diverged");
+        });
+    });
+});
