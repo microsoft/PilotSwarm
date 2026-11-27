@@ -54,8 +54,9 @@ Start / `spawn` steps, Workflow agent-step host, and fallback
 `captureSpawnToolsV1` with no session orchestration version bump) now share one
 `effectiveLevel` helper over stored lineage: nothing goes past level `2`, the
 first Workflow in a chain is free (`+0`), each later Workflow and sub-agent
-adds `+1`, an agent step sits at its Workflow's level (`+0`), and system
-sessions reset to `0`. Chains without a Workflow are unchanged. A child
+adds `+1`, an agent step sits at its Workflow's level (`+0`), and platform
+system sessions (with all-system ancestry) reset to `0`. Chains without a
+Workflow are unchanged (except all-system platform chains). A child
 Workflow's agent step now sits at level `1` and can spawn a level-`2`
 sub-agent, and Workflows may nest up to three deep (`0 -> 1 -> 2`). Refusal
 messages, `docs/user-guide/workflows.md` (*How deep can sessions and Workflows

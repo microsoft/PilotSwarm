@@ -34,7 +34,7 @@ two (the mark, the command), so that other steps can run between them; `CheckAll
 header). `Inv_OneLive` does not count an agent session whose end command is on its way.
 `RecheckSeesEnding` says whether the spawn's check sees an agent session whose end was asked while one of its turns
 runs (the code: no, its orchestration reads Running until the turn ends). `cases.tsv`, `cases.json` and
-`tlc-templates.json` (134 cases: 89 before tf1 and i1) are written by
+`tlc-templates.json` (149 cases: 134 `WfContinuedSession` [89 before tf1 and i1] + 15 `WfBranchContinuedSession`) are written by
 
     I1_AFIX_HEAD=1e0ea856 I1_MERGE_HEAD=58e4d056 \
     G1B_HEAD=7024ef6f DRR1_HEAD=69d07073 DRR2_HEAD=5451a22e DRR1B_HEAD=7bd79a46 \

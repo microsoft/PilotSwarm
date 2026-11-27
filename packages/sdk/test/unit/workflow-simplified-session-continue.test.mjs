@@ -134,7 +134,7 @@ test("the compiler: continue is the default where it is allowed and is carried; 
 
     const wrong = compileWorkflow(LOOP("sometimes"));
     assert.deepEqual(errors(wrong).map(item => [item.code, item.path]), [["WORKFLOW_FIELD_INVALID", "states.talk.session"]]);
-    assert.match(errors(wrong)[0].message, /^session must be continue \(one agent session across the state's visits, the default\) or new /);
+    assert.match(errors(wrong)[0].message, /^session must be continue \(one agent session across the state's visits, the default outside parallel states\) or new /);
 });
 
 test("the compiler: in a For each body or a named branch an agent state that sets no session gets a new session each visit", () => {

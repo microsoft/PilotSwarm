@@ -6624,13 +6624,13 @@ export class WorkflowStore {
         if (!storableId(sessionId)) return null;
         const lineageSql = (withInvocations: boolean) => `
             WITH RECURSIVE lineage AS (
-                SELECT session_id, parent_session_id, session_kind, is_system, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
+                SELECT session_id, parent_session_id, ${withInvocations ? "session_kind, " : ""}is_system, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
                 UNION ALL
-                SELECT parent.session_id, parent.parent_session_id, parent.session_kind, parent.is_system, lineage.distance + 1, parent.deleted_at IS NOT NULL
+                SELECT parent.session_id, parent.parent_session_id, ${withInvocations ? "parent.session_kind, " : ""}parent.is_system, lineage.distance + 1, parent.deleted_at IS NOT NULL
                   FROM ${this.t.sessions} parent JOIN lineage ON parent.session_id = lineage.parent_session_id
                  WHERE lineage.distance < ${WORKFLOW_LINEAGE_MAX_DEPTH}
             )
-            SELECT lineage.session_id, lineage.parent_session_id, lineage.session_kind, lineage.is_system, lineage.distance, lineage.deleted,
+            SELECT lineage.session_id, lineage.parent_session_id, ${withInvocations ? "lineage.session_kind, " : ""}lineage.is_system, lineage.distance, lineage.deleted,
                    ${withInvocations ? "invocation.node_execution_id, invocation.workflow_session_id, invocation.controlling_session_id"
                        : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
               FROM lineage
@@ -6649,7 +6649,8 @@ export class WorkflowStore {
         try {
             ({ rows } = await this.pool.query(lineageSql(true), [sessionId]));
         } catch (error) {
-            if ((error as { code?: unknown })?.code !== "42P01") throw error;
+            const code = (error as { code?: unknown })?.code;
+            if (code !== "42P01" && code !== "42703") throw error;
             ({ rows } = await this.pool.query(lineageSql(false), [sessionId]));
         }
         if (!rows[0]) return null;

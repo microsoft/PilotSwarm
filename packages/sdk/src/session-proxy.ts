@@ -6021,78 +6021,78 @@ export function registerActivities(
                 runConfig.isCrawler = resolveCrawlerRole(runConfig.agentIdentity, runConfig.boundAgentName, userAgents, systemAgents);
                 runConfig.isHarvester = runConfig.isCrawler;
                 const workflowAgentTools = await applyWorkflowToolContext(runConfig, lineage, store);
-            if (store) {
-                if (parent.workflowRef) runConfig.workflowContextTrigger = "lasting";
-                runConfig.workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.parentSessionId);
-            }
-            const provider = sessionManager.getWorkspaceProvider();
-            const defaults = await resolveWorkspaceDefaults(provider, {
-                sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
-                owner: parent.owner, isSystem: parent.isSystem,
-            }, { onError: message => activityCtx.traceInfo(`[captureSpawnTools] ${message}`) });
-            const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, defaults);
-            const workspace = withDefaults.workspace;
-            if (workspace) {
-                const request: import("./types.js").WorkspaceAttachRequest = {
-                    sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
-                    workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
-                    turnIndex, purpose: "turn",
-                };
-                const sent: import("./types.js").WorkspaceAttachRequest[] = [];
-                const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
-                    sent.push(request);
-                    sessionManager.holdWorkspaceFolders(input.parentSessionId, sent.map(request => ({
-                        root: request.workspace.root, ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
-                        ...(request.attachment ? { attachment: request.attachment } : {}),
-                        rootSessionId: request.rootSessionId, revision: request.revision, turnIndex: request.turnIndex,
-                    })));
-                };
-                const prepared = await prepareWorkspace(provider, { ...request, workspace: workingFolderOf(workspace) }, { onAttach });
-                const optionalHome = !runConfig.workspace && withDefaults.homeIsWorkingFolder && defaults?.home?.required !== true;
-                if (!prepared.ok && !optionalHome) throw new CapabilityGrantError(`The parent's workspace is unavailable (${prepared.code}: ${prepared.message}). No child was created.`);
-                if (!prepared.ok) activityCtx.traceInfo(`[captureSpawnTools] optional home unavailable: ${prepared.code} ${prepared.message}`);
-                if (prepared.ok) {
-                    const extras = workspace.extra ? await prepareWorkspaceExtras(provider, request,
-                        { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) }) : [];
-                    const bad = extras.find(extra => !extra.ok && extra.required);
-                    if (bad && !bad.ok) throw new CapabilityGrantError(`The parent's required extra folder '${bad.name}' is unavailable (${bad.code}: ${bad.message}). No child was created.`);
-                    const homeExtra = withDefaults.homeExtra ? extras.find(extra => extra.ok && extra.name === withDefaults.homeExtra) : undefined;
-                    runConfig.workspaceAttach = {
-                        root: prepared.root.name, rootPath: prepared.root.path, path: prepared.path, realPath: prepared.realPath,
-                        ...(prepared.adopt ? { adopt: prepared.adopt } : {}), ...(prepared.repo ? { repo: prepared.repo } : {}),
-                        ...(withDefaults.homeIsWorkingFolder ? { homeIsWorkingFolder: true } : {}),
-                        ...(withDefaults.defaultNames.length ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
-                        ...(homeExtra?.ok && homeExtra.adopt ? {
-                            home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
-                        } : {}),
-                        ...(prepared.readOnly ? { readOnly: true } : {}),
-                        revision: request.revision, rootSessionId: request.rootSessionId, turnIndex: request.turnIndex,
-                        ...(typeof activityCtx.sessionId === "string" ? { affinityKey: activityCtx.sessionId } : {}),
-                        extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
-                        extrasUnavailable: extras.flatMap(extra => extra.ok ? [] : [{
-                            name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
-                            code: extra.code, message: extra.message,
-                        }]),
-                    };
+                if (store) {
+                    if (parent.workflowRef) runConfig.workflowContextTrigger = "lasting";
+                    runConfig.workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.parentSessionId);
                 }
-            }
-            let epochStart = false;
-            if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
-                // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
-                const preamble = await runTurnPreamble({
-                    store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
-                    transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
-                    dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
+                const provider = sessionManager.getWorkspaceProvider();
+                const defaults = await resolveWorkspaceDefaults(provider, {
+                    sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                    owner: parent.owner, isSystem: parent.isSystem,
+                }, { onError: message => activityCtx.traceInfo(`[captureSpawnTools] ${message}`) });
+                const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, defaults);
+                const workspace = withDefaults.workspace;
+                if (workspace) {
+                    const request: import("./types.js").WorkspaceAttachRequest = {
+                        sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                        workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
+                        turnIndex, purpose: "turn",
+                    };
+                    const sent: import("./types.js").WorkspaceAttachRequest[] = [];
+                    const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
+                        sent.push(request);
+                        sessionManager.holdWorkspaceFolders(input.parentSessionId, sent.map(request => ({
+                            root: request.workspace.root, ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
+                            ...(request.attachment ? { attachment: request.attachment } : {}),
+                            rootSessionId: request.rootSessionId, revision: request.revision, turnIndex: request.turnIndex,
+                        })));
+                    };
+                    const prepared = await prepareWorkspace(provider, { ...request, workspace: workingFolderOf(workspace) }, { onAttach });
+                    const optionalHome = !runConfig.workspace && withDefaults.homeIsWorkingFolder && defaults?.home?.required !== true;
+                    if (!prepared.ok && !optionalHome) throw new CapabilityGrantError(`The parent's workspace is unavailable (${prepared.code}: ${prepared.message}). No child was created.`);
+                    if (!prepared.ok) activityCtx.traceInfo(`[captureSpawnTools] optional home unavailable: ${prepared.code} ${prepared.message}`);
+                    if (prepared.ok) {
+                        const extras = workspace.extra ? await prepareWorkspaceExtras(provider, request,
+                            { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) }) : [];
+                        const bad = extras.find(extra => !extra.ok && extra.required);
+                        if (bad && !bad.ok) throw new CapabilityGrantError(`The parent's required extra folder '${bad.name}' is unavailable (${bad.code}: ${bad.message}). No child was created.`);
+                        const homeExtra = withDefaults.homeExtra ? extras.find(extra => extra.ok && extra.name === withDefaults.homeExtra) : undefined;
+                        runConfig.workspaceAttach = {
+                            root: prepared.root.name, rootPath: prepared.root.path, path: prepared.path, realPath: prepared.realPath,
+                            ...(prepared.adopt ? { adopt: prepared.adopt } : {}), ...(prepared.repo ? { repo: prepared.repo } : {}),
+                            ...(withDefaults.homeIsWorkingFolder ? { homeIsWorkingFolder: true } : {}),
+                            ...(withDefaults.defaultNames.length ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
+                            ...(homeExtra?.ok && homeExtra.adopt ? {
+                                home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
+                            } : {}),
+                            ...(prepared.readOnly ? { readOnly: true } : {}),
+                            revision: request.revision, rootSessionId: request.rootSessionId, turnIndex: request.turnIndex,
+                            ...(typeof activityCtx.sessionId === "string" ? { affinityKey: activityCtx.sessionId } : {}),
+                            extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
+                            extrasUnavailable: extras.flatMap(extra => extra.ok ? [] : [{
+                                name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
+                                code: extra.code, message: extra.message,
+                            }]),
+                        };
+                    }
+                }
+                let epochStart = false;
+                if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
+                    // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
+                    const preamble = await runTurnPreamble({
+                        store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
+                        transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
+                        dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
+                        trace: activityTrace(activityCtx, "captureSpawnTools"),
+                    });
+                    epochStart = preamble.kind === "fresh" && preamble.uncommittedDiscard && turnIndex > 0;
+                }
+                await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
+                    turnIndex, transcriptEpoch, lockHeld: true,
+                    ...(epochStart ? { epochStart: true } : {}),
                     trace: activityTrace(activityCtx, "captureSpawnTools"),
+                    ...(workflowAgentTools ? { workflowAgentTools } : {}),
                 });
-                epochStart = preamble.kind === "fresh" && preamble.uncommittedDiscard && turnIndex > 0;
-            }
-            await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
-                turnIndex, transcriptEpoch, lockHeld: true,
-                ...(epochStart ? { epochStart: true } : {}),
-                trace: activityTrace(activityCtx, "captureSpawnTools"),
-                ...(workflowAgentTools ? { workflowAgentTools } : {}),
-            });
         });
     });
 

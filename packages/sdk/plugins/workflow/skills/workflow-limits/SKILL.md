@@ -1,6 +1,6 @@
 ---
 name: workflow-limits
-description: "The size limits a Workflow run meets, in one table: inputs, state outputs, joins, carry, messages, child results, variables and script tool calls. Load when data may be large or a fan-out collects child results."
+description: "Size limits, session/Workflow depth (max level 2), and parallel continued-session rules for Workflow runs: inputs, outputs, joins, carry, messages, child results, variables, and script tool calls."
 ---
 
 # Workflow limits
@@ -57,7 +57,7 @@ needed there.
 Nothing goes past level 2: each sub-agent or Workflow is one level below
 whoever started it, but the first Workflow in a chain is free (`+0`), and an
 agent step sits at its Workflow's level (`+0`). Workflows may nest three deep
-(`0 -> 1 -> 2`), and system sessions start again at level `0`.
+(`0 -> 1 -> 2`), and platform system sessions (and their system children) start again at level `0`.
 
 | Session | Level |
 |---|---|
@@ -66,7 +66,7 @@ agent step sits at its Workflow's level (`+0`). Workflows may nest three deep
 | First Workflow in a chain | starter's level (`+0`, free) |
 | Any later Workflow (`spawn` child) | starter's level `+ 1` |
 | Workflow agent step | its Workflow's level (`+0`) |
-| System session | resets to `0` |
+| Platform system session (all-system ancestry) | resets to `0` |
 | Native task | no level; cannot delegate |
 | Anything above level `2` | refused |
 

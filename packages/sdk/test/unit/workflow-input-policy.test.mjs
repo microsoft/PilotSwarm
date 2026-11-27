@@ -22,6 +22,7 @@ import {
 } from "../../dist/workflow/input-policy.js";
 import { registerActivities } from "../../dist/session-proxy.js";
 import { handleSubAgentAction } from "../../dist/orchestration/agents.js";
+import { WorkflowStore } from "../../dist/workflow/store.js";
 
 const ROOT = { childSessionId: "C", nodeExecutionId: "nx-1", workflowSessionId: "W", controllingSessionId: "P", distance: 0 };
 const LINEAGES = {
@@ -413,5 +414,40 @@ test("I9 Check 4: captureSpawnToolsV1 enforces stored-chain effectiveLevel befor
         assert.equal(failClosed.spawnCalls, 0);
         assert.equal(failClosed.pendingPrompt,
             "spawn_agent failed: this session's delegation chain cannot be verified, and nothing goes past level 2. Do this work yourself.");
+    }
+});
+
+test("WorkflowStore.readWorkflowLineage pre-0088 fallback omits session_kind on 42P01 and 42703 (Phase 2 review S-1)", async () => {
+    for (const pgCode of ["42P01", "42703"]) {
+        const queries = [];
+        const fakePool = {
+            async query(sql) {
+                queries.push(sql);
+                if (queries.length === 1) {
+                    const err = new Error(`pre-0088 missing relation/column (${pgCode})`);
+                    err.code = pgCode;
+                    throw err;
+                }
+                return {
+                    rows: [
+                        { session_id: "grandchild", parent_session_id: "child", is_system: false, distance: 0, deleted: false, node_execution_id: null, workflow_session_id: null, controlling_session_id: null },
+                        { session_id: "child", parent_session_id: "root", is_system: false, distance: 1, deleted: false, node_execution_id: null, workflow_session_id: null, controlling_session_id: null },
+                        { session_id: "root", parent_session_id: null, is_system: false, distance: 2, deleted: false, node_execution_id: null, workflow_session_id: null, controlling_session_id: null },
+                    ],
+                };
+            },
+        };
+        const wfStore = new WorkflowStore(fakePool, "copilot_sessions");
+        const lineage = await wfStore.readWorkflowLineage("grandchild");
+        assert.equal(queries.length, 2, `expected fallback retry on ${pgCode}`);
+        assert.ok(queries[0].includes("session_kind"), "primary query selects session_kind");
+        assert.ok(!queries[1].includes("session_kind"), `fallback query on ${pgCode} must not reference session_kind`);
+        assert.deepEqual(lineage, {
+            sessionId: "grandchild",
+            level: 2,
+            hasWorkflow: false,
+            agentRoot: null,
+            deleted: false,
+        });
     }
 });

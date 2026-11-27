@@ -1455,7 +1455,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     let session: "continue" | null = null;
     if (raw.session !== undefined && raw.session !== "new") {
         if (raw.session === "continue") session = "continue";
-        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.session`, "session must be continue (one agent session across the state's visits, the default) "
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.session`, "session must be continue (one agent session across the state's visits, the default outside parallel states) "
             + "or new (a new agent session for each visit, the only choice inside a For each).");
     }
     // FU-17: `tools: none` or a list of tool names limits what the state's agent may use; absent, it has its session's tools.
