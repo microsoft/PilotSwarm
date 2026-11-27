@@ -350,6 +350,48 @@ describe("I2: nested Workflows are read and controlled by every session above th
         }
     });
 
+    it("child_workflows full read gives one moment of a child that ends during the read (review r2)", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const top = randomUUID();
+            await h.catalog.createSession(top, { owner: OWNER_A });
+            const parent = await workflowOf(h, top, OWNER_A);
+            const child = await workflowOf(h, parent.workflowSessionId, OWNER_A);
+            // The child ends right after the read's first look at its run, as a terminal write commits all its fields at once.
+            let ended = false;
+            const end = async () => {
+                if (ended) return;
+                ended = true;
+                await h.q(`UPDATE SCHEMA.workflow_runs SET status = 'completed', terminal_outcome = 'succeeded', terminal_node_id = 'done',
+                    terminal_output = '{"report":"final"}', finished_at = now() WHERE run_id = $1`, [child.runId]);
+            };
+            const store = new Proxy(h.store, {
+                get(target, prop) {
+                    const value = Reflect.get(target, prop, target);
+                    if (typeof value !== "function") return value;
+                    if (prop === "listRuns" || prop === "readLiveRunResult" || prop === "readRun") {
+                        return async (...args) => { const result = await value.apply(target, args); await end(); return result; };
+                    }
+                    return value.bind(target);
+                },
+            });
+            const host = { ...hostOf(h), store };
+            const read = async () => JSON.parse(await childWorkflowsFromTool({ operation: "read", workflow_id: child.workflowSessionId, full_output: true },
+                { callerWorkflowSessionId: parent.workflowSessionId, host }));
+            const first = await read();
+            expect(first.ok, JSON.stringify(first.error)).toBe(true);
+            expect(ended, "the child ended during the read").toBe(true);
+            const active = ["admitted", "running", "paused"].includes(first.run.status);
+            // Either the moment before the end (active, no output) or the moment after (completed with its output), never a mix.
+            expect({ status: first.run.status, outcome: first.run.outcome, output: first.run.output })
+                .toEqual(active ? { status: first.run.status, outcome: null, output: null } : { status: "completed", outcome: "succeeded", output: '{"report":"final"}' });
+            const second = await read();
+            expect(second.run).toMatchObject({ runId: child.runId, status: "completed", outcome: "succeeded", terminalState: "done", output: '{"report":"final"}' });
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("child_workflows needs both parent records, and reads a kept outcome only for a Workflow that is gone", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
