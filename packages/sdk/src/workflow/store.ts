@@ -108,7 +108,7 @@ function sweeperLiveWorkflowRow(row: Row): boolean {
 }
 /** The Sweeper's NOWAIT lock found a session another transaction holds (sweeperSoftDelete). */
 class SweeperBusy extends Error {
-    constructor() { super("a session the Sweeper would delete is held by another transaction"); }
+    constructor() { super("a session the Sweeper would delete or must hold is held by another transaction"); }
 }
 /** A run that may admit a new node execution (a paused run admits none). */
 export const ADMITTING_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running"];
@@ -1952,6 +1952,7 @@ export class WorkflowStore {
      * one order (session, definition, run, node) and re-checks deletion here,
      * so it serializes with deletion (whose trigger ends workflow work in the same
      * transaction as the soft delete). False when the row is deleted or absent.
+     * Issue 412: the Sweeper's final check (FOR SHARE on a Workflow above its target) relies on every run end taking this lock first.
      */
     private async lockLiveSession(client: PoolClient, workflowSessionId: string): Promise<boolean> {
         const { rows } = await client.query(
@@ -3934,7 +3935,7 @@ export class WorkflowStore {
             });
         } catch (error) {
             if (error instanceof SweeperBusy) {
-                return { refused: { status: "Busy" as const, detail: "another transaction holds one of the sessions it would delete" } };
+                return { refused: { status: "Busy" as const, detail: "another transaction holds one of the sessions it would delete or must hold" } };
             }
             throw error;
         }
@@ -4008,13 +4009,14 @@ export class WorkflowStore {
         const { rows } = await client.query(
             `WITH RECURSIVE chain AS (
                  SELECT s.session_id AS start_id, s.session_id, s.parent_session_id, s.session_kind, s.service_kind, s.state, s.deleted_at,
-                        0 AS depth
+                        0 AS depth, ARRAY[s.session_id] AS path
                    FROM ${this.t.sessions} AS s
                   WHERE s.session_id = ANY($1::text[])
                  UNION ALL
                  SELECT chain.start_id, p.session_id, p.parent_session_id, p.session_kind, p.service_kind, p.state, p.deleted_at,
-                        chain.depth + 1
+                        chain.depth + 1, chain.path || p.session_id
                    FROM chain JOIN ${this.t.sessions} AS p ON p.session_id = chain.parent_session_id
+                  WHERE NOT (p.session_id = ANY(chain.path))
              )
              SELECT w.start_id, w.session_id AS workflow_session_id, a.session_id AS ancestor_session_id, a.state AS ancestor_state
                FROM chain AS w

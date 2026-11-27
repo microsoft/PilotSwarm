@@ -605,6 +605,20 @@ describe("the Sweeper's final check and delete under concurrency", () => {
         expect(await rowState(db, schema, agent)).toBe("kept");
     });
 
+    it("issue 412: the kept-session query ends on a cycle in parent links", { timeout: TIMEOUT }, async () => {
+        const a = randomUUID();
+        const b = randomUUID();
+        await catalog.createSession(a);
+        await catalog.createSession(b, { parentSessionId: a });
+        await db.query(`UPDATE ${schema}.sessions SET parent_session_id = $2 WHERE session_id = $1`, [a, b]);
+        const bounded = new pg.Pool({ connectionString: env.store, max: 1, statement_timeout: 10_000 });
+        try {
+            expect(await new WorkflowStore(bounded, env.cmsSchema).sweeperKeptSession({ sessionId: b, cascade: false })).toBeNull();
+        } finally {
+            await bounded.end();
+        }
+    });
+
     it("issue 412: a cleanup with no Workflow in or above it does not lock the sessions above it (a held parent does not refuse it)", { timeout: TIMEOUT }, async () => {
         const parent = randomUUID();
         const child = randomUUID();
