@@ -7,8 +7,8 @@
  * - save: the session row (FOR NO KEY UPDATE: saves only on a live session, Q7), then the definition row (FOR UPDATE); the guard
  *   names the definition and its revision (Q1): a stale save, or one on a deleted definition, is refused and writes
  *   nothing; a first save of a name relies on the live (session, name) key;
- * - delete (a person's, Q8): the session row (FOR SHARE), then the definition row (FOR UPDATE); refused while one of its
- *   Workflows is active (R6);
+ * - delete: the session (its own definitions only) or a person deletes a definition; the session row (FOR SHARE), then the
+ *   definition row (FOR UPDATE); refused while one of its Workflows is active (R6);
  * - Start (WorkflowStore.createDefinition with a session pin, requireSessionStartLocked): the session row (FOR SHARE: live), the
  *   definition row (FOR SHARE: not deleted), the revision (valid, the YAML being stored), before the Workflow's own rows.
  * An owner session that ends ends its Workflows (migration 0088's trigger, R5 and F2).
@@ -748,11 +748,12 @@ export class SessionDefinitionStore {
     }
 
     /**
-     * Delete a definition (a person's, Q8). Refused while one of its Workflows is active (R6: DEFINITION_IN_USE, naming
-     * them); its revisions stay, so a finished Workflow keeps its pinned copy. A repeated operation is answered from its
-     * receipt.
+     * Delete a definition (by the session for its own definitions, or by a person). Refused while one of its Workflows is
+     * active (R6: DEFINITION_IN_USE, naming them); its revisions stay, so a finished Workflow keeps its pinned copy. When
+     * `allowLocked` is false (the session's tool), package definitions (`locked: true`) are refused with DEFINITION_LOCKED.
+     * A repeated operation is answered from its receipt.
      */
-    async deleteDefinition(input: { ownerSessionId: string; definitionId: string; actor: SessionDefinitionActor; operationId: string; requestSha256: string })
+    async deleteDefinition(input: { ownerSessionId: string; definitionId: string; actor: SessionDefinitionActor; operationId: string; requestSha256: string; allowLocked?: boolean })
         : Promise<StoredSessionOperation<SessionDeleteReceipt>> {
         return this.transaction(async client => {
             const prior = await this.priorOperation<SessionDeleteReceipt>(client, input.ownerSessionId, input.operationId, "delete", input.requestSha256);
@@ -763,6 +764,11 @@ export class SessionDefinitionStore {
             if (!found || found.ownerSessionId !== input.ownerSessionId) {
                 throw new WorkflowStoreError("DEFINITION_NOT_FOUND", `This session has no Workflow Definition ${input.definitionId}.`);
             }
+            if (input.allowLocked === false && found.locked) {
+                throw new WorkflowStoreError("DEFINITION_LOCKED",
+                    `${found.name} comes from the package ${found.packageName ?? "it was published in"} and is locked: a session can only delete its own definitions, not package definitions. Nothing was deleted.`,
+                    { definitionId: found.definitionId, packageName: found.packageName });
+            }
             if (found.deletedAt !== null) throw new WorkflowStoreError("DEFINITION_DELETED", `${found.name} was already deleted.`, { definitionId: found.definitionId });
             const active = await client.query(
                 `SELECT d.workflow_session_id, s.title FROM ${this.t.wfDefinitions} d
@@ -771,8 +777,13 @@ export class SessionDefinitionStore {
                   WHERE d.session_definition_id = $1 ORDER BY d.created_at`, [input.definitionId, ACTIVE]);
             if (active.rows.length) {
                 const ids = active.rows.map((row: Row) => String(row.workflow_session_id));
+                const labels = active.rows.slice(0, 5).map((row: Row) => {
+                    const id = String(row.workflow_session_id);
+                    const title = typeof row.title === "string" && row.title.trim() ? row.title.trim().slice(0, 80) : null;
+                    return title ? `${title} (${id})` : id;
+                }).join(", ") + (active.rows.length > 5 ? ` (and ${active.rows.length - 5} more)` : "");
                 throw new WorkflowStoreError("DEFINITION_IN_USE",
-                    `${found.name} has ${ids.length === 1 ? "a Workflow" : `${ids.length} Workflows`} still running. Stop ${ids.length === 1 ? "it" : "them"} first, then delete it.`,
+                    `${found.name} has ${ids.length === 1 ? `an active Workflow: ${labels}` : `${ids.length} active Workflows: ${labels}`}. Stop or cancel ${ids.length === 1 ? "it" : "them"} first, then delete ${found.name}.`,
                     { definitionId: found.definitionId, workflowSessionIds: ids });
             }
             const { rows: deleted } = await client.query(

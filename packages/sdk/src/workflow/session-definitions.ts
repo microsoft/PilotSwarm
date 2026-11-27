@@ -11,7 +11,7 @@
  *   not live, a definition that is deleted, or a revision that is not valid, under their locks (Q3).
  * - read and list: definitions, revisions, diagnostics, YAML and the Workflows started from each. A read by the session
  *   records what it has seen (Q2).
- * - delete: a person's only (Q8), refused while one of its Workflows is active (R6).
+ * - delete: the session (its own definitions only) or a person deletes a definition; refused while one of its Workflows is active (R6).
  *
  * Stage 2.3 (P2–P6, E2-7; session-packages.ts): a package's Workflow Definition is attached to a session as its locked definition
  * `<package>/<name>` (attachSessionPackageWorkflow); Start then works as for the session's own. A newer package version is
@@ -786,9 +786,9 @@ export async function readSessionWorkflowDefinition(host: Pick<WorkflowHost, "st
     return { ...view, revision, graph: ir ? workflowGraphJson(ir, revision!.revision) : null };
 }
 
-/** A person deletes a definition (Q8); refused while one of its Workflows is active (R6). */
+/** Delete a definition (the session for its own definitions with `allowLocked: false`, or a person); refused while one of its Workflows is active (R6). */
 export async function deleteSessionWorkflowDefinition(host: Pick<WorkflowHost, "store">, request: {
-    ownerSessionId: string; definitionId: string; actor: SessionDefinitionActor; operationId: string;
+    ownerSessionId: string; definitionId: string; actor: SessionDefinitionActor; operationId: string; allowLocked?: boolean;
 }): Promise<StoredSessionOperation<SessionDeleteReceipt>> {
     requireOperationId(request.operationId);
     await requireSessionDefinitionsWritable(host, request.ownerSessionId);
