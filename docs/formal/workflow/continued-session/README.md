@@ -282,6 +282,17 @@ state counts (`i1.fix-safety` 445,565, `i1.fix-r2-safety` 6,521,296, `i1.fix-r2-
 | `i1.wit-loss-told` (non-vacuity) | reached | reached: the same trace, the next turn told |
 | `limit.i1-turn-fails-untold` | reached | reached (1,459 distinct states) |
 
+### Full run on the final model (D-2)
+
+All 134 cases on the final model (sha256 `014926672f2e...`; TLC 2.19, OpenJDK 21, two workers), 2026-11-27 08:23 to
+09:43 UTC: every case ended as expected, 75 PASS, 51 safety violations and 8 liveness violations, each where the case
+expects one (every finding, fault, witness and limit case). The longest, `cc.drr2-crash-live`, passed with 1,771,490
+distinct states in 16 minutes. The PASS cases keep their state counts (`cc.safety` 3,142, `fix.all` 78,282,
+`impl.cc-final-live` 659,197, `i1.fix-safety` 445,565, `i1.fix-r2-safety` 6,521,296, `i1.fix-memory-safety` 7,204,588,
+`i1.fix-memory-live` 207,181, `i1.fix-memory-turn-fails` 53,250). A violation's count depends on when a worker finds it
+(two workers): `i1.cc-false-memory-claim` violated `Inv_NoFalseMemoryClaim` at 1,035 distinct states, the witness
+`i1.wit-loss-told` was reached at 983 and `limit.i1-turn-fails-untold` at 1,349.
+
 ## How to run
 
 As in `../../session-orchestration/README.md`: `TLA_TOOLS=<dir with tla2tools.jar> ./check-packet.sh` then
