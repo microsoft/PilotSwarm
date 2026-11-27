@@ -30,12 +30,12 @@ For a `decision` state, call `load_skill` with name `workflow-decision`.
 | A durable delay | `wait` | `sleep` or timers in a script |
 | A check every N minutes or days | `wait`, check, repeat; load `workflow-polling` first | `cron`, a `receive` |
 | The owner's consent | `approval` | an agent's answer |
-| A typed message from a session or a workflow, maybe with a time limit | `messaging`, `mode: receive` | a polling loop in a script |
-| A one-way typed message to a session or a workflow | `messaging`, `mode: send` | reply text |
-| A typed answer from a session before a deadline | `messaging`, `mode: request` | a send and a receive |
-| The same steps for each item of a list, then one join | `parallel` | many agent states copied by hand |
+| A typed message (optional time limit) | `messaging`, `mode: receive` | a polling loop in a script |
+| A one-way typed message | `messaging`, `mode: send` | reply text |
+| A typed answer before a deadline | `messaging`, `mode: request` | a send and a receive |
+| Same steps per list item, then join | `parallel` | many agent states copied by hand |
 | Different nodes at once (a prompt or a model for each branch), then one join | `parallel` with named `branches` | several Workflows |
-| Start another saved Workflow without waiting and collect `WorkflowEnded@1` later | `spawn` | a blocking agent step in a loop |
+| Start a saved Workflow async, collect `WorkflowEnded@1` | `spawn` | a blocking agent step in a loop |
 | The end of the run, with its outcome | `terminal` | — |
 
 ## 3. Design a bounded graph
@@ -175,11 +175,9 @@ An agent state runs one task and waits for its typed result.
 
 ## 8. Parallel states
 
-A parallel state runs its `body` once for each item of `forEach`, or its
-named `branches`, and joins the branches.
+Runs `body` per `forEach` item, or named `branches`, then joins.
 
-- `forEach`: one binding that gives a list, or a list (at most 64 items),
-  read once at the state's start.
+- `forEach`: list or binding (max 64 items), evaluated once at entry.
 - `concurrency` (1 to 16, default 1): the most branches active at once. Keep
   it below the worker's slots (`PILOTSWARM_WORKER_CONCURRENCY`), or a race's
   losers may stop late and finish their side effects.
@@ -195,11 +193,9 @@ named `branches`, and joins the branches.
   branch and `needed`.
 - `failFast: true` cancels the other branches once the join can no longer
   succeed; without it they run to their end, then the join blocks.
-- `timeoutSeconds` (optional): the state's own time limit from its start;
-  it needs a `timed_out` route. At the limit running branches are
-  cancelled: with k successes saved by then it joins, else it fails
-  `timed_out` (or is `blocked`); `workflow-reference` has the details. A
-  pause does not stop it.
+- `timeoutSeconds`: state limit (needs `timed_out` route); cancels running
+  branches (joins if k already succeeded, else `timed_out`/`blocked`). Pause
+  does not stop it.
 
 Named branches run different nodes at once (a prompt or a model for each):
 `branches: { <name>: { initial, states, input? } }` instead of `forEach` and
@@ -231,6 +227,10 @@ dynamic names stay unchecked.
 4. Test only when the person asks: `test` with `inputs`, `fixtures`
    (prepared answers) and `expect` (the end it must reach); a failed test's
    report gives the fixture to add.
+5. Delete unused definitions you own with `delete` (`name` or `definition_id`,
+   optional `operation_id`). Package definitions and definitions with active
+   Workflows (`DEFINITION_IN_USE`) are refused; never cancel a running Workflow
+   on your own to delete its definition.
 
 ## 10. Diagnose a failure
 

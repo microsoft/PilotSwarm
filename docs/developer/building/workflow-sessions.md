@@ -413,8 +413,7 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
 A session owns named **Workflow Definitions**; each save is a new, immutable
 **revision** (1, 2, 3) that records who saved it (`by the session`, `by <person>`)
 and the revision it was based on. A Workflow runs the revision it
-started with; a later save never changes it. The session changes and starts its
-definitions with its `workflow_definition` tool. `spawn_workflow` is no
+started with; a later save never changes it. The session changes, starts and deletes its own definitions with its `workflow_definition` tool (`delete` refuses package definitions with `DEFINITION_LOCKED` and active Workflows with `DEFINITION_IN_USE`, naming the active Workflows). `spawn_workflow` is no
 longer declared to a model; its handler stays one release for a stale call,
 mapped to save then start (a repeat with the same `key` and YAML is answered
 as before, and a corrected YAML under the same `key` saves the next revision

@@ -134,6 +134,16 @@ earlier cycles are above: a visit decided by its time limit or a cancel (its
 Stop ends its turn unsaved), and a recovery that starts a fresh conversation
 (a corrupted transcript, a missing snapshot).
 
+### Workflow definition cleanup
+
+- `workflow_definition` now supports `operation: "delete"` (`definition_id` or
+  `name`, optional `operation_id`) so a session can delete its own throwaway or
+  unused definitions. Package definitions (`<package>/<name>`, locked) are
+  refused with `DEFINITION_LOCKED`, sessions inside a Workflow keep their
+  existing refusal, and definitions with active Workflows remain refused with
+  `DEFINITION_IN_USE` naming the active Workflows and instructing to stop or
+  cancel them first. Finished Workflows keep their pinned revision copies.
+
 ### Decision cleanups
 
 - For an unanswered yes-or-no Decision call, a Workflow test report now

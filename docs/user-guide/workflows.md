@@ -750,7 +750,7 @@ tool, `enable_workflows`. Turning them on adds the tools below and about
 | Tool | Who has it | Use it to |
 |---|---|---|
 | `enable_workflows` | A session with Workflows off | Turn Workflows on. |
-| `workflow_definition` | A session with Workflows on, not inside a Workflow | `list`, `read`, `save`, `start`, `test` and `card` this session's definitions. |
+| `workflow_definition` | A session with Workflows on, not inside a Workflow | `list`, `read`, `save`, `start`, `test`, `card` and `delete` this session's definitions. |
 | `read_workflow` | A session with Workflows on | Read one Workflow. |
 | `update_workflow` | A session with Workflows on, not inside a Workflow | Control one Workflow. |
 | `send_workflow_input` | A session with Workflows on | Give a waiting `receive` step a typed message. |
@@ -775,15 +775,19 @@ One tool for this session's definitions, chosen by `operation`:
 | `read` | One definition (`definition_id` or `name`, optional `revision`): its revisions, and the shown revision's YAML and errors. |
 | `save` | Save a new revision (`name`, `yaml`). Over an existing definition, give `definition_id` and `expected_revision`. A revision with errors is saved, but cannot start. |
 | `start` | Start a new Workflow from the newest valid revision, or `revision`: `inputs`, optional `vars`, `agent_models`, `decision_models` and `notify_on_completion`. For a package Workflow (`<package>/<name>`), `update: true` takes its newer version. |
+| `delete` | Delete one of this session's own definitions (`definition_id` or `name`, optional `operation_id`). Refused for package definitions (`DEFINITION_LOCKED`) and while any Workflow of it is active (`DEFINITION_IN_USE`). |
 | `test` | Run a revision with prepared answers (`fixtures`) on a hidden test bench, and report its path. `test_id` reads a test that is still running. |
 | `card` | A package Workflow's card: its inputs, an example, its outcomes and what it asks. |
 
 Errors to fix and retry: `DEFINITION_INVALID` (the revision cannot start),
 `REVISION_REQUIRED` (the name exists: read it first), `REVISION_STALE`
 (someone saved since you read), `DEFINITION_LOCKED` (a package definition),
+`DEFINITION_IN_USE` (an active Workflow uses the definition; stop or cancel it first),
 `WORKFLOW_SCRIPTS_DISABLED` (this deployment runs no scripts) and
 `CHILD_LIMIT` (the session runs 50 sub-agents and Workflows already).
-Deleting a definition, and copying a package one, are a person's actions.
+Copying a package definition is a person's action. Deleting one of this
+session's own definitions works from `workflow_definition` `delete` or from the
+Workflow tab; finished Workflows keep their pinned revision copies.
 
 ### `read_workflow`
 
