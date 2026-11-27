@@ -31,8 +31,9 @@ const viewOf = value => (value && finite(value.x) && finite(value.y) && finite(v
 
 /**
  * The box around the graph's main path: every step and join bar of the happy path (the edges the layout marks `spine`,
- * R4), at the places they are drawn (`places`: Map id -> { x, y, width, height }, workflowGraphPlaces). Null when the
- * graph has no happy path or none of its boxes is placed.
+ * R4), at the places they are drawn (`places`: Map id -> { x, y, width, height }, workflowGraphPlaces), with the room
+ * its end chips take beside it (R2, `layout.chipRoom`). Null when the graph has no happy path or none of its boxes is
+ * placed.
  */
 export function workflowMainPathBounds(layout, places) {
     const ids = new Set();
@@ -41,13 +42,15 @@ export function workflowMainPathBounds(layout, places) {
         ids.add(edge.from);
         ids.add(edge.to);
     }
+    const chips = layout?.chipRoom instanceof Map ? layout.chipRoom : new Map();
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
     for (const id of ids) {
         const box = boxOf(places?.get?.(id));
         if (!box) continue;
+        const room = Number(chips.get(id)) || 0;
         left = Math.min(left, box.x);
         top = Math.min(top, box.y);
-        right = Math.max(right, box.x + box.width);
+        right = Math.max(right, box.x + box.width + Math.max(0, room));
         bottom = Math.max(bottom, box.y + box.height);
     }
     return Number.isFinite(left) ? { x: left, y: top, width: right - left, height: bottom - top } : null;
@@ -56,9 +59,10 @@ export function workflowMainPathBounds(layout, places) {
 /**
  * The first view of a graph (and an automatic refit): `whole`, the view that fits the whole graph (`bounds`) into `area`
  * ({ width, height }), when its zoom is at least `legible`; else the main path (`focus`, workflowMainPathBounds; the
- * whole graph when null) fitted whole when it fits at `readable` or more (up to `maxZoom`), centred; else the main path's
- * top at `readable` (or `maxZoom`, when smaller), centred on it across. Across, the graph never leaves room on a side it
- * could fill: a graph narrower than the area is centred, a wider one keeps its edges at or past the area's. Pure.
+ * whole graph when null) fitted whole when it fits at `readable` or more (up to `maxZoom`), centred; else the graph's top
+ * (where the main path starts, with its Start mark) at `readable` (or `maxZoom`, when smaller), centred on the main path
+ * across. Across, the graph never leaves room on a side it could fill: a graph narrower than the area is centred, a wider
+ * one keeps its edges at or past the area's. Pure.
  */
 export function workflowFirstViewport({ whole, bounds, focus = null, area, legible = WORKFLOW_LEGIBLE_ZOOM, readable = WORKFLOW_READABLE_ZOOM,
     maxZoom = 1, margin = WORKFLOW_VIEW_MARGIN_PX } = {}) {
@@ -73,7 +77,7 @@ export function workflowFirstViewport({ whole, bounds, focus = null, area, legib
     const zoom = mainZoom >= readable ? mainZoom : Math.min(readable, maxZoom);
     const centreX = main.x + main.width / 2;
     let x = area.width / 2 - centreX * zoom;
-    const y = mainZoom >= readable ? area.height / 2 - (main.y + main.height / 2) * zoom : margin - main.y * zoom;
+    const y = mainZoom >= readable ? area.height / 2 - (main.y + main.height / 2) * zoom : margin - Math.min(main.y, graph.y) * zoom;
     if (graph.width * zoom <= roomX) x = area.width / 2 - (graph.x + graph.width / 2) * zoom;
     else x = Math.min(margin - graph.x * zoom, Math.max(area.width - margin - (graph.x + graph.width) * zoom, x));
     return { x, y, zoom };

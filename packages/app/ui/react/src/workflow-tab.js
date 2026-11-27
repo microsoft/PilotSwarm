@@ -464,7 +464,8 @@ function PanelTabs({ panels, panel, onPanel, mobile = false, vertical = false, s
     return h("div", { className: "ps-wf-panel-tabs", role: "tablist", "aria-label": "Workflow panel", ...(vertical ? { "aria-orientation": "vertical" } : {}) },
         panels.map(id => h("button", { key: id, type: "button", role: "tab", "aria-selected": panel === id, className: panel === id ? "is-on" : "",
             onClick: () => onPanel(panel === id && !mobile ? null : id) }, labels[id],
-        typeof steps?.[id] === "string" && steps[id] ? h("span", { className: "ps-wf-panel-tab-step", "data-step": steps[id] }, ` · ${steps[id]}`) : null)));
+        typeof steps?.[id] === "string" && steps[id] ? " · " : null,
+        typeof steps?.[id] === "string" && steps[id] ? h("span", { className: "ps-wf-panel-tab-step", "data-step": steps[id] }, steps[id]) : null)));
 }
 
 /** The bottom panel, as it was (normal mode, and a phone's sheet). */
@@ -1044,8 +1045,6 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         // A click, or a phone's tap (UX round 1, P2), selects the step and opens its details.
         setTab({ runPanel: "node" });
     };
-    // UX round 1 (P1): where a phone's graph controls go (the panel's bar).
-    const [dock, setDock] = React.useState(null);
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: `session:${sessionId}`, steps, at: Date.now() }),
         [controller, sessionId]);
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }), [controller, sessionId]);
@@ -1095,9 +1094,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
             h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry")) : null,
         notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"),
-            panel, mobile, side, onPanel: id => setTab({ runPanel: id }), steps: selected ? { node: selected.id } : null,
-            // UX round 1 (P1): a phone's graph controls sit in the panel's bar, never over the steps.
-            extra: phone ? h("span", { ref: setDock, className: "ps-workflow-graph-dock" }) : null },
+            panel, mobile, side, onPanel: id => setTab({ runPanel: id }), steps: selected ? { node: selected.id } : null },
             panel === "node" ? h(RunNodePanel, { controller, child: replayed ? { ...child, nodes } : child, selected, replayFrame: replayed ? frame : null,
                 visits, onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
             panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
@@ -1108,7 +1105,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         h("div", { className: "ps-wf-main" },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                 places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), lit,
-                reveal: chosen ?? null, dock: phone ? dock : null })
+                reveal: chosen ?? null })
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         // The timeline stays with the graph (OF-S2-1).

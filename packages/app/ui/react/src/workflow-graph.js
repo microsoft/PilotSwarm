@@ -380,11 +380,11 @@ function loadFlow() {
  * again (owner, 2026-11-06T19:40Z, F8). Owner 2026-11-09 (the timeline): `lit`, the last four transitions up to the visit
  * shown and its step (workflowLitTransitions), drawn the same by both renderers. `mobile`: the tab's mobile layout; with
  * the phone query (PHONE_MEDIA_QUERY, as the tab's own) the flow is fitted clear of its controls (UXP-TL-02). UX round 1:
- * `reveal`, the id of the step the person chose, kept in view; `dock`, on a phone, the element its controls go to (outside
- * the graph, so they never cover a step).
+ * `reveal`, the id of the step the person chose, kept in view. On a phone React Flow's controls sit in a column beside the
+ * graph, so they never cover a step.
  */
 export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null, places = null, onPlaces = null,
-    mode = "normal", lit = null, mobile = false, reveal = null, dock = null }) {
+    mode = "normal", lit = null, mobile = false, reveal = null }) {
     const key = workflowGraphKey(definition);
     const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
     // The key holds everything of the definition the layout reads.
@@ -402,14 +402,17 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
     const [hoverEnd, setHoverEnd] = React.useState(null);
     const [allHandlers, setAllHandlers] = React.useState(false);
     const hasHandlers = (layout.handlers?.size ?? 0) > 0;
+    // UX round 1 (P1): on a phone, React Flow's controls go to a column beside the graph (`dock`), never over a step.
+    const [dock, setDock] = React.useState(null);
+    const flow = Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces,
+        mode, lit, phone, hoverEnd, allHandlers, reveal, dock: phone ? dock : null }) : null;
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
         definition.notes ? h("details", { className: "ps-workflow-definition-notes" },
             h("summary", null, "Definition notes"), h("div", { className: "ps-workflow-notes" }, definition.notes)) : null,
         h(WorkflowEndsRow, { ends: layout.ends, reached: lit?.endReached ?? null, run: Boolean(lit), hoverEnd, onHover: setHoverEnd, select,
             handlers: hasHandlers ? { all: allHandlers, onToggle: () => setAllHandlers(value => !value) } : null }),
-        Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode, lit,
-            phone, hoverEnd, allHandlers, reveal, dock: phone ? dock : null })
-            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd, allHandlers }));
+        flow && phone ? h("div", { className: "ps-workflow-graph-body" }, flow, h("div", { ref: setDock, className: "ps-workflow-graph-dock" }))
+            : flow ?? h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd, allHandlers }));
 }
 
 /**

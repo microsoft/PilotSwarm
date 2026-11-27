@@ -243,8 +243,6 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
     const [graphView, setGraphView] = React.useState(null);
     // UX round 1 (R2, G4): no step is selected until the person chooses one (another definition starts with none).
     const selected = nodes.find(node => node.id === selectedId) ?? null;
-    // UX round 1 (P1): where a phone's graph controls go (the panel's bar).
-    const [dock, setDock] = React.useState(null);
     const placesKey = `session:${definition.definitionId}`;
     const places = useControllerSelector(controller, state => state.ui?.workflowLayouts?.[placesKey]?.steps ?? null);
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: placesKey, steps, at: Date.now() }),
@@ -333,9 +331,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
         line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined }, line.text) : null,
         h(DecisionAvailabilityNotice, { states: model?.graph?.states, decision }),
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels, panel, mobile, side, onPanel: id => setTab({ definitionPanel: id }),
-            steps: selected ? { node: selected.id } : null,
-            // UX round 1 (P1): a phone's graph controls sit in the panel's bar, never over the steps.
-            extra: phone && mode === "graph" ? h("span", { ref: setDock, className: "ps-workflow-graph-dock" }) : null },
+            steps: selected ? { node: selected.id } : null },
             // OF-S2-8: the node's script and samples come from the revision's YAML, for those who may read it.
             panel === "node" ? h(NodeFacts, { node: selected, yaml: read?.phase === "ready" ? access.yaml : null, pending: read?.phase !== "ready" && read?.phase !== "failed",
                 hidden: read?.phase === "failed" ? `The script could not be read: ${read.error ?? "no reason given"}`
@@ -344,7 +340,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
                 : null) },
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: placesKey, viewport: graphView, onViewport: setGraphView,
-                places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), reveal: selectedId, dock: phone ? dock : null })
+                places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), reveal: selectedId })
                 : projection && line ? h("div", { className: "ps-wf-errors" }, h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, Number.isSafeInteger(revision) ? `Reading revision ${revision}…` : "No revisions yet.")),

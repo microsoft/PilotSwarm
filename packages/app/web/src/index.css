@@ -14623,9 +14623,20 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-workflow-ends-more.is-right { right: 0; margin-left: auto; padding: 0 4px 0 16px; background: linear-gradient(to right, transparent, var(--ps-chrome) 12px); }
 .ps-workflow-ends-more.is-left { left: 0; padding: 0 16px 0 4px; background: linear-gradient(to left, transparent, var(--ps-chrome) 12px); }
 .ps-wf-tab.is-phone .ps-workflow-ends-more { min-width: 44px; }
-/* P1: a phone's graph controls sit in the bottom panel's bar, at its right end (WorkflowFlow's dock), never over a step. */
-.ps-workflow-graph-dock { display: inline-flex; align-items: center; margin-left: auto; min-width: 0; }
-.ps-workflow-graph-controls.is-docked { padding: 0; border: 0; background: transparent; }
+/* P1: on a phone React Flow's controls sit in a column beside the graph (WorkflowGraph's dock), never over a step. */
+.ps-workflow-graph-body { display: flex; min-height: 0; height: 100%; }
+.ps-workflow-graph:has(> .ps-workflow-ends) > .ps-workflow-graph-body { flex: 1 1 0; height: auto; }
+.ps-workflow-graph-body > .ps-workflow-flow { flex: 1 1 0; min-width: 0; height: 100%; }
+.ps-workflow-graph-dock {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--ps-border);
+  background: var(--ps-chrome);
+}
+.ps-workflow-graph-controls.is-docked { flex-direction: column; padding: 4px; border: 0; border-radius: 0; background: transparent; }
 /* P2: the Node tab names the step it holds. */
 .ps-wf-panel-tab-step {
   display: inline-block;

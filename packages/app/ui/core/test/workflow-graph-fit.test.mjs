@@ -33,6 +33,12 @@ test("G1: a large graph's first view shows the main path's top at a readable zoo
     assert.ok(at(view, 1700, 0).x >= area.width - M && at(view, 0, 0).x <= M);
 });
 
+test("G1: a readable view starts at the graph's top, so the Start mark above the first step shows", () => {
+    const view = workflowFirstViewport({ whole: { x: 0, y: 0, zoom: 0.16 }, bounds: { x: 0, y: 0, width: 1700, height: 2600 },
+        focus: { x: 1100, y: 32, width: 260, height: 2500 }, area: { width: 575, height: 420 } });
+    assert.equal(at(view, 1230, 0).y, M);
+});
+
 test("G1: a main path near the graph's right edge is not centred past it: the graph's right edge stays at the area's", () => {
     const bounds = { x: 0, y: 0, width: 1700, height: 2600 };
     const focus = { x: 1500, y: 0, width: 200, height: 2600 };
@@ -70,6 +76,9 @@ test("G1: the main path is the happy path's boxes where they are drawn", () => {
     const fetch = places.get("fetch"), done = places.get("done");
     assert.ok(main && main.y <= fetch.y && main.y + main.height >= done.y + done.height, JSON.stringify(main));
     assert.ok(main.x <= fetch.x && main.x + main.width >= fetch.x + fetch.width);
+    // fetch's end chip (closed → rejected) is beside it: the main path's box takes its room, so a readable view keeps it.
+    assert.ok(layout.chipRoom.get("fetch") > 0);
+    assert.ok(main.x + main.width >= fetch.x + fetch.width + layout.chipRoom.get("fetch"));
     assert.equal(workflowMainPathBounds({ edges: [] }, places), null);
 });
 
