@@ -3382,7 +3382,7 @@ export function registerActivities(
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
                     await Promise.all(pendingWorkflowToolCalls);
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
-                        onDecided: () => session.closeWorkflowTools(),
+                        onDecided: () => session.decideWorkflowVisit(),
                         // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
                         ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });

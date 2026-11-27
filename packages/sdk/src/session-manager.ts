@@ -747,6 +747,29 @@ export function withWorkspaceChangeDeny(
     };
 }
 
+/** What a tool call of a Workflow agent step's turn hears after the step's result is recorded (withWorkflowVisitDeny). */
+export const WORKFLOW_VISIT_DECIDED_DENIAL = "The result of this workflow step is recorded, so this cycle is over and no more tools run in "
+    + "this turn. Write a short final reply and stop.";
+
+/**
+ * Issue I1: once a Workflow agent step's turn has reported its result (complete_workflow_node), the turn is not stopped; it
+ * goes on to write its reply, so that its snapshot is committed. The Workflow tools and the wrapped user tools already
+ * refuse then; this hook refuses every other call too (the CLI's own tools: shell, file edits, sub-agents), so the turn only
+ * finishes its reply and the next visit's prompt, which waits behind it, is not held up. Installed only for the session of a
+ * Workflow agent step (`decided` null otherwise). A call made in the same model message as the report is not refused: the
+ * CLI runs the pre-tool hooks of a message's calls before any handler.
+ */
+export function withWorkflowVisitDeny(hooks: SessionConfig["hooks"], decided: (() => boolean) | null): SessionConfig["hooks"] {
+    if (!decided) return hooks;
+    return {
+        ...hooks,
+        onPreToolUse: async (input: any, invocation: any) => {
+            if (decided()) return { permissionDecision: "deny" as const, permissionDecisionReason: WORKFLOW_VISIT_DECIDED_DENIAL };
+            return hooks?.onPreToolUse?.(input, invocation);
+        },
+    };
+}
+
 /**
  * Session workspaces (section 4.10): one folder attached on this worker for a
  * session and not released yet. The working folder has no `attachment`.
@@ -3412,14 +3435,14 @@ export class SessionManager {
                 skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
             } : config.workspaceCleared ? { enableFileHooks: false } : {}),
             // The CLI's `skill` tool called with `name` is given it as `skill` (withSkillNameArgument).
-            hooks: withSkillNameArgument(withWorkspaceChangeDeny(
+            hooks: withSkillNameArgument(withWorkflowVisitDeny(withWorkspaceChangeDeny(
                 nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
                     () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess, repoAgentAccess, nativeLimit) : config.hooks,
                 workspaceTools ? {
                     state: () => this.sessions.get(sessionId)?.workspaceChangeState() ?? "none",
                     noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
                 } : null,
-            )),
+            ), config.workflowAgentChild === true ? () => this.sessions.get(sessionId)?.workflowVisitIsDecided() === true : null)),
             // Workflow real-agent test runs: a session whose turn ran
             // under such a test refuses MCP tools, which cannot be intercepted; its other requests go to its handler unchanged.
             // Every other session gets its handler as it is.
@@ -3603,8 +3626,9 @@ export class SessionManager {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
+                // A new turn: an earlier turn's decided visit no longer closes its tools (issue I1).
+                existing.resetWorkflowToolsOpen();
                 if (agentBindingRefusal) existing.closeWorkflowTools();
-                else existing.resetWorkflowToolsOpen();
                 existing.setWorkflowDelegationRefusal(agentBindingRefusal);
                 existing.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
                 existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);

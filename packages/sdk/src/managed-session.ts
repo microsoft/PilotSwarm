@@ -1046,9 +1046,16 @@ export class ManagedSession {
     private workflowDelegationRefusal: string | null = null;
     private workflowToolsClosed = false;
     private workflowToolsGeneration = 0;
+    private workflowVisitDecided = false;
     /** Worker-local turn fence; durable timeout/cancel closes it when the Stop reaches this turn. */
     closeWorkflowTools(): void { this.workflowToolsClosed = true; this.workflowToolsGeneration++; }
-    resetWorkflowToolsOpen(): void { this.workflowToolsClosed = false; this.workflowToolsGeneration++; }
+    resetWorkflowToolsOpen(): void { this.workflowToolsClosed = false; this.workflowVisitDecided = false; this.workflowToolsGeneration++; }
+    /**
+     * Issue I1: this turn's Workflow visit is decided (its result is recorded). The turn is not stopped; it finishes its reply,
+     * and every tool refuses until the session's next turn: the Workflow tools here, the CLI's own tools in the pre-tool hook.
+     */
+    decideWorkflowVisit(): void { this.workflowVisitDecided = true; this.closeWorkflowTools(); }
+    workflowVisitIsDecided(): boolean { return this.workflowVisitDecided; }
     assertWorkflowToolsOpen(generation = this.workflowToolsGeneration): void {
         if (this.workflowToolsClosed || generation !== this.workflowToolsGeneration) {
             throw new WorkflowToolAuthorityError("Workflow agent visit is no longer available.");
