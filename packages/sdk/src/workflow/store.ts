@@ -6631,6 +6631,32 @@ export class WorkflowStore {
         return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
     }
 
+    /**
+     * I2: a session and the sessions above it, nearest first, in one recursive read of the session rows (soft-deleted rows
+     * included, so a deleted link is seen as deleted, not as missing), each with its owner as the typed-input rule reads it.
+     * At most WORKFLOW_LINEAGE_MAX_DEPTH sessions above it; empty when the session row does not exist. A cycle repeats rows:
+     * the caller stops at the first repeat.
+     */
+    async readSessionAncestry(sessionId: string): Promise<Array<AuthoritySession & { sessionId: string }>> {
+        if (!storableId(sessionId)) return [];
+        const { rows } = await this.pool.query(`
+            WITH RECURSIVE chain AS (
+                SELECT session_id, parent_session_id, 0 AS distance FROM ${this.t.sessions} WHERE session_id = $1
+                UNION ALL
+                SELECT parent.session_id, parent.parent_session_id, chain.distance + 1
+                  FROM ${this.t.sessions} parent JOIN chain ON parent.session_id = chain.parent_session_id
+                 WHERE chain.distance < ${WORKFLOW_LINEAGE_MAX_DEPTH}
+            )
+            SELECT s.session_id, s.deleted_at, s.is_system, s.session_kind, s.parent_session_id,
+                   u.provider AS owner_provider, u.subject AS owner_subject
+              FROM chain
+              JOIN ${this.t.sessions} s ON s.session_id = chain.session_id
+              LEFT JOIN ${this.t.sessionOwners} so ON so.session_id = s.session_id
+              LEFT JOIN ${this.t.users} u ON u.user_id = so.user_id
+             ORDER BY chain.distance`, [sessionId]);
+        return rows.map(row => ({ sessionId: str(row, "session_id"), ...authoritySessionFrom(row) }));
+    }
+
     // ─── Agent states (migration 0088) ──
 
     /**

@@ -14,6 +14,7 @@ import {
     type WorkflowReadCursor, type WorkflowReadSection,
 } from "./read-pages.js";
 import { describeWorkflowStates, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
+import { authorizeWorkflowAccess, decideWorkflowAccess, mayReadRetainedWorkflow, type WorkflowAccess } from "./access.js";
 import { workflowStoreFailure } from "./failure.js";
 import { redactWorkflowErrorValue } from "./redact.js";
 import { workflowErrorWords } from "./error-words.js";
@@ -281,16 +282,8 @@ function receiptJson(receipt: WorkflowDefinitionReceipt, replayed: boolean): { [
     };
 }
 
-/** The calling agent must be the workflow's parent, by catalog lineage and the definition's own record. */
-async function authorizeParent(host: WorkflowToolHost, workflowSessionId: string, callerSessionId: string): Promise<void> {
-    const [row, definition] = await Promise.all([host.catalog.getSession(workflowSessionId), host.store.readDefinition(workflowSessionId)]);
-    if (!row || row.deletedAt || row.sessionKind !== "workflow" || !definition) {
-        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId} is visible to this session.`);
-    }
-    if (row.parentSessionId !== callerSessionId || definition.parentSessionId !== callerSessionId) {
-        throw new WorkflowStoreError("FORBIDDEN", "Only the agent that created this workflow may change or read it with this tool.");
-    }
-}
+/** The default reason of a cancel by a session above the Workflow's parent (the parent's own reads "Cancelled by its parent"). */
+const ANCESTOR_CANCEL_REASON = "Cancelled by a session above it";
 
 function optionalString(args: Record<string, unknown>, name: string): string | null {
     const value = args[name];
@@ -610,7 +603,7 @@ async function recoverWorkflowFromTool(args: Record<string, unknown>, context: {
     const workflowSessionId = requiredString(args, "workflow_id");
     const operationId = requiredString(args, "operation_id");
     refuseAgentModelsArg(args, "recover");
-    await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+    await authorizeWorkflowAccess(context.host, workflowSessionId, context.callerSessionId, "control");
     const runs = await context.host.store.listRuns(workflowSessionId);
     const requested = optionalString(args, "run_id");
     const run = requested ? runs.find(item => item.runId === requested) : runs.find(item => item.mode === "live");
@@ -663,8 +656,18 @@ export async function updateWorkflowFromTool(args: Record<string, unknown>, cont
     try {
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
+        // I2: a run command (pause, resume, stop, cancel, set_vars) is control, which every session above the Workflow has; the
+        // definition and test operations stay with its parent.
+        const operation = typeof args.operation === "string" ? args.operation : "";
+        const access: WorkflowAccess = RUN_COMMANDS.has(operation) || operation === "stop" ? "control" : "definition";
+        // A cancel by a session above the parent says so, unless it gives its own reason.
+        if (operation === "cancel" && (args.reason === undefined || args.reason === null) && typeof args.workflow_id === "string") {
+            // Its refusals are left to the authorization below, after the arguments are checked.
+            const decision = await decideWorkflowAccess(context.host, args.workflow_id, context.callerSessionId).catch(() => null);
+            if (decision?.allowed && decision.relation === "ancestor") args = { ...args, reason: ANCESTOR_CANCEL_REASON };
+        }
         const result = await runUpdateWorkflowCommand(args, context.host, actor,
-            workflowSessionId => authorizeParent(context.host, workflowSessionId, context.callerSessionId));
+            async workflowSessionId => { await authorizeWorkflowAccess(context.host, workflowSessionId, context.callerSessionId, access); });
         return payload({ ok: true, ...result });
     } catch (error) {
         return errorPayload(error);
@@ -1858,12 +1861,15 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
         try {
-            await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+            await authorizeWorkflowAccess(context.host, workflowSessionId, context.callerSessionId, "read");
         } catch (error) {
             if (!(error instanceof WorkflowStoreError) || error.code !== "WORKFLOW_NOT_FOUND"
                 || typeof context.host.catalog.getChildOutcome !== "function") throw error;
+            // A cleaned-up Workflow: its outcome kept with its parent, for the parent and every session above it (I2).
             const retained = await context.host.catalog.getChildOutcome(workflowSessionId);
-            if (!retained || retained.parentSessionId !== context.callerSessionId) throw error;
+            if (!retained?.parentSessionId || !await mayReadRetainedWorkflow(context.host, retained.parentSessionId, context.callerSessionId)) {
+                throw error;
+            }
             return payload({ ok: true, ...retainedWorkflowReadModel(workflowSessionId, retained, args) });
         }
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
@@ -1887,9 +1893,11 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
 
 /**
  * send_workflow_input: the calling session (from the host) gives a run typed
- * input. Unlike update_workflow it is not limited to the parent: the
- * service also allows a live session owned by the same user as the
- * workflow (authority.ts); unknown or system ownership allows nothing.
+ * input. Its rule is the typed-input rule (authority.ts), which the store
+ * decides again under its locks: the parent, or a live session owned by the
+ * same user as the workflow; unknown or system ownership allows nothing. So
+ * every session above a Workflow in a user's tree may send to it (I2), as it
+ * may read and control it.
  */
 export async function sendWorkflowInputFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
