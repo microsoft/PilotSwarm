@@ -822,24 +822,32 @@ export class SessionDefinitionStore {
                        FROM ${this.t.sessions} c
                        JOIN wf_tree t ON c.parent_session_id = t.session_id
                       WHERE c.session_kind = 'workflow' AND c.deleted_at IS NULL AND t.depth < 16
+                 ),
+                 candidates AS (
+                     SELECT d.workflow_session_id, d.session_definition_id, d.created_at, sd.name AS def_name
+                       FROM ${this.t.definitions} sd
+                       JOIN ${this.t.wfDefinitions} d ON d.session_definition_id = sd.definition_id
+                      WHERE sd.owner_session_id = $1
+                     UNION ALL
+                     SELECT d.workflow_session_id, d.session_definition_id, d.created_at, NULL::text AS def_name
+                       FROM wf_tree t
+                       JOIN ${this.t.wfDefinitions} d ON d.workflow_session_id = t.session_id
+                      WHERE d.session_definition_id IS NULL
                  )
-                 SELECT d.workflow_session_id, d.session_definition_id, s.title, sd.name AS def_name, rev.name AS rev_name, rev.ir,
-                        CASE WHEN d.session_definition_id IS NOT NULL THEN (
+                 SELECT c.workflow_session_id, c.session_definition_id, s.title, c.def_name, rev.name AS rev_name, rev.ir,
+                        CASE WHEN c.session_definition_id IS NOT NULL THEN (
                             SELECT count(*)::int
                               FROM ${this.t.wfDefinitions} d2
                               JOIN ${this.t.sessions} s2 ON s2.session_id = d2.workflow_session_id AND s2.deleted_at IS NULL
-                             WHERE d2.session_definition_id = d.session_definition_id
+                             WHERE d2.session_definition_id = c.session_definition_id
                                AND EXISTS (SELECT 1 FROM ${this.t.runs} r2 WHERE r2.workflow_session_id = d2.workflow_session_id AND r2.mode = 'live')
-                               AND (d2.created_at < d.created_at OR (d2.created_at = d.created_at AND d2.workflow_session_id <= d.workflow_session_id))
+                               AND (d2.created_at < c.created_at OR (d2.created_at = c.created_at AND d2.workflow_session_id <= c.workflow_session_id))
                         ) ELSE NULL END AS workflow_number
-                   FROM ${this.t.wfDefinitions} d
-                   JOIN ${this.t.runs} r ON r.workflow_session_id = d.workflow_session_id AND r.mode = 'live' AND r.status = ANY($2::text[])
-                   JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id AND s.deleted_at IS NULL
+                   FROM candidates c
+                   JOIN ${this.t.runs} r ON r.workflow_session_id = c.workflow_session_id AND r.mode = 'live' AND r.status = ANY($2::text[])
+                   JOIN ${this.t.sessions} s ON s.session_id = c.workflow_session_id AND s.deleted_at IS NULL
                    JOIN ${this.t.wfRevisions} rev ON rev.workflow_session_id = r.workflow_session_id AND rev.revision = r.revision
-                   LEFT JOIN ${this.t.definitions} sd ON sd.definition_id = d.session_definition_id
-                  WHERE sd.owner_session_id = $1
-                     OR (d.session_definition_id IS NULL AND d.workflow_session_id IN (SELECT session_id FROM wf_tree))
-                  ORDER BY d.created_at, d.workflow_session_id`,
+                  ORDER BY c.created_at, c.workflow_session_id`,
                 [input.ownerSessionId, ACTIVE],
             );
             const seenWf = new Set<string>();
