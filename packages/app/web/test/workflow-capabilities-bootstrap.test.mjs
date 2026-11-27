@@ -108,6 +108,7 @@ test("with a person's commands on, it advertises the controller version and the 
                 const { workflows } = await h.bootstrap();
                 assert.deepEqual(workflows.commands, { available: true, controllerVersion, operations }, JSON.stringify(config));
                 assert.equal(workflows.read, true);
+                assert.equal(workflows.input, true, JSON.stringify(config));
                 // Review SF-D5: the server's word that test mode is on, only then.
                 assert.equal(workflows.testMode, config.workflowCommands.testMode === true ? true : undefined, JSON.stringify(config));
                 assert.ok(!workflows.commands.operations.includes("recover"), "recover stays the agent's");

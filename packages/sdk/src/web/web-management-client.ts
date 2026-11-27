@@ -9,6 +9,7 @@ import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult
 import type { MotdCreateInput, MotdViewer } from "../motd-store.js";
 import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult, WorkflowReadOptions } from "../types.js";
 import type { WorkflowInputCapabilities } from "../workflow/input-policy.js";
+import type { SendWorkflowInputRequest, WorkflowInputSendReceipt } from "../workflow/human-commands.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -457,6 +458,22 @@ export class WebPilotSwarmManagementClient {
         // The signed-in caller is the actor; the session the command comes from, when given, is passed on (review SF-2).
         return this._api.call("updateWorkflow", { sessionId, command,
             ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}) });
+    }
+
+    /**
+     * Workflow: deliver a typed message to a Workflow waiting at an open receive step
+     * (POST /api/v1/sessions/:sessionId/workflow/inputs, session:manage).
+     */
+    async sendWorkflowInput(
+        sessionId: string,
+        input: SendWorkflowInputRequest,
+        options: { originatingSessionId?: string | null } = {},
+    ): Promise<WorkflowInputSendReceipt> {
+        return this._api.call("sendWorkflowInput", {
+            ...(input && typeof input === "object" ? input : {}),
+            sessionId,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /**

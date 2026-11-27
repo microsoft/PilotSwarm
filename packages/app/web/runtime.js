@@ -124,7 +124,7 @@ function requireUserPrincipal(authContext, methodName) {
 // readWorkflow is content-bearing (a run's outputs, KV, executions and
 // message previews, and the definition's revisions), so every one of its
 // selectors is gated whatever the switch says (adversarial review SF-1).
-const ENFORCED_NEW_METHODS = new Set(["updateWorkflow", "readWorkflow", "listSessionWorkflowDefinitions", "readSessionWorkflowDefinition",
+const ENFORCED_NEW_METHODS = new Set(["updateWorkflow", "sendWorkflowInput", "readWorkflow", "listSessionWorkflowDefinitions", "readSessionWorkflowDefinition",
     "readSessionWorkflowCard",
     "saveSessionWorkflowDefinition", "startSessionWorkflowDefinition", "deleteSessionWorkflowDefinition",
     // Stage 2.3: a person's Make a copy and newer package version.
@@ -961,6 +961,19 @@ export class PortalRuntime {
                 return this.transport.updateWorkflow(safeParams.sessionId, safeParams.command,
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null,
                         ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
+            case "sendWorkflowInput": {
+                const input = {
+                    contract: safeParams.contract,
+                    ...(Object.hasOwn(safeParams, "payload") ? { payload: safeParams.payload } : {}),
+                    ...(safeParams.correlation !== undefined ? { correlation: safeParams.correlation } : {}),
+                    operationId: safeParams.operationId,
+                    ...(safeParams.ttlSeconds !== undefined ? { ttlSeconds: safeParams.ttlSeconds } : {}),
+                    ...(safeParams.runId !== undefined ? { runId: safeParams.runId } : {}),
+                };
+                return this.transport.sendWorkflowInput(safeParams.sessionId, input,
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
+            }
             // Session workspaces: the wait for the answer holds this request,
             // so the caller's timeout is bounded like the other long waits.
             case "setSessionWorkspace":

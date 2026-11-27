@@ -184,7 +184,10 @@ import { readWorkflowModel, retainedWorkflowReadModel, workflowExclusiveRead } f
 import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
 import { PilotSwarmClient, type PilotSwarmSession } from "./client.js";
 import { loadSkillsSync } from "./skills.js";
-import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
+import {
+    sendWorkflowInputForPerson, updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus,
+    type SendWorkflowInputRequest, type WorkflowInputSendReceipt,
+} from "./workflow/human-commands.js";
 import {
     attachSessionPackageWorkflow, copySessionPackageWorkflow, deleteSessionWorkflowDefinition, findPackageWorkflow, listSessionWorkflowDefinitions,
     packageWorkflowFacts, readPackageWorkflowCard, readSessionWorkflowDefinition, refuseSessionDefinitionFromInsideWorkflow, requirePackageRef,
@@ -2277,6 +2280,63 @@ export class PilotSwarmManagementClient {
         } catch (error) {
             // The details of a refusal (field errors, the conflicting revision, the controlling agent) are safe to show over the
             // Web API (exposeDetails), as its message is.
+            if (error instanceof WorkflowStoreError) {
+                throw Object.assign(failure(error.code, workflowCommandStatus(error.code), error.message, error.details), { exposeDetails: true });
+            }
+            if ((error as { code?: unknown })?.code === "WORKFLOW_HUMAN_INPUT_DENIED") throw Object.assign(error as Error, { exposeDetails: true });
+            throw error;
+        }
+    }
+
+    /**
+     * Deliver a typed message to a Workflow waiting at an open receive step
+     * (human-commands.ts: sendWorkflowInputForPerson). Returns the stored
+     * acceptance receipt; refusals carry their code, HTTP status, and
+     * safe details (`exposeDetails: true`).
+     */
+    async sendWorkflowInput(
+        sessionId: string,
+        input: SendWorkflowInputRequest,
+        options: { principal?: { provider?: string | null; subject?: string | null } | null; originatingSessionId?: string | null } = {},
+    ): Promise<WorkflowInputSendReceipt> {
+        try {
+            return await this._sendWorkflowInput(sessionId, input, options);
+        } catch (error) {
+            throw workflowAdapterFailure(error);
+        }
+    }
+
+    private async _sendWorkflowInput(
+        sessionId: string,
+        input: SendWorkflowInputRequest,
+        options: { principal?: { provider?: string | null; subject?: string | null } | null; originatingSessionId?: string | null },
+    ): Promise<WorkflowInputSendReceipt> {
+        this._ensureStarted();
+        const failure = (code: string, status: number, message: string, details?: unknown): Error =>
+            Object.assign(new Error(message), { code, status, ...(details !== undefined ? { details } : {}) });
+        const enabled = this.config.workflowCommands;
+        if (!enabled) {
+            throw Object.assign(failure("WORKFLOW_COMMANDS_UNAVAILABLE", 501,
+                "This deployment does not take workflow input from people yet; an agent session sends it with send_workflow_input."), { expose: true });
+        }
+        const session = await this._catalog!.getSession(sessionId);
+        if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
+        const store = this._catalog!.workflowStore?.();
+        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a durable Workflow.");
+        const provider = typeof options.principal?.provider === "string" ? options.principal.provider.trim() : "";
+        const subject = typeof options.principal?.subject === "string" ? options.principal.subject.trim() : "";
+        const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
+        const host: WorkflowHost = {
+            catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
+            ...(typeof this.config.workflowScripts === "boolean" ? { scripts: this.config.workflowScripts } : {}),
+            testMode: resolveWorkflowTestMode(enabled.testMode),
+        };
+        try {
+            return await sendWorkflowInputForPerson(input, {
+                host, workflowSessionId: sessionId, actor,
+                ...(options.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}),
+            });
+        } catch (error) {
             if (error instanceof WorkflowStoreError) {
                 throw Object.assign(failure(error.code, workflowCommandStatus(error.code), error.message, error.details), { exposeDetails: true });
             }

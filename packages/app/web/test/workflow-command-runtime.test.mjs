@@ -54,6 +54,23 @@ function runtimeWith({ enforce }) {
             calls.push([sessionId, command, options]);
             return { workflowId: sessionId, operation: command?.operation ?? null };
         },
+        sendWorkflowInput: async (sessionId, input, options) => {
+            calls.push(["sendWorkflowInput", sessionId, input, options]);
+            return {
+                replayed: false,
+                workflowId: sessionId,
+                runId: input?.runId ?? "run-1",
+                messageId: "msg-1",
+                senderSessionId: options?.principal ? `person:user:${options.principal.provider}:${options.principal.subject}` : "person:system:management-client",
+                operationId: input?.operationId ?? "op-1",
+                contract: input?.contract ?? "Deploy@1",
+                requestSha256: "req-sha",
+                payloadSha256: "pay-sha",
+                acceptedAt: "2026-11-27T00:00:00.000Z",
+                expiresAt: "2026-11-28T00:00:00.000Z",
+                claimedBy: { nodeExecutionId: "nx-1", stateId: "await_signal" },
+            };
+        },
     };
     return { runtime, calls, audits };
 }
@@ -226,3 +243,177 @@ for (const enforce of [true, false]) {
         assert.equal(calls.length, 0, "reading sends no command");
     });
 }
+
+test("sendWorkflowInput is one POST session:manage operation with camelCase body params", async () => {
+    const { OPERATIONS } = await import("../../../sdk/api/src/protocol.js");
+    const op = OPERATIONS.find((entry) => entry.name === "sendWorkflowInput");
+    assert.ok(op, "sendWorkflowInput is a protocol operation");
+    assert.deepEqual({ access: op.access, method: op.method, path: op.path, params: op.params }, {
+        access: "session:manage",
+        method: "POST",
+        path: "/sessions/:sessionId/workflow/inputs",
+        params: {
+            sessionId: { in: "path", name: "sessionId" },
+            contract: { in: "body" },
+            payload: { in: "body" },
+            correlation: { in: "body" },
+            operationId: { in: "body" },
+            ttlSeconds: { in: "body" },
+            runId: { in: "body" },
+            originatingSessionId: { in: "body" },
+        },
+    });
+});
+
+for (const enforce of [true, false]) {
+    test(`sendWorkflowInput enforces session:manage (owner/admin only) even with ownership switch ${enforce ? "on" : "off"}`, async () => {
+        const { runtime, calls, audits } = runtimeWith({ enforce });
+        const input = { contract: "Deploy@1", payload: null, operationId: "op-1", correlation: { ticket: "T-1" }, ttlSeconds: 60 };
+        const receipt = await runtime.call("sendWorkflowInput", { sessionId: "s1", ...input }, as("alice"));
+        assert.equal(receipt.workflowId, "s1");
+        assert.equal(receipt.senderSessionId, "person:user:dev:alice");
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0][1], "s1");
+        assert.equal(calls[0][2].payload, null);
+        assert.deepEqual(calls[0][3], { principal: { provider: "dev", subject: "alice" } });
+
+        // Unrelated user -> 404 NOT_FOUND; shared_write user -> 403 FORBIDDEN; missing -> 404 NOT_FOUND.
+        await assert.rejects(runtime.call("sendWorkflowInput", { sessionId: "s1", ...input }, as("bob")),
+            (err) => err.status === 404 && err.code === "NOT_FOUND");
+        await assert.rejects(runtime.call("sendWorkflowInput", { sessionId: "shared", ...input }, as("bob")),
+            (err) => err.status === 403 && err.code === "FORBIDDEN");
+        await assert.rejects(runtime.call("sendWorkflowInput", { sessionId: "missing", ...input }, as("alice")),
+            (err) => err.status === 404 && err.code === "NOT_FOUND");
+        assert.equal(calls.length, 1);
+        assert.ok(audits.some((entry) => entry.action === "sendWorkflowInput" && entry.decision === "deny"));
+
+        // Admin succeeds with break-glass audit.
+        await runtime.call("sendWorkflowInput", { sessionId: "s1", ...input }, as("ada", "admin"));
+        assert.deepEqual(calls.at(-1)[3], { principal: { provider: "dev", subject: "ada" } });
+        assert.ok(audits.some((entry) => entry.action === "sendWorkflowInput" && entry.sessionId === "s1" && entry.decision === "break_glass"));
+
+        // originatingSessionId forwarded to transport.
+        await runtime.call("sendWorkflowInput", { sessionId: "s1", ...input, originatingSessionId: "agent-1" }, as("alice"));
+        assert.deepEqual(calls.at(-1)[3], { principal: { provider: "dev", subject: "alice" }, originatingSessionId: "agent-1" });
+    });
+}
+
+test("sendWorkflowInput over HTTP: preserves falsy payloads, forged sessionId cannot override path, details & error codes flow through both clients", async () => {
+    const owner = { provider: "dev", subject: "alice" };
+    const calls = [];
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.start = async () => {};
+    runtime.authz = { ...runtime.authz, enforce: false };
+    runtime.transport = {
+        getSessionAccess: async (sessionId, viewer) => ({
+            rootSessionId: sessionId, isSystem: false, visibility: "private", owner: { ...owner, displayName: "Alice" },
+            viewerIsOwner: viewer.provider === owner.provider && viewer.subject === owner.subject, viewerShareAccess: null,
+        }),
+        recordAuthzAudit: async () => {},
+        sendWorkflowInput: async (sessionId, input, options) => {
+            calls.push([sessionId, input, options]);
+            if (options?.originatingSessionId) throw refusal("FORBIDDEN", 403, "Agent sessions must use native send_workflow_input.");
+            if (input.contract === "InvalidSchema@1") throw refusal("INPUT_INVALID", 400, "Payload mismatch.", { details: [{ path: "/x", message: "bad" }], exposeDetails: true });
+            if (input.contract === "BoundOnly@1") throw refusal("UNSUPPORTED_CONTRACT", 409, "Bound only.", { details: { receives: ["Deploy@1"] }, exposeDetails: true });
+            if (input.contract === "Full@1") throw refusal("INBOX_FULL", 429, "Inbox full.", { details: { unconsumed: 20 }, exposeDetails: true });
+            if (input.contract === "Subtree@1") throw refusal("WORKFLOW_HUMAN_INPUT_DENIED", 403, "Subtree denied.", { details: { controllingSessionId: "P" }, exposeDetails: true });
+            if (input.contract === "Off@1") throw refusal("WORKFLOW_COMMANDS_UNAVAILABLE", 501, "Disabled.", { expose: true });
+            if (input.contract === "Ended@1") throw refusal("RUN_ENDED", 409, "Run ended.");
+            if (input.contract === "Conflict@1") throw refusal("OPERATION_CONFLICT", 409, "Conflict.");
+            if (input.contract === "BadCmd@1") throw refusal("WORKFLOW_COMMAND_INVALID", 400, "Bad ttlSeconds.");
+            return {
+                replayed: input.operationId === "replay-1",
+                workflowId: sessionId,
+                runId: "r-1",
+                messageId: "m-1",
+                senderSessionId: `person:user:${options.principal.provider}:${options.principal.subject}`,
+                operationId: input.operationId,
+                contract: input.contract,
+                requestSha256: "req",
+                payloadSha256: "pay",
+                acceptedAt: "2026-11-27T00:00:00.000Z",
+                expiresAt: "2026-11-28T00:00:00.000Z",
+                claimedBy: { nodeExecutionId: "nx-1", stateId: "await_signal" },
+            };
+        },
+    };
+    const requireAuth = (req, res, next) => {
+        if (req.headers["x-test-unauth"] === "1") {
+            return res.status(401).json({ ok: false, error: { code: "PORTAL_AUTH_REQUIRED", message: "Sign in required." } });
+        }
+        const subject = String(req.headers["x-test-user"] || "alice");
+        req.auth = { principal: { provider: "dev", subject }, authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] } };
+        next();
+    };
+    const app = express();
+    app.use(express.json());
+    app.use("/api/v1", createApiRouter({ runtime, requireAuth }));
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    try {
+        const post = async (body, headers = {}) => {
+            const response = await fetch(`${origin}/api/v1/sessions/wf-target/workflow/inputs`, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-test-user": "alice", ...headers },
+                body: JSON.stringify(body),
+            });
+            return { status: response.status, body: await response.json() };
+        };
+
+        // 401 when unauthenticated.
+        assert.equal((await post({ contract: "Deploy@1", payload: {}, operationId: "o-unauth" }, { "x-test-unauth": "1" })).status, 401);
+
+        // Falsy payloads preserved (null, false, 0, ""), and forged sessionId in body cannot override path param.
+        for (const payload of [null, false, 0, ""]) {
+            const res = await post({ sessionId: "forged-other-id", contract: "Deploy@1", payload, operationId: `op-${String(payload)}` });
+            assert.equal(res.status, 200);
+            assert.equal(res.body.ok, true);
+            assert.equal(res.body.result.workflowId, "wf-target");
+            assert.equal(calls.at(-1)[0], "wf-target");
+            assert.equal(calls.at(-1)[1].payload, payload);
+        }
+
+        // Error codes & exposed details.
+        for (const [contract, status, code, checkDetails] of [
+            ["InvalidSchema@1", 400, "INPUT_INVALID", (d) => Array.isArray(d) && d[0].path === "/x"],
+            ["BadCmd@1", 400, "WORKFLOW_COMMAND_INVALID", null],
+            ["BoundOnly@1", 409, "UNSUPPORTED_CONTRACT", (d) => Array.isArray(d?.receives) && d.receives[0] === "Deploy@1"],
+            ["Ended@1", 409, "RUN_ENDED", null],
+            ["Conflict@1", 409, "OPERATION_CONFLICT", null],
+            ["Full@1", 429, "INBOX_FULL", (d) => d?.unconsumed === 20],
+            ["Subtree@1", 403, "WORKFLOW_HUMAN_INPUT_DENIED", (d) => d?.controllingSessionId === "P"],
+            ["Off@1", 501, "WORKFLOW_COMMANDS_UNAVAILABLE", null],
+        ]) {
+            const res = await post({ contract, payload: {}, operationId: `err-${contract}` });
+            assert.equal(res.status, status, contract);
+            assert.equal(res.body.error.code, code, contract);
+            if (checkDetails) assert.ok(checkDetails(res.body.error.details), `${contract} details`);
+        }
+
+        // Both HTTP clients: HttpApiTransport & WebPilotSwarmManagementClient (and forged sessionId in input cannot override).
+        const api = new ApiClient({ apiUrl: origin, fetchImpl: (url, init = {}) =>
+            fetch(url, { ...init, headers: { ...init.headers, "x-test-user": "alice" } }) });
+        const transport = new HttpApiTransport({ api });
+        const viaTransport = await transport.sendWorkflowInput("wf-target", {
+            sessionId: "forged", contract: "Deploy@1", payload: { ok: true }, operationId: "replay-1",
+        });
+        assert.equal(viaTransport.workflowId, "wf-target");
+        assert.equal(viaTransport.replayed, true);
+
+        const web = new WebPilotSwarmManagementClient({ api });
+        const viaWeb = await web.sendWorkflowInput("wf-target", {
+            sessionId: "forged", contract: "Deploy@1", payload: false, operationId: "web-1",
+        });
+        assert.equal(viaWeb.workflowId, "wf-target");
+        assert.equal(calls.at(-1)[0], "wf-target");
+        assert.equal(calls.at(-1)[1].payload, false);
+
+        await assert.rejects(web.sendWorkflowInput("wf-target", { contract: "Subtree@1", payload: {}, operationId: "web-2" }),
+            (err) => err.code === "WORKFLOW_HUMAN_INPUT_DENIED" && err.status === 403 && err.details?.controllingSessionId === "P");
+        await assert.rejects(web.sendWorkflowInput("wf-target", { contract: "Deploy@1", payload: {}, operationId: "web-3" }, { originatingSessionId: "agent-9" }),
+            (err) => err.code === "FORBIDDEN" && err.status === 403);
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+});

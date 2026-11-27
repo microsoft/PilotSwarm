@@ -247,3 +247,15 @@ test("send_workflow_input is in WORKFLOW_DEFINITION_MCP_TOOLS and rejected for s
     assert.equal(denied.kind, "reject");
     assert.equal(check({ kind: "mcp", toolName: "read_workflow" }).kind, "allow");
 });
+
+test("PilotSwarmManagementClient.sendWorkflowInput refuses with 501 WORKFLOW_COMMANDS_UNAVAILABLE when workflowCommands is null", async () => {
+    const client = Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
+        config: { workflowCommands: null },
+        _started: true,
+        _ensureStarted() {},
+    });
+    await assert.rejects(
+        client.sendWorkflowInput("wf-1", { contract: "Deploy@1", payload: {}, operationId: "op-1" }),
+        err => err.code === "WORKFLOW_COMMANDS_UNAVAILABLE" && err.status === 501 && err.expose === true,
+    );
+});

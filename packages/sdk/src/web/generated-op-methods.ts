@@ -161,6 +161,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "sendAnswer",
     "sendMessage",
     "sendSessionEvent",
+    "sendWorkflowInput",
     "sessionWorkspaceFiles",
     "setAgentPackageEnabled",
     "setAgentPackageScope",
@@ -1585,6 +1586,21 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Deliver a typed message to a durable Workflow session waiting at an open receive step (501 WORKFLOW_COMMANDS_UNAVAILABLE only when workflow commands are disabled). Owner or admin only, enforced even while the ownership switch is off. Refuses agent-controlled Workflow subtrees (403 WORKFLOW_HUMAN_INPUT_DENIED), agent-originated calls with originatingSessionId (403 FORBIDDEN), and contracts accepted only by from:-bound receive steps (409 UNSUPPORTED_CONTRACT). Idempotent by (workflowId, sender, operationId); returns WorkflowInputSendReceipt.
+     * @remarks `POST /sessions/:sessionId/workflow/inputs` — access: `session:manage`
+     */
+    sendWorkflowInput(params: {
+        sessionId: string;
+        contract?: any;
+        payload?: any;
+        correlation?: any;
+        operationId?: any;
+        ttlSeconds?: any;
+        runId?: any;
+        originatingSessionId?: any;
+    }): Promise<any>;
+
+    /**
      * One file call in one of the session's folders: { op: list|stat|read|find|write|mkdir|move|delete|zip, folder, path, ... } (find: files and folders whose names hold the words of `query`, up to 200). Contents travel as base64; a write with a stale ifMatch answers WORKSPACE_FILES_CONFLICT with the current etag. { op: git, folder, what: status|log|show|file|compare|repos|checkout|restore } reads the folder's git changes and commits, or checks out a commit with an optional stash (checkout and restore are refused while a turn runs; only where the deployment runs git for canvas commands). The session's owner only.
      * @remarks `POST /management/sessions/:sessionId/workspace/files` — access: `session:files`
      */
@@ -2202,6 +2218,7 @@ export function createManagementOps(
         sendAnswer: (params: Record<string, unknown> = {}) => callOp("sendAnswer", params),
         sendMessage: (params: Record<string, unknown> = {}) => callOp("sendMessage", params),
         sendSessionEvent: (params: Record<string, unknown> = {}) => callOp("sendSessionEvent", params),
+        sendWorkflowInput: (params: Record<string, unknown> = {}) => callOp("sendWorkflowInput", params),
         sessionWorkspaceFiles: (params: Record<string, unknown> = {}) => callOp("sessionWorkspaceFiles", params),
         setAgentPackageEnabled: (params: Record<string, unknown> = {}) => callOp("setAgentPackageEnabled", params),
         setAgentPackageScope: (params: Record<string, unknown> = {}) => callOp("setAgentPackageScope", params),

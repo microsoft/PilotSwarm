@@ -1223,6 +1223,14 @@ export class NodeSdkTransport {
             ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
     }
 
+    /** Workflow: deliver a typed message to a workflow session waiting at an open receive step. */
+    async sendWorkflowInput(sessionId, input, options = {}) {
+        const principal = Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
+            : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
+        return this.mgmt.sendWorkflowInput(sessionId, input, { principal,
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
+    }
+
     /**
      * Workflow support as this host takes it now (design 04, D11): what the
      * portal's bootstrap advertises as `workflows`, from the management
