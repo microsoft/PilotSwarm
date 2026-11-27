@@ -6,6 +6,11 @@ import type { ServerContext } from "../context.js";
 import { cacheSessionHandle } from "./sessions.js";
 import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../util/respond.js";
 
+const WORKFLOW_SKILL_MCP_NOTE =
+    "This skill is written for agents inside a PilotSwarm session. Over MCP: load_skill(name) is read_workflow_skill { name }; "
+    + "definitions are workflow_definition with your own operation_id; runs are read_workflow / update_workflow (pause, resume, stop, cancel, set_vars); "
+    + "test, recover, send_workflow_input, respond_session_request and child_workflows are not available, and nothing notifies you: poll read_workflow.";
+
 const PERSON_START_TOOL_BINDING_WARNING = {
     code: "WORKFLOW_PERSON_START_NO_TOOL_BINDING",
     path: "$",
@@ -200,6 +205,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     name: skill.name,
                     description: skill.description,
                     content: skill.content,
+                    note: WORKFLOW_SKILL_MCP_NOTE,
                 });
             } catch (err: unknown) {
                 return refusal(err);

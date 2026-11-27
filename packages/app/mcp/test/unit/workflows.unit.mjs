@@ -461,6 +461,8 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     const skillBody = JSON.parse((await handlers.get("read_workflow_skill")({ name: "workflow-authoring" })).content[0].text);
     assert.equal(skillBody.name, "workflow-authoring");
     assert.equal(skillBody.content, "# Authoring");
+    assert.match(skillBody.note, /load_skill\(name\) is read_workflow_skill \{ name \}/);
+    assert.match(skillBody.note, /poll read_workflow/);
 
     const skill404 = await handlers.get("read_workflow_skill")({ name: "nope" });
     assert.equal(skill404.isError, true);
