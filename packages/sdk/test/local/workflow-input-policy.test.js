@@ -148,31 +148,34 @@ describe("workflow agent states: lineage and the human-input chokepoints", () =>
             await h.catalog.createSession(C, { parentSessionId: W });
             const G = randomUUID();
             await h.catalog.createSession(G, { parentSessionId: C });
+            const G2 = randomUUID();
+            await h.catalog.createSession(G2, { parentSessionId: G });
             const O = randomUUID();
             await h.catalog.createSession(O, { parentSessionId: P });
             const root = { childSessionId: C, nodeExecutionId, workflowSessionId: W, controllingSessionId: P };
-            expect(await h.store.readWorkflowLineage(P)).toEqual({ sessionId: P, level: 0, agentRoot: null, deleted: false });
-            expect(await h.store.readWorkflowLineage(W)).toEqual({ sessionId: W, level: 1, agentRoot: null, deleted: false });
-            expect(await h.store.readWorkflowLineage(C)).toEqual({ sessionId: C, level: 1, agentRoot: { ...root, distance: 0 }, deleted: false });
-            expect(await h.store.readWorkflowLineage(G)).toEqual({ sessionId: G, level: 2, agentRoot: { ...root, distance: 1 }, deleted: false });
-            expect(await h.store.readWorkflowLineage(O)).toEqual({ sessionId: O, level: 1, agentRoot: null, deleted: false });
+            expect(await h.store.readWorkflowLineage(P)).toEqual({ sessionId: P, level: 0, hasWorkflow: false, agentRoot: null, deleted: false });
+            expect(await h.store.readWorkflowLineage(W)).toEqual({ sessionId: W, level: 0, hasWorkflow: true, agentRoot: null, deleted: false });
+            expect(await h.store.readWorkflowLineage(C)).toEqual({ sessionId: C, level: 0, hasWorkflow: true, agentRoot: { ...root, distance: 0 }, deleted: false });
+            expect(await h.store.readWorkflowLineage(G)).toEqual({ sessionId: G, level: 1, hasWorkflow: true, agentRoot: { ...root, distance: 1 }, deleted: false });
+            expect(await h.store.readWorkflowLineage(G2)).toEqual({ sessionId: G2, level: 2, hasWorkflow: true, agentRoot: { ...root, distance: 2 }, deleted: false });
+            expect(await h.store.readWorkflowLineage(O)).toEqual({ sessionId: O, level: 1, hasWorkflow: false, agentRoot: null, deleted: false });
             expect(await h.store.readWorkflowLineage(randomUUID())).toBeNull();
             // A deleted ancestor still counts: its row is kept.
             await h.catalog.softDeleteSession(C);
             // Review DR2-001: the deleted session's own lineage says so (its turn runs no model); a descendant's does not.
             expect(await h.store.readWorkflowLineage(C)).toMatchObject({ sessionId: C, deleted: true });
-            expect(await h.store.readWorkflowLineage(G)).toEqual({ sessionId: G, level: 2, agentRoot: { ...root, distance: 1 }, deleted: false });
+            expect(await h.store.readWorkflowLineage(G)).toEqual({ sessionId: G, level: 1, hasWorkflow: true, agentRoot: { ...root, distance: 1 }, deleted: false });
             // A cycle or a missing parent has no level.
             const X = randomUUID();
             const Y = randomUUID();
             await h.catalog.createSession(X, {});
             await h.catalog.createSession(Y, { parentSessionId: X });
             await h.q("UPDATE SCHEMA.sessions SET parent_session_id = $2 WHERE session_id = $1", [X, Y]);
-            expect(await h.store.readWorkflowLineage(X)).toEqual({ sessionId: X, level: null, agentRoot: null, deleted: false });
+            expect(await h.store.readWorkflowLineage(X)).toEqual({ sessionId: X, level: null, hasWorkflow: false, agentRoot: null, deleted: false });
             const Z = randomUUID();
             await h.catalog.createSession(Z, {});
             await h.q("UPDATE SCHEMA.sessions SET parent_session_id = $2 WHERE session_id = $1", [Z, randomUUID()]);
-            expect(await h.store.readWorkflowLineage(Z)).toEqual({ sessionId: Z, level: null, agentRoot: null, deleted: false });
+            expect(await h.store.readWorkflowLineage(Z)).toEqual({ sessionId: Z, level: null, hasWorkflow: false, agentRoot: null, deleted: false });
         } finally {
             await h.stop();
         }

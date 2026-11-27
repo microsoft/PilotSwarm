@@ -239,7 +239,7 @@ describe("workflow real-agent test runs: the controller", () => {
             expect(child).toBe(workflowAgentChildSessionId(review));
             expect(invocation.deadlineAt.toISOString()).toBe("9000-01-01T00:10:00.000Z");
             expect(h.children).toHaveLength(1);
-            expect(h.children[0]).toMatchObject({ sessionId: child, parentSessionId: workflow.workflowSessionId, nestingLevel: 1,
+            expect(h.children[0]).toMatchObject({ sessionId: child, parentSessionId: workflow.workflowSessionId, nestingLevel: 0,
                 owner: { provider: "test", subject: "alice" } });
             expect(h.children[0].prompt).toContain(TASK);
             expect(await h.store.readInterception(`${review}/agent`)).toBeNull();
