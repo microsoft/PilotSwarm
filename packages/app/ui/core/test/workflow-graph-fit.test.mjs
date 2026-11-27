@@ -82,6 +82,23 @@ test("G1: the main path is the happy path's boxes where they are drawn", () => {
     assert.equal(workflowMainPathBounds({ edges: [] }, places), null);
 });
 
+test("G1 (review GU-07, GU-12): a join bar on the main path takes its parallel step's chip room; bad numbers never make a view", () => {
+    const places = new Map([["a", { x: 0, y: 0, width: 200, height: 60 }], ["join:p", { x: 0, y: 100, width: 300, height: 10 }]]);
+    const layout = { edges: [{ spine: true, from: "a", to: "join:p" }], chipRoom: new Map([["p", 50]]),
+        joins: new Map([["join:p", { id: "join:p", parallel: "p" }]]) };
+    assert.deepEqual(workflowMainPathBounds(layout, places), { x: 0, y: 0, width: 350, height: 110 });
+    // An unusable chip room counts as none; an extent that is not finite gives no main path.
+    assert.equal(workflowMainPathBounds({ ...layout, chipRoom: new Map([["p", Infinity]]) }, places).width, 300);
+    assert.equal(workflowMainPathBounds(layout, new Map([["a", { x: 0, y: 0, width: Number.MAX_VALUE, height: 1 }],
+        ["join:p", { x: Number.MAX_VALUE, y: 0, width: Number.MAX_VALUE, height: 1 }]])), null);
+    // NaN options fall back to the defaults; a result that is not finite gives the whole-graph fit back.
+    const whole = { x: 0, y: 0, zoom: 0.16 };
+    const args = { whole, bounds: { x: 0, y: 0, width: 1700, height: 2600 }, area: { width: 575, height: 420 } };
+    assert.deepEqual(workflowFirstViewport({ ...args, maxZoom: NaN, margin: NaN, readable: NaN, legible: NaN }), workflowFirstViewport(args));
+    assert.deepEqual(workflowFirstViewport({ ...args, bounds: { x: Number.MAX_VALUE, y: 0, width: Number.MAX_VALUE, height: Number.MAX_VALUE } }), whole);
+    assert.notEqual(workflowRevealViewport({ x: 0, y: 0, zoom: 1 }, { x: 0, y: 500, width: 10, height: 10 }, { width: 100, height: 100 }, NaN), null);
+});
+
 test("G1, P2: a selected step out of view is brought into view by the smallest pan, keeping the zoom", () => {
     const view = { x: 0, y: 0, zoom: 0.5 };
     const visible = { width: 400, height: 300 };

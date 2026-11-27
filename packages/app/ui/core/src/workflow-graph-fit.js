@@ -28,12 +28,14 @@ const finite = value => typeof value === "number" && Number.isFinite(value);
 const boxOf = value => (value && finite(value.x) && finite(value.y) && finite(value.width) && finite(value.height)
     && value.width >= 0 && value.height >= 0 ? value : null);
 const viewOf = value => (value && finite(value.x) && finite(value.y) && finite(value.zoom) && value.zoom > 0 ? value : null);
+const positive = (value, fallback) => (finite(value) && value > 0 ? value : fallback);
+const atLeastZero = (value, fallback) => (finite(value) && value >= 0 ? value : fallback);
 
 /**
  * The box around the graph's main path: every step and join bar of the happy path (the edges the layout marks `spine`,
  * R4), at the places they are drawn (`places`: Map id -> { x, y, width, height }, workflowGraphPlaces), with the room
- * its end chips take beside it (R2, `layout.chipRoom`). Null when the graph has no happy path or none of its boxes is
- * placed.
+ * its end chips take beside it (R2, `layout.chipRoom`; a join bar's are its parallel step's). Null when the graph has no
+ * happy path, none of its boxes is placed, or its extent is not a finite number.
  */
 export function workflowMainPathBounds(layout, places) {
     const ids = new Set();
@@ -43,17 +45,19 @@ export function workflowMainPathBounds(layout, places) {
         ids.add(edge.to);
     }
     const chips = layout?.chipRoom instanceof Map ? layout.chipRoom : new Map();
+    const parallelOf = new Map([...(layout?.joins?.values?.() ?? [])].map(join => [join?.id, join?.parallel]));
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
     for (const id of ids) {
         const box = boxOf(places?.get?.(id));
         if (!box) continue;
-        const room = Number(chips.get(id)) || 0;
+        const room = atLeastZero(Number(chips.get(id) ?? chips.get(parallelOf.get(id))), 0);
         left = Math.min(left, box.x);
         top = Math.min(top, box.y);
-        right = Math.max(right, box.x + box.width + Math.max(0, room));
+        right = Math.max(right, box.x + box.width + room);
         bottom = Math.max(bottom, box.y + box.height);
     }
-    return Number.isFinite(left) ? { x: left, y: top, width: right - left, height: bottom - top } : null;
+    const bounds = { x: left, y: top, width: right - left, height: bottom - top };
+    return Object.values(bounds).every(finite) ? bounds : null;
 }
 
 /**
@@ -69,6 +73,10 @@ export function workflowFirstViewport({ whole, bounds, focus = null, area, legib
     const fitted = viewOf(whole);
     const graph = boxOf(bounds);
     if (!fitted || !graph || !area || !finite(area.width) || !finite(area.height) || area.width <= 0 || area.height <= 0) return fitted;
+    legible = positive(legible, WORKFLOW_LEGIBLE_ZOOM);
+    readable = positive(readable, WORKFLOW_READABLE_ZOOM);
+    maxZoom = positive(maxZoom, 1);
+    margin = atLeastZero(margin, WORKFLOW_VIEW_MARGIN_PX);
     if (fitted.zoom >= legible) return fitted;
     const main = boxOf(focus) ?? graph;
     const roomX = Math.max(1, area.width - 2 * margin);
@@ -80,7 +88,7 @@ export function workflowFirstViewport({ whole, bounds, focus = null, area, legib
     const y = mainZoom >= readable ? area.height / 2 - (main.y + main.height / 2) * zoom : margin - Math.min(main.y, graph.y) * zoom;
     if (graph.width * zoom <= roomX) x = area.width / 2 - (graph.x + graph.width / 2) * zoom;
     else x = Math.min(margin - graph.x * zoom, Math.max(area.width - margin - (graph.x + graph.width) * zoom, x));
-    return { x, y, zoom };
+    return [x, y, zoom].every(finite) ? { x, y, zoom } : fitted;
 }
 
 /**
@@ -93,6 +101,7 @@ export function workflowRevealViewport(view, box, visible, margin = WORKFLOW_VIE
     const shown = viewOf(view);
     const place = boxOf(box);
     if (!shown || !place || !visible || !finite(visible.width) || !finite(visible.height) || visible.width <= 0 || visible.height <= 0) return null;
+    margin = atLeastZero(margin, WORKFLOW_VIEW_MARGIN_PX);
     const { zoom } = shown;
     const along = (start, size, room, offset) => {
         const from = start * zoom + offset;
@@ -103,5 +112,7 @@ export function workflowRevealViewport(view, box, visible, margin = WORKFLOW_VIE
     };
     const dx = along(place.x, place.width, visible.width, shown.x);
     const dy = along(place.y, place.height, visible.height, shown.y);
-    return dx === 0 && dy === 0 ? null : { x: shown.x + dx, y: shown.y + dy, zoom };
+    if (dx === 0 && dy === 0) return null;
+    const next = { x: shown.x + dx, y: shown.y + dy, zoom };
+    return finite(next.x) && finite(next.y) ? next : null;
 }
