@@ -3,16 +3,25 @@
  *
  * Inspects every session reachable from `rootSessionIds` (via `sessions.parent_session_id`,
  * `sessions.root_session_id`, `workflow_definitions.parent_session_id`, and
- * `workflow_agent_invocations.child_session_id`) across 8 resource categories:
+ * `workflow_agent_invocations.child_session_id`) across 8 resource categories inside a single
+ * REPEATABLE READ READ ONLY database snapshot, plus live Duroxide orchestration status reads:
  *
  *   1. orchestrations_live             — Duroxide orchestrations not in a terminal/NotFound status
  *   2. runs_active                     — workflow_runs in ACTIVE_RUN_STATUSES
  *   3. child_workflows_active          — child Workflow sessions with an active run
  *   4. agent_sessions_live             — workflow agent sessions (incl. continued) not ended
- *   5. claim_shells                    — workflow sessions with no run row and deleted_at IS NULL older than graceMs
- *   6. open_work_on_terminal_runs      — open requests, open approvals, undelivered outbox rows on terminal runs
+ *   5. claim_shells                    — workflow sessions with no workflow_runs row and deleted_at IS NULL
+ *                                        older than graceMs (intentionally broader than
+ *                                        listBareChildWorkflowClaims's no-definition check so it also
+ *                                        catches crashed spawns between createDefinition and startLive,
+ *                                        or unstarted drafts left behind)
+ *   6. open_work_on_terminal_runs      — open requests, open approvals, undelivered outbox rows, pending
+ *                                        node executions, and awaiting_parent test interceptions on terminal runs
  *   7. inbox_pending_on_terminal_runs  — unconsumed, unexpired workflow_inbox rows on terminal runs
  *   8. sessions_not_swept              — sessions in the tree with deleted_at IS NULL (checked after owner end + Sweeper)
+ *
+ * Also returns `orchestrationStatuses` (instanceId -> status) for every Duroxide instance checked so
+ * callers can prove non-vacuity (e.g. asserting `wfx-`/`wfr-`/`wfa-`/`wft-` existed and are Completed).
  */
 
 import { ACTIVE_RUN_STATUSES, SWEEPER_ENDED_SESSION_STATES } from "../../src/workflow/store.ts";
@@ -40,6 +49,7 @@ export const LEAK_CENSUS_CATEGORIES = Object.freeze([
 ]);
 
 const TERMINAL_ORCH_STATUSES = new Set(["Completed", "Failed", "Terminated", "NotFound"]);
+const ENDED_AGENT_CMS_STATES = new Set([...SWEEPER_ENDED_SESSION_STATES, "error"]);
 const STATUS_CONCURRENCY = 16;
 
 function quoteIdent(ident) {
@@ -133,33 +143,48 @@ export async function census({
     const liveOwners = new Set(normalizeIds(liveOwnerSessionIds));
     const s = quoteIdent(resolvedSchema);
 
-    const treeSessionIds = await discoverTreeSessionIds(resolvedPool, s, roots);
+    // Read the entire session tree and all DB categories inside one REPEATABLE READ READ ONLY snapshot
+    // so concurrent transitions cannot produce a torn view across categories.
+    const dbClient = await resolvedPool.connect();
+    let treeSessionIds;
+    let sessionsRes;
+    let runsRes;
+    let activeRunsRes;
+    let childWfActiveRes;
+    let claimShellsRes;
+    let openWorkRes;
+    let inboxPendingRes;
+    let unsweptRes;
+    let nodeRows = [];
+    let outboxRows = [];
+    let agentInvRows = [];
+    try {
+        await dbClient.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+        treeSessionIds = await discoverTreeSessionIds(dbClient, s, roots);
 
-    // Fetch session rows, runs, nodes, outbox, and agent invocations for the tree.
-    const [sessionsRes, runsRes, activeRunsRes, childWfActiveRes, claimShellsRes, openWorkRes, inboxPendingRes, unsweptRes] = await Promise.all([
-        resolvedPool.query(
+        sessionsRes = await dbClient.query(
             `SELECT session_id, session_kind, state, deleted_at
                FROM ${s}.sessions
               WHERE session_id = ANY($1::text[])
               ORDER BY session_id`,
             [treeSessionIds],
-        ),
-        resolvedPool.query(
+        );
+        runsRes = await dbClient.query(
             `SELECT run_id, workflow_session_id, status, controller_instance_id
                FROM ${s}.workflow_runs
               WHERE workflow_session_id = ANY($1::text[])
               ORDER BY run_id`,
             [treeSessionIds],
-        ),
-        resolvedPool.query(
+        );
+        activeRunsRes = await dbClient.query(
             `SELECT run_id
                FROM ${s}.workflow_runs
               WHERE workflow_session_id = ANY($1::text[])
                 AND status = ANY($2::text[])
               ORDER BY run_id`,
             [treeSessionIds, ACTIVE_RUN_STATUSES],
-        ),
-        resolvedPool.query(
+        );
+        childWfActiveRes = await dbClient.query(
             `SELECT DISTINCT s.session_id
                FROM ${s}.sessions s
                LEFT JOIN ${s}.workflow_definitions d ON d.workflow_session_id = s.session_id
@@ -171,8 +196,8 @@ export async function census({
                 AND r.status = ANY($2::text[])
               ORDER BY s.session_id`,
             [treeSessionIds, ACTIVE_RUN_STATUSES],
-        ),
-        resolvedPool.query(
+        );
+        claimShellsRes = await dbClient.query(
             `SELECT s.session_id
                FROM ${s}.sessions s
               WHERE s.session_id = ANY($1::text[])
@@ -183,13 +208,13 @@ export async function census({
                      WHERE r.workflow_session_id = s.session_id
                 )
                 AND (
-                    ($2::double precision <= 0 AND s.created_at <= clock_timestamp())
-                    OR ($2::double precision > 0 AND s.created_at < clock_timestamp() - ($2::double precision * interval '1 millisecond'))
+                    ($2::double precision <= 0 AND s.created_at <= now())
+                    OR ($2::double precision > 0 AND s.created_at < now() - ($2::double precision * interval '1 millisecond'))
                 )
               ORDER BY s.session_id`,
             [treeSessionIds, graceMs],
-        ),
-        resolvedPool.query(
+        );
+        openWorkRes = await dbClient.query(
             `SELECT id FROM (
                 SELECT 'request:' || req.exchange_id AS id
                   FROM ${s}.workflow_requests req
@@ -216,52 +241,61 @@ export async function census({
                  WHERE r.workflow_session_id = ANY($1::text[])
                    AND NOT (r.status = ANY($2::text[]))
                    AND o.state = 'pending'
+                UNION ALL
+                SELECT 'node:' || n.node_execution_id AS id
+                  FROM ${s}.workflow_node_executions n
+                  JOIN ${s}.workflow_runs r ON r.run_id = n.run_id
+                 WHERE r.workflow_session_id = ANY($1::text[])
+                   AND NOT (r.status = ANY($2::text[]))
+                   AND n.state = 'pending'
+                   AND NOT EXISTS (SELECT 1 FROM ${s}.workflow_requests req WHERE req.exchange_id = n.node_execution_id)
+                   AND NOT EXISTS (SELECT 1 FROM ${s}.workflow_approvals a WHERE a.node_execution_id = n.node_execution_id)
+                UNION ALL
+                SELECT 'interception:' || ti.interception_id AS id
+                  FROM ${s}.workflow_test_interceptions ti
+                  JOIN ${s}.workflow_runs r ON r.run_id = ti.run_id
+                 WHERE r.workflow_session_id = ANY($1::text[])
+                   AND NOT (r.status = ANY($2::text[]))
+                   AND ti.state = 'awaiting_parent'
              ) open_work
              ORDER BY id`,
             [treeSessionIds, ACTIVE_RUN_STATUSES],
-        ),
-        resolvedPool.query(
+        );
+        inboxPendingRes = await dbClient.query(
             `SELECT i.message_id
                FROM ${s}.workflow_inbox i
                JOIN ${s}.workflow_runs r ON r.run_id = i.run_id
               WHERE r.workflow_session_id = ANY($1::text[])
                 AND NOT (r.status = ANY($2::text[]))
                 AND i.consumed_by IS NULL
-                AND i.expires_at > clock_timestamp()
+                AND i.expires_at > now()
               ORDER BY i.message_id`,
             [treeSessionIds, ACTIVE_RUN_STATUSES],
-        ),
-        resolvedPool.query(
+        );
+        unsweptRes = await dbClient.query(
             `SELECT s.session_id
                FROM ${s}.sessions s
               WHERE s.session_id = ANY($1::text[])
                 AND s.deleted_at IS NULL
               ORDER BY s.session_id`,
             [treeSessionIds],
-        ),
-    ]);
+        );
 
-    const sessionById = new Map(sessionsRes.rows.map(row => [row.session_id, row]));
-    const runIds = runsRes.rows.map(row => row.run_id);
-
-    let nodeRows = [];
-    let outboxRows = [];
-    let agentInvRows = [];
-    if (runIds.length > 0) {
-        const [nodesRes, outboxRes, invRes] = await Promise.all([
-            resolvedPool.query(
+        const runIds = runsRes.rows.map(row => row.run_id);
+        if (runIds.length > 0) {
+            nodeRows = (await dbClient.query(
                 `SELECT node_execution_id, node_type
                    FROM ${s}.workflow_node_executions
                   WHERE run_id = ANY($1::text[])`,
                 [runIds],
-            ),
-            resolvedPool.query(
+            )).rows;
+            outboxRows = (await dbClient.query(
                 `SELECT node_execution_id, mode
                    FROM ${s}.workflow_outbox
                   WHERE run_id = ANY($1::text[])`,
                 [runIds],
-            ),
-            resolvedPool.query(
+            )).rows;
+            agentInvRows = (await dbClient.query(
                 `SELECT i.child_session_id, i.run_id, i.node_execution_id, i.spawn_attempts,
                         i.end_sent_at, i.end_child_status, i.created_at,
                         r.status AS run_status
@@ -270,12 +304,17 @@ export async function census({
                   WHERE i.run_id = ANY($1::text[])
                   ORDER BY i.child_session_id, i.created_at DESC, i.node_execution_id DESC`,
                 [runIds],
-            ),
-        ]);
-        nodeRows = nodesRes.rows;
-        outboxRows = outboxRes.rows;
-        agentInvRows = invRes.rows;
+            )).rows;
+        }
+        await dbClient.query("COMMIT");
+    } catch (error) {
+        try { await dbClient.query("ROLLBACK"); } catch {}
+        throw error;
+    } finally {
+        dbClient.release();
     }
+
+    const sessionById = new Map(sessionsRes.rows.map(row => [row.session_id, row]));
 
     // Build complete set of candidate Duroxide orchestration instance IDs for the tree.
     const candidateInstances = new Set();
@@ -339,8 +378,10 @@ export async function census({
         }
     }
 
+    const sortedStatuses = [...statusByInstance.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const orchestrationStatuses = Object.fromEntries(sortedStatuses);
     const liveOrchestrations = [];
-    for (const [instanceId, status] of [...statusByInstance.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [instanceId, status] of sortedStatuses) {
         if (!TERMINAL_ORCH_STATUSES.has(status)) {
             liveOrchestrations.push(`${instanceId}:${status}`);
         }
@@ -354,7 +395,7 @@ export async function census({
         const orchLive = !TERMINAL_ORCH_STATUSES.has(orchStatus);
         const cmsLive = sessionRow !== null
             && sessionRow.deleted_at === null
-            && !SWEEPER_ENDED_SESSION_STATES.includes(String(sessionRow.state));
+            && !ENDED_AGENT_CMS_STATES.has(String(sessionRow.state));
         const endOwedOnTerminalRun = !ACTIVE_RUN_STATUSES.includes(info.latestRunStatus)
             && info.anySpawnAttempt
             && (info.latestEndSentAt === null || info.latestEndChildStatus === "AgentSessionContinues");
@@ -375,7 +416,7 @@ export async function census({
     };
 
     const total = Object.values(categories).reduce((sum, entry) => sum + entry.count, 0);
-    return { total, treeSessionIds, categories };
+    return { total, treeSessionIds, orchestrationStatuses, categories };
 }
 
 /**
