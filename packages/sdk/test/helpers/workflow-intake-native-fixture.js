@@ -197,6 +197,7 @@ function scriptedModelSession(script, onRun = null) {
     const session = {
         ...managedSessionFence(ManagedSession),
         abort() {},
+        getActiveTurn() { return null; },
         async runTurn(prompt, opts) {
             prompts.push(prompt);
             onRun?.(prompts.length, prompt);
