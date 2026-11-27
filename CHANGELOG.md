@@ -62,6 +62,9 @@ Saving warns `WORKFLOW_ENDED_WHOLE_OUTPUT` when a child's whole output reaches
 a `send` or `request` message, a parallel branch's output that is joined with
 others, or (two or more of them) the run's output, with no mapping in between.
 The new `workflow-limits` skill lists the size limits a run meets.
+`workflow-reference` now gives the message's values: `status` is `completed`
+(`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`;
+`outcome` is the terminal state's, else `null`.
 
 ### Workflows: an agent step remembers its earlier visits
 

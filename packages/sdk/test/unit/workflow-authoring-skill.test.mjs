@@ -71,6 +71,9 @@ test("the workflow skills load from their own plugin directory, which no worker 
         `| Tool calls in one script visit (a live run) | ${SCRIPT_NODE_MAX_TOOL_CALLS} |`]) {
         assert.ok(limits.prompt.includes(phrase), `workflow-limits covers: ${phrase}`);
     }
+    // A child's end notice gives its values next to its fields (a model checked status "succeeded"); the values are pinned
+    // in workflow-child-runtime.test.js.
+    assert.ok(reference.prompt.includes("`status`: `completed` (`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`; `outcome`: the terminal state's, else `null`."));
     // The script tool-call cap is stated once per mode: live in workflow-limits, a test run's in the hidden testing guide.
     assert.match(core.prompt, /`callTool\(name, args\)`: one call at a time, capped \(`workflow-limits`\),/);
     assert.ok(!/at most \d+ calls/.test(core.prompt), "the core skill states no call count of its own");
