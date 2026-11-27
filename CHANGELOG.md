@@ -33,8 +33,19 @@ whose orchestration is gone no longer deletes a session that has a Workflow
 under one of its sub-agents, so that Workflow stays in the session list. The
 Resource Manager's
 `purge_old_events` keeps the events of a finished Workflow and of the sessions
-under it, so its Log stays whole. An explicit delete is unchanged. There is no
-retention cap: delete a finished Workflow to remove it.
+under it, so its Log stays whole. An explicit delete is unchanged. A Start of a
+saved Workflow Definition is refused (`SESSION_NOT_FOUND`) in a session below a
+deleted session, for example after such a prune, because that Workflow would
+not be shown.
+
+There is no retention cap, so a session that stays active keeps every finished
+Workflow it ran, with its agent sessions and their events. A session counts as
+active by its state alone: one whose state never became completed, cancelled
+or failed (for example a root left `pending`) keeps them until a person deletes
+them. Find them in the owning session's Terminated row (`scan_completed_sessions`
+reports in `keptCount` how many ended sessions it skipped as kept, and a
+`WorkflowKept` refusal names the session that keeps one), and delete a finished
+Workflow, or its session, to remove it.
 
 ## 0.8.19 — 2026-11-25
 

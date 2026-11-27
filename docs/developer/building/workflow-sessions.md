@@ -1270,7 +1270,9 @@ example an ended owner whose parent is still active. Its prune
 Workflow under it that the delete would leave in place: lists and the portal
 reach a session through its parent, so that Workflow would no longer be shown.
 The final check refuses such a delete (`WorkflowBelow`) under NOWAIT locks on the
-sessions the prune leaves under its target. Once the Workflow and
+sessions the prune leaves under its target. A Start under a session below a
+deleted session is refused (`SESSION_NOT_FOUND`), so no Workflow is created where
+lists cannot reach it. Once the Workflow and
 every session above it have ended, the Sweeper cleans them together. A legacy
 finished Workflow gets the same owner result during the guarded cleanup
 transaction before its session is deleted. `read_workflow` is the full
