@@ -47,7 +47,7 @@ commit `0f80ee3c3` (branch `waldemort/wf-phase2-continue-branches`, base `1a866c
 
 ## 5. Abstractions, Explicit Assumptions, and Limits
 
-- **Cross-branch session/Stop isolation (explicit assumption, verified in code):** Model state arrays are indexed per branch `b \in Branches`. In code, non-collision across branches is guaranteed by: (1) compiler `WORKFLOW_STATE_ID` uniqueness across the entire Workflow (`compiler.ts:2164, :2227`), (2) `workflowAgentSessionId(runId, stateId[, visit])` hashing `stateId`, and (3) keyed Stop IDs (`workflow-cycle-stop:<nodeExecutionId>` and `workflow-session-stop:<childSessionId>`).
+- **Cross-branch session/Stop isolation (explicit assumption, verified in code):** Model state arrays are indexed per branch `b \in Branches`. In code, non-collision across branches is guaranteed by: (1) compiler `WORKFLOW_STATE_ID` uniqueness across the entire Workflow (`compiler.ts:2165, :2230`), (2) `workflowAgentSessionId(runId, stateId[, visit])` hashing `stateId`, and (3) keyed Stop IDs (`workflow-cycle-stop:<nodeExecutionId>` and `workflow-session-stop:<childSessionId>`).
 - **Modeled abstractions vs runtime:**
   - (a) Cycle/session Stops take effect atomically in `EndVisit`/`EndBranchSession`; asynchronous Stop delivery and reply-limit timeouts are already exhaustively modeled in `WfContinuedSession.tla` (`I1` R2–R5, 134 cases).
   - (b) Stale sends of an already-decided visit (`afterSpawn` `:sent` Stop) are modeled in `WfContinuedSession.tla` and omitted from `WfBranchContinuedSession.tla` (`SpawnVisit` requires `vState = "pending"`).

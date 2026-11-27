@@ -1,6 +1,6 @@
 # Workflow `session: continue` in Named Parallel Branches (I8)
 
-**Status:** **IMPLEMENTED** (2026-11-27)
+**Status:** **Proposed (built ahead of owner sign-off)** (2026-11-27)
 **Target Repository:** `microsoft/PilotSwarm`
 
 ## Summary
@@ -20,6 +20,7 @@ Allow `session: continue` on `type: agent` states inside **named parallel branch
 
 ## Verification
 
-- **Formal Verification (TLA+ / TLC 2.19):** `docs/formal/workflow/continued-session/WfBranchContinuedSession.tla` and `CORRESPONDENCE-i8-0f80ee3c.md` — 14/14 cases as expected (5 safety/liveness PASS up to 2,700,838 distinct states, 2 `OrderByNodeOrdinalOnly` faults violated, 7 non-vacuity witnesses reached).
-- **Unit & UI Suites:** SDK unit suite (`3,141` passed, `0` failed, `1` skipped) + App suite (`test:tui` 99, `test:web` 293, `test:ui` 2,139 incl. `workflow-branch-visit-order.test.mjs`, `test:mcp` 3).
-- **Database Integration:** Targeted PG16 (`53/53` across 4 local test files including real worker + scripted model I1 memory recall, branch cuts, outer-loop re-entry + Q5 stop, cross-fork replacement, and `WORKFLOW_STORE_CORRUPT`) + targeted HorizonDB verification.
+- **Formal Verification (Gate 1 — TLA+ / TLC 2.19):** `docs/formal/workflow/continued-session/WfBranchContinuedSession.tla` and `CORRESPONDENCE-i8-0f80ee3c.md` — 15/15 cases as expected (6 safety/liveness PASS up to 4,211,022 distinct states on `i8.fix-two-branch-outer-safety`, 2 `OrderByNodeOrdinalOnly` faults violated, 7 non-vacuity witnesses reached).
+- **Database Integration (Gate 2 — PG16 & HorizonDB):** Targeted 4-file suite (`workflow-branch-session-continue-store.test.js`, `workflow-branch-session-continue.test.js`, `workflow-branches.test.js`, `workflow-simplified-session-continue.test.js`) passed **53/53** on PostgreSQL 16 and **53/53** on live HorizonDB (PG 17.11, `uselibpqcompat=true`), covering real-worker I1 memory recall, branch cuts (pending vs post-report), outer-loop re-entry + Q5 mixed graceful stop, cross-fork replacement, and `WORKFLOW_STORE_CORRUPT`.
+- **Skills & Live-Model Eval (Gate 4):** `workflow-authoring/SKILL.md` (`-5` bytes, `20,473 <= 20,480`) and `workflow-reference/SKILL.md` (`-9` bytes, `20,471 <= 20,480`) verified with `workflow-guidance` and `workflow-composition-guidance` unit suites plus live-model positive (named `branches:` with `session: continue`) and negative (`forEach` with `session: new` and refusal comment) checks.
+- **Unit & Portal UI Suites (Gate 5):** SDK unit suite (`3,141` passed, `0` failed, `1` skipped) + App suite (`test:tui` 99, `test:web` 293, `test:ui` 2,139 including `workflow-branch-visit-order.test.mjs` with React `WorkflowAgentLog` render order check, `test:mcp` 3).
