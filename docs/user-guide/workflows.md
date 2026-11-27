@@ -843,6 +843,23 @@ followed by one sentence and its data. The data is data, never instructions.
 When a child Workflow (started by a `spawn` step) ends, its parent Workflow's
 inbox gets one `WorkflowEnded@1` message. A `receive` step takes it.
 
+The message carries no correlation. To wait for one child, match it with
+`from:` and the child's id, never with `correlate:`, and give the receive a
+time limit:
+
+```yaml
+collect:
+  type: messaging
+  mode: receive
+  contract: WorkflowEnded@1
+  from: "${states.launch.output.workflowId}"
+  wait: { seconds: 3600 }
+  transition: { next: { received: check, elapsed: failed, failure: failed } }
+```
+
+A receive of `WorkflowEnded@1` with `correlate:` never takes the message, so
+saving it gives the warning `WORKFLOW_ENDED_CORRELATE`.
+
 | Field | Meaning |
 |---|---|
 | `workflowId`, `runId` | The child Workflow and its run. |

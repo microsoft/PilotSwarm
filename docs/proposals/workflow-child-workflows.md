@@ -200,7 +200,7 @@ spawn_investigation:
 
 ### 6.2 The `WorkflowEnded@1` Ended Message
 
-Sent exclusively by the runtime when a child run ends. User definitions cannot declare it in `contracts:` or send it via `send` or ordinary runtime input. The sender is the child's session id and `correlation` is `{}`, so a `receive` without `correlate` accepts it.
+Sent exclusively by the runtime when a child run ends. User definitions cannot declare it in `contracts:` or send it via `send` or ordinary runtime input. The sender is the child's session id and `correlation` is `{}`, so a `receive` without `correlate` accepts it. Match one child with `from: "${states.<spawn>.output.workflowId}"`, never with `correlate:`: a receive of `WorkflowEnded@1` with a non-empty `correlate` never takes the message, and the compiler warns `WORKFLOW_ENDED_CORRELATE` at save. Give such a receive a `wait`.
 
 ```json
 {
