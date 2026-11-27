@@ -22,8 +22,7 @@ import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 import { canonicalJson, sha256Hex, type JsonValue } from "./json.js";
 import type { WorkflowCompileResult, WorkflowDiagnostic, WorkflowIR } from "./compiler.js";
-import { WorkflowStoreError, WORKFLOW_LINEAGE_MAX_DEPTH, revisionIrFrom, type WorkflowLineage } from "./store.js";
-import { effectiveLevel } from "./input-policy.js";
+import { WorkflowStoreError, revisionIrFrom, type WorkflowLineage } from "./store.js";
 import { packageVersionIsNewer } from "./session-packages.js";
 import { childBudgetCountSql, childBudgetWords } from "../child-budget.js";
 
@@ -512,24 +511,10 @@ export class SessionDefinitionStore {
      * `readWorkflowLineage` in TypeScript (never duplicating the depth formula in SQL).
      */
     async nestingLevel(sessionId: string): Promise<number | null> {
-        if (this.readLineage) {
-            return (await this.readLineage(sessionId))?.level ?? null;
+        if (!this.readLineage) {
+            throw new Error("SessionDefinitionStore.nestingLevel requires a readLineage callback.");
         }
-        const { rows } = await this.pool.query(
-            `WITH RECURSIVE up(session_id, parent_session_id, session_kind, is_system, depth) AS (
-                 SELECT session_id, parent_session_id, session_kind, is_system, 0 FROM ${this.t.sessions} WHERE session_id = $1
-                 UNION ALL
-                 SELECT p.session_id, p.parent_session_id, p.session_kind, p.is_system, up.depth + 1
-                   FROM ${this.t.sessions} p JOIN up ON p.session_id = up.parent_session_id
-                  WHERE up.depth < ${WORKFLOW_LINEAGE_MAX_DEPTH})
-             SELECT session_id, parent_session_id, session_kind, is_system FROM up ORDER BY depth`, [sessionId]);
-        if (!rows[0]) return null;
-        return effectiveLevel(rows.map((row: Row) => ({
-            sessionId: String(row.session_id),
-            parentSessionId: row.parent_session_id === null || row.parent_session_id === undefined ? null : String(row.parent_session_id),
-            isWorkflow: row.session_kind === "workflow",
-            isSystem: row.is_system === true,
-        })));
+        return (await this.readLineage(sessionId))?.level ?? null;
     }
 
     /** The newest revision of a definition the session itself has seen (its saves and reads), or null (Q2). */

@@ -48,10 +48,10 @@ import {
 } from "./package-card.js";
 
 /**
- * Stage 2.4 (PR 235 2b893906): Start keeps spawn_agent's limits. A Workflow is a child of its session, one level deeper,
- * and no session may be deeper than WORKFLOW_START_MAX_NESTING_LEVEL (spawn_agent's ordinary limit: 0 the root, 1 a
- * child, 2 a grandchild); a session's running sub-agents and active Workflows share one budget of
- * WORKFLOW_START_MAX_RUNNING_CHILDREN.
+ * Stage 2.4 / I9: Start keeps spawn_agent's depth and child-budget limits under one effectiveLevel rule.
+ * Nothing goes past WORKFLOW_START_MAX_NESTING_LEVEL (2): the first Workflow in a chain is free (+0), each later
+ * Workflow adds +1, and an agent step sits at its Workflow's level (+0). A session's running sub-agents and active
+ * Workflows share one budget of WORKFLOW_START_MAX_RUNNING_CHILDREN.
  */
 export const WORKFLOW_START_MAX_NESTING_LEVEL = SESSION_MAX_NESTING_LEVEL;
 export const WORKFLOW_START_MAX_RUNNING_CHILDREN = WORKFLOW_CHILD_BUDGET_MAX;
@@ -71,7 +71,7 @@ export async function requireWorkflowStartLimits(host: Pick<WorkflowHost, "store
             { nestingLevel: null, maxNestingLevel: WORKFLOW_START_MAX_NESTING_LEVEL },
         );
     }
-    const hasWorkflow = lineage.hasWorkflow === true;
+    const hasWorkflow = lineage.hasWorkflow !== false;
     const callerLevel = Math.max(lineage.level, Number.isSafeInteger(given) ? given as number : 0);
     const workflowLevel = effectiveChildLevel({ level: callerLevel, hasWorkflow }, "workflow");
     if (workflowLevel > WORKFLOW_START_MAX_NESTING_LEVEL) {

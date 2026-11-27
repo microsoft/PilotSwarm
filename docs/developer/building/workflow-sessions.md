@@ -403,9 +403,9 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   Any other session may hand prescriptive work to a Workflow; the base
   guidance says so. Nothing goes past effective level 2: the first Workflow in
   a delegation segment is free (`+0`), each later Workflow and each sub-agent
-  is `+1`, an agent step sits at its Workflow's level (`+0`), and system
-  sessions (`is_system = true`) reset their segment root to `0`. Every refusal
-  states this rule in plain words.
+  is `+1`, an agent step sits at its Workflow's level (`+0`), and platform
+  system sessions (top-level or system-parented `is_system = true`) reset their
+  segment root to `0`. Every refusal states this rule in plain words.
 - **Test mode is hidden** (see [Test mode (hidden)](#test-mode-hidden)).
 
 ## A definition belongs to the session (stage 2.1)
@@ -442,9 +442,7 @@ admitted, running or paused, or a Start claimed and not admitted yet) share one
 budget of 50 (`CHILD_LIMIT`, 429). `spawn_agent` and Start count it with the
 same rule, under an exclusive lock on the session, in the transaction that
 makes the child, so two at the same moment cannot both take the 50th place.
-budget always applies. System children are not counted, and a system child is
-created without the atomic budget; a calling system agent is not exempt: its
-`spawn_agent` is still refused once its counted children reach 50.
+Workflows are always on, so this budget always applies. System children are not counted, and a system child is created without the atomic budget; a calling system agent is not exempt: its `spawn_agent` is still refused once its counted children reach 50.
 
 **Models of agent nodes (OF-S2-7).** A definition never names a model,
 reasoning effort or context tier (a `model` key stays `WORKFLOW_FIELD_UNKNOWN`),

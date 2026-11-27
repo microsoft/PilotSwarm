@@ -262,17 +262,23 @@ test("effectiveLevelDetail matches the owner level-table oracle across every leg
     assert.deepEqual(effectiveLevelDetail(buildChain([{ id: "rootWf", isWorkflow: true }])), { level: 0, hasWorkflow: true });
     assert.deepEqual(effectiveLevelDetail(buildChain([{ id: "rootWf", isWorkflow: true }, { id: "childWf", isWorkflow: true }])), { level: 1, hasWorkflow: true });
 
-    // 2. Mid-chain system session resets to level 0, hasWorkflow: false (even under deep chains or pruned parent).
-    const sysMid = [
-        { id: "p", isWorkflow: false, isSystem: false },
-        { id: "w1", isWorkflow: true, isSystem: false },
-        { id: "w2", isWorkflow: true, isSystem: false },
-        { id: "sys", isWorkflow: false, isSystem: true },
+    // 2. Platform system sessions reset to level 0, hasWorkflow: false; user-spawned system agents stay in their parent's chain (Q2).
+    const sysHierarchy = [
+        { id: "sysRoot", isWorkflow: false, isSystem: true },
+        { id: "sysChild", isWorkflow: false, isSystem: true },
     ];
-    assert.deepEqual(effectiveLevelDetail(buildChain(sysMid)), { level: 0, hasWorkflow: false });
-    assert.deepEqual(effectiveLevelDetail(buildChain([...sysMid, { id: "w3", isWorkflow: true }])), { level: 0, hasWorkflow: true });
-    assert.deepEqual(effectiveLevelDetail(buildChain([...sysMid, { id: "s1" }, { id: "s2" }])), { level: 2, hasWorkflow: false });
-    // System session whose parent was pruned (parentSessionId still non-null, not in chain) still terminates as segment root!
+    assert.deepEqual(effectiveLevelDetail(buildChain(sysHierarchy)), { level: 0, hasWorkflow: false });
+    assert.deepEqual(effectiveLevelDetail(buildChain([...sysHierarchy, { id: "sysWf", isWorkflow: true }])), { level: 0, hasWorkflow: true });
+    assert.deepEqual(effectiveLevelDetail(buildChain([...sysHierarchy, { id: "s1" }, { id: "s2" }])), { level: 2, hasWorkflow: false });
+    // User-spawned creatable system agent under a non-system session does NOT reset depth (owner decision Q2).
+    const userSpawnedSys = [
+        { id: "p", isWorkflow: false, isSystem: false },
+        { id: "sub1", isWorkflow: false, isSystem: false },
+        { id: "sysChild", isWorkflow: false, isSystem: true },
+    ];
+    assert.deepEqual(effectiveLevelDetail(buildChain(userSpawnedSys)), { level: 2, hasWorkflow: false });
+    assert.equal(effectiveChildLevel(effectiveLevelDetail(buildChain(userSpawnedSys)), "sub_agent"), 3);
+    // Platform system session whose parent was pruned (parentSessionId still non-null, not in chain) still terminates as segment root.
     assert.deepEqual(effectiveLevelDetail([
         { sessionId: "child", parentSessionId: "sys", isWorkflow: false, isSystem: false },
         { sessionId: "sys", parentSessionId: "pruned-parent", isWorkflow: false, isSystem: true },

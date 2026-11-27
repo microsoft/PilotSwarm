@@ -20,10 +20,10 @@ import type { WorkflowLineage, WorkflowStore } from "./store.js";
  *   portal stamps every caller as a user, so an API caller cannot claim it)
  *   is not human input; an agent's authority to message a session is decided
  *   where it sends (message_agent's lineage rule).
- * - An agent step is at the level of its Workflow; every other session is one
- *   level deeper than its parent; no session may be deeper than
- *   SESSION_MAX_NESTING_LEVEL (2), counted on the stored lineage, not on a
- *   nesting level a caller passes.
+ * - Nothing goes past SESSION_MAX_NESTING_LEVEL (2), counted on the stored
+ *   lineage: the first Workflow in a chain is free (+0), an agent step sits
+ *   at its Workflow's level (+0), every later Workflow and every sub-agent
+ *   adds +1, and platform system sessions reset to 0.
  * - ask_user is refused there: the agent consults its controlling parent
  *   agent or completes its state with needs_input.
  */
@@ -75,11 +75,16 @@ export function effectiveLevelDetail(chain: readonly SessionLevelNode[]): Effect
     const seen = new Set<string>();
     const segment: SessionLevelNode[] = [];
     let reachedRoot = false;
-    for (const node of chain) {
+    for (let i = 0; i < chain.length; i += 1) {
+        const node = chain[i];
         if (seen.has(node.sessionId)) return null;
         seen.add(node.sessionId);
         segment.push(node);
-        if (node.isSystem === true || node.parentSessionId === null) {
+        // Rule 8: platform system sessions (top-level, pruned parent, or under another system session) reset the
+        // segment root to level 0; a creatable system agent spawned under a non-system session stays in its chain.
+        const isPlatformSystemRoot = node.isSystem === true
+            && (node.parentSessionId === null || i === chain.length - 1 || chain[i + 1].isSystem === true);
+        if (node.parentSessionId === null || isPlatformSystemRoot) {
             reachedRoot = true;
             break;
         }

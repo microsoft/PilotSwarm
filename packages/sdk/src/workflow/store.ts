@@ -829,7 +829,7 @@ export interface WorkflowLineage {
     /** Its effective level from the segment root (0 for a root/system session); null when its lineage is cyclic, has a missing parent, or is deeper than any allowed. */
     level: number | null;
     /** True when the active delegation segment (at or below its root/system reset) contains at least one Workflow session. */
-    hasWorkflow?: boolean;
+    hasWorkflow: boolean;
     /**
      * The nearest of the session and its ancestors that is an agent state's
      * child (distance 0: the session itself), with that state's workflow and

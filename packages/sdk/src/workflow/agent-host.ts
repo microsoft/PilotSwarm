@@ -133,7 +133,7 @@ export interface WorkflowAgentHostDeps {
     createChild(spec: WorkflowAgentChildSpec): Promise<void>;
 }
 
-/** A session's effective level (root/system 0, first Workflow free, agent step +0, every other child +1); null when missing, cyclic or deeper than maxDepth. */
+/** A session's effective level (root/platform-system 0, first Workflow free, agent step +0, every other child +1); null when missing, cyclic or deeper than maxDepth. */
 export async function sessionLevel(getSession: WorkflowAgentHostDeps["getSession"], sessionId: string, maxDepth = 16): Promise<number | null> {
     const chain: SessionLevelNode[] = [];
     const seen = new Set<string>();
@@ -142,11 +142,12 @@ export async function sessionLevel(getSession: WorkflowAgentHostDeps["getSession
         if (seen.has(cursor)) return null;
         seen.add(cursor);
         const row = await getSession(cursor);
-        if (!row) return null;
+        if (!row) {
+            return chain.length > 0 && chain[chain.length - 1].isSystem ? effectiveLevel(chain) : null;
+        }
         const parent = row.parentSessionId ?? null;
-        const isSystem = row.isSystem === true;
-        chain.push({ sessionId: cursor, parentSessionId: parent, isWorkflow: row.sessionKind === "workflow", isSystem });
-        if (isSystem || parent === null) return effectiveLevel(chain);
+        chain.push({ sessionId: cursor, parentSessionId: parent, isWorkflow: row.sessionKind === "workflow", isSystem: row.isSystem === true });
+        if (parent === null) return effectiveLevel(chain);
         cursor = parent;
     }
     return null;
@@ -155,9 +156,13 @@ export async function sessionLevel(getSession: WorkflowAgentHostDeps["getSession
 export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): WorkflowAgentNodeHost {
     return {
         async spawn(request: WorkflowAgentSpawnRequest) {
-            const workflowLevel = deps.readLineage
-                ? (await deps.readLineage(request.workflowSessionId))?.level ?? null
-                : await sessionLevel(deps.getSession, request.workflowSessionId);
+            let workflowLevel: number | null;
+            if (deps.readLineage) {
+                const lineage = await deps.readLineage(request.workflowSessionId);
+                workflowLevel = !lineage || lineage.deleted || lineage.level === null ? null : lineage.level;
+            } else {
+                workflowLevel = await sessionLevel(deps.getSession, request.workflowSessionId);
+            }
             if (workflowLevel === null) {
                 return { refused: { code: "unavailable" as const, message: `The lineage of workflow ${request.workflowSessionId} cannot be read.` } };
             }

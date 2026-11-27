@@ -168,7 +168,9 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
             expect(c2.refusal).toBe(
                 "[SYSTEM: spawn_agent failed — you are already at nesting level 2 (max 2). Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]",
             );
+            const beforeC2 = captureCalls.length;
             await expect(captureSpawn(s2)).rejects.toThrow("you are already at nesting level 2 (max 2).");
+            expect(captureCalls.length).toBe(beforeC2);
 
             // ── Chain 3: person 0 -> W1 (0) -> step1 (0) -> sub (1) (allowed) ──
             const w1 = await createWf(P, { withAgentStep: true });
@@ -213,7 +215,9 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
             expect(c8.lineage).toMatchObject({ level: 2, hasWorkflow: true });
             expect(c8.allowed).toBe(false);
             expect(c8.refusal).toContain("this session is at level 2, and nothing goes past level 2");
+            const beforeC8 = captureCalls.length;
             await expect(captureSpawn(w2Sub1)).rejects.toThrow(/this session is at level 2, and nothing goes past level 2/);
+            expect(captureCalls.length).toBe(beforeC8);
 
             // ── Chain 9: person 0 -> sub 1 -> W (1) -> step (1) -> sub (2) (allowed) ──
             const s1Wf = await createWf(s1, { withAgentStep: true });
@@ -254,9 +258,9 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
             expect((await checkInlineSpawn(s1Wf2.stepId)).allowed).toBe(false);
             await refused(requireWorkflowStartLimits(host, s1Wf2.wfId), "WORKFLOW_NESTING_LIMIT");
 
-            // ── Chain 13: person 0 -> sub 1 -> sub 2 -> W1 (2) (allowed via Start; step at 2 cannot delegate) ──
+            // ── Chain 13: person 0 -> sub 1 -> sub 2 -> W1 (2) (allowed via Start; its step at 2 cannot delegate) ──
             const s2Def = (await saveSessionWorkflowDefinition(host, {
-                ownerSessionId: s2, name: "s2-wf", yaml: SIMPLE_YAML("s2-wf"), expected: null,
+                ownerSessionId: s2, name: "step-wf", yaml: AGENT_YAML, expected: null,
                 actor: { kind: "session", sessionId: s2 }, operationId: "save-s2-wf", by: "session",
             })).receipt;
             const s2Started = await startSessionWorkflowDefinition(host, {
@@ -268,8 +272,21 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
             createdSteps.length = 0;
             expect(await spawnStepOn(s2Started.workflowId, s2)).toEqual({ spawned: true });
             expect(createdSteps[0].nestingLevel).toBe(2);
-            const s2Step = await createWf(s2, { withAgentStep: true });
-            expect((await checkInlineSpawn(s2Step.stepId)).allowed).toBe(false);
+            const s2StepId = randomUUID();
+            await h.store.enterNode({
+                runId: s2Started.runId, nodeExecutionId: nodeExecutionIdFor(s2Started.runId, "root", "work", 1),
+                scopeId: "root", nodeId: "work", ordinal: 1, nodeType: "agent",
+                predecessorId: null, arrivalRoute: null, inputText: "null", kvRevision: 1, waitSeconds: null, immediate: null,
+                agent: {
+                    childSessionId: s2StepId, controllingSessionId: s2,
+                    task: { source: "prompt", prompt: "Do work." }, outcomes: ["ok"], outputSchema: null, timeoutSeconds: 3600,
+                },
+            });
+            await h.catalog.createSession(s2StepId, { parentSessionId: s2Started.workflowId, owner: OWNER });
+            expect((await checkInlineSpawn(s2StepId)).allowed).toBe(false);
+            const beforeC13 = captureCalls.length;
+            await expect(captureSpawn(s2StepId)).rejects.toThrow(/this session is at level 2, and nothing goes past level 2/);
+            expect(captureCalls.length).toBe(beforeC13);
 
             // ── Chain 14: person 0 -> sub 1 -> sub 2 -> W1 (2) -> W2 (3) (refused WORKFLOW_NESTING_LIMIT, 0 rows) ──
             const c14Refused = await refused(requireWorkflowStartLimits(host, s2Started.workflowId), "WORKFLOW_NESTING_LIMIT");
@@ -334,15 +351,26 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
             })).toEqual({ spawned: true });
             expect(created[0].nestingLevel).toBe(2);
 
-            // 3. System session reset (Rule 8): top-level and mid-chain is_system = true reset segment root to level 0.
+            // 3. System sessions (Rule 8 & owner decision Q2): platform system hierarchy resets to level 0,
+            // while a creatable system agent spawned under a user session stays in its parent's delegation chain.
             const sysTop = randomUUID();
             await h.catalog.createSession(sysTop, { isSystem: true });
             expect(await h.store.readWorkflowLineage(sysTop)).toMatchObject({ level: 0, hasWorkflow: false });
-            const sysMid = randomUUID();
-            await h.catalog.createSession(sysMid, { parentSessionId: W3, isSystem: true });
-            expect(await h.store.readWorkflowLineage(sysMid)).toMatchObject({ level: 0, hasWorkflow: false });
-            const sysWf = await createWfRow(sysMid);
+            const sysPlatformChild = randomUUID();
+            await h.catalog.createSession(sysPlatformChild, { parentSessionId: sysTop, isSystem: true });
+            expect(await h.store.readWorkflowLineage(sysPlatformChild)).toMatchObject({ level: 0, hasWorkflow: false });
+            const sysWf = await createWfRow(sysPlatformChild);
             expect(await h.store.readWorkflowLineage(sysWf)).toMatchObject({ level: 0, hasWorkflow: true });
+
+            const userRoot = randomUUID();
+            await h.catalog.createSession(userRoot, { owner: OWNER });
+            const userSub1 = randomUUID();
+            await h.catalog.createSession(userSub1, { parentSessionId: userRoot, owner: OWNER });
+            const userSpawnedSys = randomUUID();
+            await h.catalog.createSession(userSpawnedSys, { parentSessionId: userSub1, owner: OWNER, isSystem: true });
+            const userSysLineage = await h.store.readWorkflowLineage(userSpawnedSys);
+            expect(userSysLineage).toMatchObject({ level: 2, hasWorkflow: false });
+            expect(spawnNesting(2, SESSION_MAX_NESTING_LEVEL, userSysLineage).childNestingLevel).toBe(3);
 
             // 4. Broken (missing parent) and cyclic lineages fail closed in Start limits and Check 4.
             const orphan = randomUUID();
@@ -355,11 +383,15 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
             await h.q("UPDATE SCHEMA.sessions SET parent_session_id = $2 WHERE session_id = $1", [cycA, cycB]);
 
             const handlers = new Map();
+            let badCaptureCalls = 0;
             registerActivities(
                 { registerActivity: (name, handler) => handlers.set(name, handler) },
-                { captureSpawnTools: async () => ({ toolCeiling: [] }), getSessionStateDir: () => "/tmp", getWorkspaceProvider: () => null },
+                { captureSpawnTools: async () => { badCaptureCalls += 1; return { toolCeiling: [] }; }, getSessionStateDir: () => "/tmp", getWorkspaceProvider: () => null },
                 null, undefined, h.catalog, undefined, "in-memory://depth-broken", undefined, undefined, [], null, [], [],
             );
+            await expect(handlers.get("captureSpawnToolsV1")({ traceInfo() {} }, {
+                parentSessionId: userSpawnedSys, childConfig: {}, agent: null,
+            })).rejects.toThrow("you are already at nesting level 2 (max 2).");
             for (const bad of [orphan, cycA, randomUUID()]) {
                 const startErr = await refused(requireWorkflowStartLimits(host, bad), "WORKFLOW_NESTING_LIMIT");
                 expect(startErr.message).toContain("delegation chain cannot be verified");
@@ -367,6 +399,7 @@ describe("I9 depth rule: all 14 chains and PostgreSQL invariants", () => {
                     parentSessionId: bad, childConfig: {}, agent: null,
                 })).rejects.toThrow(/delegation chain cannot be verified/);
             }
+            expect(badCaptureCalls).toBe(0);
         } finally {
             await h.stop();
         }

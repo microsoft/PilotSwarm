@@ -2728,7 +2728,7 @@ export function registerActivities(
         }
         // Workflow agent states: this session's stored lineage. An
         // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
-        // refusal and nests up to level 3 (design 03 human-input denial and depth), and in a test run's agent state's
+        // refusal and follows the effectiveLevel depth cap of 2 (first Workflow free, agent step +0), and in a test run's agent state's
         // subtree (design 05 agent mode real) its framework tool calls are intercepted. A session outside every agent state
         // gets none of these. A lineage or test scope that cannot be read fails the turn (it is retried): a session in an
         // agent state's subtree never runs a turn without its denial or, under a test, with live tools. Both are read before
