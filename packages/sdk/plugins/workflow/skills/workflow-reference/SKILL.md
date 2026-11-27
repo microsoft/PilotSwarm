@@ -273,7 +273,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 ### spawn
 
-`definition` (literal name or `<package>/<name>`), `inputs` (object template), `revision` (fixed positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (use `from: "${states.<spawn>.output.workflowId}"`). Child end sends built-in `WorkflowEnded@1` while parent is active (inbox order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; >16 KiB sets `outputTruncated: true`). Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
+`definition` (literal name or `<package>/<name>`), `inputs` (object template), `revision` (fixed positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (use `from: "${states.<spawn>.output.workflowId}"`). Child end sends built-in `WorkflowEnded@1` while parent is active (inbox order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; has `runId`; over ~190 KiB, `output` is left out (`outputTruncated: true`): `child_workflows` `read` `full_output: true` gets it). Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
 
 ### terminal
 
