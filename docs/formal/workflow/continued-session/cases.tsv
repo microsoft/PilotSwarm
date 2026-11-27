@@ -110,6 +110,7 @@ i1.wit-cancel-stops	i1.wit-cancel-stops.cfg	WfContinuedSession
 i1.cc-abort-unfenced	i1.cc-abort-unfenced.cfg	WfContinuedSession
 i1.cc-ack-lost	i1.cc-ack-lost.cfg	WfContinuedSession
 i1.fault-replay-decided	i1.fault-replay-decided.cfg	WfContinuedSession
+i1.fault-reconcile-unlocked	i1.fault-reconcile-unlocked.cfg	WfContinuedSession
 i1.fix-r2-safety	i1.fix-r2-safety.cfg	WfContinuedSession
 i1.fix-r2-live	i1.fix-r2-live.cfg	WfContinuedSession
 i1.fix-r2-stalled-reply	i1.fix-r2-stalled-reply.cfg	WfContinuedSession

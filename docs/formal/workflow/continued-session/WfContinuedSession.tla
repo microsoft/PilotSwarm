@@ -38,7 +38,8 @@ CONSTANTS
     PerAgentSessionEnd,     \* fix G3: one agent session's failed end does not keep the others from being ended
     StopAtRunEnd,   \* fix G5: a visit ended by the run's end also stops its running turn
     Fault,          \* "none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided",
-                    \* "stop-unfenced", "abort-unfenced" (i1 review R2-2), "replay-decided" (i1 review R2-1)
+                    \* "stop-unfenced", "abort-unfenced" (i1 review R2-2), "replay-decided" (i1 review R2-1),
+                    \* "reconcile-unlocked" (i1 review R3-1)
     \* DRR-1 and DRR-2 (the delta review of the G1 fixes): the spawn and a person's end in separate steps.
     SplitSpawn,     \* the spawn is three steps: the G1 check, the child create (cms_create_session), the send
     CheckAll,       \* the check also covers a first visit, a replacement session and a retried attempt (FALSE: the code
@@ -101,7 +102,7 @@ ASSUME V \in 1..3 /\ Person \in {"none", "end", "delete", "any"}
 ASSUME {AllowStop, AllowCancel, AllowStopFail, RecoverFair, SpawnRecheck, RecheckSeesEnding, EndMark, StopBeforeSpawn, PerAgentSessionEnd, StopAtRunEnd} \subseteq BOOLEAN
 ASSUME FailAgentSession \in 0..V
 ASSUME Fault \in {"none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided", "stop-unfenced",
-                  "abort-unfenced", "replay-decided"}
+                  "abort-unfenced", "replay-decided", "reconcile-unlocked"}
 ASSUME {SplitTurn, NoStopOnDone, SessionEndStop, AllowStall, ReplyLimit} \subseteq BOOLEAN
 ASSUME {AsyncAbort, AckLost, Reconcile, AllowLoss} \subseteq BOOLEAN
 ASSUME {SplitSpawn, CheckAll, Backstop, AllowSpawnCrash, MarkSplit, Withdraw, Outbox, Carry} \subseteq BOOLEAN
@@ -341,17 +342,20 @@ TurnEnd(s) ==
 (* from now on (decideWorkflowVisit and the pre-tool hook).                *)
 (* Review R2-3 (AckLost): the write may commit while the worker sees a     *)
 (* failure; without Reconcile the worker then does not know the result     *)
-(* (`ack` FALSE): its tools stay open and no reply limit is armed.         *)
+(* (`ack` FALSE): its tools stay open and no reply limit is armed. Review  *)
+(* R3-1: the read-back waits for the write's COMMIT (a row lock), so it    *)
+(* sees the result; fault "reconcile-unlocked": a plain read may still see *)
+(* the visit pending while that COMMIT is in flight.                       *)
 TurnReport(s) ==
     /\ SplitTurn /\ ses[s].turn # 0 /\ ~ses[s].rep
-    /\ \E lost \in (IF AckLost THEN BOOLEAN ELSE {FALSE}) :
+    /\ \E lost \in (IF AckLost THEN BOOLEAN ELSE {FALSE}), seen \in (IF Fault = "reconcile-unlocked" THEN BOOLEAN ELSE {TRUE}) :
        LET u == ses[s].turn
            pendVis == {w \in Vis : vis[w].s = s /\ vis[w].node = "pending"}
            t == IF Fault = "bind-newest" /\ pendVis # {} THEN CHOOSE w \in pendVis : \A x \in pendVis : x <= w ELSE u
        IN /\ vis' = IF vis[t].node = "pending" THEN Decide(t, "result") ELSE vis
           /\ gh' = gh \cup (IF vis[t].node = "pending" /\ t # u THEN {"wrongResult"} ELSE {})
-                      \cup (IF lost /\ Reconcile THEN {"ackReconciled"} ELSE {})
-          /\ ses' = [ses EXCEPT ![s].rep = TRUE, ![s].ack = IF AckLost THEN ~lost \/ Reconcile ELSE @]
+                      \cup (IF lost /\ Reconcile /\ seen THEN {"ackReconciled"} ELSE {})
+          /\ ses' = [ses EXCEPT ![s].rep = TRUE, ![s].ack = IF AckLost THEN ~lost \/ (Reconcile /\ seen) ELSE @]
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 
 (* i1 (SplitTurn): the turn ends by itself after its reply and its        *)

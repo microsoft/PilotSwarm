@@ -8930,6 +8930,87 @@
   }
  },
  {
+  "id": "i1.fault-reconcile-unlocked",
+  "module": "WfContinuedSession",
+  "config": "i1.fault-reconcile-unlocked.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_PromptTaken"
+  ],
+  "deadlock": true,
+  "note": "Review R3-1: a read-back that is not ordered after the write (a plain read while the COMMIT is in flight) sees the visit pending; no reply limit is armed, and a reply that never ends keeps the next visit's prompt queued.",
+  "tlc": {
+   "comment": "i1.fault-reconcile-unlocked (expected liveness): Review R3-1: a read-back that is not ordered after the write (a plain read while the COMMIT is in flight) sees the visit pending; no reply limit is armed, and a reply that never ends keeps the next visit's prompt queued.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"reconcile-unlocked\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "FALSE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "TRUE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_PromptTaken"
+   ],
+   "deadlock": true
+  }
+ },
+ {
   "id": "i1.fix-r2-safety",
   "module": "WfContinuedSession",
   "config": "i1.fix-r2-safety.cfg",

@@ -320,6 +320,8 @@ CASES = [
   f"Review R2-3 at {I1R2}: the result's write commits but the worker sees a failure; no reply limit is armed, so a reply that never ends keeps the next visit's prompt queued (time limits not forced)."),
  ("i1.fault-replay-decided", "deliberate", "deliberate", "Spec", cc(v=2, fault="replay-decided", **I1E), ["TypeOK", "Inv_NoTurnForDecided"], [], "safety", False,
   f"A recovery that does not read the visit runs a decided visit's prompt again, with its tools open. Review R2-1 found one at {I1R2}: the check after the live-session recovery's own run, when that run reported and its transcript was then refused."),
+ ("i1.fault-reconcile-unlocked", "deliberate", "deliberate", "LiveSpec", cc(v=2, allowstall=True, tofair=False, fault="reconcile-unlocked", **I1F2), CORE, ["Prop_PromptTaken"], "liveness", True,
+  "Review R3-1: a read-back that is not ordered after the write (a plain read while the COMMIT is in flight) sees the visit pending; no reply limit is armed, and a reply that never ends keeps the next visit's prompt queued."),
  ("i1.fix-r2-safety", "proposal", "proposed-fix", "Spec", cc(person="any", stopfail=True, **I1F2), ALL + I1INV, [], "PASS", True,
   "Review R2 fixes: every safety property of i1.fix-safety, with the abort landing later, lost acknowledgements and lost sessions (three visits, a person's end or delete, failing Stops)."),
  ("i1.fix-r2-live", "proposal", "proposed-fix", "LiveSpec", cc(v=2, person="any", stopfail=True, **I1F2), CORE + I1INV, LIVE + ["Prop_PromptTaken"], "PASS", True,

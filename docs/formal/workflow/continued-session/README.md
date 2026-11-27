@@ -220,6 +220,22 @@ Batch r2a (TLC 2.19, two workers, 3,600 s per case; 9 cases; model sha256 `8ae4e
 
 (`i1.fault-replay-decided` ran as `i1.cc-replay-decided` in batch r2a; only its name and note changed.)
 
+### Review R3 of i1 (bound to 19bd0cc1)
+
+Review R3 found that the R2-3 read-back was a plain read, which can see the visit pending while the write's COMMIT is
+still in flight. The fix reads the visit under a row lock that waits for the decision's own. In the model, `TurnReport`'s
+read-back sees the result unless the new fault `"reconcile-unlocked"`. The other two R3 findings (a retried
+`session: new` turn, a disconnect that never answers) are outside the model; `CORRESPONDENCE-i1-r3-19bd0cc1.md` says
+how the code handles them.
+
+Batch r3a (TLC 2.19, two workers, 3,600 s per case; model sha256 `f517c705cc65...`):
+
+| Case | Expected | Result |
+|---|---|---|
+| `i1.fault-reconcile-unlocked` (a read-back that may see the visit pending; a reply that stalls, time limits not forced) | `Prop_PromptTaken` violated | violated (liveness) |
+| `i1.fix-r2-stalled-reply` (the read-back ordered after the write) | PASS | PASS, 13,908 distinct states |
+| `i1.wit-ack-reconciled` | reached | reached |
+
 ## How to run
 
 As in `../../session-orchestration/README.md`: `TLA_TOOLS=<dir with tla2tools.jar> ./check-packet.sh` then
