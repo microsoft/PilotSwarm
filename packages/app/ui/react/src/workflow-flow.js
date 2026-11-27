@@ -228,7 +228,7 @@ const panZoomReady = state => Boolean(state.panZoom);
  * (UXP-TL-02): every fit leaves the controls' strip at the bottom of the area (`host`, the flow's element) clear.
  */
 function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, onReset, refit = 0, onInteract = null, phone = false, host = null,
-    focus = null, revealBox = null, revealAt = 0, revealUntil, dock = null }) {
+    focus = null, current = null, revealBox = null, revealAt = 0, revealUntil, dock = null }) {
     const flow = useReactFlow();
     const ready = useStore(panZoomReady);
     const panel = React.useRef(null);
@@ -241,8 +241,8 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
             shown = workflowFitArea(area, host.current.getBoundingClientRect().bottom - panel.current.getBoundingClientRect().top);
         }
         const whole = workflowFitViewport(bounds, shown);
-        flow.setViewport(readable ? workflowFirstViewport({ whole, bounds, focus, area: shown, maxZoom: FIT_MAX_ZOOM }) ?? whole : whole, options);
-    }, [flow, bounds, area, touched, phone, host, focus]);
+        flow.setViewport(readable ? workflowFirstViewport({ whole, bounds, focus, current, area: shown, maxZoom: FIT_MAX_ZOOM }) ?? whole : whole, options);
+    }, [flow, bounds, area, touched, phone, host, focus, current]);
     React.useEffect(() => {
         if (!ready || !area || fitted.current) return;
         fitted.current = true;
@@ -253,9 +253,10 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
         if (!ready || !area || !fitted.current || touched.current) return;
         if (Date.now() - modeChanged.current < MODE_REFIT_MS) fit(undefined, { readable: true });
     }, [ready, area]);
-    // UI-6: the one hydration fit, when the person's saved places arrived after the first fit (see WorkflowFlow).
+    // UI-6: the one hydration fit, when the person's saved places arrived after the first fit (see WorkflowFlow): the whole
+    // graph, so every box the person placed shows.
     React.useEffect(() => {
-        if (refit > 0 && ready && area) fit(undefined, { readable: true });
+        if (refit > 0 && ready && area) fit(undefined);
     }, [refit]);
     // UX round 1 (G1, P2): the step chosen stays in view. Only the person's intent starts it (`revealAt`: a step chosen, a
     // visit shown, a panel opened); for REVEAL_WINDOW_MS after it, the area's changes (the Node panel opening under the
@@ -316,7 +317,7 @@ function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, o
  * its controls (UXP-TL-02).
  */
 export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null, mode = "normal",
-    lit = null, phone = false, hoverEnd = null, allHandlers = false, reveal = null, revealAt = 0, dock = null }) {
+    lit = null, phone = false, hoverEnd = null, allHandlers = false, reveal = null, revealAt = 0, dock = null, handlerStep }) {
     const [hand, setHand] = React.useState(true);
     const hostRef = React.useRef(null);
     const [start] = React.useState(() => workflowViewportOf(viewport));
@@ -482,12 +483,17 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
     // drawn as its branch box (B1).
     const focus = React.useMemo(() => workflowMainPathBounds(layout, shown), [layout, shown]);
     const groupOf = id => [...(layout.groups?.values() ?? [])].find(group => group.parallel === id)?.id;
-    const revealBox = reveal !== null && reveal !== undefined ? shown.get(reveal) ?? shown.get(groupOf(reveal)) ?? null : null;
+    const boxOfStep = id => (id !== null && id !== undefined ? shown.get(id) ?? shown.get(groupOf(id)) ?? null : null);
+    const revealBox = boxOfStep(reveal);
+    // UXP-TL-02: an automatic fit keeps the run's current step (the newest visit's, at the moment shown) in view.
+    const currentBox = boxOfStep(lit?.current ?? null);
     // While this is a time in the future, the person's last intent may still reveal the chosen step; their own pan or drag ends it.
     const revealUntil = React.useRef(0);
-    // R1: the error handlers' dashed arrows, between the boxes where they are drawn now (a moved box takes its arrows).
-    const arrows = React.useMemo(() => workflowHandlerArrows(layout, shown, { selectedId, all: allHandlers, hoverEnd, lit }),
-        [layout, shown, selectedId, allHandlers, hoverEnd, lit]);
+    // R1: the error handlers' dashed arrows, between the boxes where they are drawn now (a moved box takes its arrows). UX
+    // round 1 (G4): for `handlerStep` when given (a step shown only by default has none), else the step selected.
+    const arrowsFor = handlerStep === undefined ? selectedId : handlerStep;
+    const arrows = React.useMemo(() => workflowHandlerArrows(layout, shown, { selectedId: arrowsFor, all: allHandlers, hoverEnd, lit }),
+        [layout, shown, arrowsFor, allHandlers, hoverEnd, lit]);
     return h(ReactFlow, {
         ref: hostRef,
         nodes: flowNodes, edges: flowEdges, nodeTypes: NODE_TYPES, edgeTypes: EDGE_TYPES,
@@ -513,5 +519,5 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
     h(Background, { variant: BackgroundVariant.Dots, gap: 18, size: 1 }),
     arrows.length ? h(ViewportPortal, null, h(WorkflowHandlerArrows, { arrows })) : null,
     h(GraphView, { bounds, area, fitted, touched, modeChanged, hand, onHand: setHand, onReset: moved.size ? reset : null, refit, onInteract, phone,
-        host: hostRef, focus, revealBox, revealAt, revealUntil, dock }));
+        host: hostRef, focus, current: currentBox, revealBox, revealAt, revealUntil, dock }));
 }

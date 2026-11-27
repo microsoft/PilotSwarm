@@ -14620,15 +14620,19 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   font-weight: 600;
   cursor: pointer;
 }
-.ps-workflow-ends-more.is-right { right: 0; margin-left: auto; padding: 0 4px 0 16px; background: linear-gradient(to right, transparent, var(--ps-chrome) 12px); }
-.ps-workflow-ends-more.is-left { left: 0; padding: 0 16px 0 4px; background: linear-gradient(to left, transparent, var(--ps-chrome) 12px); }
+/* The row's 8px side padding is outside the sticky edge: the cue reaches over it (-8px), so no chip shows past it. */
+.ps-workflow-ends-more.is-right { right: -8px; margin-left: auto; padding: 0 12px 0 16px; background: linear-gradient(to right, transparent, var(--ps-chrome) 12px); }
+.ps-workflow-ends-more.is-left { left: -8px; padding: 0 16px 0 12px; background: linear-gradient(to left, transparent, var(--ps-chrome) 12px); }
 .ps-wf-tab.is-phone .ps-workflow-ends-more { min-width: 44px; }
 /* P1: on a phone React Flow's controls sit in a column beside the graph (WorkflowGraph's dock), never over a step. */
 .ps-workflow-graph-body { display: flex; min-height: 0; height: 100%; }
 .ps-workflow-graph:has(> .ps-workflow-ends) > .ps-workflow-graph-body { flex: 1 1 0; height: auto; }
 .ps-workflow-graph-body > .ps-workflow-flow { flex: 1 1 0; min-width: 0; height: 100%; }
+/* A fixed width (a 44px button, 4px padding each side and the border): the graph's area is its final size at its first fit,
+   before the controls move in. */
 .ps-workflow-graph-dock {
   flex: none;
+  width: 53px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -14645,7 +14649,6 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
-  color: var(--ps-foreground);
 }
 .ps-wf-tab.is-phone .ps-wf-panel-tab-step { max-width: 6.5em; }
 /* P1: on a phone, while a graph is shown, the header folds into one line (the toggle with the definition, the Workflow and

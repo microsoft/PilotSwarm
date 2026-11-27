@@ -330,12 +330,13 @@ export function workflowGroupProps(layout, group, byId, { selected = null, lit =
 }
 
 /** The plain picture: the layout at its own size, scrolled when it is larger than the graph's area. */
-function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hoverEnd = null, allHandlers = false }) {
+function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hoverEnd = null, allHandlers = false, handlerStep }) {
     const markerId = `wf-arrow-${React.useId().replace(/:/g, "")}`;
     const byId = new Map(nodes.map(node => [node.id, node]));
     const boxes = new Map([...layout.positions, ...[...(layout.joins?.values() ?? [])].map(join => [join.id, join]),
         ...[...(layout.groups?.values() ?? [])].map(group => [group.id, group])]);
-    const arrows = workflowHandlerArrows(layout, boxes, { selectedId: selected?.id ?? null, all: allHandlers, hoverEnd, lit });
+    const arrows = workflowHandlerArrows(layout, boxes, { selectedId: handlerStep === undefined ? selected?.id ?? null : handlerStep,
+        all: allHandlers, hoverEnd, lit });
     const slot = (box, className, child, key) => h("div", { key, className, style: { left: box.x, top: box.y, width: box.width, height: box.height } }, child);
     return h("div", { className: "ps-workflow-graph-static" },
         h("div", { className: "ps-workflow-graph-canvas", style: { width: layout.width, height: layout.height } },
@@ -384,7 +385,9 @@ function loadFlow() {
  * graph, so they never cover a step.
  */
 export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null, places = null, onPlaces = null,
-    mode = "normal", lit = null, mobile = false, reveal = null, revealAt = 0 }) {
+    mode = "normal", lit = null, mobile = false, reveal = null, revealAt = 0, handlerStep }) {
+    // UX round 1 (G4): the step whose error handlers' arrows show; when not given, the step selected (as before).
+    const arrowsFor = handlerStep === undefined ? selected?.id ?? null : handlerStep;
     const key = workflowGraphKey(definition);
     const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
     // The key holds everything of the definition the layout reads.
@@ -406,14 +409,14 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
     // flow's parent is the same at every width, so crossing the phone width never mounts it again.
     const [dock, setDock] = React.useState(null);
     const flow = Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces,
-        mode, lit, phone, hoverEnd, allHandlers, reveal, revealAt, dock: phone ? dock : null }) : null;
+        mode, lit, phone, hoverEnd, allHandlers, reveal, revealAt, dock: phone ? dock : null, handlerStep: arrowsFor }) : null;
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
         definition.notes ? h("details", { className: "ps-workflow-definition-notes" },
             h("summary", null, "Definition notes"), h("div", { className: "ps-workflow-notes" }, definition.notes)) : null,
         h(WorkflowEndsRow, { ends: layout.ends, reached: lit?.endReached ?? null, run: Boolean(lit), hoverEnd, onHover: setHoverEnd, select,
             handlers: hasHandlers ? { all: allHandlers, onToggle: () => setAllHandlers(value => !value) } : null }),
         flow ? h("div", { className: "ps-workflow-graph-body" }, flow, phone ? h("div", { ref: setDock, className: "ps-workflow-graph-dock" }) : null)
-            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd, allHandlers }));
+            : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd, allHandlers, handlerStep: arrowsFor }));
 }
 
 /**

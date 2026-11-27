@@ -553,11 +553,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         }
         await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
         if (phone) {
-            // On a phone a tap only selects the node and keeps the graph on screen, even for collect, the node the view
-            // selects by default; a second tap opens its details.
+            // UX round 1 (P2, owner 2026-11-26): on a phone one tap opens the step's details, as a click does on a desktop
+            // (before, a first tap only selected it and a second opened them), and the graph stays above the sheet.
             await expect(main.locator(".ps-workflow-graph")).toBeVisible();
-            await expect.poll(() => detailsOnScreen(page)).toBe(0);
-            await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
+            await expect.poll(() => detailsOnScreen(page)).toBe(1);
         }
         const details = nodeDetails(page);
         await expect(details.locator(NODE_NAME)).toHaveText("collect");

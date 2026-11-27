@@ -17,7 +17,7 @@ import { CompareView, WorkflowDiagnostics, WorkflowNoGraph, WorkflowYamlBox } fr
 import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
-import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
+import { PHONE_MEDIA_QUERY, WORKFLOW_FOLD_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { WORKFLOW_RUN_STATE_WORDS, workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowStartModels } from "../../core/src/workflow-words.js";
 import {
     BottomPanel, DecisionAvailabilityNotice, Dialog, FacedPicker, LIST_READ_LIMIT, NodeFacts, StartDialog, StateChip, WorkflowRunView, WorkflowStage, revisionLine, shownTime, shownTimeTitle,
@@ -48,6 +48,7 @@ const sessionRefusal = (label, result, fallback) => (result?.phase === "unconfir
  */
 export function SessionWorkflowTab({ controller, mobile = false, modeButtons = null, displayMode = "normal", context, definitions, listError = null }) {
     const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
+    const shortPhone = useMediaQuery(WORKFLOW_FOLD_MEDIA_QUERY) && phone;
     const ownerId = context.ownerId;
     const shownId = context.workflowId;
     // F4 (stage 1): this tab records what it showed; the Workflow button's dot clears. OF-S2-4 (C): every lifecycle change counts.
@@ -149,11 +150,12 @@ export function SessionWorkflowTab({ controller, mobile = false, modeButtons = n
                 title: decisionBlocked ? "Decision nodes are unavailable for this definition"
                     : start.enabled ? `start Workflow #${sessionNextWorkflowNumber(definition)} from revision ${revision}` : start.title,
                 onClick: () => setTab({ definitionStart: true }) })) : null);
-    // UX round 1 (P1): a phone showing a graph (a definition's, or a Workflow's) folds the pickers, the lines under them and
-    // the Workflow's bar into one line (the header: its words and state, and the full screen button), so the graph gets
-    // most of the height; a tap on the line opens them again. Errors stay shown. Nothing is removed: the folded parts are
-    // hidden (CSS) and come back as they were.
-    const foldable = phone && (onDefinition ? !yaml : Boolean(workflow));
+    // UX round 1 (P1): a short upright phone (WORKFLOW_FOLD_MEDIA_QUERY) showing a graph (a definition's, or a Workflow's)
+    // folds the pickers, the lines under them and the Workflow's bar into one line (the header: its words and state, and
+    // the full screen button), so the graph gets most of the height; a tap on the line opens them again. Errors stay shown.
+    // Nothing is removed: the folded parts are hidden (CSS) and come back as they were. A taller phone, or one held
+    // sideways, keeps the bars as they were.
+    const foldable = shortPhone && (onDefinition ? !yaml : Boolean(workflow));
     const folded = foldable && !barsOpen;
     const fold = foldable ? h("button", { type: "button", className: "ps-wf-fold-toggle", "data-action": "fold-bars", "aria-expanded": !folded,
         title: folded ? "Show the pickers, the revision and the Workflow's controls" : "Fold them into one line, so the graph gets the height",
@@ -241,8 +243,10 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
     const nodes = projection?.nodes ?? [];
     const [selectedId, setSelectedId] = React.useState(null);
     const [graphView, setGraphView] = React.useState(null);
-    // UX round 1 (R2, G4): no step is selected until the person chooses one (another definition starts with none).
-    const selected = nodes.find(node => node.id === selectedId) ?? null;
+    const chosenNode = nodes.find(node => node.id === selectedId) ?? null;
+    const selected = chosenNode || nodes.find(node => node.id === graph?.initial) || nodes[0] || null;
+    // UX round 1 (G4): only a step the person chose shows its error handlers' arrows (another definition starts with none).
+    const handlerStep = chosenNode?.id ?? null;
     // UX round 1 (G1, P2): when the person last chose a step or opened a panel (the graph then keeps the step in view).
     const [revealAt, setRevealAt] = React.useState(0);
     const placesKey = `session:${definition.definitionId}`;
@@ -343,7 +347,7 @@ function SessionDefinitionView({ controller, ownerId, definition, revision, tab,
                 : null) },
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: placesKey, viewport: graphView, onViewport: setGraphView,
-                places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), reveal: selectedId, revealAt })
+                places, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), reveal: selectedId, revealAt, handlerStep })
                 : projection && line ? h("div", { className: "ps-wf-errors" }, h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, Number.isSafeInteger(revision) ? `Reading revision ${revision}…` : "No revisions yet.")),

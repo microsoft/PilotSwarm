@@ -16,7 +16,7 @@ import {
 import { workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowShortTime, workflowStartAgentChoices, workflowStartAgentModels,
     workflowStartModels, workflowTimeTitle,
 } from "../../core/src/workflow-words.js";
-import { workflowRunSelectedNode, workflowRunSwitched } from "../../core/src/workflow-run-picker.js";
+import { workflowRunHandlerStep, workflowRunSelectedNode, workflowRunSwitched } from "../../core/src/workflow-run-picker.js";
 import {
     normalizeWorkflowDecisionCapability, reconcileWorkflowDecisionOverrideSelection,
     workflowDecisionOverrideMap, workflowDecisionUnavailableText, workflowStartDecisionModels,
@@ -461,11 +461,14 @@ export function BottomPanel({ controller, panels, panel, onPanel, mobile, childr
  */
 function PanelTabs({ panels, panel, onPanel, mobile = false, vertical = false, steps = null }) {
     const labels = { node: "Node", log: "Log", variables: "Variables", revisions: "Revisions", test: "Test" };
+    // UX round 1 (P2): a tab may show the step it holds ("Node · gate"); the tab keeps its own name ("Node"), and its title
+    // names the step.
+    const stepOf = id => (typeof steps?.[id] === "string" && steps[id] ? steps[id] : null);
     return h("div", { className: "ps-wf-panel-tabs", role: "tablist", "aria-label": "Workflow panel", ...(vertical ? { "aria-orientation": "vertical" } : {}) },
         panels.map(id => h("button", { key: id, type: "button", role: "tab", "aria-selected": panel === id, className: panel === id ? "is-on" : "",
+            ...(stepOf(id) ? { title: `${labels[id]}: ${stepOf(id)}` } : {}),
             onClick: () => onPanel(panel === id && !mobile ? null : id) }, labels[id],
-        typeof steps?.[id] === "string" && steps[id] ? " · " : null,
-        typeof steps?.[id] === "string" && steps[id] ? h("span", { className: "ps-wf-panel-tab-step", "data-step": steps[id] }, steps[id]) : null)));
+        stepOf(id) ? h("span", { "aria-hidden": "true" }, " · ", h("span", { className: "ps-wf-panel-tab-step", "data-step": stepOf(id) }, stepOf(id))) : null)));
 }
 
 /** The bottom panel, as it was (normal mode, and a phone's sheet). */
@@ -751,7 +754,9 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                 places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)),
-                reveal: view.selectedNodeId ?? null, revealAt })
+                reveal: view.selectedNodeId ?? null, revealAt,
+                // UX round 1 (G4): only a step the person chose shows its error handlers' arrows.
+                handlerStep: nodes.some(node => node.id === view.selectedNodeId) ? view.selectedNodeId : null })
                 // No graph to draw: the line above says why; its errors are listed under it (folded while the session writes).
                 : projection && line ? (line.calm
                     ? h("details", { className: "ps-wf-errors" }, h("summary", null, "Errors so far"), h(WorkflowDiagnostics, { diagnostics: projection.diagnostics }))
@@ -1020,7 +1025,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     } : null, [Boolean(replay), frames, frame?.nodeExecutionId, child.olderEvents, controller, sessionId]);
     const nodes = replayed ? replayed.nodes : child.nodes;
     const graph = child.definition;
-    // UX round 1 (R2): switching from another run shows this one with no step selected (its own earlier choice included).
+    // UX round 1 (R2): switching from another run shows this one with no step chosen (its own earlier choice included).
     const switched = React.useRef(workflowRunSwitched(tab.shownRun ?? null, sessionId));
     React.useEffect(() => {
         if (switched.current && view.selectedNodeId != null) controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: null } });
@@ -1028,8 +1033,10 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         if (tab.shownRun !== sessionId) setTab({ shownRun: sessionId });
     }, [sessionId]);
     const chosen = nodeStateId && view.selectedNodeId == null ? nodeStateId : switched.current ? null : view.selectedNodeId;
-    // UX round 1 (R2, G4): the step chosen, else a running Workflow's pending step; an ended run has none by default.
-    const selected = workflowRunSelectedNode(nodes, chosen ?? null);
+    // The step shown (as before: chosen, else the pending one, else the first). UX round 1 (G4): only a chosen or running
+    // step shows its error handlers' arrows, never one shown by default.
+    const selected = workflowRunSelectedNode(nodes, chosen ?? null, { initial: graph?.initial ?? null, live: Boolean(projection) });
+    const handlerStep = workflowRunHandlerStep(nodes, chosen ?? null, { live: Boolean(projection) });
     const state = workflowStateOf(session, view);
     const runCommand = view.runCommand ?? null;
     const runControls = React.useMemo(() => workflowRunControls(readModel, runCommand), [readModel, runCommand]);
@@ -1129,7 +1136,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         h("div", { className: "ps-wf-main" },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                 places: places ?? null, onPlaces, mobile, mode: workflowGraphMode(displayMode, side, Boolean(panel)), lit,
-                reveal: chosen ?? null, revealAt })
+                reveal: chosen ?? null, revealAt, handlerStep })
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         // The timeline stays with the graph (OF-S2-1).
