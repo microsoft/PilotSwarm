@@ -80,7 +80,7 @@ test("a deployment as configured today advertises reads and a person's commands 
             schema: 1,
             enabled: true,
             decision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
-            apiVersion: "pilotswarm.dev/v1", read: true, create: false, input: false,
+            apiVersion: "pilotswarm.dev/v1", read: true, validate: true, skills: true, card: true, create: false, input: false,
             commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
         });
         // The advertised refusal is the adapter's own: a person's command to this deployment changes nothing and gets it.

@@ -600,6 +600,48 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     assert.equal(seenCsfwOpts.originatingSessionId, "bound-wf-child");
     assert.equal(csfwDenied.isError, true);
     assert.equal(JSON.parse(csfwDenied.content[0].text).code, "WORKFLOW_DEFINITION_TOOLS_REFUSED");
+
+    // Proposed Q3: older-portal advert reflection in buildCapabilities & 501 WORKFLOW_API_UNAVAILABLE on missing route
+    const olderAdvert = { schema: 1, enabled: true, apiVersion: "pilotswarm.dev/v1", read: true };
+    const { tool: olderTool } = await describedBy({
+        ...capabilityCtx(webClient({ ok: true, workflows: olderAdvert }), { workflowCommands: true, webMode: true }),
+        workflowsAdvert: olderAdvert,
+    });
+    assert.deepEqual(olderTool.workflow_tools, {
+        read: true, catalog: true, session_for_workflow: true, skills: false, commands: true, definitions: false,
+    });
+    const newerAdvert = { schema: 1, enabled: true, apiVersion: "pilotswarm.dev/v1", read: true, validate: true, skills: true, card: true };
+    const { tool: newerTool } = await describedBy({
+        ...capabilityCtx(webClient({ ok: true, workflows: newerAdvert }), { workflowCommands: true, webMode: true }),
+        workflowsAdvert: newerAdvert,
+    });
+    assert.deepEqual(newerTool.workflow_tools, {
+        read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true,
+    });
+
+    const missingRouteErr = () => Object.assign(new Error("Unknown API route: POST /api/v1/workflow-definitions/validate"), {
+        code: "NOT_FOUND",
+        status: 404,
+    });
+    const olderTools = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        mgmt: {
+            readWorkflowSkills: async () => { throw missingRouteErr(); },
+            validateWorkflowDefinition: async () => { throw missingRouteErr(); },
+            readSessionWorkflowCard: async () => { throw missingRouteErr(); },
+        },
+    });
+    const sk501 = JSON.parse((await olderTools.get("read_workflow_skill")({})).content[0].text);
+    assert.equal(sk501.code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(sk501.status, 501);
+    const val501 = JSON.parse((await olderTools.get("workflow_definition")({ operation: "validate", yaml: "x" })).content[0].text);
+    assert.equal(val501.code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(val501.status, 501);
+    const card501 = JSON.parse((await olderTools.get("workflow_definition")({ operation: "card", owner_session_id: OWNER_SID, name: "demo/echo" })).content[0].text);
+    assert.equal(card501.code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(card501.status, 501);
+    assert.equal(card501.session_id, OWNER_SID);
 }
 
 console.log("✅ Phase 4 MCP workflow tools unit suite passed");

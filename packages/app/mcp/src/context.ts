@@ -105,6 +105,11 @@ interface ServerContextBase {
      */
     originatingSessionId?: string;
     /**
+     * Workflow capability advert captured from /api/v1/bootstrap in web mode (proposed; owner to confirm),
+     * used to detect older portals that predate skills/validate/card routes.
+     */
+    workflowsAdvert?: Record<string, unknown> | null;
+    /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
      * from /auth/me and /bootstrap; direct mode is privileged (`admin`) with
@@ -199,6 +204,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
     let admin = false;
     let ctxRole: string | null = null;
     let ctxAuthz = { ownershipEnforced: false, defaultVisibility: "private", systemVisibility: "read", adminScope: "unrestricted", policyVersion: 0 };
+    let workflowsAdvert: Record<string, unknown> | null = null;
     let webAgents: AgentConfig[] | null = null;
 
     if (opts.apiUrl) {
@@ -248,6 +254,9 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
                     adminScope: String(boot.authz.adminScope || "unrestricted"),
                     policyVersion: Number(boot.authz.policyVersion) || 0,
                 };
+            }
+            if (boot?.workflows && typeof boot.workflows === "object" && !Array.isArray(boot.workflows)) {
+                workflowsAdvert = boot.workflows as Record<string, unknown>;
             }
         } catch {
             // leave defaults
@@ -402,6 +411,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         role: ctxRole,
         authz: ctxAuthz,
         workflowCommands: opts.workflowCommands !== null,
+        ...(workflowsAdvert ? { workflowsAdvert } : {}),
         // The session this server acts for, when it was started for one (review SF-2).
         ...(originatingSessionIdFromEnv() ? { originatingSessionId: originatingSessionIdFromEnv()! } : {}),
         webMode: Boolean(opts.apiUrl),

@@ -34,6 +34,9 @@ export async function workflowAdvertisement(ctx: ServerContext): Promise<Record<
  * picks up provider changes, matching worker semantics.
  */
 export function buildCapabilities(ctx: ServerContext) {
+    const advert = ctx.webMode && ctx.workflowsAdvert && typeof ctx.workflowsAdvert === "object"
+        ? ctx.workflowsAdvert
+        : null;
     return {
         mode: ctx.webMode ? "web" : "direct",
         admin: ctx.admin,
@@ -81,9 +84,9 @@ export function buildCapabilities(ctx: ServerContext) {
             read: true,
             catalog: true,
             session_for_workflow: true,
-            skills: true,
+            skills: advert ? Boolean(advert.skills) : true,
             commands: ctx.workflowCommands === true,
-            definitions: ctx.workflowCommands === true,
+            definitions: ctx.workflowCommands === true && (advert ? Boolean(advert.validate && advert.card) : true),
         },
     };
 }

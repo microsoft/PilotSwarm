@@ -208,7 +208,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     note: WORKFLOW_SKILL_MCP_NOTE,
                 });
             } catch (err: unknown) {
-                return refusal(err);
+                return refusal(err, undefined, "readWorkflowSkills");
             }
         }),
     );
@@ -340,7 +340,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     const result = await ctx.mgmt.validateWorkflowDefinition(yaml);
                     return jsonResult({ operation: "validate", ...result });
                 } catch (err: unknown) {
-                    return refusal(err);
+                    return refusal(err, undefined, "validateWorkflowDefinition");
                 }
             }
 
@@ -375,8 +375,12 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     if (!name) {
                         return errorResult("card needs name: <package>/<name>.", { code: "WORKFLOW_COMMAND_INVALID", status: 400, session_id: owner_session_id });
                     }
-                    const card = await ctx.mgmt.readSessionWorkflowCard(owner_session_id, { name });
-                    return jsonResult({ operation: "card", owner_session_id, ...card });
+                    try {
+                        const card = await ctx.mgmt.readSessionWorkflowCard(owner_session_id, { name });
+                        return jsonResult({ operation: "card", owner_session_id, ...card });
+                    } catch (err: unknown) {
+                        return refusal(err, owner_session_id, "readSessionWorkflowCard");
+                    }
                 }
 
                 if (operation === "save") {
@@ -540,9 +544,25 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
  * A workflow refusal: every one with a code answers in one JSON shape, with its status and details; a bare 403 and an
  * error without a code keep the standard answer (rethrown to withToolErrors).
  */
-function refusal(err: unknown, session_id?: string): ToolResult {
+function refusal(err: unknown, session_id?: string, olderPortalOp?: string): ToolResult {
     const failure = (err ?? {}) as { code?: unknown; status?: unknown; message?: unknown; details?: unknown };
     const code = failure.code;
+    if (
+        olderPortalOp
+        && failure.status === 404
+        && code === "NOT_FOUND"
+        && typeof failure.message === "string"
+        && /^Unknown API route:/i.test(failure.message)
+    ) {
+        return errorResult(
+            `This deployment is older than this MCP server and has no ${olderPortalOp}; upgrade the portal.`,
+            {
+                code: "WORKFLOW_API_UNAVAILABLE",
+                status: 501,
+                ...(session_id ? { session_id } : {}),
+            },
+        );
+    }
     if (typeof code !== "string" || (failure.status === 403 && code === "FORBIDDEN")) throw err;
     return errorResult(typeof failure.message === "string" ? failure.message : String(err), {
         code,

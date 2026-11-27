@@ -94,6 +94,9 @@ export function workflowCapabilities(options: {
         decision: { ...decision, models: [...decision.models] },
         apiVersion: WORKFLOW_API_VERSION,
         read: options.read === true,
+        validate: true,
+        skills: true,
+        card: options.read === true,
         // Review SF-D5: the server's word that workflow test mode is on, only then, so a client shows stored test notices (a
         // parent session's "test waiting" card) only while it is; absent: hidden.
         ...(resolveWorkflowTestMode(commands?.testMode) ? { testMode: true } : {}),
