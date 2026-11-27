@@ -39,6 +39,33 @@ test("G1: a readable view starts at the graph's top, so the Start mark above the
     assert.equal(at(view, 1230, 0).y, M);
 });
 
+test("P1: a main path wider than a phone's graph at a readable zoom starts at the area's left edge, so its steps show whole", () => {
+    // issue-to-pr on a phone: a 324 x 310 area; the main path's steps are 203 wide at x 1,100, with 220 of end chips beside them.
+    const bounds = { x: 0, y: 0, width: 1940, height: 1420 };
+    const focus = { x: 1100, y: 0, width: 423, height: 1420 };
+    const view = workflowFirstViewport({ whole: { x: 0, y: 0, zoom: 0.16 }, bounds, focus, area: { width: 324, height: 310 } });
+    assert.equal(view.zoom, WORKFLOW_READABLE_ZOOM);
+    assert.equal(at(view, 1100, 0).x, M, "the steps' left edge at the margin");
+    assert.ok(at(view, 1303, 0).x <= 324 - M, "the steps' right edge inside the area");
+    assert.equal(at(view, 1100, 0).y, M);
+});
+
+test("UXP-TL-02: a readable first view keeps the run's current step in view, by the smallest pan; a fitted whole graph has it already", () => {
+    // A long chain on a phone: the current step is the last, far below the main path's top.
+    const bounds = { x: 0, y: 0, width: 300, height: 2600 };
+    const area = { width: 324, height: 500 };
+    const current = { x: 50, y: 2500, width: 200, height: 75 };
+    const top = workflowFirstViewport({ whole: { x: 0, y: 0, zoom: 0.18 }, bounds, area });
+    const view = workflowFirstViewport({ whole: { x: 0, y: 0, zoom: 0.18 }, bounds, area, current });
+    assert.equal(view.zoom, top.zoom);
+    assert.equal(view.x, top.x, "only up and down");
+    assert.equal(at(view, 50, 2575).y, area.height - M, "its bottom at the area's, inside the margin");
+    // A current step already in view, or none, leaves the view as it was; a whole-graph fit is kept as it is.
+    assert.deepEqual(workflowFirstViewport({ whole: { x: 0, y: 0, zoom: 0.18 }, bounds, area, current: { x: 50, y: 100, width: 200, height: 75 } }), top);
+    const whole = { x: 1, y: 2, zoom: 0.9 };
+    assert.deepEqual(workflowFirstViewport({ whole, bounds: { x: 0, y: 0, width: 300, height: 400 }, area, current }), whole);
+});
+
 test("G1: a main path near the graph's right edge is not centred past it: the graph's right edge stays at the area's", () => {
     const bounds = { x: 0, y: 0, width: 1700, height: 2600 };
     const focus = { x: 1500, y: 0, width: 200, height: 2600 };

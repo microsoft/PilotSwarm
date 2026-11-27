@@ -12,7 +12,7 @@ import {
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { WorkflowRunView } from "../../react/src/workflow-tab.js";
 import { selectWorkflowRun, workflowRunPickerModel } from "../../react/src/workflow-panels.js";
-import { workflowRunSelectedNode, workflowRunSwitched } from "../src/workflow-run-picker.js";
+import { workflowRunHandlerStep, workflowRunSelectedNode, workflowRunSwitched } from "../src/workflow-run-picker.js";
 import { startedData, ev, row, done, readModel } from "./workflow-fixtures.mjs";
 
 const SID = "wf-picker";
@@ -97,15 +97,25 @@ test("the Workflow view and phone picker use the saved source pin, not a local c
     assert.ok(!phone.includes("Saved definition revision 3"));
 });
 
-test("R2, G4: an ended run has no step selected until one is chosen; a running one shows its pending step; switching runs clears", () => {
+test("R2, G4: the step shown is the one chosen, else the running step, else the first; only a chosen or running step shows its handler arrows", () => {
     const nodes = [{ id: "fetch" }, { id: "review", pending: false }, { id: "gate" }];
-    assert.equal(workflowRunSelectedNode(nodes, null), null, "an ended run: no default step, so no handler arrows on its first step");
+    // The Node panel's step, as before: chosen, else the pending one (while the run is read), else the initial, else the first.
+    assert.equal(workflowRunSelectedNode(nodes, null, { initial: "review" }).id, "review");
+    assert.equal(workflowRunSelectedNode(nodes, null).id, "fetch");
     assert.equal(workflowRunSelectedNode(nodes, "gate").id, "gate");
-    assert.equal(workflowRunSelectedNode(nodes, "gone"), null);
+    assert.equal(workflowRunSelectedNode(nodes, "gone", { initial: "gate" }).id, "gate");
     const running = [{ id: "fetch" }, { id: "review", pending: true }];
     assert.equal(workflowRunSelectedNode(running, null).id, "review");
+    assert.equal(workflowRunSelectedNode(running, null, { live: false }).id, "fetch", "no read model yet: no pending step");
     assert.equal(workflowRunSelectedNode(running, "fetch").id, "fetch");
     assert.equal(workflowRunSelectedNode(null, "fetch"), null);
+    // G4: a step shown only by default (an ended run's first step) draws no handler arrows; a chosen or running one does.
+    assert.equal(workflowRunHandlerStep(nodes, null), null, "an ended run's default step: no arrows on a step that succeeded");
+    assert.equal(workflowRunHandlerStep(nodes, "gate"), "gate");
+    assert.equal(workflowRunHandlerStep(nodes, "gone"), null);
+    assert.equal(workflowRunHandlerStep(running, null), "review");
+    assert.equal(workflowRunHandlerStep(running, null, { live: false }), null);
+    assert.equal(workflowRunHandlerStep(running, "fetch"), "fetch");
     assert.equal(workflowRunSwitched("wf-1", "wf-4"), true);
     assert.equal(workflowRunSwitched("wf-4", "wf-4"), false);
     assert.equal(workflowRunSwitched(null, "wf-4"), false, "the first run shown keeps its selection (a link to a step)");

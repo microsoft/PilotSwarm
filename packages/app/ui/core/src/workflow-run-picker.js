@@ -110,15 +110,27 @@ export function workflowRunPickerModel({ workflowModel = null, selectedRunId = n
     return { selection, value: liveSelected ? "" : selection ?? "", options, notes, runsKnown: Boolean(list), runCount: runs.length, malformed, missing };
 }
 
+const chosenNode = (list, chosen) => (chosen !== null && chosen !== undefined ? list.find(node => node?.id === chosen) ?? null : null);
+
 /**
- * UX round 1 (R2, G4): the step a Workflow's view shows as selected: the one chosen (`chosen`, a step id), else the step
- * a running Workflow is at (its pending node), else none. A run that has ended has no step selected until the person
- * chooses one, so no step shows its error handlers' arrows and the Node panel asks for a choice. Pure.
+ * The step a Workflow's view shows selected (its Node panel's): the one chosen (`chosen`, a step id), else, while the
+ * run is read (`live`), the step it is at (its pending node), else the definition's first step (`initial`), else the
+ * first node, as before UX round 1. Pure.
  */
-export function workflowRunSelectedNode(nodes, chosen = null) {
+export function workflowRunSelectedNode(nodes, chosen = null, { initial = null, live = true } = {}) {
     const list = Array.isArray(nodes) ? nodes : [];
-    return (chosen !== null && chosen !== undefined ? list.find(node => node?.id === chosen) : null)
-        ?? list.find(node => node?.pending) ?? null;
+    return chosenNode(list, chosen) ?? (live ? list.find(node => node?.pending) : null)
+        ?? list.find(node => node?.id === initial) ?? list[0] ?? null;
+}
+
+/**
+ * UX round 1 (G4): the step whose error handlers' arrows the graph draws: the one chosen, else the step a read run is at;
+ * null for a step shown only by default (an ended run's first step), so a step that succeeded never looks as if its
+ * errors went somewhere. Pure.
+ */
+export function workflowRunHandlerStep(nodes, chosen = null, { live = true } = {}) {
+    const list = Array.isArray(nodes) ? nodes : [];
+    return (chosenNode(list, chosen) ?? (live ? list.find(node => node?.pending) : null) ?? null)?.id ?? null;
 }
 
 /**

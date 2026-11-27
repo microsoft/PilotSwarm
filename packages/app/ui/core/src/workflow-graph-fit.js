@@ -65,11 +65,19 @@ export function workflowMainPathBounds(layout, places) {
  * ({ width, height }), when its zoom is at least `legible`; else the main path (`focus`, workflowMainPathBounds; the
  * whole graph when null) fitted whole when it fits at `readable` or more (up to `maxZoom`), centred; else the graph's top
  * (where the main path starts, with its Start mark) at `readable` (or `maxZoom`, when smaller), centred on the main path
- * across. Across, the graph never leaves room on a side it could fill: a graph narrower than the area is centred, a wider
- * one keeps its edges at or past the area's. Pure.
+ * across (a main path wider than the area, as on a phone, starts at its left margin instead). Across, the graph never
+ * leaves room on a side it could fill: a graph narrower than the area is centred, a wider one keeps its edges at or past
+ * the area's. A readable view keeps a run's current step (`current`, its box) in view by the smallest pan. Pure.
  */
-export function workflowFirstViewport({ whole, bounds, focus = null, area, legible = WORKFLOW_LEGIBLE_ZOOM, readable = WORKFLOW_READABLE_ZOOM,
-    maxZoom = 1, margin = WORKFLOW_VIEW_MARGIN_PX } = {}) {
+export function workflowFirstViewport({ whole, bounds, focus = null, current = null, area, legible = WORKFLOW_LEGIBLE_ZOOM,
+    readable = WORKFLOW_READABLE_ZOOM, maxZoom = 1, margin = WORKFLOW_VIEW_MARGIN_PX } = {}) {
+    const view = readableViewport({ whole, bounds, focus, area, legible, readable, maxZoom, margin });
+    // UXP-TL-02: a run's current step (`current`, its box) stays in a readable view, by the smallest pan.
+    if (!view || view === viewOf(whole) || !boxOf(current)) return view;
+    return workflowRevealViewport(view, current, area, atLeastZero(margin, WORKFLOW_VIEW_MARGIN_PX)) ?? view;
+}
+
+function readableViewport({ whole, bounds, focus, area, legible, readable, maxZoom, margin }) {
     const fitted = viewOf(whole);
     const graph = boxOf(bounds);
     if (!fitted || !graph || !area || !finite(area.width) || !finite(area.height) || area.width <= 0 || area.height <= 0) return fitted;
@@ -79,12 +87,15 @@ export function workflowFirstViewport({ whole, bounds, focus = null, area, legib
     margin = atLeastZero(margin, WORKFLOW_VIEW_MARGIN_PX);
     if (fitted.zoom >= legible) return fitted;
     const main = boxOf(focus) ?? graph;
+    // An extent past the largest number makes no view.
+    if (![graph.x + graph.width, graph.y + graph.height, main.x + main.width, main.y + main.height].every(finite)) return fitted;
     const roomX = Math.max(1, area.width - 2 * margin);
     const roomY = Math.max(1, area.height - 2 * margin);
     const mainZoom = Math.min(maxZoom, roomX / Math.max(1, main.width), roomY / Math.max(1, main.height));
     const zoom = mainZoom >= readable ? mainZoom : Math.min(readable, maxZoom);
     const centreX = main.x + main.width / 2;
-    let x = area.width / 2 - centreX * zoom;
+    // A main path wider than the room (a phone) starts at the left margin: its steps show whole, its end chips run off.
+    let x = main.width * zoom > roomX ? margin - main.x * zoom : area.width / 2 - centreX * zoom;
     const y = mainZoom >= readable ? area.height / 2 - (main.y + main.height / 2) * zoom : margin - Math.min(main.y, graph.y) * zoom;
     if (graph.width * zoom <= roomX) x = area.width / 2 - (graph.x + graph.width / 2) * zoom;
     else x = Math.min(margin - graph.x * zoom, Math.max(area.width - margin - (graph.x + graph.width) * zoom, x));
