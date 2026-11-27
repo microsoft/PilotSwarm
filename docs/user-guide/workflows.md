@@ -520,7 +520,7 @@ client with these Workflow methods. Results are plain JSON objects.
 | `readSessionWorkflowDefinition(ownerSessionId, { definitionId \| name, revision? })` | One revision: its YAML, graph and errors. |
 | `saveSessionWorkflowDefinition(ownerSessionId, { name, yaml, definitionId?, expectedRevision?, operationId })` | Saves a new revision. The receipt has `definitionId`, `revision`, `valid` and `diagnostics`. To save over a definition, give `definitionId` and `expectedRevision`. |
 | `startSessionWorkflowDefinition(ownerSessionId, { definitionId, revision?, inputs?, vars?, notifyParent?, agentModels?, decisionModels?, runAgainOf?, operationId })` | Starts a new Workflow, by default from the newest valid revision. Returns `workflowId` (the Workflow's session) and `runId`. `notifyParent: false` stops the owning session from being told when it ends. |
-| `copySessionWorkflowDefinition`, `updateSessionWorkflowPackage`, `deleteSessionWorkflowDefinition` | **Make a copy** of a package definition, take its newer version for the next Workflow, and delete a definition (refused while one of its Workflows runs). |
+| `copySessionWorkflowDefinition`, `updateSessionWorkflowPackage`, `deleteSessionWorkflowDefinition` | **Make a copy** of a package definition, take its newer version for the next Workflow, and delete a definition (refused while one of its Workflows runs or an active Workflow's `spawn` state names it). |
 | `readWorkflow(workflowId, options?)` | A Workflow: its graph, runs, each step's visits and results, variables, and the controls the caller may use (`personCommands`). |
 | `updateWorkflow(workflowId, command)` | A person's control. `command` is `{ operation, operation_id, ... }`, with `operation` one of `pause`, `resume`, `stop` (with `grace_seconds`, 0 to 3,600), `cancel` (with an optional `reason`) or `set_vars` (with `set`, `delete` and `expected_kv_revision`). |
 | `listCreatableWorkflows()` | The package Workflows the caller can make a session for. |
@@ -775,14 +775,14 @@ One tool for this session's definitions, chosen by `operation`:
 | `read` | One definition (`definition_id` or `name`, optional `revision`): its revisions, and the shown revision's YAML and errors. |
 | `save` | Save a new revision (`name`, `yaml`). Over an existing definition, give `definition_id` and `expected_revision`. A revision with errors is saved, but cannot start. |
 | `start` | Start a new Workflow from the newest valid revision, or `revision`: `inputs`, optional `vars`, `agent_models`, `decision_models` and `notify_on_completion`. For a package Workflow (`<package>/<name>`), `update: true` takes its newer version. |
-| `delete` | Delete one of this session's own definitions (`definition_id` or `name`, optional `operation_id`), ending any running tests of it. Refused for package definitions (`DEFINITION_LOCKED`) and while any Workflow of it is active (`DEFINITION_IN_USE`). |
+| `delete` | Delete one of this session's own definitions (`definition_id` or `name`, optional `operation_id`), ending any running tests of it. Refused for package definitions (`DEFINITION_LOCKED`) and while any Workflow of it is active or any active Workflow of the session (including spawned child Workflows and parallel lanes) runs a revision whose `spawn` state names it (`DEFINITION_IN_USE`). |
 | `test` | Run a revision with prepared answers (`fixtures`) on a hidden test bench, and report its path. `test_id` reads a test that is still running. |
 | `card` | A package Workflow's card: its inputs, an example, its outcomes and what it asks. |
 
 Errors to fix and retry: `DEFINITION_INVALID` (the revision cannot start),
 `REVISION_REQUIRED` (the name exists: read it first), `REVISION_STALE`
 (someone saved since you read), `DEFINITION_LOCKED` (a package definition),
-`DEFINITION_IN_USE` (an active Workflow uses the definition; ask the person — they stop or cancel it first),
+`DEFINITION_IN_USE` (an active Workflow runs the definition or names it in a `spawn` state; ask the person — they stop or cancel it first, or wait for it to end),
 `WORKFLOW_SCRIPTS_DISABLED` (this deployment runs no scripts) and
 `CHILD_LIMIT` (the session runs 50 sub-agents and Workflows already).
 Copying a package definition is a person's action. Deleting one of this

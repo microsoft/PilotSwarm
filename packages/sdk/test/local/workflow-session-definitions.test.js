@@ -916,4 +916,266 @@ states:
             await h.stop();
         }
     });
+
+    it("delete refused with DEFINITION_IN_USE when an active Workflow's spawn state names the target (by name, by id, parallel lanes, spawned child Workflow, person delete, concurrent Start, allowed after end)", { timeout: TIMEOUT }, async () => {
+        const { h, host, session } = await harness();
+        const otherSession = randomUUID();
+        await h.catalog.createSession(otherSession, { owner: OWNER });
+        const mgmt = await createManagementClient(getEnv(), { workflowCommands: {} });
+        const callTool = (caller, args, toolCallId = `call-${randomUUID()}`) =>
+            workflowDefinitionFromTool(args, { callerSessionId: caller, host, toolCallId, owner: OWNER, binding: async () => null })
+                .then(text => JSON.parse(text));
+        const parentSpawnYaml = (name, spawnDef, stateId = "launch_child") => `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: ${name}, version: "1.0.0" }
+initial: ${stateId}
+states:
+  ${stateId}:
+    type: spawn
+    definition: "${spawnDef}"
+    transition: { next: { started: hold, failure: fail } }
+  hold: { type: wait, seconds: 600, transition: { next: { elapsed: done } } }
+  done: { type: terminal, outcome: succeeded }
+  fail: { type: terminal, outcome: failed }
+`;
+        const parallelForEachSpawnYaml = (name, spawnDef) => `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: ${name}, version: "1.0.0" }
+initial: fan
+states:
+  fan:
+    type: parallel
+    forEach: [1, 2]
+    concurrency: 2
+    join: all_required
+    failFast: false
+    body:
+      initial: lane_spawn
+      states:
+        lane_spawn:
+          type: spawn
+          definition: "${spawnDef}"
+          transition: { next: { started: lane_done, failure: lane_fail } }
+        lane_done: { type: terminal, outcome: succeeded }
+        lane_fail: { type: terminal, outcome: failed }
+    transition: { next: { joined: done, blocked: fail, failure: fail } }
+  done: { type: terminal, outcome: succeeded }
+  fail: { type: terminal, outcome: failed }
+`;
+        const parallelBranchesSpawnYaml = (name, spawnDef) => `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: ${name}, version: "1.0.0" }
+initial: fork
+states:
+  fork:
+    type: parallel
+    concurrency: 2
+    join: all_required
+    failFast: false
+    branches:
+      left:
+        initial: left_spawn
+        states:
+          left_spawn:
+            type: spawn
+            definition: "${spawnDef}"
+            transition: { next: { started: l_done, failure: l_fail } }
+          l_done: { type: terminal, outcome: succeeded }
+          l_fail: { type: terminal, outcome: failed }
+      right:
+        initial: r_wait
+        states:
+          r_wait: { type: wait, seconds: 600, transition: { next: { elapsed: r_done } } }
+          r_done: { type: terminal, outcome: succeeded }
+    transition: { next: { joined: done, blocked: fail, failure: fail } }
+  done: { type: terminal, outcome: succeeded }
+  fail: { type: terminal, outcome: failed }
+`;
+        try {
+            // 1. Running parent whose spawn names target by NAME -> refused on agent tool AND person management client.
+            const targetByName = (await save(host, session, YAML(30, "leaf-by-name"), null, { name: "leaf-by-name" })).receipt;
+            const parentDef = (await save(host, session, parentSpawnYaml("parent-by-name", "leaf-by-name", "launch_leaf"), null, { name: "parent-by-name" })).receipt;
+            // Start workflow #1 (and cancel it) then start workflow #2 so we also verify workflow number (#2) is accurate.
+            const parentWf1 = await start(host, session, parentDef.definitionId);
+            await controlWorkflowRun(host, parentWf1.workflowId, { operation: "cancel", runId: null, reason: "make #2 active" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+            const parentWf2 = await start(host, session, parentDef.definitionId);
+
+            // Saving a newer revision (rev 2) of parent-by-name WITHOUT the spawn must NOT unblock deletion while #2 runs rev 1.
+            await save(host, session, YAML(60, "parent-by-name"), { definitionId: parentDef.definitionId, revision: 1 }, { name: "parent-by-name" });
+
+            // Agent tool delete is refused with DEFINITION_IN_USE naming parent-by-name #2, id, launch_leaf, stop/cancel/wait, and ask the person.
+            const toolRefused = await callTool(session, { operation: "delete", name: "leaf-by-name", operation_id: "del-ref-name-1" });
+            expect(toolRefused).toMatchObject({ ok: false, error: { code: "DEFINITION_IN_USE" } });
+            expect(toolRefused.error.details.workflowSessionIds).toEqual([parentWf2.workflowId]);
+            expect(toolRefused.error.details.referencedBy).toEqual([
+                { workflowSessionId: parentWf2.workflowId, name: "parent-by-name", number: 2, spawnStates: ["launch_leaf"] },
+            ]);
+            expect(toolRefused.error.message).toContain("parent-by-name #2");
+            expect(toolRefused.error.message).toContain(parentWf2.workflowId);
+            expect(toolRefused.error.message).toContain("launch_leaf");
+            expect(toolRefused.error.message).toMatch(/stop or cancel/i);
+            expect(toolRefused.error.message).toMatch(/wait for .* to end/i);
+            expect(toolRefused.error.message).toMatch(/ask the person/i);
+
+            // Person / Portal management client delete also gets 409 DEFINITION_IN_USE without the agent-only caveat.
+            let mgmtErr = null;
+            try {
+                await mgmt.deleteSessionWorkflowDefinition(session, { definitionId: targetByName.definitionId, operationId: "mgmt-ref-name-1" }, { principal: PERSON });
+            } catch (error) { mgmtErr = error; }
+            expect(mgmtErr?.code).toBe("DEFINITION_IN_USE");
+            expect(mgmtErr?.status).toBe(409);
+            expect(mgmtErr?.message).toContain("parent-by-name #2");
+            expect(mgmtErr?.message).toContain("launch_leaf");
+            expect(mgmtErr?.message).toMatch(/stop or cancel/i);
+            expect(mgmtErr?.message).toMatch(/wait for .* to end/i);
+            expect(mgmtErr?.message).not.toMatch(/ask the person/i);
+            expect(mgmtErr?.details?.referencedBy).toEqual([
+                { workflowSessionId: parentWf2.workflowId, name: "parent-by-name", number: 2, spawnStates: ["launch_leaf"] },
+            ]);
+
+            // Another session's active Workflow spawning "leaf-by-name" does NOT block unrelated session's delete after our parent ends.
+            const foreignParentDef = (await save(host, otherSession, parentSpawnYaml("foreign-parent", "leaf-by-name", "foreign_launch"), null, { name: "foreign-parent" })).receipt;
+            await start(host, otherSession, foreignParentDef.definitionId);
+
+            // Once parentWf2 ends, even with rev 2 active (which has no spawn) and foreign-parent active, leaf-by-name can be deleted.
+            await controlWorkflowRun(host, parentWf2.workflowId, { operation: "cancel", runId: null, reason: "done" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+            const parentWf3Rev2 = await start(host, session, parentDef.definitionId, { revision: 2 });
+            const deletedName = await callTool(session, { operation: "delete", name: "leaf-by-name", operation_id: "del-ref-name-2" });
+            expect(deletedName).toMatchObject({ ok: true, operation: "delete", definitionId: targetByName.definitionId, name: "leaf-by-name", replayed: false });
+            await controlWorkflowRun(host, parentWf3Rev2.workflowId, { operation: "cancel", runId: null, reason: "cleanup" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+
+            // 2. Running parent whose spawn names target by DEFINITION ID -> refused, then allowed after parent ends.
+            const targetById = (await save(host, session, YAML(30, "leaf-by-id"), null, { name: "leaf-by-id" })).receipt;
+            const parentByIdDef = (await save(host, session, parentSpawnYaml("parent-by-id", targetById.definitionId, "spawn_by_uuid"), null, { name: "parent-by-id" })).receipt;
+            const parentByIdWf = await start(host, session, parentByIdDef.definitionId);
+            const idRefused = await refused(deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definitionId: targetById.definitionId, actor: PERSON, operationId: "del-ref-id-1",
+            }), "DEFINITION_IN_USE");
+            expect(idRefused.message).toContain("parent-by-id #1");
+            expect(idRefused.message).toContain("spawn_by_uuid");
+            expect(idRefused.details.referencedBy).toEqual([
+                { workflowSessionId: parentByIdWf.workflowId, name: "parent-by-id", number: 1, spawnStates: ["spawn_by_uuid"] },
+            ]);
+            await controlWorkflowRun(host, parentByIdWf.workflowId, { operation: "cancel", runId: null, reason: "done" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+            expect((await deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definitionId: targetById.definitionId, actor: PERSON, operationId: "del-ref-id-2",
+            })).receipt.definitionId).toBe(targetById.definitionId);
+
+            // 3. Running parents whose spawn states sit inside parallel lanes (both forEach body AND named branches) -> refused naming both.
+            const targetPar = (await save(host, session, YAML(30, "leaf-parallel"), null, { name: "leaf-parallel" })).receipt;
+            const forEachDef = (await save(host, session, parallelForEachSpawnYaml("par-foreach", "leaf-parallel"), null, { name: "par-foreach" })).receipt;
+            const branchesDef = (await save(host, session, parallelBranchesSpawnYaml("par-branches", "leaf-parallel"), null, { name: "par-branches" })).receipt;
+            const forEachWf = await start(host, session, forEachDef.definitionId);
+            const branchesWf = await start(host, session, branchesDef.definitionId);
+            const parRefused = await refused(deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definitionId: targetPar.definitionId, actor: PERSON, operationId: "del-ref-par-1",
+            }), "DEFINITION_IN_USE");
+            expect(parRefused.message).toContain("par-foreach #1");
+            expect(parRefused.message).toContain("lane_spawn");
+            expect(parRefused.message).toContain("par-branches #1");
+            expect(parRefused.message).toContain("left_spawn");
+            expect(parRefused.details.workflowSessionIds).toEqual([forEachWf.workflowId, branchesWf.workflowId]);
+            await controlWorkflowRun(host, forEachWf.workflowId, { operation: "cancel", runId: null, reason: "done" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+            // Still refused while branchesWf is active.
+            const stillRefused = await refused(deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definitionId: targetPar.definitionId, actor: PERSON, operationId: "del-ref-par-2",
+            }), "DEFINITION_IN_USE");
+            expect(stillRefused.details.workflowSessionIds).toEqual([branchesWf.workflowId]);
+            await controlWorkflowRun(host, branchesWf.workflowId, { operation: "cancel", runId: null, reason: "done" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+            expect((await deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definitionId: targetPar.definitionId, actor: PERSON, operationId: "del-ref-par-3",
+            })).receipt.definitionId).toBe(targetPar.definitionId);
+
+            // 4. Spawned child Workflow (parent_session_id = rootWf, definition owner = session) whose spawn names leaf -> refused even after rootWf ends.
+            const leafChild = (await save(host, session, YAML(30, "grandchild-leaf"), null, { name: "grandchild-leaf" })).receipt;
+            const midDef = (await save(host, session, parentSpawnYaml("mid-spawner", "grandchild-leaf", "spawn_grandchild"), null, { name: "mid-spawner" })).receipt;
+            const rootDef = (await save(host, session, parentSpawnYaml("root-spawner", "mid-spawner", "spawn_mid"), null, { name: "root-spawner" })).receipt;
+            const rootWf = await start(host, session, rootDef.definitionId);
+            const nxMid = `nx-mid-${randomUUID()}`;
+            await h.store.enterNode({
+                runId: rootWf.runId, nodeExecutionId: nxMid, scopeId: "root", nodeId: "spawn_mid", ordinal: 1,
+                nodeType: "spawn", predecessorId: null, arrivalRoute: null, inputText: "{}", kvRevision: 1, waitSeconds: null, immediate: null,
+            });
+            const midWf = await startSessionWorkflowDefinition(host, {
+                ownerSessionId: session, parentSessionId: rootWf.workflowId, spawn: { nodeExecutionId: nxMid },
+                definition: { definitionId: midDef.definitionId }, inputs: {}, actor: ENGINE, operationId: nxMid, owner: OWNER,
+            });
+            // End rootWf so ONLY the spawned child Workflow (midWf) remains active.
+            await controlWorkflowRun(host, rootWf.workflowId, { operation: "cancel", runId: null, reason: "end root" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+            const childRefused = await refused(deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definitionId: leafChild.definitionId, actor: PERSON, operationId: "del-ref-child-1",
+            }), "DEFINITION_IN_USE");
+            expect(childRefused.message).toContain("mid-spawner #1");
+            expect(childRefused.message).toContain(midWf.workflowId);
+            expect(childRefused.message).toContain("spawn_grandchild");
+            expect(childRefused.details.workflowSessionIds).toEqual([midWf.workflowId]);
+            await controlWorkflowRun(host, midWf.workflowId, { operation: "cancel", runId: null, reason: "end mid" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+            expect((await deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definitionId: leafChild.definitionId, actor: PERSON, operationId: "del-ref-child-2",
+            })).receipt.definitionId).toBe(leafChild.definitionId);
+
+            // 5. Concurrency: an in-flight Start (holding sessions(owner) FOR SHARE while admitting a parent run)
+            //    must serialize against deleteDefinition so delete blocks until Start commits and then refuses DEFINITION_IN_USE.
+            const raceTarget = (await save(host, session, YAML(30, "race-leaf"), null, { name: "race-leaf" })).receipt;
+            const raceParent = (await save(host, session, parentSpawnYaml("race-parent", "race-leaf", "race_spawn"), null, { name: "race-parent" })).receipt;
+            const raceParentCompiled = compileWorkflow(parentSpawnYaml("race-parent", "race-leaf", "race_spawn"));
+            const raceWfId = randomUUID();
+            await h.catalog.createSession(raceWfId, { parentSessionId: session, owner: OWNER, sessionKind: "workflow" });
+
+            const txClient = await h.pool.connect();
+            let deleteResolvedEarly = false;
+            try {
+                await txClient.query("BEGIN");
+                // Mirror requireSessionStartLocked: hold FOR SHARE on the owner session row.
+                await txClient.query(`SELECT state FROM "${h.store.schema}".sessions WHERE session_id = $1 FOR SHARE`, [session]);
+                const deletePromise = deleteSessionWorkflowDefinition(host, {
+                    ownerSessionId: session, definitionId: raceTarget.definitionId, actor: PERSON, operationId: "del-race-1",
+                }).then(
+                    res => { deleteResolvedEarly = true; return { ok: true, res }; },
+                    err => ({ ok: false, err }),
+                );
+                // Give deleteDefinition time to reach the owner session lock; it MUST still be waiting (not committed).
+                await new Promise(resolve => setTimeout(resolve, 150));
+                expect(deleteResolvedEarly).toBe(false);
+                // Now insert the parent Workflow definition, revision, and active live run inside the same transaction and commit.
+                await txClient.query(
+                    `INSERT INTO "${h.store.schema}".workflow_definitions
+                        (workflow_session_id, parent_session_id, api_version, semver, state, current_revision, published_revision,
+                         published_yaml_sha256, published_ir_sha256, notify_parent, session_definition_id, session_revision)
+                     VALUES ($1, $2, 'pilotswarm.dev/v1', '1.0.0', 'published', 1, 1, $3, $4, true, $5, 1)`,
+                    [raceWfId, session, raceParentCompiled.yamlSha256, raceParentCompiled.irSha256, raceParent.definitionId],
+                );
+                await txClient.query(
+                    `INSERT INTO "${h.store.schema}".workflow_revisions
+                        (workflow_session_id, revision, yaml, yaml_sha256, valid, diagnostics, name, semver, ir, ir_sha256, actor)
+                     VALUES ($1, 1, $2, $3, true, '[]', 'race-parent', '1.0.0', $4, $5, '{"kind":"system","name":"test"}')`,
+                    [raceWfId, parentSpawnYaml("race-parent", "race-leaf", "race_spawn"), raceParentCompiled.yamlSha256,
+                        canonicalJson(raceParentCompiled.ir), raceParentCompiled.irSha256],
+                );
+                await txClient.query(
+                    `INSERT INTO "${h.store.schema}".workflow_runs
+                        (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, start_operation_id, status)
+                     VALUES ($1, $2, 'live', 1, $3, $4, '{}', $5, 'start:race', 'admitted')`,
+                    [`run-${randomUUID()}`, raceWfId, raceParentCompiled.yamlSha256, raceParentCompiled.irSha256, `wf-${raceWfId}`],
+                );
+                await txClient.query("COMMIT");
+                const outcome = await deletePromise;
+                expect(outcome.ok).toBe(false);
+                expect(outcome.err?.code).toBe("DEFINITION_IN_USE");
+                expect(outcome.err?.message).toContain("race-parent #1");
+                expect(outcome.err?.message).toContain("race_spawn");
+                // Target must remain live (not deleted).
+                expect((await h.store.sessionDefinitions.readDefinition(raceTarget.definitionId)).deletedAt).toBeNull();
+            } finally {
+                await txClient.query("ROLLBACK").catch(() => {});
+                txClient.release();
+            }
+        } finally {
+            await mgmt.stop();
+            await h.stop();
+        }
+    });
 });

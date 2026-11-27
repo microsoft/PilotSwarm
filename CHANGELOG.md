@@ -69,9 +69,13 @@ go?*), `docs/developer/building/workflow-sessions.md`, and the
   `name`, optional `operation_id`) so a session can delete its own throwaway or
   unused definitions. Package definitions (`<package>/<name>`, locked) are
   refused with `DEFINITION_LOCKED`, sessions inside a Workflow keep their
-  existing refusal, and definitions with active Workflows remain refused with
-  `DEFINITION_IN_USE` naming the active Workflows and instructing to stop or
-  cancel them first. Finished Workflows keep their pinned revision copies.
+  existing refusal, and definitions with active Workflows — or named by any
+  `spawn` state (including inside parallel lanes) of an active Workflow of the
+  owning session (including spawned child Workflows) — are refused across every
+  surface (agent tool, SDK management clients, Web API, and portal) with
+  `DEFINITION_IN_USE` naming the Workflows (name and number) and spawn states
+  and instructing to stop or cancel them first or wait for them to end.
+  Finished Workflows keep their pinned revision copies.
 
 ### Workflows: every session above a Workflow reads and controls it
 

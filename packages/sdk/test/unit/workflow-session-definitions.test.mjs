@@ -12,7 +12,11 @@ import fs from "node:fs";
 import assert from "node:assert/strict";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { WORKFLOW_DEFINITION_TOOL, WORKFLOW_DEFINITION_TOOL_SPEC, workflowDefinitionFromTool, workflowDefinitionToolSpec } from "../../dist/workflow/definition-tool.js";
-import { sessionActorWords, sessionSaveRequestSha256, OWNER_SESSION_ENDED_STATES } from "../../dist/workflow/session-definition-store.js";
+import {
+    sessionActorWords, sessionSaveRequestSha256, OWNER_SESSION_ENDED_STATES,
+    spawnTargetsOfIr, matchingSpawnStatesOfIr,
+} from "../../dist/workflow/session-definition-store.js";
+import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { workflowCommandStatus } from "../../dist/workflow/human-commands.js";
 import { workflowMigration } from "../../dist/migrations/workflow-0088.js";
 import { workflowSessionNamesMigration } from "../../dist/migrations/workflow-session-names-0089.js";
@@ -139,5 +143,109 @@ test("declarations: workflow_definition is a definition tool, declared (spawn_wo
     const inside = names(ManagedSession.subAgentToolDefs({ workflowInsideWorkflow: true }));
     for (const tool of ["workflow_definition", "spawn_workflow", "update_workflow"]) assert.ok(!inside.includes(tool), tool);
     assert.ok(inside.includes("read_workflow"));
+});
+
+test("spawnTargetsOfIr / matchingSpawnStatesOfIr: top-level, parallel forEach, named branches, by name or id, and static-only compiler rule", () => {
+    const targetId = "550e8400-e29b-41d4-a716-446655440000";
+    const compiled = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: multi-spawn, version: "1.0.0" }
+initial: top_name
+states:
+  top_name:
+    type: spawn
+    definition: leaf-target
+    transition: { next: { started: top_id, failure: fail } }
+  top_id:
+    type: spawn
+    definition: "${targetId}"
+    transition: { next: { started: fan_items, failure: fail } }
+  fan_items:
+    type: parallel
+    forEach: [1, 2]
+    concurrency: 2
+    join: all_required
+    failFast: false
+    body:
+      initial: lane_spawn
+      states:
+        lane_spawn:
+          type: spawn
+          definition: leaf-target
+          transition: { next: { started: lane_done, failure: lane_fail } }
+        lane_done: { type: terminal, outcome: succeeded }
+        lane_fail: { type: terminal, outcome: failed }
+    transition: { next: { joined: fan_branches, blocked: fail, failure: fail } }
+  fan_branches:
+    type: parallel
+    concurrency: 2
+    join: all_required
+    failFast: false
+    branches:
+      alpha:
+        initial: branch_spawn_a
+        states:
+          branch_spawn_a:
+            type: spawn
+            definition: "${targetId}"
+            transition: { next: { started: a_done, failure: a_fail } }
+          a_done: { type: terminal, outcome: succeeded }
+          a_fail: { type: terminal, outcome: failed }
+      beta:
+        initial: branch_spawn_b
+        states:
+          branch_spawn_b:
+            type: spawn
+            definition: unrelated-child
+            transition: { next: { started: b_done, failure: b_fail } }
+          b_done: { type: terminal, outcome: succeeded }
+          b_fail: { type: terminal, outcome: failed }
+    transition: { next: { joined: done, blocked: fail, failure: fail } }
+  done: { type: terminal, outcome: succeeded }
+  fail: { type: terminal, outcome: failed }
+`);
+    assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
+    const allTargets = spawnTargetsOfIr(compiled.ir);
+    assert.deepEqual(allTargets, [
+        { stateId: "top_name", definition: "leaf-target" },
+        { stateId: "top_id", definition: targetId },
+        { stateId: "lane_spawn", definition: "leaf-target" },
+        { stateId: "branch_spawn_a", definition: targetId },
+        { stateId: "branch_spawn_b", definition: "unrelated-child" },
+    ]);
+    assert.deepEqual(
+        matchingSpawnStatesOfIr(compiled.ir, { definitionId: targetId, name: "leaf-target" }),
+        ["top_name", "top_id", "lane_spawn", "branch_spawn_a"],
+    );
+    assert.deepEqual(
+        matchingSpawnStatesOfIr(compiled.ir, { definitionId: "other-id", name: "unrelated-child" }),
+        ["branch_spawn_b"],
+    );
+    // Synthetic IR with a dynamic binding is ignored defensively; compiler itself also refuses dynamic spawn.definition.
+    assert.deepEqual(
+        matchingSpawnStatesOfIr({ nodes: { dyn: { id: "dyn", type: "spawn", definition: "${inputs.def}" } } },
+            { definitionId: "${inputs.def}", name: "${inputs.def}" }),
+        [],
+    );
+    const dynamicCompile = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: dyn-spawn, version: "1.0.0" }
+initial: s
+states:
+  s: { type: spawn, definition: "\${inputs.target}", transition: { next: { started: d, failure: f } } }
+  d: { type: terminal, outcome: succeeded }
+  f: { type: terminal, outcome: failed }
+`);
+    assert.equal(dynamicCompile.valid, false);
+    assert.ok(dynamicCompile.diagnostics.some(d => d.code === "WORKFLOW_FIELD_INVALID" && d.path === "states.s.definition"));
+
+    // workflow-tools skill DEFINITION_IN_USE row states the spawn-state refusal and fits the 20,480-byte cap.
+    const skill = fs.readFileSync(new URL("../../plugins/workflow/skills/workflow-tools/SKILL.md", import.meta.url), "utf8");
+    assert.ok(Buffer.byteLength(skill, "utf8") <= 20_480, `workflow-tools SKILL.md is ${Buffer.byteLength(skill, "utf8")} bytes`);
+    const inUseRow = skill.split(/\r?\n/).find(line => line.startsWith("| `DEFINITION_IN_USE` |")) ?? "";
+    assert.match(inUseRow, /spawn/i);
+    assert.doesNotMatch(inUseRow, /Also keep defs named by active/);
 });
 

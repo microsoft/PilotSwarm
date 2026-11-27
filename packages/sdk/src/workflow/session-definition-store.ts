@@ -7,8 +7,10 @@
  * - save: the session row (FOR NO KEY UPDATE: saves only on a live session, Q7), then the definition row (FOR UPDATE); the guard
  *   names the definition and its revision (Q1): a stale save, or one on a deleted definition, is refused and writes
  *   nothing; a first save of a name relies on the live (session, name) key;
- * - delete: the session (its own definitions only) or a person deletes a definition; the session row (FOR SHARE), then the
- *   definition row (FOR UPDATE); refused while one of its Workflows is active (R6);
+ * - delete: the session (its own definitions only) or a person deletes a definition; the session row (FOR NO KEY UPDATE,
+ *   serializing against concurrent Start's FOR SHARE on the owner session), then the definition row (FOR UPDATE); refused
+ *   while one of its Workflows is active or while any active Workflow of the owning session (including spawned child
+ *   Workflows) runs a revision whose static `spawn` states (including parallel lanes) name it by name or id (R6);
  * - Start (WorkflowStore.createDefinition with a session pin, requireSessionStartLocked): the session row (FOR SHARE: live), the
  *   definition row (FOR SHARE: not deleted), the revision (valid, the YAML being stored), before the Workflow's own rows.
  * An owner session that ends ends its Workflows (migration 0088's trigger, R5 and F2).
@@ -245,8 +247,42 @@ export function sessionActorWords(actor: SessionDefinitionActor): string {
     return actor.name === "imported" ? "the import of stage 1 Workflows" : "the system";
 }
 
+/**
+ * Static `spawn` targets declared in a compiled Workflow IR (top-level states, parallel `forEach` body states, and named
+ * parallel branch states — all live in `ir.nodes`). Dynamic expressions (`${...}`, currently rejected by the compiler)
+ * are ignored defensively.
+ */
+export function spawnTargetsOfIr(ir: unknown): Array<{ stateId: string; definition: string }> {
+    if (!ir || typeof ir !== "object" || Array.isArray(ir)) return [];
+    const nodes = (ir as { nodes?: unknown }).nodes;
+    if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return [];
+    const targets: Array<{ stateId: string; definition: string }> = [];
+    for (const [key, value] of Object.entries(nodes as Record<string, unknown>)) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+        const node = value as { id?: unknown; type?: unknown; definition?: unknown };
+        if (node.type !== "spawn") continue;
+        if (typeof node.definition !== "string" || !node.definition.trim() || node.definition.includes("${")) continue;
+        const stateId = typeof node.id === "string" && node.id.trim() ? node.id : key;
+        targets.push({ stateId, definition: node.definition });
+    }
+    return targets;
+}
+
+/** State ids of static `spawn` nodes in `ir` that name `target` by its definition name or definition id. */
+export function matchingSpawnStatesOfIr(ir: unknown, target: { definitionId: string; name: string }): string[] {
+    return spawnTargetsOfIr(ir)
+        .filter(item => item.definition === target.name || item.definition === target.definitionId)
+        .map(item => item.stateId);
+}
+
+function cleanShortLabel(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const cleaned = value.replace(/\s+/g, " ").trim();
+    return cleaned ? [...cleaned].slice(0, 80).join("") : null;
+}
+
 export class SessionDefinitionStore {
-    private readonly t: { definitions: string; revisions: string; operations: string; seen: string; notes: string; sessions: string; wfDefinitions: string; runs: string };
+    private readonly t: { definitions: string; revisions: string; operations: string; seen: string; notes: string; sessions: string; wfDefinitions: string; wfRevisions: string; runs: string };
 
     constructor(
         private readonly pool: Pool,
@@ -257,7 +293,7 @@ export class SessionDefinitionStore {
         this.t = {
             definitions: `${s}.session_workflow_definitions`, revisions: `${s}.session_workflow_revisions`, operations: `${s}.session_workflow_operations`,
             seen: `${s}.session_workflow_seen`, notes: `${s}.session_workflow_notes`, sessions: `${s}.sessions`,
-            wfDefinitions: `${s}.workflow_definitions`, runs: `${s}.workflow_runs`,
+            wfDefinitions: `${s}.workflow_definitions`, wfRevisions: `${s}.workflow_revisions`, runs: `${s}.workflow_runs`,
         };
     }
 
@@ -749,16 +785,22 @@ export class SessionDefinitionStore {
 
     /**
      * Delete a definition (by the session for its own definitions, or by a person). Refused while one of its Workflows is
-     * active (R6: DEFINITION_IN_USE, naming them); its revisions stay, so a finished Workflow keeps its pinned copy. When
-     * `allowLocked` is false (the session's tool), package definitions (`locked: true`) are refused with DEFINITION_LOCKED.
-     * A repeated operation is answered from its receipt.
+     * active or while any active Workflow of the owning session (including spawned child Workflows) runs a revision whose
+     * static `spawn` states (including parallel lanes) name this definition by name or id (R6: DEFINITION_IN_USE, naming
+     * them); its revisions stay, so a finished Workflow keeps its pinned copy. Takes FOR NO KEY UPDATE on the owner session
+     * row so a concurrent Start (which holds FOR SHARE on the owner session row while admitting its live run) cannot slip
+     * past the spawn-reference check. When `allowLocked` is false (the session's tool), package definitions (`locked: true`)
+     * are refused with DEFINITION_LOCKED. A repeated operation is answered from its receipt.
      */
     async deleteDefinition(input: { ownerSessionId: string; definitionId: string; actor: SessionDefinitionActor; operationId: string; requestSha256: string; allowLocked?: boolean })
         : Promise<StoredSessionOperation<SessionDeleteReceipt>> {
         return this.transaction(async client => {
             const prior = await this.priorOperation<SessionDeleteReceipt>(client, input.ownerSessionId, input.operationId, "delete", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
-            await this.lockLiveOwnerSession(client, input.ownerSessionId, "FOR SHARE");
+            await this.lockLiveOwnerSession(client, input.ownerSessionId, "FOR NO KEY UPDATE");
+            // Formal L3: a concurrent repeat stored its receipt while this one waited for the owner session lock.
+            const stored = await this.priorOperation<SessionDeleteReceipt>(client, input.ownerSessionId, input.operationId, "delete", input.requestSha256);
+            if (stored) return { receipt: stored, replayed: true };
             const { rows } = await client.query(`SELECT * FROM ${this.t.definitions} WHERE definition_id = $1 FOR UPDATE`, [input.definitionId]);
             const found = rows[0] ? definitionFrom(rows[0]) : null;
             if (!found || found.ownerSessionId !== input.ownerSessionId) {
@@ -771,21 +813,92 @@ export class SessionDefinitionStore {
             }
             if (found.deletedAt !== null) throw new WorkflowStoreError("DEFINITION_DELETED", `${found.name} was already deleted.`, { definitionId: found.definitionId });
             const active = await client.query(
-                `SELECT d.workflow_session_id, s.title FROM ${this.t.wfDefinitions} d
+                `WITH RECURSIVE wf_tree(session_id, depth) AS (
+                     SELECT s.session_id, 1
+                       FROM ${this.t.sessions} s
+                      WHERE s.parent_session_id = $1 AND s.session_kind = 'workflow' AND s.deleted_at IS NULL
+                     UNION ALL
+                     SELECT c.session_id, t.depth + 1
+                       FROM ${this.t.sessions} c
+                       JOIN wf_tree t ON c.parent_session_id = t.session_id
+                      WHERE c.session_kind = 'workflow' AND c.deleted_at IS NULL AND t.depth < 16
+                 )
+                 SELECT d.workflow_session_id, d.session_definition_id, s.title, sd.name AS def_name, rev.name AS rev_name, rev.ir,
+                        CASE WHEN d.session_definition_id IS NOT NULL THEN (
+                            SELECT count(*)::int
+                              FROM ${this.t.wfDefinitions} d2
+                              JOIN ${this.t.sessions} s2 ON s2.session_id = d2.workflow_session_id AND s2.deleted_at IS NULL
+                             WHERE d2.session_definition_id = d.session_definition_id
+                               AND EXISTS (SELECT 1 FROM ${this.t.runs} r2 WHERE r2.workflow_session_id = d2.workflow_session_id AND r2.mode = 'live')
+                               AND (d2.created_at < d.created_at OR (d2.created_at = d.created_at AND d2.workflow_session_id <= d.workflow_session_id))
+                        ) ELSE NULL END AS workflow_number
+                   FROM ${this.t.wfDefinitions} d
                    JOIN ${this.t.runs} r ON r.workflow_session_id = d.workflow_session_id AND r.mode = 'live' AND r.status = ANY($2::text[])
                    JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id AND s.deleted_at IS NULL
-                  WHERE d.session_definition_id = $1 ORDER BY d.created_at`, [input.definitionId, ACTIVE]);
-            if (active.rows.length) {
-                const ids = active.rows.map((row: Row) => String(row.workflow_session_id));
-                const labels = active.rows.slice(0, 5).map((row: Row) => {
+                   JOIN ${this.t.wfRevisions} rev ON rev.workflow_session_id = r.workflow_session_id AND rev.revision = r.revision
+                   LEFT JOIN ${this.t.definitions} sd ON sd.definition_id = d.session_definition_id
+                  WHERE sd.owner_session_id = $1
+                     OR (d.session_definition_id IS NULL AND d.workflow_session_id IN (SELECT session_id FROM wf_tree))
+                  ORDER BY d.created_at, d.workflow_session_id`,
+                [input.ownerSessionId, ACTIVE],
+            );
+            const seenWf = new Set<string>();
+            const directRows: Row[] = [];
+            const spawnRefs: Array<{ workflowSessionId: string; name: string; number: number | null; spawnStates: string[] }> = [];
+            for (const row of active.rows as Row[]) {
+                const wfId = String(row.workflow_session_id);
+                if (seenWf.has(wfId)) continue;
+                seenWf.add(wfId);
+                if (row.session_definition_id === found.definitionId) {
+                    directRows.push(row);
+                    continue;
+                }
+                const ir = parse<unknown>(row.ir, null);
+                const spawnStates = matchingSpawnStatesOfIr(ir, found);
+                if (spawnStates.length > 0) {
+                    const wfName = cleanShortLabel(row.def_name) ?? cleanShortLabel(row.rev_name) ?? cleanShortLabel(row.title) ?? wfId;
+                    const wfNumber = row.workflow_number !== null && row.workflow_number !== undefined ? Number(row.workflow_number) : null;
+                    spawnRefs.push({ workflowSessionId: wfId, name: wfName, number: wfNumber, spawnStates });
+                }
+            }
+            if (directRows.length || spawnRefs.length) {
+                const directIds = directRows.map(row => String(row.workflow_session_id));
+                const allIds = [...directIds, ...spawnRefs.map(ref => ref.workflowSessionId)];
+                const directLabels = directRows.slice(0, 5).map(row => {
                     const id = String(row.workflow_session_id);
-                    const cleaned = typeof row.title === "string" ? row.title.replace(/\s+/g, " ").trim() : "";
-                    const title = cleaned ? [...cleaned].slice(0, 80).join("") : null;
+                    const title = cleanShortLabel(row.title);
                     return title ? `${title} (${id})` : id;
-                }).join(", ") + (active.rows.length > 5 ? ` (and ${active.rows.length - 5} more)` : "");
-                throw new WorkflowStoreError("DEFINITION_IN_USE",
-                    `${found.name} has ${ids.length === 1 ? `an active Workflow: ${labels}` : `${ids.length} active Workflows: ${labels}`}. Stop or cancel ${ids.length === 1 ? "it" : "them"} first, then delete ${found.name}.`,
-                    { definitionId: found.definitionId, workflowSessionIds: ids });
+                }).join(", ") + (directRows.length > 5 ? ` (and ${directRows.length - 5} more)` : "");
+                const refLabels = spawnRefs.slice(0, 5).map(ref => {
+                    const shownStates = ref.spawnStates.slice(0, 5).join(", ")
+                        + (ref.spawnStates.length > 5 ? ` (and ${ref.spawnStates.length - 5} more)` : "");
+                    const stateWord = ref.spawnStates.length === 1 ? "spawn state" : "spawn states";
+                    const num = ref.number !== null ? ` #${ref.number}` : "";
+                    return `${ref.name}${num} (${ref.workflowSessionId}; ${stateWord}: ${shownStates})`;
+                }).join(", ") + (spawnRefs.length > 5 ? ` (and ${spawnRefs.length - 5} more)` : "");
+
+                let message: string;
+                if (directRows.length && !spawnRefs.length) {
+                    message = `${found.name} has ${directIds.length === 1 ? `an active Workflow: ${directLabels}` : `${directIds.length} active Workflows: ${directLabels}`}. `
+                        + `Stop or cancel ${directIds.length === 1 ? "it" : "them"} first, then delete ${found.name}.`;
+                } else if (!directRows.length && spawnRefs.length) {
+                    const refLead = spawnRefs.length === 1
+                        ? `an active Workflow's ${spawnRefs[0].spawnStates.length === 1 ? "spawn state" : "spawn states"}: ${refLabels}`
+                        : `${spawnRefs.length} active Workflows' spawn states: ${refLabels}`;
+                    const pronoun = spawnRefs.length === 1 ? "it" : "them";
+                    message = `${found.name} is named by ${refLead}. Stop or cancel ${pronoun} first, or wait for ${pronoun} to end, then delete ${found.name}.`;
+                } else {
+                    const directPhrase = directIds.length === 1 ? `an active Workflow: ${directLabels}` : `${directIds.length} active Workflows: ${directLabels}`;
+                    const refPhrase = spawnRefs.length === 1
+                        ? `an active Workflow's ${spawnRefs[0].spawnStates.length === 1 ? "spawn state" : "spawn states"}: ${refLabels}`
+                        : `${spawnRefs.length} active Workflows' spawn states: ${refLabels}`;
+                    message = `${found.name} has ${directPhrase}, and is named by ${refPhrase}. Stop or cancel them first, or wait for them to end, then delete ${found.name}.`;
+                }
+                throw new WorkflowStoreError("DEFINITION_IN_USE", message, {
+                    definitionId: found.definitionId,
+                    workflowSessionIds: allIds,
+                    ...(spawnRefs.length ? { referencedBy: spawnRefs } : {}),
+                });
             }
             const { rows: deleted } = await client.query(
                 `UPDATE ${this.t.definitions} SET deleted_at = now(), deleted_by = $2, updated_at = now() WHERE definition_id = $1 RETURNING deleted_at`,

@@ -54,7 +54,7 @@ export function workflowDefinitionToolSpec() {
             + "(<package>/<name>, locked) you may start. read: one, with YAML, errors and Workflows. save: a new revision (to change one, "
             + "definition_id and the expected_revision you read; a stale save is refused); a revision with errors is saved but cannot start. "
             + "start: a new Workflow from a revision (default newest valid); start again to run it again. "
-            + "delete: remove one of your own definitions (refused while a Workflow of it is active). "
+            + "delete: remove one of your own definitions (refused while an active Workflow uses or spawns it). "
             + "test: only when the user asks, or before you publish it in a package. "
             + "card: a package definition's inputs and results; read it before you start one. "
             + "Inputs: inputs: { schema: { type: object, required: [topic], properties: { topic: { type: string } } } }. "
@@ -479,8 +479,11 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 });
             } catch (error) {
                 if (error instanceof WorkflowStoreError && error.code === "DEFINITION_IN_USE") {
+                    const ids = Array.isArray((error.details as { workflowSessionIds?: unknown } | null)?.workflowSessionIds)
+                        ? (error.details as { workflowSessionIds: unknown[] }).workflowSessionIds : [];
+                    const pronoun = ids.length > 1 ? "them" : "it";
                     throw new WorkflowStoreError("DEFINITION_IN_USE",
-                        `${error.message} Ask the person before stopping or canceling it; do not stop or cancel a running Workflow on your own.`,
+                        `${error.message} Ask the person before stopping or canceling ${pronoun}; do not stop or cancel a running Workflow on your own.`,
                         error.details);
                 }
                 throw error;

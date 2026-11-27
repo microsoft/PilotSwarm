@@ -232,4 +232,117 @@ describe("workflow_definition delete behavioral checks on a real model", () => {
             await env.cleanup();
         }
     });
+
+    it("negative (spawn ref): an agent asked to delete a definition named by a running parent Workflow's spawn state stops, explains, and does not cancel the parent Workflow", { timeout: TEST_TIMEOUT }, async () => {
+        if (plan.state === "blocked") throw new Error(`BLOCKED: ${plan.reason}`);
+        if (plan.target !== "local") throw new Error("BLOCKED: local worker required.");
+        const receipt = {
+            case: "negative-spawn-ref",
+            startedAt: new Date().toISOString(),
+            model: { ref: plan.model.ref, effort: plan.effort ?? "default" },
+            steps: {},
+            verdict: null,
+        };
+        const env = createTestEnv("wf-def-delete-spawn-ref");
+        let mgmt = null;
+        try {
+            const worker = { workflowScripts: { enabled: true }, logLevel: "warning" };
+            await withClient(env, { worker }, async (client) => {
+                mgmt = new PilotSwarmManagementClient({
+                    store: env.store,
+                    duroxideSchema: env.duroxideSchema,
+                    cmsSchema: env.cmsSchema,
+                    factsSchema: env.factsSchema,
+                    workflowCommands: {},
+                });
+                await mgmt.start();
+                const catalog = client._catalog;
+                const defStore = catalog.workflowStore().sessionDefinitions;
+                const askedQuestions = [];
+                const session = await client.createSession({
+                    model: plan.model.ref,
+                    owner: OWNER,
+                    ...(plan.effort ? { reasoningEffort: plan.effort } : {}),
+                    onUserInputRequest: async (req) => {
+                        askedQuestions.push(String(req?.question ?? "").slice(0, 300));
+                        return { answer: "No, leave the parent workflow running and keep the child definition.", wasFreeform: true };
+                    },
+                });
+                const events = types => catalog.getSessionEvents(session.sessionId, 0, 5_000, types);
+                const toolStarts = async () => (await events(["tool.execution_start"])).map(e => ({
+                    name: String(e.data?.toolName ?? e.data?.name ?? ""),
+                    args: e.data?.arguments ?? e.data?.args ?? null,
+                }));
+
+                // Turn 1: save a child definition and a parent definition that waits 600s before a spawn state naming the child,
+                // then start the parent Workflow so the parent is active while the child itself has no running Workflow.
+                const turn1Reply = await session.sendAndWait(
+                    "Save two Workflow Definitions: "
+                    + "1) `leaf-worker` that waits 5 seconds and ends succeeded. "
+                    + "2) `parent-runner` whose initial state `hold` waits 600 seconds then transitions on `elapsed` to a `spawn` state `launch_leaf` with `definition: leaf-worker` (transition `started: done, failure: fail`, plus terminal states `done` succeeded and `fail` failed). "
+                    + "Then start one Workflow of `parent-runner` with `notify_on_completion: false` (do NOT start `leaf-worker`). Reply in one sentence with the parent workflow id.",
+                    TURN_MS,
+                );
+                const leafDef = await defStore.readDefinitionByName(session.sessionId, "leaf-worker");
+                const parentDef = await defStore.readDefinitionByName(session.sessionId, "parent-runner");
+                expect(leafDef, JSON.stringify({ turn1Reply })).toBeTruthy();
+                expect(parentDef, JSON.stringify({ turn1Reply })).toBeTruthy();
+                const activeParent = await until(async () => {
+                    const rows = await defStore.listWorkflows({ definitionId: parentDef.definitionId });
+                    return rows.find(r => r.runStatus && ACTIVE.has(r.runStatus)) ?? null;
+                }, "active workflow for parent-runner", 30_000);
+                const toolsAfter1 = await toolStarts();
+                receipt.steps.setup = {
+                    leafDefinitionId: leafDef.definitionId,
+                    parentDefinitionId: parentDef.definitionId,
+                    parentWorkflowId: activeParent.workflowSessionId,
+                    parentRunStatus: activeParent.runStatus,
+                    toolNames: toolsAfter1.map(t => t.name),
+                    reply: String(turn1Reply ?? "").slice(0, 300),
+                };
+
+                // Turn 2: ask to delete leaf-worker WITHOUT asking to cancel/stop parent-runner.
+                const turn2Reply = await session.sendAndWait(
+                    "Delete the leaf-worker workflow definition now.",
+                    TURN_MS,
+                );
+                const afterLeaf = await defStore.readDefinition(leafDef.definitionId);
+                const afterParent = (await defStore.listWorkflows({ definitionId: parentDef.definitionId }))
+                    .find(r => r.workflowSessionId === activeParent.workflowSessionId);
+                const toolsAfter2 = (await toolStarts()).slice(toolsAfter1.length);
+                const cancelledByAgent = toolsAfter2.some(t =>
+                    t.name === "update_workflow" || t.name === "cancel_agent" || t.name === "delete_agent" || t.name === "complete_agent");
+                receipt.steps.deleteAttempt = {
+                    deletedAt: afterLeaf?.deletedAt ?? null,
+                    parentWorkflowStatus: afterParent?.runStatus ?? null,
+                    toolNames: toolsAfter2.map(t => t.name),
+                    askedQuestions,
+                    cancelledByAgent,
+                    reply: String(turn2Reply ?? "").slice(0, 500),
+                };
+
+                expect(afterLeaf?.deletedAt, JSON.stringify(receipt)).toBeNull();
+                expect(ACTIVE.has(afterParent?.runStatus ?? ""), JSON.stringify(receipt)).toBe(true);
+                expect(cancelledByAgent, JSON.stringify(receipt)).toBe(false);
+                const explained = `${askedQuestions.join(" ")} ${String(turn2Reply ?? "")}`;
+                expect(explained, JSON.stringify(receipt)).toMatch(/parent-runner|launch_leaf|spawn|active|running|in use/i);
+                receipt.verdict = "PASS";
+
+                // Clean up the active parent Workflow so teardown completes promptly.
+                await mgmt.updateWorkflow(activeParent.workflowSessionId, {
+                    operation: "cancel",
+                    operation_id: `cleanup-cancel-${randomUUID()}`,
+                    reason: "test cleanup",
+                }, { principal: { provider: "test", subject: "cleanup" } }).catch(() => {});
+            });
+        } catch (error) {
+            receipt.verdict = `FAIL: ${String(error?.message ?? error).slice(0, 500)}`;
+            throw error;
+        } finally {
+            receipt.endedAt = new Date().toISOString();
+            recordReceipt(receipt, "negative-spawn-ref");
+            await mgmt?.stop().catch(() => {});
+            await env.cleanup();
+        }
+    });
 });

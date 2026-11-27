@@ -19,7 +19,7 @@ every save is a new revision, and a Workflow runs the revision it started with.
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
 | `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `decision_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
-| `delete` | `name` or `definition_id`, `operation_id?` | Delete one of your own definitions (refused for package definitions or while a Workflow of it is active). |
+| `delete` | `name` or `definition_id`, `operation_id?` | Delete an own def (refused for package defs, active runs, or active `spawn` refs). |
 | `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `agent_models?`, `decision_models?`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
@@ -298,7 +298,7 @@ Workflow scripts (`callTool("child_workflows", ...)`) and direct agent steps onl
 | Code | Meaning |
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
-| `DEFINITION_IN_USE` | Active Workflow uses it. Never stop/cancel a running Workflow on your own to delete its definition; ask first. Also keep defs named by active `spawn` states. |
+| `DEFINITION_IN_USE` | Active Workflow runs it or its `spawn` state names it (including parallel lanes/child Workflows). Never stop/cancel on your own; ask first or wait. |
 | `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks. Read the named state/tool; attach the missing tool. Nothing started. |
 | `REVISION_STALE` | Another save won. Read the newest revision and redo your change. |
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |

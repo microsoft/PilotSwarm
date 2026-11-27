@@ -259,3 +259,50 @@ test("PRS-002: the HTTP save of an agent step's session is refused with the huma
         await close();
     }
 });
+
+test("delete route returns 409 DEFINITION_IN_USE with spawn-referencing Workflow name, number, spawn states, and details", async () => {
+    const { runtime } = harness();
+    const refusal = new WorkflowStoreError(
+        "DEFINITION_IN_USE",
+        "leaf-wf is named by an active Workflow's spawn state: parent-wf #1 (wf-parent-1; spawn state: launch_leaf). Stop or cancel it first, or wait for it to end, then delete leaf-wf.",
+        {
+            definitionId: "def-leaf",
+            workflowSessionIds: ["wf-parent-1"],
+            referencedBy: [{ workflowSessionId: "wf-parent-1", name: "parent-wf", number: 1, spawnStates: ["launch_leaf"] }],
+        },
+    );
+    const store = {
+        readWorkflowLineage: async () => null,
+        sessionDefinitions: {
+            deleteDefinition: async () => { throw refusal; },
+        },
+    };
+    const mgmt = Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
+        config: { workflowCommands: {} },
+        _ensureStarted() {},
+        _catalog: { getSession: async (sessionId) => ({ sessionId, sessionKind: "agent", deletedAt: null, owner }), workflowStore: () => store },
+        _artifactStore: null,
+        _duroxideClient: null,
+    });
+    runtime.transport.deleteSessionWorkflowDefinition = (sessionId, request, options) =>
+        PilotSwarmManagementClient.prototype.deleteSessionWorkflowDefinition.call(mgmt, sessionId, request, options);
+    const { transport, close } = await serve(runtime);
+    try {
+        let caught = null;
+        try {
+            await transport("alice").deleteSessionWorkflowDefinition("shared", { definitionId: "def-leaf", operationId: "op-del-spawn-ref" });
+        } catch (error) { caught = error; }
+        assert.equal(caught?.status, 409);
+        assert.equal(caught?.code, "DEFINITION_IN_USE");
+        assert.match(String(caught?.message), /parent-wf #1/);
+        assert.match(String(caught?.message), /launch_leaf/);
+        assert.match(String(caught?.message), /stop or cancel/i);
+        assert.deepEqual(caught?.details, {
+            definitionId: "def-leaf",
+            workflowSessionIds: ["wf-parent-1"],
+            referencedBy: [{ workflowSessionId: "wf-parent-1", name: "parent-wf", number: 1, spawnStates: ["launch_leaf"] }],
+        });
+    } finally {
+        await close();
+    }
+});
