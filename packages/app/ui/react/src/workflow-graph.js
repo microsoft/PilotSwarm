@@ -379,10 +379,12 @@ function loadFlow() {
  * automatic layout. `mode` is the display mode it is shown in ("normal", "zen", "full"): a change fits an untouched view
  * again (owner, 2026-11-06T19:40Z, F8). Owner 2026-11-09 (the timeline): `lit`, the last four transitions up to the visit
  * shown and its step (workflowLitTransitions), drawn the same by both renderers. `mobile`: the tab's mobile layout; with
- * the phone query (PHONE_MEDIA_QUERY, as the tab's own) the flow is fitted clear of its controls (UXP-TL-02).
+ * the phone query (PHONE_MEDIA_QUERY, as the tab's own) the flow is fitted clear of its controls (UXP-TL-02). UX round 1:
+ * `reveal`, the id of the step the person chose, kept in view; `dock`, on a phone, the element its controls go to (outside
+ * the graph, so they never cover a step).
  */
 export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null, places = null, onPlaces = null,
-    mode = "normal", lit = null, mobile = false }) {
+    mode = "normal", lit = null, mobile = false, reveal = null, dock = null }) {
     const key = workflowGraphKey(definition);
     const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
     // The key holds everything of the definition the layout reads.
@@ -406,7 +408,7 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
         h(WorkflowEndsRow, { ends: layout.ends, reached: lit?.endReached ?? null, run: Boolean(lit), hoverEnd, onHover: setHoverEnd, select,
             handlers: hasHandlers ? { all: allHandlers, onToggle: () => setAllHandlers(value => !value) } : null }),
         Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces, mode, lit,
-            phone, hoverEnd, allHandlers })
+            phone, hoverEnd, allHandlers, reveal, dock: phone ? dock : null })
             : h(WorkflowGraphStatic, { layout, nodes, selected, select, lit, hoverEnd, allHandlers }));
 }
 
@@ -416,8 +418,34 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
  * dimmed. R1: `handlers`, the Show all handlers toggle ({ all, onToggle }), when the graph has any.
  */
 export function WorkflowEndsRow({ ends, reached = null, run = false, hoverEnd = null, onHover = () => {}, select = () => {}, handlers = null }) {
+    // UX round 1 (G2, P3): the row is one line that scrolls sideways; while ends are out of sight a "‹" or "+N ›" cue at its
+    // edge says so and scrolls to them.
+    const row = React.useRef(null);
+    const [hidden, setHidden] = React.useState({ left: 0, right: 0 });
+    React.useEffect(() => {
+        const element = row.current;
+        if (!element) return undefined;
+        const check = () => {
+            const from = element.scrollLeft, to = element.scrollLeft + element.clientWidth;
+            let left = 0, right = 0;
+            for (const chip of element.querySelectorAll("[data-end]")) {
+                if (chip.offsetLeft < from - 1) left += 1;
+                else if (chip.offsetLeft + chip.offsetWidth > to + 1) right += 1;
+            }
+            setHidden(current => (current.left === left && current.right === right ? current : { left, right }));
+        };
+        check();
+        element.addEventListener("scroll", check, { passive: true });
+        const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+        observer?.observe(element);
+        return () => { element.removeEventListener("scroll", check); observer?.disconnect(); };
+    }, [Array.isArray(ends) ? ends.length : 0]);
     if (!Array.isArray(ends) || !ends.length) return null;
-    return h("div", { className: "ps-workflow-ends", role: "group", "aria-label": "Ends" },
+    const scroll = by => row.current?.scrollBy?.({ left: by * row.current.clientWidth * 0.8, behavior: "smooth" });
+    return h("div", { ref: row, className: `ps-workflow-ends${hidden.left || hidden.right ? " has-more" : ""}`, role: "group", "aria-label": "Ends" },
+        hidden.left ? h("button", { type: "button", className: "ps-workflow-ends-more is-left", "data-action": "ends-back",
+            "aria-label": `${hidden.left} more end${hidden.left === 1 ? "" : "s"} to the left`, title: "Show the ends to the left", onClick: () => scroll(-1) }, "‹")
+            : null,
         handlers ? h("button", { type: "button", className: `ps-workflow-end is-toggle${handlers.all ? " is-on" : ""}`, "aria-pressed": handlers.all,
             "data-action": "show-handlers", title: "Show every error route into an end at once, each as a dashed arrow to a ghost of its end. Without it, select a step to see where its errors go.",
             onClick: handlers.onToggle }, "Show all handlers") : null,
@@ -431,5 +459,8 @@ export function WorkflowEndsRow({ ends, reached = null, run = false, hoverEnd = 
                 onMouseEnter: () => onHover(end.id), onMouseLeave: () => onHover(null), onFocus: () => onHover(end.id), onBlur: () => onHover(null),
                 onClick: () => select(end.id) },
             h("span", { className: "ps-workflow-end-mark", "aria-hidden": "true" }, end.box ? "●" : "⏹"), ` ${end.id} · ${waysText}`);
-        }));
+        }),
+        hidden.right ? h("button", { type: "button", className: "ps-workflow-ends-more is-right", "data-action": "ends-more",
+            "aria-label": `${hidden.right} more end${hidden.right === 1 ? "" : "s"}`, title: "Show the other ends", onClick: () => scroll(1) }, `+${hidden.right} ›`)
+            : null);
 }
