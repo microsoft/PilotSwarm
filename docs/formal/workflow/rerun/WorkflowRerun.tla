@@ -193,11 +193,14 @@ RunKvRev == IF StartVars THEN CutKvRev + 1 ELSE CutKvRev
 
 \* Target routing:
 \*   - reroute_taken: S1 "again" routes to TNode (misses S2 in both run_again and continue)
-\*   - reroute_onto_copy: S1 "again" routes back to S1 (existing copied row!) with predecessor S1 != NoNode (S1 review race)
+\*   - reroute_onto_copy:
+\*       * SourceKind="catchall": T adds explicit "error" failure route from S1 to H1, so controller arrives
+\*         at existing copied H1 with route "error" != recorded "catchAll" (100% reachable S1 controller race).
+\*       * SourceKind="loop": S1 "again" routes back onto S1 (predecessor mismatch on copied row).
 RouteTarget(x, o, caught, h1Present) ==
     IF Target = "reroute_taken" /\ x = SNode(1) /\ o = "again"
       THEN TNode
-    ELSE IF Target = "reroute_onto_copy" /\ x = SNode(1) /\ o = "again"
+    ELSE IF Target = "reroute_onto_copy" /\ SourceKind = "loop" /\ x = SNode(1) /\ o = "again"
       THEN SNode(1)
     ELSE CASE x[1] = "S" /\ o = "again"     -> SNode(x[2] + 1)
            [] x[1] = "S" /\ o = "ok"        -> TNode
@@ -214,7 +217,9 @@ RouteTarget(x, o, caught, h1Present) ==
            [] OTHER -> NoNode
 
 RouteLabelOf(x, o, caught) ==
-    IF x[1] = "S" /\ o = "error" /\ ~caught THEN "catchAll" ELSE o
+    IF Target = "reroute_onto_copy" /\ SourceKind = "catchall" /\ x = SNode(1) /\ o = "error"
+      THEN "error"
+    ELSE IF x[1] = "S" /\ o = "error" /\ ~caught THEN "catchAll" ELSE o
 
 NewWorkOutcomes(x) ==
     CASE x[1] = "S" -> IF SourceKind = "catchall" THEN {"error", "ok"}
@@ -836,7 +841,7 @@ AdmitExec ==
                                                   firstNewHashOk, copyHitMismatch, inboxVars>>
                               ELSE /\ actRes' = IF runStatus = "paused" THEN "paused" ELSE "notAdmitted"
                                    /\ UNCHANGED <<runVars, inboxVars>>
-                       ELSE \* Fault rr-df-copy-hit-ignores-pred: silently accepts mismatched copied row
+                       ELSE \* Fault rr-df-copy-hit-ignores-pred (unreachable post-cut in valid configs; real code throws NONDETERMINISTIC_ADMISSION post-cut)
                             /\ copyHitMismatch' = TRUE
                             /\ actRes' = nState[x]
                             /\ UNCHANGED <<runStatus, failCode, nState, nPred, nRoute, nWinner, nOutcome,
@@ -1179,6 +1184,11 @@ Inv_NoWorkOnDiverge ==
         /\ \A x \in AllNodes \ reusedSet : nState[x] = "absent"
         /\ \A x \in WorkNodes : eff[x] = "absent"
 
+\* Permissive guard safety: a valid or byte-check-exempt re-run never triggers rerun_diverged.
+Inv_ValidNeverDiverges ==
+    (Target \in {"same", "fix_chosen"} /\ (~ByteCheckRequired \/ ~InputHashMismatch)) =>
+        ~(runStatus = "failed" /\ failCode = "rerun_diverged")
+
 Inv_OrdinalsContinue ==
     /\ \A x \in newVisits : x \notin reusedSet
     /\ \A x \in newVisits : \A y \in reusedSet : x[1] = y[1] => x[2] > y[2]
@@ -1250,9 +1260,11 @@ Prop_NoAdmissionAfterTerminal ==
 Live_ReachesCut == <>(startPhase \in Refused \/ resumedAtCut \/ runStatus \in Terminal)
 Live_Terminates == <>(startPhase \in Refused \/ runStatus \in Terminal)
 
-\* Strong liveness (without deleters or cancel/stop): an admitted re-run genuinely reaches the cut
-\* (or fails rerun_diverged on an incompatible/mismatched-hash target); the guard never blocks a valid re-run.
-Live_AdmittedReachesCut == <>(resumedAtCut \/ (runStatus = "failed" /\ failCode = "rerun_diverged"))
+\* Strong liveness for valid/exempt re-runs (no deleters, no cancel/stop): MUST reach resumedAtCut (never rerun_diverged).
+Live_ReachesCutOnly == <>resumedAtCut
+
+\* Strong liveness for incompatible/mismatched-hash divergence cases: MUST reach rerun_diverged cleanly.
+Live_DivergesCleanly == <>(runStatus = "failed" /\ failCode = "rerun_diverged")
 
 -----------------------------------------------------------------------------
 (* Non-Vacuity Witnesses (each expected VIOLATED, exit 12)                 *)

@@ -6,11 +6,32 @@
  *      commits immediately, releasing ACCESS EXCLUSIVE without a full-table scan.
  *   2. Steps 2 and 3 run `VALIDATE CONSTRAINT` in separate transactions under SHARE UPDATE EXCLUSIVE (allowing concurrent
  *      reads and writes).
- *   3. Steps 4 and 5 build the partial rerun indexes `CONCURRENTLY IF NOT EXISTS`.
+ *   3. Steps 4–7 drop any invalid leftover index (`NOT i.indisvalid`, as migration 0088 does) under a 5 s lock_timeout
+ *      before building each partial rerun index `CONCURRENTLY IF NOT EXISTS`.
  */
 export function workflowRerunMigration(schema: string): string[] {
     const s = `"${schema.replace(/"/g, "\"\"")}"`;
     const name = schema.replace(/'/g, "''");
+    const dropInvalidIndex = (indexName: string, tag: string) => `
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+DO $${tag}$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indexrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = '${name}'
+          AND c.relname = '${indexName}'
+          AND NOT i.indisvalid
+    ) THEN
+        EXECUTE format('DROP INDEX %I.%I', '${name}', '${indexName}');
+    END IF;
+END
+$${tag}$;
+COMMIT;
+`;
     return [
         `
 BEGIN;
@@ -89,10 +110,12 @@ SET LOCAL lock_timeout = '5s';
 ALTER TABLE ${s}.workflow_node_executions VALIDATE CONSTRAINT workflow_node_executions_reused_check;
 COMMIT;
 `,
+        dropInvalidIndex("workflow_runs_by_rerun_of_run", "rerun_run_idx"),
         `
 CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_runs_by_rerun_of_run
     ON ${s}.workflow_runs (rerun_of_run_id, created_at) WHERE rerun_of_run_id IS NOT NULL;
 `,
+        dropInvalidIndex("workflow_runs_by_rerun_of_workflow", "rerun_wf_idx"),
         `
 CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_runs_by_rerun_of_workflow
     ON ${s}.workflow_runs (rerun_of_workflow_session_id, created_at) WHERE rerun_of_workflow_session_id IS NOT NULL;

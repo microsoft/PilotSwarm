@@ -10,10 +10,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { CATCH_ALL_ROUTE, branchScopeId } from "../../dist/workflow/controller/runtime.js";
-import { nodeExecutionIdFor } from "../../dist/workflow/store.js";
+import { nodeExecutionIdFor, WorkflowStoreError } from "../../dist/workflow/store.js";
 import {
     WORKFLOW_RERUN_MAX_COPY_BYTES,
-    WorkflowRerunError,
     flattenRerunOrigin,
     pickRerunTarget,
     partitionRerunVisits,
@@ -223,13 +222,13 @@ test("pickRerunTarget: covers all 6 auto-pick rows and all refusal reasons", () 
             { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "execution_failed", details: { nodeExecutionId: orphanLane.nodeExecutionId } } },
             [keys1[0], orphanLane],
         ),
-        (err) => err instanceof WorkflowRerunError && err.code === "RERUN_VISIT_NOT_ALLOWED" && err.details?.reason === "inside_lane",
+        (err) => err instanceof WorkflowStoreError && err.code === "RERUN_VISIT_NOT_ALLOWED" && err.details?.reason === "inside_lane",
     );
 
-    // 5c. (m7) technical failure (timed_out with winner="deadline") -> tagged last_visit, mode run_again
+    // 5c. (B1) step-level unrouted timed_out (with details.nodeExecutionId) -> run_again / failed_visit
     const keys5c = chainKeys([
         { nodeId: "build", ordinal: 1, outcome: "ok" },
-        { nodeId: "finish", ordinal: 1, arrivalRoute: "ok", outcome: "cancelled", resultKind: "runtime_error", winner: "deadline" },
+        { nodeId: "finish", ordinal: 1, arrivalRoute: "ok", outcome: "timed_out", resultKind: "runtime_error", winner: "controller" },
     ]);
     const p5c = pickRerunTarget(
         { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "timed_out", details: { nodeExecutionId: keys5c[1].nodeExecutionId } } },
@@ -237,7 +236,20 @@ test("pickRerunTarget: covers all 6 auto-pick rows and all refusal reasons", () 
     );
     assert.equal(p5c.chosen.nodeExecutionId, keys5c[1].nodeExecutionId);
     assert.equal(p5c.mode, "run_again");
-    assert.equal(p5c.picked, "last_visit");
+    assert.equal(p5c.picked, "failed_visit");
+
+    // 5d. run-level timed_out (NO details.nodeExecutionId; last visit cancelled with winner="deadline") -> row 5 last_visit / run_again
+    const keys5d = chainKeys([
+        { nodeId: "build", ordinal: 1, outcome: "ok" },
+        { nodeId: "finish", ordinal: 1, arrivalRoute: "ok", outcome: "cancelled", resultKind: "runtime_error", winner: "deadline" },
+    ]);
+    const p5d = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "timed_out", details: { limit: "run_timeout", timeoutSeconds: 60 } } },
+        keys5d,
+    );
+    assert.equal(p5d.chosen.nodeExecutionId, keys5d[1].nodeExecutionId);
+    assert.equal(p5d.mode, "run_again");
+    assert.equal(p5d.picked, "last_visit");
 
     // 5a. Stopped with real result on last visit -> continue
     const p5a = pickRerunTarget(
@@ -757,7 +769,7 @@ test("mapRerunExecutions & flattenRerunOrigin: remaps multi-lane/multi-parallel 
     // Refuses any non-completed reused key before DB write
     assert.throws(
         () => mapRerunExecutions("run-3", [k1, makeKey({ ...kPar1, state: "pending" })]),
-        (err) => err instanceof WorkflowRerunError && err.code === "RERUN_VISIT_NOT_ALLOWED",
+        (err) => err instanceof WorkflowStoreError && err.code === "RERUN_VISIT_NOT_ALLOWED",
     );
 });
 

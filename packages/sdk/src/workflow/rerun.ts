@@ -9,27 +9,15 @@ import {
     selectRoute,
     type WorkflowRunStatus,
 } from "./controller/runtime.js";
-import { canonicalJson, isJsonObject, sha256Hex, type JsonValue } from "./json.js";
+import { canonicalJson, isJsonObject, type JsonValue } from "./json.js";
 import type { WorkflowRunRow } from "./store.js";
+import { nodeExecutionIdFor, WorkflowStoreError } from "./store-primitives.js";
 
 /**
  * Maximum total byte size of copied visits in a single v1 re-run (256 MiB).
  * Enforced in Unit 3B's store copy (`RERUN_TOO_LARGE`) and `readWorkflowRerunPlan`.
  */
 export const WORKFLOW_RERUN_MAX_COPY_BYTES = 256 * 1024 * 1024;
-
-/** Pure deterministic node execution identity (matches store.ts › nodeExecutionIdFor without importing pg/store.ts). */
-function rerunNodeExecutionIdFor(runId: string, scopeId: string, nodeId: string, ordinal: number): string {
-    return `nx-${sha256Hex(canonicalJson([runId, scopeId, nodeId, ordinal])).slice(0, 40)}`;
-}
-
-/** Pure coded error thrown by rerun planning/mapping helpers (zero runtime dependency on store.ts/pg). */
-export class WorkflowRerunError extends Error {
-    constructor(readonly code: string, message: string, readonly details: JsonValue = null) {
-        super(message);
-        this.name = "WorkflowRerunError";
-    }
-}
 
 export type WorkflowRerunMode = "run_again" | "continue";
 
@@ -274,7 +262,7 @@ function orderedRootChain(keys: readonly WorkflowRerunKey[]): WorkflowRerunKey[]
 
 function validateVisitAndMode(chosen: WorkflowRerunKey, mode: WorkflowRerunMode): void {
     if (mode === "run_again" && chosen.predecessorId === null) {
-        throw new WorkflowRerunError("RERUN_VISIT_NOT_ALLOWED", "Nothing would be reused. Use Run again.", {
+        throw new WorkflowStoreError("RERUN_VISIT_NOT_ALLOWED", "Nothing would be reused. Use Run again.", {
             reason: "first_visit",
             executionId: chosen.nodeExecutionId,
             stateId: chosen.nodeId,
@@ -282,7 +270,7 @@ function validateVisitAndMode(chosen: WorkflowRerunKey, mode: WorkflowRerunMode)
         });
     }
     if (mode === "continue" && chosen.nodeType === "terminal") {
-        throw new WorkflowRerunError("RERUN_VISIT_NOT_ALLOWED", `${chosen.nodeId} · visit ${chosen.ordinal} is a terminal step and cannot continue.`, {
+        throw new WorkflowStoreError("RERUN_VISIT_NOT_ALLOWED", `${chosen.nodeId} · visit ${chosen.ordinal} is a terminal step and cannot continue.`, {
             reason: "terminal",
             executionId: chosen.nodeExecutionId,
             stateId: chosen.nodeId,
@@ -290,7 +278,7 @@ function validateVisitAndMode(chosen: WorkflowRerunKey, mode: WorkflowRerunMode)
         });
     }
     if (mode === "continue" && isCancelledByRunEnd(chosen)) {
-        throw new WorkflowRerunError("RERUN_VISIT_NOT_ALLOWED", `${chosen.nodeId} · visit ${chosen.ordinal} has no completed result to continue from. Use run_again.`, {
+        throw new WorkflowStoreError("RERUN_VISIT_NOT_ALLOWED", `${chosen.nodeId} · visit ${chosen.ordinal} has no completed result to continue from. Use run_again.`, {
             reason: "no_result",
             executionId: chosen.nodeExecutionId,
             stateId: chosen.nodeId,
@@ -298,8 +286,6 @@ function validateVisitAndMode(chosen: WorkflowRerunKey, mode: WorkflowRerunMode)
         });
     }
 }
-
-const TECHNICAL_RUN_ERROR_CODES = new Set(["timed_out", "controller_error", "controller_ended"]);
 
 export function pickRerunTarget(
     run: Pick<WorkflowRunRow, "status" | "terminalNodeId" | "terminalOutcome" | "terminalError">,
@@ -312,13 +298,13 @@ export function pickRerunTarget(
     const reqMode = requested?.mode ?? null;
 
     if (reqMode !== null && reqMode !== "run_again" && reqMode !== "continue") {
-        throw new WorkflowRerunError("RERUN_ARGUMENT_REFUSED", `Invalid re-run mode "${String(reqMode)}". Expected "run_again" or "continue".`);
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", `Invalid re-run mode "${String(reqMode)}". Expected "run_again" or "continue".`);
     }
 
     if (reqExecId !== null) {
         const found = byId.get(reqExecId);
         if (!found) {
-            throw new WorkflowRerunError("RERUN_VISIT_NOT_FOUND", `Visit ${reqExecId} is not a step execution of this Workflow.`, {
+            throw new WorkflowStoreError("RERUN_VISIT_NOT_FOUND", `Visit ${reqExecId} is not a step execution of this Workflow.`, {
                 executionId: reqExecId,
             });
         }
@@ -326,7 +312,7 @@ export function pickRerunTarget(
             const parsed = parseBranchScope(found.scopeId);
             const parallel = parsed ? byId.get(parsed.parallelNodeExecutionId) ?? null : null;
             const targetLabel = parallel ? `${parallel.nodeId} · visit ${parallel.ordinal}` : "the parallel step";
-            throw new WorkflowRerunError(
+            throw new WorkflowStoreError(
                 "RERUN_VISIT_NOT_ALLOWED",
                 `To re-run this lane, choose ${targetLabel}.`,
                 {
@@ -356,8 +342,6 @@ export function pickRerunTarget(
         const last = rootChain.at(-1) ?? null;
         if (last) {
             chosen = last;
-            // I5: if a lane hit limit_exceeded, finishRun cancelled the pending root parallel visit (winner="controller"),
-            // so fall back to run_again when the last root visit has no real completed result.
             defaultMode = (last.state === "completed" && !isCancelledByRunEnd(last) && last.nodeType !== "terminal")
                 ? "continue"
                 : "run_again";
@@ -372,7 +356,7 @@ export function pickRerunTarget(
             const parsed = parseBranchScope(raw.scopeId);
             const parallel = parsed ? byId.get(parsed.parallelNodeExecutionId) ?? null : null;
             if (!parallel) {
-                throw new WorkflowRerunError(
+                throw new WorkflowStoreError(
                     "RERUN_VISIT_NOT_ALLOWED",
                     "To re-run this lane, choose the parallel step.",
                     {
@@ -386,21 +370,12 @@ export function pickRerunTarget(
             }
             lifted = parallel;
         }
-        const isTechnicalFailure = (errCode !== null && TECHNICAL_RUN_ERROR_CODES.has(errCode))
-            || raw.winner === "deadline"
-            || lifted.winner === "deadline";
         const isFailure = raw.resultKind === "runtime_error"
             || raw.state !== "completed"
             || lifted.resultKind === "runtime_error"
             || RUN_END_CANCEL_WINNERS.has(raw.winner ?? "")
             || raw.winner === "fail_fast";
-        if (isTechnicalFailure) {
-            chosen = lifted;
-            defaultMode = (lifted.state === "completed" && !isCancelledByRunEnd(lifted) && lifted.nodeType !== "terminal")
-                ? "continue"
-                : "run_again";
-            picked = "last_visit";
-        } else if (isFailure) {
+        if (isFailure) {
             chosen = lifted;
             defaultMode = "run_again";
             picked = "failed_visit";
@@ -438,7 +413,7 @@ export function pickRerunTarget(
             && run.terminalOutcome !== null
             && (run.terminalOutcome === "succeeded" || run.terminalOutcome === "blocked" || run.terminalOutcome === "cancelled")
         ) {
-            throw new WorkflowRerunError(
+            throw new WorkflowStoreError(
                 "RERUN_VISIT_REQUIRED",
                 `This Workflow ended ${run.terminalOutcome} with no failed step. Name the visit with execution_id.`,
                 { outcome: run.terminalOutcome },
@@ -446,7 +421,7 @@ export function pickRerunTarget(
         } else {
             const last = rootChain.at(-1) ?? null;
             if (!last) {
-                throw new WorkflowRerunError("RERUN_VISIT_REQUIRED", "This Workflow has no recorded visits to re-run from.");
+                throw new WorkflowStoreError("RERUN_VISIT_REQUIRED", "This Workflow has no recorded visits to re-run from.");
             }
             chosen = last;
             defaultMode = (last.state === "completed" && !isCancelledByRunEnd(last) && last.nodeType !== "terminal")
@@ -457,7 +432,7 @@ export function pickRerunTarget(
     }
 
     if (chosen === null) {
-        throw new WorkflowRerunError("RERUN_VISIT_REQUIRED", "No suitable visit could be picked automatically. Name the visit with execution_id.");
+        throw new WorkflowStoreError("RERUN_VISIT_REQUIRED", "No suitable visit could be picked automatically. Name the visit with execution_id.");
     }
 
     const mode: WorkflowRerunMode = reqMode ?? defaultMode;
@@ -510,7 +485,7 @@ export function partitionRerunVisits(
     const rootChain = orderedRootChain(keys);
     const chosenIndex = rootChain.findIndex(k => k.nodeExecutionId === chosenId);
     if (chosenIndex < 0) {
-        throw new WorkflowRerunError("RERUN_VISIT_NOT_FOUND", `Visit ${chosenId} is not a top-level execution of this run.`, {
+        throw new WorkflowStoreError("RERUN_VISIT_NOT_FOUND", `Visit ${chosenId} is not a top-level execution of this run.`, {
             executionId: chosenId,
         });
     }
@@ -550,7 +525,7 @@ export function mapRerunExecutions(
 ): MappedRerunExecution[] {
     for (const k of reused) {
         if (k.state !== "completed") {
-            throw new WorkflowRerunError(
+            throw new WorkflowStoreError(
                 "RERUN_VISIT_NOT_ALLOWED",
                 `Visit ${k.nodeId} · visit ${k.ordinal} is not completed (state=${k.state}) and cannot be reused.`,
                 { reason: "not_completed", executionId: k.nodeExecutionId, state: k.state },
@@ -569,10 +544,10 @@ export function mapRerunExecutions(
     const mapped: MappedRerunExecution[] = [];
 
     for (const s of rootVisits) {
-        const newId = rerunNodeExecutionIdFor(newRunId, ROOT_SCOPE, s.nodeId, s.ordinal);
+        const newId = nodeExecutionIdFor(newRunId, ROOT_SCOPE, s.nodeId, s.ordinal);
         const newPredecessorId = s.predecessorId === null ? null : (idMap.get(s.predecessorId) ?? null);
         if (s.predecessorId !== null && newPredecessorId === null) {
-            throw new WorkflowRerunError(
+            throw new WorkflowStoreError(
                 "RERUN_VISIT_NOT_ALLOWED",
                 `Reused visit ${s.nodeId} · visit ${s.ordinal} is missing its predecessor in the reused set.`,
                 { reason: "missing_predecessor", executionId: s.nodeExecutionId, predecessorId: s.predecessorId },
@@ -590,24 +565,24 @@ export function mapRerunExecutions(
     for (const s of laneVisits) {
         const parsed = parseBranchScope(s.scopeId);
         if (!parsed) {
-            throw new WorkflowRerunError("RERUN_VISIT_NOT_ALLOWED", `Invalid lane scope "${s.scopeId}" on reused visit ${s.nodeExecutionId}.`, {
+            throw new WorkflowStoreError("RERUN_VISIT_NOT_ALLOWED", `Invalid lane scope "${s.scopeId}" on reused visit ${s.nodeExecutionId}.`, {
                 reason: "invalid_scope",
                 executionId: s.nodeExecutionId,
             });
         }
         const mappedParallelId = idMap.get(parsed.parallelNodeExecutionId);
         if (!mappedParallelId) {
-            throw new WorkflowRerunError(
+            throw new WorkflowStoreError(
                 "RERUN_VISIT_NOT_ALLOWED",
                 `Lane visit ${s.nodeId} · visit ${s.ordinal} references an uncopied parallel visit.`,
                 { reason: "missing_parallel", executionId: s.nodeExecutionId, parallelExecutionId: parsed.parallelNodeExecutionId },
             );
         }
         const newScopeId = branchScopeId(mappedParallelId, parsed.index);
-        const newId = rerunNodeExecutionIdFor(newRunId, newScopeId, s.nodeId, s.ordinal);
+        const newId = nodeExecutionIdFor(newRunId, newScopeId, s.nodeId, s.ordinal);
         const newPredecessorId = s.predecessorId === null ? null : (idMap.get(s.predecessorId) ?? null);
         if (s.predecessorId !== null && newPredecessorId === null) {
-            throw new WorkflowRerunError(
+            throw new WorkflowStoreError(
                 "RERUN_VISIT_NOT_ALLOWED",
                 `Reused lane visit ${s.nodeId} · visit ${s.ordinal} is missing its predecessor in the reused set.`,
                 { reason: "missing_predecessor", executionId: s.nodeExecutionId, predecessorId: s.predecessorId },

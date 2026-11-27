@@ -35,24 +35,26 @@
 ## Mechanism-level vs specification-level invariants
 
 - **Mechanism-level checks (verified by interleavings, guards, and state transitions in `WorkflowRerun.tla`):**
-  Lock-order deadlock freedom (`CHECK_DEADLOCK TRUE` across `Copy`, `SweeperDirect`, `DeleteWorkflow`, `OwnerEnded`), `Inv_NoCopyFromDeleted` (read-then-commit window without `FOR SHARE`), `Inv_CopyAtomic`, `Inv_ReusedNeverRuns`, `Inv_ReusedImmutable`, `Inv_FirstNewAtCut` (run-again, continue, same-IR byte check, `fix_chosen` & `StartVars` exemptions), `Inv_PassOverOnChain` (S1 copied-row predecessor/route check), `Inv_NoWorkOnDiverge`, `Inv_OrdinalsContinue`, `Inv_CatchAllOnce`, `Inv_VisitLimit`, `Inv_StepLimit`, `Inv_TotalFromFirstNew`, `Inv_CarriedWereWaiting` (`accepted_at <= cutTime`, excluding consumed `m0` and late `m2`, including `WorkflowEnded@1` `m_child`), `Inv_TakeOnce`, `Inv_OriginRan` (`COALESCE` flattening across generations), `CoreSafety`, `Inv_TerminalNoPending`, `Prop_NoAdmissionAfterTerminal`, and strong liveness `Live_AdmittedReachesCut` / `Live_Terminates`.
+  Lock-order deadlock freedom (`CHECK_DEADLOCK TRUE` across `Copy`, `SweeperDirect`, `DeleteWorkflow`, `OwnerEnded`), `Inv_NoCopyFromDeleted` (read-then-commit window without `FOR SHARE`), `Inv_CopyAtomic`, `Inv_ReusedNeverRuns`, `Inv_ReusedImmutable`, `Inv_FirstNewAtCut` (run-again, continue, same-IR byte check, `fix_chosen` & `StartVars` exemptions), `Inv_ValidNeverDiverges` (guard never blocks valid or exempt re-runs), `Inv_PassOverOnChain` (S1 copied-row route/predecessor check), `Inv_NoWorkOnDiverge`, `Inv_OrdinalsContinue`, `Inv_CatchAllOnce`, `Inv_VisitLimit`, `Inv_StepLimit`, `Inv_TotalFromFirstNew`, `Inv_TakeOnce`, `CoreSafety`, `Inv_TerminalNoPending`, `Prop_NoAdmissionAfterTerminal`, and strong liveness `Live_ReachesCutOnly` (`<>resumedAtCut`, no divergence disjunct) / `Live_DivergesCleanly` / `Live_Terminates`.
 - **Specification-level restatements (checked structurally here; code-level mechanism evidence lives in Unit 3B integration tests):**
   - `Inv_SourceUntouched`: models zero writes to `#2`'s rows; code-level ID separation (`nodeExecutionIdFor(newRunId, ...)`) and source-row immutability are verified by Unit 3A `workflow-rerun-plan.test.mjs` and Unit 3B `workflow-rerun-store.test.js`.
+  - `Inv_OriginRan`: models `COALESCE` flattening over static `SrcReusedFrom`; multi-generation SQL `COALESCE` provenance is verified by Unit 3A `flattenRerunOrigin` tests and Unit 3B `workflow-rerun-store.test.js`.
+  - `Inv_CarriedWereWaiting`: models the `accepted_at <= cutTime \/ WorkflowEnded@1` filter over a static inbox; SQL timestamp/consumption/TTL selection (`copyRerunInboxIn`) is verified by Unit 3B `workflow-rerun-store.test.js`.
   - `Inv_PinnedChoice`: models `rerunPin` preservation across claim crash; JSON pin persistence and `replaySessionStart` recovery are verified by Unit 3B `workflow-rerun-start.test.js` (Task 4d).
   - `Inv_NoConsentReuse`: models owner-only gating past answered approvals; `(owner_provider, owner_subject)` matching, owner-change refusal, and fail-closed missing-approval checks are verified by Unit 3B `workflow-rerun-start.test.js` (Task 4d).
 
-## What is checked (batch `rr2`, 59 cases, `CHECK_DEADLOCK TRUE` on all cases)
+## What is checked (batch `rr3`, 60 cases, `CHECK_DEADLOCK TRUE` on all cases)
 
-- **26 design cases** (15 safety + 11 liveness, including strong `Live_AdmittedReachesCut` on clean runs and `fix_chosen`/`StartVars`/parallel/approval/inbox/gen2/diverge).
-- **15 non-vacuity witnesses** (all 13 required + 2 for copied-coordinate divergence and same-IR hash divergence; each expected violated, exit `12`).
+- **27 design cases** (15 safety + 12 liveness, including strong `Live_ReachesCutOnly` (`<>resumedAtCut`) + `Inv_ValidNeverDiverges` on clean run-again, continue, `fix_chosen`, `StartVars`, catchall, parallel, approval, inbox, gen2, plus `Live_DivergesCleanly` on S1 catchall route mismatch).
+- **15 non-vacuity witnesses** (all 13 required + 2 for S1 copied-coordinate divergence and same-IR hash divergence; each expected violated, exit `12`).
 - **18 deliberate faults** (all 15 required + 3 for copied-coordinate mismatch, same-IR hash bypass, and continue-mode unguarded divergence; 17 invariant violations exit `12` + `rr-df-lock-new-before-owner` TLC deadlock exit `11`).
 
 Generate cases with `python3 gen-cases.py`, verify packet integrity with `./check-packet.sh`, and run TLC with `TLA_TOOLS=<dir> ./run-tlc.sh`.
 
-## Results (batch `rr2`, TLC 2.19, `CHECK_DEADLOCK TRUE` on all 59 cases)
+## Results (batch `rr3`, TLC 2.19, `CHECK_DEADLOCK TRUE` on all 60 cases)
 
-- **Design safety & liveness (26 cases):** 26/26 PASS (largest: `rr.design-loop-run-again` and `rr.live-run-again`, 2,732,308 generated / 757,336 distinct states, 0 errors, 0 deadlocks).
+- **Design safety & liveness (27 cases):** 27/27 PASS (largest: `rr.design-loop-run-again` and `rr.live-run-again`, 2,732,308 generated / 757,336 distinct states, 0 errors, 0 deadlocks; all 9 clean/exempt liveness cases prove `Live_ReachesCutOnly == <>resumedAtCut` and `Inv_ValidNeverDiverges`).
 - **Non-vacuity witnesses (15 cases):** 15/15 VIOLATED as expected (exit 12).
 - **Deliberate faults (18 cases):** 18/18 VIOLATED / DEADLOCK as expected (17 invariant violations exit 12; `rr-df-lock-new-before-owner` TLC deadlock exit 11).
-- **Total:** 59/59 matched expected, zero timeouts.
+- **Total:** 60/60 matched expected, zero timeouts.
 

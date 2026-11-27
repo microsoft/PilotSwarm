@@ -19,6 +19,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -33,10 +34,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Run-again loop with all 3 deleters (incl. defLock), claim crash + new revision, pause/stop/cancel, retry and CAN in pass-over.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-loop-run-again (rr2; expected PASS): Run-again loop with all 3 deleters (incl. defLock), claim crash + new revision, pause/stop/cancel, retry and CAN in pass-over.",
+   "comment": "rr.design-loop-run-again (rr3; expected PASS): Run-again loop with all 3 deleters (incl. defLock), claim crash + new revision, pause/stop/cancel, retry and CAN in pass-over.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -87,6 +88,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -121,6 +123,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -135,10 +138,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Continue mode over 2 reused loop visits hitting MaxVisits exhaustion at cut, with deleters and pass-over retry/CAN.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-loop-continue (rr2; expected PASS): Continue mode over 2 reused loop visits hitting MaxVisits exhaustion at cut, with deleters and pass-over retry/CAN.",
+   "comment": "rr.design-loop-continue (rr3; expected PASS): Continue mode over 2 reused loop visits hitting MaxVisits exhaustion at cut, with deleters and pass-over retry/CAN.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -189,6 +192,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -223,6 +227,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -237,10 +242,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Reused catch-all visit: subsequent unhandled error fails run without re-entering catch-all.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-catchall (rr2; expected PASS): Reused catch-all visit: subsequent unhandled error fails run without re-entering catch-all.",
+   "comment": "rr.design-catchall (rr3; expected PASS): Reused catch-all visit: subsequent unhandled error fails run without re-entering catch-all.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -291,6 +296,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -325,6 +331,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -339,10 +346,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Reused parallel step with 1 unwalked lane visit; plan budget subtracts rerun_unwalked so total visits never exceed StepLimit.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-parallel (rr2; expected PASS): Reused parallel step with 1 unwalked lane visit; plan budget subtracts rerun_unwalked so total visits never exceed StepLimit.",
+   "comment": "rr.design-parallel (rr3; expected PASS): Reused parallel step with 1 unwalked lane visit; plan budget subtracts rerun_unwalked so total visits never exceed StepLimit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"parallel\"",
@@ -393,6 +400,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -427,6 +435,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -441,10 +450,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Owner re-run past an answered approval is allowed and reuses the approval without re-asking.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-approval-owner (rr2; expected PASS): Owner re-run past an answered approval is allowed and reuses the approval without re-asking.",
+   "comment": "rr.design-approval-owner (rr3; expected PASS): Owner re-run past an answered approval is allowed and reuses the approval without re-asking.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -495,6 +504,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -529,6 +539,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -543,10 +554,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Agent re-run past an answered approval is refused cleanly with zero work admitted.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-approval-agent (rr2; expected PASS): Agent re-run past an answered approval is refused cleanly with zero work admitted.",
+   "comment": "rr.design-approval-agent (rr3; expected PASS): Agent re-run past an answered approval is refused cleanly with zero work admitted.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -597,6 +608,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -631,6 +643,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -645,10 +658,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Carried waiting inbox message + reused spawn notice copied (consumed m0 & late m2 excluded); total wait anchor resets.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-inbox (rr2; expected PASS): Carried waiting inbox message + reused spawn notice copied (consumed m0 & late m2 excluded); total wait anchor resets.",
+   "comment": "rr.design-inbox (rr3; expected PASS): Carried waiting inbox message + reused spawn notice copied (consumed m0 & late m2 excluded); total wait anchor resets.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -699,6 +712,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -733,6 +747,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -747,10 +762,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Second-generation re-run (#1 -> #2 -> #3) flattens origin via COALESCE to #1.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-gen2 (rr2; expected PASS): Second-generation re-run (#1 -> #2 -> #3) flattens origin via COALESCE to #1.",
+   "comment": "rr.design-gen2 (rr3; expected PASS): Second-generation re-run (#1 -> #2 -> #3) flattens origin via COALESCE to #1.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -801,6 +816,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -835,6 +851,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -849,10 +866,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Incompatible target revision (reroute_taken) refused by FitCheck before copy.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-reroute-refused (rr2; expected PASS): Incompatible target revision (reroute_taken) refused by FitCheck before copy.",
+   "comment": "rr.design-reroute-refused (rr3; expected PASS): Incompatible target revision (reroute_taken) refused by FitCheck before copy.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -903,6 +920,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -937,6 +955,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -951,10 +970,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Run-again with FitCheck disabled: cut guard catches divergence and fails rerun_diverged with zero new rows or effects.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-diverge-guard (rr2; expected PASS): Run-again with FitCheck disabled: cut guard catches divergence and fails rerun_diverged with zero new rows or effects.",
+   "comment": "rr.design-diverge-guard (rr3; expected PASS): Run-again with FitCheck disabled: cut guard catches divergence and fails rerun_diverged with zero new rows or effects.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1005,6 +1024,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -1039,6 +1059,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -1053,10 +1074,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Continue mode with FitCheck disabled: predecessor-only cut guard catches divergence and fails rerun_diverged.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-continue-diverge (rr2; expected PASS): Continue mode with FitCheck disabled: predecessor-only cut guard catches divergence and fails rerun_diverged.",
+   "comment": "rr.design-continue-diverge (rr3; expected PASS): Continue mode with FitCheck disabled: predecessor-only cut guard catches divergence and fails rerun_diverged.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1107,6 +1128,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -1141,6 +1163,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -1154,14 +1177,14 @@
   ],
   "expected": "PASS",
   "deadlock": true,
-  "note": "S1 copied-coordinate divergence: faulty revision reroutes onto existing copied row from wrong predecessor; failRerunDiverged ends run cleanly.",
-  "batch": "rr2",
+  "note": "S1 copied-coordinate divergence (reachable catchall route mismatch: explicit 'error' route hits copied H1 recorded with '@catchAll').",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-copy-coord-diverge (rr2; expected PASS): S1 copied-coordinate divergence: faulty revision reroutes onto existing copied row from wrong predecessor; failRerunDiverged ends run cleanly.",
+   "comment": "rr.design-copy-coord-diverge (rr3; expected PASS): S1 copied-coordinate divergence (reachable catchall route mismatch: explicit 'error' route hits copied H1 recorded with '@catchAll').",
    "spec": "Spec",
    "constants": {
-    "SourceKind": "\"loop\"",
+    "SourceKind": "\"catchall\"",
     "Mode": "\"run_again\"",
     "Target": "\"reroute_onto_copy\"",
     "Generations": "1",
@@ -1209,6 +1232,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -1243,6 +1267,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -1257,10 +1282,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Decision 3 same-IR byte check: mismatched input/carry hash with same IR & same KV rev fails rerun_diverged before insert.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-same-ir-hash-diverge (rr2; expected PASS): Decision 3 same-IR byte check: mismatched input/carry hash with same IR & same KV rev fails rerun_diverged before insert.",
+   "comment": "rr.design-same-ir-hash-diverge (rr3; expected PASS): Decision 3 same-IR byte check: mismatched input/carry hash with same IR & same KV rev fails rerun_diverged before insert.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1311,6 +1336,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -1345,6 +1371,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -1359,10 +1386,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Decision 3: Target=fix_chosen (sameIr=FALSE) skips byte check and admits the fixed chosen visit.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-fix-chosen-skips-hash (rr2; expected PASS): Decision 3: Target=fix_chosen (sameIr=FALSE) skips byte check and admits the fixed chosen visit.",
+   "comment": "rr.design-fix-chosen-skips-hash (rr3; expected PASS): Decision 3: Target=fix_chosen (sameIr=FALSE) skips byte check and admits the fixed chosen visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1413,6 +1440,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -1447,6 +1475,7 @@
    "Inv_FirstNewAtCut",
    "Inv_PassOverOnChain",
    "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
    "Inv_OrdinalsContinue",
    "Inv_CatchAllOnce",
    "Inv_VisitLimit",
@@ -1461,10 +1490,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Decision 3: Start vars (kvRev=R+1 != cutKvRev) skips same-IR byte check and admits the chosen visit.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-start-vars-skips-hash (rr2; expected PASS): Decision 3: Start vars (kvRev=R+1 != cutKvRev) skips same-IR byte check and admits the chosen visit.",
+   "comment": "rr.design-start-vars-skips-hash (rr3; expected PASS): Decision 3: Start vars (kvRev=R+1 != cutKvRev) skips same-IR byte check and admits the chosen visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1515,6 +1544,7 @@
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -1545,10 +1575,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Liveness (run_again with all deleters/commands): eventually refused or reaches cut and terminates.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-run-again (rr2; expected PASS): Liveness (run_again with all deleters/commands): eventually refused or reaches cut and terminates.",
+   "comment": "rr.live-run-again (rr3; expected PASS): Liveness (run_again with all deleters/commands): eventually refused or reaches cut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1611,10 +1641,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Liveness (continue with deleters): pass-over reaches cut and terminates.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-continue (rr2; expected PASS): Liveness (continue with deleters): pass-over reaches cut and terminates.",
+   "comment": "rr.live-continue (rr3; expected PASS): Liveness (continue with deleters): pass-over reaches cut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1668,19 +1698,20 @@
   "spec": "LiveSpec",
   "config": "rr.live-clean-reaches-cut.cfg",
   "invariants": [
-   "TypeOK"
+   "TypeOK",
+   "Inv_ValidNeverDiverges"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_ReachesCutOnly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
-  "note": "Strong liveness: valid same-IR re-run is never blocked by the cut guard or byte check and reaches resumedAtCut.",
-  "batch": "rr2",
+  "note": "Strong liveness (run_again): valid same-IR re-run MUST reach resumedAtCut (never rerun_diverged).",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-clean-reaches-cut (rr2; expected PASS): Strong liveness: valid same-IR re-run is never blocked by the cut guard or byte check and reaches resumedAtCut.",
+   "comment": "rr.live-clean-reaches-cut (rr3; expected PASS): Strong liveness (run_again): valid same-IR re-run MUST reach resumedAtCut (never rerun_diverged).",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1718,10 +1749,79 @@
     "LockNewBeforeOwner": "FALSE"
    },
    "invariants": [
-    "TypeOK"
+    "TypeOK",
+    "Inv_ValidNeverDiverges"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_ReachesCutOnly",
+    "Live_Terminates"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rr.live-continue-reaches-cut",
+  "module": "WorkflowRerun",
+  "group": "design",
+  "spec": "LiveSpec",
+  "config": "rr.live-continue-reaches-cut.cfg",
+  "invariants": [
+   "TypeOK",
+   "Inv_ValidNeverDiverges"
+  ],
+  "properties": [
+   "Live_ReachesCutOnly",
+   "Live_Terminates"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Strong liveness (continue): valid continue re-run MUST reach resumedAtCut (catches overly-restrictive continue guard).",
+  "batch": "rr3",
+  "head": "design",
+  "tlc": {
+   "comment": "rr.live-continue-reaches-cut (rr3; expected PASS): Strong liveness (continue): valid continue re-run MUST reach resumedAtCut (catches overly-restrictive continue guard).",
+   "spec": "LiveSpec",
+   "constants": {
+    "SourceKind": "\"loop\"",
+    "Mode": "\"continue\"",
+    "Target": "\"same\"",
+    "Generations": "1",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "FALSE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "TRUE",
+    "AllowCan": "TRUE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "LockNewBeforeOwner": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_ValidNeverDiverges"
+   ],
+   "properties": [
+    "Live_ReachesCutOnly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -1734,19 +1834,20 @@
   "spec": "LiveSpec",
   "config": "rr.live-fix-chosen.cfg",
   "invariants": [
-   "TypeOK"
+   "TypeOK",
+   "Inv_ValidNeverDiverges"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_ReachesCutOnly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
-  "note": "Strong liveness: Target=fix_chosen with changed input hash reaches resumedAtCut and terminates.",
-  "batch": "rr2",
+  "note": "Strong liveness: Target=fix_chosen with changed input hash MUST reach resumedAtCut (verifies fix_chosen exemption).",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-fix-chosen (rr2; expected PASS): Strong liveness: Target=fix_chosen with changed input hash reaches resumedAtCut and terminates.",
+   "comment": "rr.live-fix-chosen (rr3; expected PASS): Strong liveness: Target=fix_chosen with changed input hash MUST reach resumedAtCut (verifies fix_chosen exemption).",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1784,10 +1885,11 @@
     "LockNewBeforeOwner": "FALSE"
    },
    "invariants": [
-    "TypeOK"
+    "TypeOK",
+    "Inv_ValidNeverDiverges"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_ReachesCutOnly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -1800,19 +1902,20 @@
   "spec": "LiveSpec",
   "config": "rr.live-start-vars.cfg",
   "invariants": [
-   "TypeOK"
+   "TypeOK",
+   "Inv_ValidNeverDiverges"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_ReachesCutOnly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
-  "note": "Strong liveness: same-IR with StartVars (kvRev R+1) reaches resumedAtCut and terminates.",
-  "batch": "rr2",
+  "note": "Strong liveness: same-IR with StartVars (kvRev R+1) MUST reach resumedAtCut (verifies StartVars exemption).",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-start-vars (rr2; expected PASS): Strong liveness: same-IR with StartVars (kvRev R+1) reaches resumedAtCut and terminates.",
+   "comment": "rr.live-start-vars (rr3; expected PASS): Strong liveness: same-IR with StartVars (kvRev R+1) MUST reach resumedAtCut (verifies StartVars exemption).",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1850,10 +1953,11 @@
     "LockNewBeforeOwner": "FALSE"
    },
    "invariants": [
-    "TypeOK"
+    "TypeOK",
+    "Inv_ValidNeverDiverges"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_ReachesCutOnly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -1869,16 +1973,16 @@
    "TypeOK"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_ReachesCutOnly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (reused catch-all): reaches resumedAtCut and terminates.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-catchall (rr2; expected PASS): Strong liveness (reused catch-all): reaches resumedAtCut and terminates.",
+   "comment": "rr.live-catchall (rr3; expected PASS): Strong liveness (reused catch-all): reaches resumedAtCut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -1919,7 +2023,7 @@
     "TypeOK"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_ReachesCutOnly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -1935,16 +2039,16 @@
    "TypeOK"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_ReachesCutOnly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (reused parallel with unwalked lane): reaches resumedAtCut and terminates.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-parallel (rr2; expected PASS): Strong liveness (reused parallel with unwalked lane): reaches resumedAtCut and terminates.",
+   "comment": "rr.live-parallel (rr3; expected PASS): Strong liveness (reused parallel with unwalked lane): reaches resumedAtCut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"parallel\"",
@@ -1985,7 +2089,7 @@
     "TypeOK"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_ReachesCutOnly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -2001,16 +2105,16 @@
    "TypeOK"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_ReachesCutOnly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (owner past answered approval): reaches resumedAtCut and terminates.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-approval-owner (rr2; expected PASS): Strong liveness (owner past answered approval): reaches resumedAtCut and terminates.",
+   "comment": "rr.live-approval-owner (rr3; expected PASS): Strong liveness (owner past answered approval): reaches resumedAtCut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -2051,7 +2155,7 @@
     "TypeOK"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_ReachesCutOnly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -2067,16 +2171,16 @@
    "TypeOK"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_ReachesCutOnly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (carried inbox): reaches resumedAtCut, takes carried message, and terminates.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-inbox (rr2; expected PASS): Strong liveness (carried inbox): reaches resumedAtCut, takes carried message, and terminates.",
+   "comment": "rr.live-inbox (rr3; expected PASS): Strong liveness (carried inbox): reaches resumedAtCut, takes carried message, and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -2117,7 +2221,7 @@
     "TypeOK"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_ReachesCutOnly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -2133,16 +2237,16 @@
    "TypeOK"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_ReachesCutOnly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (generation 2): reaches resumedAtCut and terminates.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-gen2 (rr2; expected PASS): Strong liveness (generation 2): reaches resumedAtCut and terminates.",
+   "comment": "rr.live-gen2 (rr3; expected PASS): Strong liveness (generation 2): reaches resumedAtCut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2183,7 +2287,7 @@
     "TypeOK"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_ReachesCutOnly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -2199,19 +2303,19 @@
    "TypeOK"
   ],
   "properties": [
-   "Live_AdmittedReachesCut",
+   "Live_DivergesCleanly",
    "Live_Terminates"
   ],
   "expected": "PASS",
   "deadlock": true,
-  "note": "Strong liveness (copied-coordinate divergence): reaches rerun_diverged and terminates cleanly.",
-  "batch": "rr2",
+  "note": "Strong liveness (S1 catchall route-mismatch divergence): MUST reach rerun_diverged and terminate cleanly.",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-diverge (rr2; expected PASS): Strong liveness (copied-coordinate divergence): reaches rerun_diverged and terminates cleanly.",
+   "comment": "rr.live-diverge (rr3; expected PASS): Strong liveness (S1 catchall route-mismatch divergence): MUST reach rerun_diverged and terminate cleanly.",
    "spec": "LiveSpec",
    "constants": {
-    "SourceKind": "\"loop\"",
+    "SourceKind": "\"catchall\"",
     "Mode": "\"run_again\"",
     "Target": "\"reroute_onto_copy\"",
     "Generations": "1",
@@ -2249,7 +2353,7 @@
     "TypeOK"
    ],
    "properties": [
-    "Live_AdmittedReachesCut",
+    "Live_DivergesCleanly",
     "Live_Terminates"
    ],
    "deadlock": true
@@ -2268,10 +2372,10 @@
   "expected": "VIOLATION:Wit_NeverResumes",
   "deadlock": true,
   "note": "Witness 1: pass-over reaches the cut and admits a new visit.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-never-resumes (rr2; expected VIOLATION:Wit_NeverResumes): Witness 1: pass-over reaches the cut and admits a new visit.",
+   "comment": "wit.rr-never-resumes (rr3; expected VIOLATION:Wit_NeverResumes): Witness 1: pass-over reaches the cut and admits a new visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2328,10 +2432,10 @@
   "expected": "VIOLATION:Wit_NoReusedCatchAll",
   "deadlock": true,
   "note": "Witness 2: a re-run copies and passes over a reused catch-all visit.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-reused-catchall (rr2; expected VIOLATION:Wit_NoReusedCatchAll): Witness 2: a re-run copies and passes over a reused catch-all visit.",
+   "comment": "wit.rr-no-reused-catchall (rr3; expected VIOLATION:Wit_NoReusedCatchAll): Witness 2: a re-run copies and passes over a reused catch-all visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -2388,10 +2492,10 @@
   "expected": "VIOLATION:Wit_NoFailAfterReusedCatchAll",
   "deadlock": true,
   "note": "Witness 3: an unhandled error after a reused catch-all fails the run.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-fail-after-reused-catchall (rr2; expected VIOLATION:Wit_NoFailAfterReusedCatchAll): Witness 3: an unhandled error after a reused catch-all fails the run.",
+   "comment": "wit.rr-no-fail-after-reused-catchall (rr3; expected VIOLATION:Wit_NoFailAfterReusedCatchAll): Witness 3: an unhandled error after a reused catch-all fails the run.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -2448,10 +2552,10 @@
   "expected": "VIOLATION:Wit_NoExhausted",
   "deadlock": true,
   "note": "Witness 4: a step reaches exhausted because reused visits counted toward MaxVisits.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-exhausted (rr2; expected VIOLATION:Wit_NoExhausted): Witness 4: a step reaches exhausted because reused visits counted toward MaxVisits.",
+   "comment": "wit.rr-no-exhausted (rr3; expected VIOLATION:Wit_NoExhausted): Witness 4: a step reaches exhausted because reused visits counted toward MaxVisits.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2508,10 +2612,10 @@
   "expected": "VIOLATION:Wit_NoRetryInPassOver",
   "deadlock": true,
   "note": "Witness 5: an admission activity is retried during pass-over.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-retry-in-passover (rr2; expected VIOLATION:Wit_NoRetryInPassOver): Witness 5: an admission activity is retried during pass-over.",
+   "comment": "wit.rr-no-retry-in-passover (rr3; expected VIOLATION:Wit_NoRetryInPassOver): Witness 5: an admission activity is retried during pass-over.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2568,10 +2672,10 @@
   "expected": "VIOLATION:Wit_NoContinueAsNewInPassOver",
   "deadlock": true,
   "note": "Witness 6: continue-as-new occurs during pass-over before the cut.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-can-in-passover (rr2; expected VIOLATION:Wit_NoContinueAsNewInPassOver): Witness 6: continue-as-new occurs during pass-over before the cut.",
+   "comment": "wit.rr-no-can-in-passover (rr3; expected VIOLATION:Wit_NoContinueAsNewInPassOver): Witness 6: continue-as-new occurs during pass-over before the cut.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2628,10 +2732,10 @@
   "expected": "VIOLATION:Wit_NoSecondGeneration",
   "deadlock": true,
   "note": "Witness 7: a generation-2 re-run (#1 -> #2 -> #3) completes with origin flattened to wf1.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-second-generation (rr2; expected VIOLATION:Wit_NoSecondGeneration): Witness 7: a generation-2 re-run (#1 -> #2 -> #3) completes with origin flattened to wf1.",
+   "comment": "wit.rr-no-second-generation (rr3; expected VIOLATION:Wit_NoSecondGeneration): Witness 7: a generation-2 re-run (#1 -> #2 -> #3) completes with origin flattened to wf1.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2688,10 +2792,10 @@
   "expected": "VIOLATION:Wit_NoDiverge",
   "deadlock": true,
   "note": "Witness 8: with FitCheck=FALSE, the cut guard is reached and fails the run rerun_diverged.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-diverge (rr2; expected VIOLATION:Wit_NoDiverge): Witness 8: with FitCheck=FALSE, the cut guard is reached and fails the run rerun_diverged.",
+   "comment": "wit.rr-no-diverge (rr3; expected VIOLATION:Wit_NoDiverge): Witness 8: with FitCheck=FALSE, the cut guard is reached and fails the run rerun_diverged.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2748,10 +2852,10 @@
   "expected": "VIOLATION:Wit_NoSourceGone",
   "deadlock": true,
   "note": "Witness 9: a deleter commits before copy and Start refuses RERUN_SOURCE_GONE.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-source-gone (rr2; expected VIOLATION:Wit_NoSourceGone): Witness 9: a deleter commits before copy and Start refuses RERUN_SOURCE_GONE.",
+   "comment": "wit.rr-no-source-gone (rr3; expected VIOLATION:Wit_NoSourceGone): Witness 9: a deleter commits before copy and Start refuses RERUN_SOURCE_GONE.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2808,10 +2912,10 @@
   "expected": "VIOLATION:Wit_NoDeleteAfterCopy",
   "deadlock": true,
   "note": "Witness 10: a deleter observes copy_share, waits, deletes source #2 after copy, and re-run #3 completes.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-delete-after-copy (rr2; expected VIOLATION:Wit_NoDeleteAfterCopy): Witness 10: a deleter observes copy_share, waits, deletes source #2 after copy, and re-run #3 completes.",
+   "comment": "wit.rr-no-delete-after-copy (rr3; expected VIOLATION:Wit_NoDeleteAfterCopy): Witness 10: a deleter observes copy_share, waits, deletes source #2 after copy, and re-run #3 completes.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2868,10 +2972,10 @@
   "expected": "VIOLATION:Wit_NoApprovalRefusal",
   "deadlock": true,
   "note": "Witness 11: non-owner Start is refused at an answered approval.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-approval-refusal (rr2; expected VIOLATION:Wit_NoApprovalRefusal): Witness 11: non-owner Start is refused at an answered approval.",
+   "comment": "wit.rr-no-approval-refusal (rr3; expected VIOLATION:Wit_NoApprovalRefusal): Witness 11: non-owner Start is refused at an answered approval.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -2928,10 +3032,10 @@
   "expected": "VIOLATION:Wit_NoCarriedTake",
   "deadlock": true,
   "note": "Witness 12: a new receive visit takes a carried inbox message.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-carried-take (rr2; expected VIOLATION:Wit_NoCarriedTake): Witness 12: a new receive visit takes a carried inbox message.",
+   "comment": "wit.rr-no-carried-take (rr3; expected VIOLATION:Wit_NoCarriedTake): Witness 12: a new receive visit takes a carried inbox message.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -2988,10 +3092,10 @@
   "expected": "VIOLATION:Wit_NoPinnedResume",
   "deadlock": true,
   "note": "Witness 13: claim crashes, a newer revision is saved, and resumed Start uses rerunPin.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-pinned-resume (rr2; expected VIOLATION:Wit_NoPinnedResume): Witness 13: claim crashes, a newer revision is saved, and resumed Start uses rerunPin.",
+   "comment": "wit.rr-no-pinned-resume (rr3; expected VIOLATION:Wit_NoPinnedResume): Witness 13: claim crashes, a newer revision is saved, and resumed Start uses rerunPin.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3047,14 +3151,14 @@
   "properties": [],
   "expected": "VIOLATION:Wit_NoDiverge",
   "deadlock": true,
-  "note": "Witness 14 (B1): copied-coordinate mismatch hits failRerunDiverged cleanly.",
-  "batch": "rr2",
+  "note": "Witness 14 (B1/m1): realistic catchall route mismatch hits failRerunDiverged cleanly.",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-copy-coord-diverge (rr2; expected VIOLATION:Wit_NoDiverge): Witness 14 (B1): copied-coordinate mismatch hits failRerunDiverged cleanly.",
+   "comment": "wit.rr-no-copy-coord-diverge (rr3; expected VIOLATION:Wit_NoDiverge): Witness 14 (B1/m1): realistic catchall route mismatch hits failRerunDiverged cleanly.",
    "spec": "Spec",
    "constants": {
-    "SourceKind": "\"loop\"",
+    "SourceKind": "\"catchall\"",
     "Mode": "\"run_again\"",
     "Target": "\"reroute_onto_copy\"",
     "Generations": "1",
@@ -3108,10 +3212,10 @@
   "expected": "VIOLATION:Wit_NoDiverge",
   "deadlock": true,
   "note": "Witness 15 (B1): same-IR input/carry hash mismatch triggers rerun_diverged.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-hash-diverge (rr2; expected VIOLATION:Wit_NoDiverge): Witness 15 (B1): same-IR input/carry hash mismatch triggers rerun_diverged.",
+   "comment": "wit.rr-no-hash-diverge (rr3; expected VIOLATION:Wit_NoDiverge): Witness 15 (B1): same-IR input/carry hash mismatch triggers rerun_diverged.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3168,10 +3272,10 @@
   "expected": "VIOLATION:Inv_ReusedNeverRuns",
   "deadlock": true,
   "note": "Fault 1: controller starts an effect for a completed reused visit.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-starts-decided (rr2; expected VIOLATION:Inv_ReusedNeverRuns): Fault 1: controller starts an effect for a completed reused visit.",
+   "comment": "rr-df-starts-decided (rr3; expected VIOLATION:Inv_ReusedNeverRuns): Fault 1: controller starts an effect for a completed reused visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3228,10 +3332,10 @@
   "expected": "VIOLATION:Inv_SourceUntouched",
   "deadlock": true,
   "note": "Fault 2: copy mutates source visit rows.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-copy-keeps-ids (rr2; expected VIOLATION:Inv_SourceUntouched): Fault 2: copy mutates source visit rows.",
+   "comment": "rr-df-copy-keeps-ids (rr3; expected VIOLATION:Inv_SourceUntouched): Fault 2: copy mutates source visit rows.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3288,10 +3392,10 @@
   "expected": "VIOLATION:Inv_FirstNewAtCut",
   "deadlock": true,
   "note": "Fault 3: reroute_taken with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-no-fit-no-guard (rr2; expected VIOLATION:Inv_FirstNewAtCut): Fault 3: reroute_taken with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
+   "comment": "rr-df-no-fit-no-guard (rr3; expected VIOLATION:Inv_FirstNewAtCut): Fault 3: reroute_taken with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3348,10 +3452,10 @@
   "expected": "VIOLATION:Inv_StepLimit",
   "deadlock": true,
   "note": "Fault 4: plan budget ignores rerun_unwalked lane visits and exceeds StepLimit.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-plan-ignores-unwalked (rr2; expected VIOLATION:Inv_StepLimit): Fault 4: plan budget ignores rerun_unwalked lane visits and exceeds StepLimit.",
+   "comment": "rr-df-plan-ignores-unwalked (rr3; expected VIOLATION:Inv_StepLimit): Fault 4: plan budget ignores rerun_unwalked lane visits and exceeds StepLimit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"parallel\"",
@@ -3408,10 +3512,10 @@
   "expected": "VIOLATION:Inv_OrdinalsContinue",
   "deadlock": true,
   "note": "Fault 5: new visit restarts at ordinal 1 instead of continuing past reused ordinals.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-ordinals-restart (rr2; expected VIOLATION:Inv_OrdinalsContinue): Fault 5: new visit restarts at ordinal 1 instead of continuing past reused ordinals.",
+   "comment": "rr-df-ordinals-restart (rr3; expected VIOLATION:Inv_OrdinalsContinue): Fault 5: new visit restarts at ordinal 1 instead of continuing past reused ordinals.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3468,10 +3572,10 @@
   "expected": "VIOLATION:Inv_CatchAllOnce",
   "deadlock": true,
   "note": "Fault 6: pass-over drops catchAllEntered on reused catch-all, allowing a second catch-all visit.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-drops-catch-all (rr2; expected VIOLATION:Inv_CatchAllOnce): Fault 6: pass-over drops catchAllEntered on reused catch-all, allowing a second catch-all visit.",
+   "comment": "rr-df-drops-catch-all (rr3; expected VIOLATION:Inv_CatchAllOnce): Fault 6: pass-over drops catchAllEntered on reused catch-all, allowing a second catch-all visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -3528,10 +3632,10 @@
   "expected": "VIOLATION:Inv_CopyAtomic",
   "deadlock": true,
   "note": "Fault 7: run row commits before reused visit copies exist.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-copy-not-atomic (rr2; expected VIOLATION:Inv_CopyAtomic): Fault 7: run row commits before reused visit copies exist.",
+   "comment": "rr-df-copy-not-atomic (rr3; expected VIOLATION:Inv_CopyAtomic): Fault 7: run row commits before reused visit copies exist.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3588,10 +3692,10 @@
   "expected": "VIOLATION:Inv_OriginRan",
   "deadlock": true,
   "note": "Fault 8: gen-2 copy points to intermediate copy #2 instead of flattening via COALESCE to #1.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-origin-is-copy (rr2; expected VIOLATION:Inv_OriginRan): Fault 8: gen-2 copy points to intermediate copy #2 instead of flattening via COALESCE to #1.",
+   "comment": "rr-df-origin-is-copy (rr3; expected VIOLATION:Inv_OriginRan): Fault 8: gen-2 copy points to intermediate copy #2 instead of flattening via COALESCE to #1.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3648,10 +3752,10 @@
   "expected": "VIOLATION:Inv_NoCopyFromDeleted",
   "deadlock": true,
   "note": "Fault 9: copy reads source without FOR SHARE and commits after a deleter soft-deleted #2.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-no-source-lock (rr2; expected VIOLATION:Inv_NoCopyFromDeleted): Fault 9: copy reads source without FOR SHARE and commits after a deleter soft-deleted #2.",
+   "comment": "rr-df-no-source-lock (rr3; expected VIOLATION:Inv_NoCopyFromDeleted): Fault 9: copy reads source without FOR SHARE and commits after a deleter soft-deleted #2.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3708,10 +3812,10 @@
   "expected": "VIOLATION:Inv_PinnedChoice",
   "deadlock": true,
   "note": "Fault 10: resumed Start after claim crash repicks latestRev instead of rerunPin.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-repick-on-resume (rr2; expected VIOLATION:Inv_PinnedChoice): Fault 10: resumed Start after claim crash repicks latestRev instead of rerunPin.",
+   "comment": "rr-df-repick-on-resume (rr3; expected VIOLATION:Inv_PinnedChoice): Fault 10: resumed Start after claim crash repicks latestRev instead of rerunPin.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3768,10 +3872,10 @@
   "expected": "VIOLATION:Inv_NoConsentReuse",
   "deadlock": true,
   "note": "Fault 11: agent Start bypasses owner consent check past a reused answered approval.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-agent-reuses-approval (rr2; expected VIOLATION:Inv_NoConsentReuse): Fault 11: agent Start bypasses owner consent check past a reused answered approval.",
+   "comment": "rr-df-agent-reuses-approval (rr3; expected VIOLATION:Inv_NoConsentReuse): Fault 11: agent Start bypasses owner consent check past a reused answered approval.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -3828,10 +3932,10 @@
   "expected": "VIOLATION:Inv_TotalFromFirstNew",
   "deadlock": true,
   "note": "Fault 12: copied receive row keeps source deadline_at instead of clearing it to NULL.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-copy-keeps-deadline (rr2; expected VIOLATION:Inv_TotalFromFirstNew): Fault 12: copied receive row keeps source deadline_at instead of clearing it to NULL.",
+   "comment": "rr-df-copy-keeps-deadline (rr3; expected VIOLATION:Inv_TotalFromFirstNew): Fault 12: copied receive row keeps source deadline_at instead of clearing it to NULL.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -3888,10 +3992,10 @@
   "expected": "VIOLATION:Inv_NoWorkOnDiverge",
   "deadlock": true,
   "note": "Fault 13: cut guard inserts a pending row before failing rerun_diverged.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-diverge-inserts (rr2; expected VIOLATION:Inv_NoWorkOnDiverge): Fault 13: cut guard inserts a pending row before failing rerun_diverged.",
+   "comment": "rr-df-diverge-inserts (rr3; expected VIOLATION:Inv_NoWorkOnDiverge): Fault 13: cut guard inserts a pending row before failing rerun_diverged.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3948,10 +4052,10 @@
   "expected": "VIOLATION:Inv_CarriedWereWaiting",
   "deadlock": true,
   "note": "Fault 14: inbox carry copies a message that arrived after the cut (m2).",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-carry-late-message (rr2; expected VIOLATION:Inv_CarriedWereWaiting): Fault 14: inbox carry copies a message that arrived after the cut (m2).",
+   "comment": "rr-df-carry-late-message (rr3; expected VIOLATION:Inv_CarriedWereWaiting): Fault 14: inbox carry copies a message that arrived after the cut (m2).",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -4008,10 +4112,10 @@
   "expected": "DEADLOCK",
   "deadlock": true,
   "note": "Fault 15: copy locks #2/#3 before owner row, causing TLC deadlock with OwnerEnded.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-lock-new-before-owner (rr2; expected DEADLOCK): Fault 15: copy locks #2/#3 before owner row, causing TLC deadlock with OwnerEnded.",
+   "comment": "rr-df-lock-new-before-owner (rr3; expected DEADLOCK): Fault 15: copy locks #2/#3 before owner row, causing TLC deadlock with OwnerEnded.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4067,14 +4171,14 @@
   "properties": [],
   "expected": "VIOLATION:Inv_PassOverOnChain",
   "deadlock": true,
-  "note": "Fault 16 (B1/S1): pass-over hit ignores copied row's predecessor/route mismatch.",
-  "batch": "rr2",
+  "note": "Fault 16 (B1/S1/m1): pass-over hit ignores copied row's route/predecessor mismatch.",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-copy-hit-ignores-pred (rr2; expected VIOLATION:Inv_PassOverOnChain): Fault 16 (B1/S1): pass-over hit ignores copied row's predecessor/route mismatch.",
+   "comment": "rr-df-copy-hit-ignores-pred (rr3; expected VIOLATION:Inv_PassOverOnChain): Fault 16 (B1/S1/m1): pass-over hit ignores copied row's route/predecessor mismatch.",
    "spec": "Spec",
    "constants": {
-    "SourceKind": "\"loop\"",
+    "SourceKind": "\"catchall\"",
     "Mode": "\"run_again\"",
     "Target": "\"reroute_onto_copy\"",
     "Generations": "1",
@@ -4128,10 +4232,10 @@
   "expected": "VIOLATION:Inv_FirstNewAtCut",
   "deadlock": true,
   "note": "Fault 17 (B1): cut guard ignores same-IR input/carry hash mismatch at same KV rev.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-ignores-input-hash (rr2; expected VIOLATION:Inv_FirstNewAtCut): Fault 17 (B1): cut guard ignores same-IR input/carry hash mismatch at same KV rev.",
+   "comment": "rr-df-ignores-input-hash (rr3; expected VIOLATION:Inv_FirstNewAtCut): Fault 17 (B1): cut guard ignores same-IR input/carry hash mismatch at same KV rev.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4188,10 +4292,10 @@
   "expected": "VIOLATION:Inv_FirstNewAtCut",
   "deadlock": true,
   "note": "Fault 18 (I6): continue mode with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
-  "batch": "rr2",
+  "batch": "rr3",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-continue-no-guard (rr2; expected VIOLATION:Inv_FirstNewAtCut): Fault 18 (I6): continue mode with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
+   "comment": "rr-df-continue-no-guard (rr3; expected VIOLATION:Inv_FirstNewAtCut): Fault 18 (I6): continue mode with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",

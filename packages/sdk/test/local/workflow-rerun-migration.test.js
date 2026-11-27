@@ -288,10 +288,9 @@ describe("migration 0104: workflow_rerun", () => {
             // Admit without dispatching so copied visits are seeded deterministically BEFORE the controller starts.
             const deferDispatchHost = {
                 ...h,
-                duroxideClient: {
-                    ...h.duroxideClient,
+                duroxideClient: Object.assign(Object.create(h.duroxideClient), {
                     startOrchestrationVersioned: async () => {},
-                },
+                }),
             };
             const pool = new pg.Pool(pgPoolConfig(getEnv().store));
             const schema = getEnv().cmsSchema;

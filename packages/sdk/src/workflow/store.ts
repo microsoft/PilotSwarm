@@ -131,12 +131,8 @@ export const WORKFLOW_KV_LIMITS = { maxKeys: 1_000, maxKeyLength: 128, maxValueB
 export const WORKFLOW_TEST_NEEDS_DRAFT_MESSAGE = "Only a draft can be tested, and this workflow is published. "
     + "To test a change, create a new workflow as a draft.";
 
-export class WorkflowStoreError extends Error {
-    constructor(readonly code: string, message: string, readonly details: JsonValue = null) {
-        super(message);
-        this.name = "WorkflowStoreError";
-    }
-}
+import { WorkflowStoreError, nodeExecutionIdFor } from "./store-primitives.js";
+export { WorkflowStoreError, nodeExecutionIdFor };
 
 export interface WorkflowRunReceipt {
     runId: string;
@@ -1862,10 +1858,7 @@ export function parseDefinitionReceipt(value: JsonValue): WorkflowDefinitionRece
     };
 }
 
-/** Deterministic node execution identity from its history-selected coordinates. */
-export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: string, ordinal: number): string {
-    return `nx-${sha256Hex(canonicalJson([runId, scopeId, nodeId, ordinal])).slice(0, 40)}`;
-}
+/** Deterministic node execution identity is defined in store-primitives.ts and re-exported above. */
 
 /**
  * A result's text as it is stored (SF-6 verification): a runtime error's has its secrets hidden before it is written,

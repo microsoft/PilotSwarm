@@ -8,7 +8,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import tlc_cases  # docs/formal/tlc_cases.py
 
-BATCH = "rr2"
+BATCH = "rr3"
 M = "WorkflowRerun"
 
 
@@ -102,6 +102,7 @@ ALL_SAFE_INVS = [
     "Inv_FirstNewAtCut",
     "Inv_PassOverOnChain",
     "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
     "Inv_OrdinalsContinue",
     "Inv_CatchAllOnce",
     "Inv_VisitLimit",
@@ -112,7 +113,8 @@ ALL_SAFE_INVS = [
 ]
 SAFE_PROPS = ["Prop_NoAdmissionAfterTerminal"]
 LIVE_PROPS = ["Live_ReachesCut", "Live_Terminates"]
-STRONG_LIVE_PROPS = ["Live_AdmittedReachesCut", "Live_Terminates"]
+STRONG_LIVE_PROPS = ["Live_ReachesCutOnly", "Live_Terminates"]
+DIVERGE_LIVE_PROPS = ["Live_DivergesCleanly", "Live_Terminates"]
 
 # (id, group, spec, constants, invariants, properties, expected, deadlock, note)
 CASES = [
@@ -259,12 +261,12 @@ CASES = [
         "rr.design-copy-coord-diverge",
         "design",
         "Spec",
-        c(source_kind="loop", mode="run_again", target="reroute_onto_copy", fit_check=False, guard=True),
+        c(source_kind="catchall", mode="run_again", target="reroute_onto_copy", fit_check=False, guard=True),
         ALL_SAFE_INVS,
         SAFE_PROPS,
         "PASS",
         True,
-        "S1 copied-coordinate divergence: faulty revision reroutes onto existing copied row from wrong predecessor; failRerunDiverged ends run cleanly.",
+        "S1 copied-coordinate divergence (reachable catchall route mismatch: explicit 'error' route hits copied H1 recorded with '@catchAll').",
     ),
     (
         "rr.design-same-ir-hash-diverge",
@@ -343,33 +345,44 @@ CASES = [
         "design",
         "LiveSpec",
         c(source_kind="loop", mode="run_again", target="same", allow_retry=True, allow_can=True),
-        ["TypeOK"],
+        ["TypeOK", "Inv_ValidNeverDiverges"],
         STRONG_LIVE_PROPS,
         "PASS",
         True,
-        "Strong liveness: valid same-IR re-run is never blocked by the cut guard or byte check and reaches resumedAtCut.",
+        "Strong liveness (run_again): valid same-IR re-run MUST reach resumedAtCut (never rerun_diverged).",
+    ),
+    (
+        "rr.live-continue-reaches-cut",
+        "design",
+        "LiveSpec",
+        c(source_kind="loop", mode="continue", target="same", allow_retry=True, allow_can=True),
+        ["TypeOK", "Inv_ValidNeverDiverges"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Strong liveness (continue): valid continue re-run MUST reach resumedAtCut (catches overly-restrictive continue guard).",
     ),
     (
         "rr.live-fix-chosen",
         "design",
         "LiveSpec",
         c(source_kind="loop", mode="run_again", target="fix_chosen", input_hash_mismatch=True),
-        ["TypeOK"],
+        ["TypeOK", "Inv_ValidNeverDiverges"],
         STRONG_LIVE_PROPS,
         "PASS",
         True,
-        "Strong liveness: Target=fix_chosen with changed input hash reaches resumedAtCut and terminates.",
+        "Strong liveness: Target=fix_chosen with changed input hash MUST reach resumedAtCut (verifies fix_chosen exemption).",
     ),
     (
         "rr.live-start-vars",
         "design",
         "LiveSpec",
         c(source_kind="loop", mode="run_again", target="same", start_vars=True, input_hash_mismatch=True),
-        ["TypeOK"],
+        ["TypeOK", "Inv_ValidNeverDiverges"],
         STRONG_LIVE_PROPS,
         "PASS",
         True,
-        "Strong liveness: same-IR with StartVars (kvRev R+1) reaches resumedAtCut and terminates.",
+        "Strong liveness: same-IR with StartVars (kvRev R+1) MUST reach resumedAtCut (verifies StartVars exemption).",
     ),
     (
         "rr.live-catchall",
@@ -430,12 +443,12 @@ CASES = [
         "rr.live-diverge",
         "design",
         "LiveSpec",
-        c(source_kind="loop", target="reroute_onto_copy", fit_check=False, guard=True),
+        c(source_kind="catchall", target="reroute_onto_copy", fit_check=False, guard=True),
         ["TypeOK"],
-        STRONG_LIVE_PROPS,
+        DIVERGE_LIVE_PROPS,
         "PASS",
         True,
-        "Strong liveness (copied-coordinate divergence): reaches rerun_diverged and terminates cleanly.",
+        "Strong liveness (S1 catchall route-mismatch divergence): MUST reach rerun_diverged and terminate cleanly.",
     ),
     # ---- Non-Vacuity Witnesses (13 required + 2 new for B1, expected VIOLATED exit 12) ----
     (
@@ -585,12 +598,12 @@ CASES = [
         "wit.rr-no-copy-coord-diverge",
         "witness",
         "Spec",
-        c(source_kind="loop", target="reroute_onto_copy", fit_check=False, guard=True),
+        c(source_kind="catchall", target="reroute_onto_copy", fit_check=False, guard=True),
         ["Wit_NoDiverge"],
         [],
         "VIOLATION:Wit_NoDiverge",
         True,
-        "Witness 14 (B1): copied-coordinate mismatch hits failRerunDiverged cleanly.",
+        "Witness 14 (B1/m1): realistic catchall route mismatch hits failRerunDiverged cleanly.",
     ),
     (
         "wit.rr-no-hash-diverge",
@@ -773,12 +786,12 @@ CASES = [
         "rr-df-copy-hit-ignores-pred",
         "fault",
         "Spec",
-        c(source_kind="loop", target="reroute_onto_copy", fit_check=False, guard=True, check_copy_coord=False),
+        c(source_kind="catchall", target="reroute_onto_copy", fit_check=False, guard=True, check_copy_coord=False),
         ["Inv_PassOverOnChain"],
         [],
         "VIOLATION:Inv_PassOverOnChain",
         True,
-        "Fault 16 (B1/S1): pass-over hit ignores copied row's predecessor/route mismatch.",
+        "Fault 16 (B1/S1/m1): pass-over hit ignores copied row's route/predecessor mismatch.",
     ),
     (
         "rr-df-ignores-input-hash",

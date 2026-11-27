@@ -16,6 +16,7 @@ rr.design-start-vars-skips-hash	rr.design-start-vars-skips-hash.cfg	WorkflowReru
 rr.live-run-again	rr.live-run-again.cfg	WorkflowRerun
 rr.live-continue	rr.live-continue.cfg	WorkflowRerun
 rr.live-clean-reaches-cut	rr.live-clean-reaches-cut.cfg	WorkflowRerun
+rr.live-continue-reaches-cut	rr.live-continue-reaches-cut.cfg	WorkflowRerun
 rr.live-fix-chosen	rr.live-fix-chosen.cfg	WorkflowRerun
 rr.live-start-vars	rr.live-start-vars.cfg	WorkflowRerun
 rr.live-catchall	rr.live-catchall.cfg	WorkflowRerun
