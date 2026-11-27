@@ -30,6 +30,38 @@ with `child_workflows` `read` `full_output: true`. Saving now warns
 `WORKFLOW_ENDED_WHOLE_OUTPUT` where a child's whole output reaches one of those
 limits as it arrived.
 
+### Workflows over MCP
+
+An external LLM connected only through `pilotswarm-mcp` can now discover and
+start packaged Workflows, read the deployment's packaged Workflow authoring
+skills on demand, distinguish Workflow sessions in `list_sessions`, and
+validate, author, save, start, copy, read, and delete session Workflow
+Definitions in both direct and Web API modes — with zero SQL migrations and no
+session orchestration or Workflow controller version changes:
+
+- **SDK & Web API:** Exported `compileWorkflow` and pure no-write
+  `validateWorkflowYaml` from `pilotswarm-sdk`; moved `createSessionForWorkflow`
+  (preserving S2SF-F3 delete-on-attach-failure and separate `principal` vs
+  `owner`) onto `PilotSwarmManagementClient` and `WebPilotSwarmManagementClient`;
+  added `readWorkflowSkills` (`GET /api/v1/workflow-definitions/skills`),
+  `validateWorkflowDefinition` (`POST /api/v1/workflow-definitions/validate`),
+  and `readSessionWorkflowCard` (`GET /api/v1/sessions/:sessionId/workflow-definitions/card`,
+  enforced `session:manage`); added name-based lookup with receipt-first
+  `operation_id` replay safety across `start`, `delete` (sharing
+  `resolveDeleteTarget`), `copy`, and `updateSessionWorkflowPackage`; enforced
+  SF-2 (`403 WORKFLOW_DEFINITION_TOOLS_REFUSED`) on `originatingSessionId`
+  inside a Workflow (and on `create_session_for_workflow` plus MCP-only A1
+  tool filtering).
+- **MCP Server:** Wired direct-mode `artifactStore` in `context.ts` for package
+  Workflows; projected `session_kind` on `list_sessions`; added
+  `list_creatable_workflows`, `create_session_for_workflow`,
+  `read_workflow_skill` (with fixed MCP adaptation `note`), and
+  `workflow_definition` (`validate`, `list`, `read`, `card`, `save`, `start`
+  with conditional `WORKFLOW_PERSON_START_NO_TOOL_BINDING` warning and
+  `update: true`, `delete`, `copy`); expanded `workflow_tools` capabilities and
+  added `501 WORKFLOW_API_UNAVAILABLE` fallback when `pilotswarm-mcp` is
+  upgraded ahead of an older portal.
+
 ### Workflows: `session: continue` in named parallel branches
 
 Agent states inside named parallel `branches:` may now declare `session: continue`,
