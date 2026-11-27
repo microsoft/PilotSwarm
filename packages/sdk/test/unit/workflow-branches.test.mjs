@@ -127,8 +127,6 @@ test("named branches are refused in words: with forEach or body, empty, misnamed
         ["an unknown branch field", (_, v) => { v.branches.quick.forEach = [1]; }, "WORKFLOW_FIELD_UNKNOWN", "states.views.branches.quick.forEach", /./],
         ["branch in a branch's input", (_, v) => { v.branches.careful.input = "${branch.name}"; }, "WORKFLOW_BINDING_INVALID",
             "states.views.branches.careful.input", /branch is bound only/],
-        ["a continued agent session", (_, v) => { v.branches.quick.states.quick_summary.session = "continue"; }, "WORKFLOW_FIELD_INVALID",
-            "states.views.branches.quick.states.quick_summary.session", /inside branch 'quick' of parallel state 'views'/],
         ["a state id used twice", (_, v) => { v.branches.careful.states.quick_end = v.branches.careful.states.careful_end;
             v.branches.careful.states.careful_summary.transition.next.done = "quick_end"; delete v.branches.careful.states.careful_end; },
         "WORKFLOW_STATE_ID", "states.views.branches.careful.states.quick_end", /used twice/],

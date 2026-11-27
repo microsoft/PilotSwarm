@@ -147,10 +147,12 @@ test("the compiler: in a For each body or a named branch an agent state that set
     for (const id of ["left_talk", "right_talk"]) assert.equal(Object.hasOwn(branches.ir.nodes[id], "session"), false, id);
     // Outside the parallel state the same Workflow's agent state continues.
     assert.equal(branches.ir.nodes.sum_up.session, "continue");
-    // An explicit continue in a branch is still refused, in today's words; an explicit new is accepted.
-    const refused = errors(compileWorkflow(BRANCHES("continue"))).filter(item => item.path === "states.fan.branches.left.states.left_talk.session");
-    assert.equal(refused.length, 1);
-    assert.equal(refused[0].message, "state 'left_talk' cannot continue its agent session: it runs inside branch 'left' of parallel state 'fan'. Use session: new.");
+    // I8: explicit continue inside a named branch is accepted (one continued session per run and state);
+    // sibling states that omit session stay new, and explicit new is accepted.
+    const branchContinue = compileWorkflow(BRANCHES("continue"));
+    assert.deepEqual(errors(branchContinue), [], JSON.stringify(branchContinue.diagnostics));
+    assert.equal(branchContinue.ir.nodes.left_talk.session, "continue");
+    assert.equal(Object.hasOwn(branchContinue.ir.nodes.right_talk, "session"), false);
     assert.deepEqual(errors(compileWorkflow(BRANCHES("new"))), []);
 });
 
