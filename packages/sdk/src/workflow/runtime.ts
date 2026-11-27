@@ -2362,6 +2362,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                         const pin = !("agent" in node.invoke) ? null
                             : current.mode === "test" && current.testAgentMode === "real" ? agentPinOf(current.testAgentPins, nodeId)
                             : definition?.publishedRevision === current.revision ? agentPinOf(definition.publishedAgentPins, nodeId) : null;
+                        // I8: only root-scope states and named parallel branches may run session: continue (forEach items run side by side).
+                        if (node.session === "continue" && scopeId !== ROOT_SCOPE && !branch?.name) {
+                            throw new WorkflowStoreError(
+                                "WORKFLOW_STORE_CORRUPT",
+                                `State '${nodeId}' has session: continue in non-named branch scope '${scopeId}'.`,
+                            );
+                        }
                         agent = {
                             // session: continue keeps one session per run and state across the state's visits (owner decision
                             // agent-node-continue-20261106); otherwise each visit has its own child.
