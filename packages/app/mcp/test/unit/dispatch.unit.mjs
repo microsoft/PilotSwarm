@@ -531,6 +531,56 @@ async function main() {
         await client.close();
     }
 
+    // ── 10. update_workflow typed discriminated union schema ────────────
+    {
+        const calls = [];
+        const ctx = makeCtx(calls, { workflowCommands: true });
+        ctx.mgmt.updateWorkflow = async (...args) => { calls.push(["updateWorkflow", ...args]); return { ok: true, status: "running" }; };
+        const client = await connect(ctx);
+        const { tools } = await client.listTools();
+        const updTool = tools.find((t) => t.name === "update_workflow");
+        const variants = updTool?.inputSchema?.properties?.command?.oneOf;
+        const ops = Array.isArray(variants) ? variants.map((v) => v?.properties?.operation?.const) : [];
+        record("update_workflow command schema is typed oneOf per operation",
+            JSON.stringify(ops) === JSON.stringify(["pause", "resume", "cancel", "stop", "set_vars", "approval_respond"]),
+            JSON.stringify(ops));
+
+        const svOk = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "set_vars", operation_id: "sv-1", expected_kv_revision: 2, set: { flag: "go" } } },
+        });
+        record("update_workflow accepts typed set_vars",
+            !svOk.isError && calls.some(([n, sid, cmd]) => n === "updateWorkflow" && sid === UUID && cmd.operation === "set_vars" && cmd.expected_kv_revision === 2));
+
+        const stopOk = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "stop", operation_id: "st-1", grace_seconds: 30 } },
+        });
+        record("update_workflow accepts typed stop with grace_seconds",
+            !stopOk.isError && calls.some(([n, sid, cmd]) => n === "updateWorkflow" && sid === UUID && cmd.operation === "stop" && cmd.grace_seconds === 30));
+
+        const appDenied = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "approval_respond", approval_id: "a1", decision: "approve" } },
+        });
+        record("update_workflow keeps approval_respond 403 refusal",
+            appDenied.isError === true && parse(appDenied)?.code === "FORBIDDEN" && parse(appDenied)?.status === 403);
+
+        const recRejected = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "recover", operation_id: "r-1" } },
+        });
+        record("update_workflow rejects recover at schema level", recRejected.isError === true);
+
+        const svMissingRev = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "set_vars", operation_id: "sv-bad", set: { a: 1 } } },
+        });
+        record("update_workflow rejects set_vars without expected_kv_revision", svMissingRev.isError === true);
+
+        await client.close();
+    }
+
     const failed = results.filter((r) => !r.ok);
     console.log(`\n${results.length - failed.length}/${results.length} passed`);
     process.exit(failed.length ? 1 : 0);

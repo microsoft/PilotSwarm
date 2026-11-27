@@ -355,9 +355,10 @@ console.log("✅ every server registers update_workflow unless a test passes nul
     delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
     try {
         for (const off of [descriptions({ workflowCommands: true, mgmt: {} }), descriptions({ workflowCommands: true, workflowTestMode: false, mgmt: {} })]) {
-            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,"]) assert.ok(!off.includes(word), word);
-            // Stop is named without a condition.
-            assert.ok(off.includes("operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel and stop),"), off);
+            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,", "replace_definition", "publish_and_start", "publish"]) assert.ok(!off.includes(word), word);
+            // Stop is named without a condition; legacy definition operations are removed; recover refusal is stated.
+            assert.ok(off.includes("operation (set_vars, pause, resume, cancel and stop),"), off);
+            assert.ok(/persons are refused recover/i.test(off), off);
             assert.ok(!/controller 1\.9\.0|when the workers run/.test(off), off);
             assert.ok(off.includes("grace_seconds"));
         }

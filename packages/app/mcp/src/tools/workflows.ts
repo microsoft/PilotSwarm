@@ -234,27 +234,57 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
 
     // Off, update_workflow names stop and no test operation; with test mode on, the test operations too.
     const operations = testMode
-        ? "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel, stop, test, test_respond "
-            + "and test_advance), operation_id (repeat it to retry the same command) and the operation's arguments (expected_revision, "
-            + "definition_hash, yaml, inputs, vars, notify_on_completion, set, delete, expected_kv_revision, run_id, reason, grace_seconds, "
+        ? "operation (set_vars, pause, resume, cancel, stop, test, test_respond and test_advance), operation_id "
+            + "(repeat it to retry the same command) and the operation's arguments (set, delete, expected_kv_revision, run_id, reason, grace_seconds, "
             + "agent_mode, fixtures, scenario, interception_id, response, seconds). "
-        : "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel and stop), operation_id "
-            + "(repeat it to retry the same command) and the operation's arguments (expected_revision, definition_hash, yaml, inputs, "
-            + "vars, notify_on_completion, set, delete, expected_kv_revision, run_id, reason, grace_seconds). ";
+        : "operation (set_vars, pause, resume, cancel and stop), operation_id "
+            + "(repeat it to retry the same command) and the operation's arguments (set, delete, expected_kv_revision, run_id, reason, grace_seconds). ";
+    const cmdOpId = z.string().min(1).max(256).describe("New id per change; reuse unchanged only to retry");
+    const cmdRunId = z.string().optional().describe("Target run id (default the live run)");
+    const cmdReason = z.string().optional().describe("Optional reason");
+    const baseCommandBranches = [
+        z.object({ operation: z.literal("pause"), operation_id: cmdOpId, run_id: cmdRunId, reason: cmdReason }).passthrough(),
+        z.object({ operation: z.literal("resume"), operation_id: cmdOpId, run_id: cmdRunId, reason: cmdReason }).passthrough(),
+        z.object({ operation: z.literal("cancel"), operation_id: cmdOpId, run_id: cmdRunId, reason: cmdReason }).passthrough(),
+        z.object({
+            operation: z.literal("stop"),
+            operation_id: cmdOpId,
+            run_id: cmdRunId,
+            reason: cmdReason,
+            grace_seconds: z.number().int().min(0).max(3600).optional().describe("Graceful stop window in seconds, 0 to 3600 (default 60)"),
+        }).passthrough(),
+        z.object({
+            operation: z.literal("set_vars"),
+            operation_id: cmdOpId,
+            run_id: cmdRunId,
+            set: z.record(z.string(), z.unknown()).optional().describe("Variables to set"),
+            delete: z.array(z.string()).optional().describe("Variable names to delete"),
+            expected_kv_revision: z.number().int().positive().describe("Current kvRevision from read_workflow"),
+        }).passthrough(),
+        z.object({ operation: z.literal("approval_respond") }).passthrough(),
+    ] as const;
+    const commandSchema = testMode
+        ? z.discriminatedUnion("operation", [
+            ...baseCommandBranches,
+            z.object({ operation: z.literal("test"), operation_id: cmdOpId }).passthrough(),
+            z.object({ operation: z.literal("test_respond"), operation_id: cmdOpId }).passthrough(),
+            z.object({ operation: z.literal("test_advance"), operation_id: cmdOpId }).passthrough(),
+        ])
+        : z.discriminatedUnion("operation", baseCommandBranches);
     server.registerTool(
         "update_workflow",
         {
             title: "Update Workflow",
             description:
-                "Send one command to a Workflow, as a person. command is the update_workflow agent tool's command: "
+                "Send one command to a running Workflow, as a person: "
                 + operations
-                + "A live start (publish_and_start, start) tells the workflow's parent agent the result when the run ends unless "
-                + "notify_on_completion is false. Answers the command's receipt. "
+                + "Persons are refused recover (the parent agent recovers runs) and approval_respond (answer approvals in the portal). "
+                + "Answers the command's receipt. "
                 + "A workflow started under another workflow's agent step takes only pause, stop and cancel; read a workflow with read_workflow "
                 + "first.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to command"),
-                command: z.record(z.string(), z.unknown()).describe("The command: { operation, operation_id, ...its arguments }"),
+                command: commandSchema.describe("The command: { operation, operation_id, ...its arguments }"),
                 originating_session_id: z.string().optional()
                     .describe("The session this command comes from, when an agent's call is passed on; a session inside a Workflow cannot change definitions"),
             },
