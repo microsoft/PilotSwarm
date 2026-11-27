@@ -91,7 +91,7 @@ export function operationWords(operations: readonly string[]): string {
  * (runUpdateWorkflowCommand): a person's commands use them.
  */
 function updateWorkflowDescription(options: { stop: boolean; test: boolean }): string {
-    return "Control one of your Workflows: workflow_id, operation, and a new operation_id for each change (a retry reuses it). "
+    return "Control one of your Workflows or one nested below them: workflow_id, operation, and a new operation_id for each change (a retry reuses it). "
         + "pause, resume, cancel; "
         + (options.stop ? "stop (grace_seconds 0 to 3600, default 60: nothing new starts, started work may finish, then the run ends stopped); " : "")
         + "set_vars (set, delete, and expected_kv_revision from read_workflow: one atomic change to the run's variables); recover (when "
@@ -127,7 +127,7 @@ const READ_WORKFLOW_RECOVER_WORDS = " A run that shows needsRecovery needs updat
 
 export const READ_WORKFLOW_TOOL_SPEC = {
     description:
-        "Read one of your Workflows; reading changes nothing. Returns JSON: its definition, graph and runs, and one run (run_id, default the "
+        "Read one of your Workflows or one nested below them (an agent step reads its own); reading changes nothing. Returns JSON: its definition, graph and runs, and one run (run_id, default the "
         + "live run) with its step executions, variables (kv, kvRevision), the inputs it received (inbox) and the messages it sent (outbox). "
         + "Its lastControl says who last paused, resumed, stopped or cancelled it or set its variables, and when. "
         + `Use it, not list_sessions, for a Workflow's status.${READ_WORKFLOW_RECOVER_WORDS}`,
