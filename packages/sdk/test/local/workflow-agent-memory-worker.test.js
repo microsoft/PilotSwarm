@@ -536,21 +536,33 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
             // Another transaction holds the visit's row lock, as the decision's own does until its COMMIT lands. The real
             // decision queues behind it (PostgreSQL shows it waiting). The call fails; the lock is released only once the
             // worker's read-back is seen waiting behind it too (or after 10 seconds, for a read that does not wait). The
-            // holder and the witness use the test's own connections, not the worker's small pool.
+            // holder and the witness use the test's own connections, not the worker's small pool. The holder is released on
+            // every path (COMMIT once the read-back waited, ROLLBACK on any failure before), so a failed witness never leaves
+            // the decision blocked.
+            witness.inFlight = true;
             const holder = await witness.side.connect();
-            await holder.query("BEGIN");
-            await holder.query(`SELECT 1 FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [input.nodeExecutionId]);
-            witness.deciding = original.call(this, input);
-            witness.deciding.catch(() => {});
-            const waiting = lock => lockWaiter(witness.side, this.t.nodes, lock);
-            if (!await waitUntil(() => waiting("FOR UPDATE"), 10_000)) {
-                await holder.query("ROLLBACK").finally(() => holder.release());
-                throw new Error("the decision was not seen waiting behind the held row lock");
+            let done = false;
+            const release = async sql => {
+                if (done) return;
+                done = true;
+                try { await holder.query(sql); } catch {} finally { holder.release(); }
+            };
+            try {
+                await holder.query("BEGIN");
+                await holder.query(`SELECT 1 FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [input.nodeExecutionId]);
+                witness.deciding = original.call(this, input);
+                witness.deciding.catch(() => {});
+                const waiting = lock => lockWaiter(witness.side, this.t.nodes, lock);
+                witness.writerWaited = await waitUntil(() => waiting("FOR UPDATE"), 10_000);
+                if (!witness.writerWaited) throw new Error("the decision was not seen waiting behind the held row lock");
+                witness.released = (async () => {
+                    try { witness.readerWaited = await waitUntil(() => waiting("FOR SHARE"), 10_000); } finally { await release("COMMIT"); }
+                })();
+                witness.released.catch(() => {});
+            } catch (error) {
+                await release("ROLLBACK");
+                throw error;
             }
-            witness.released = (async () => {
-                witness.readerWaited = await waitUntil(() => waiting("FOR SHARE"), 10_000);
-                try { await holder.query("COMMIT"); } finally { holder.release(); }
-            })();
             throw new Error("Connection terminated unexpectedly");
         },
     };
@@ -594,8 +606,12 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                     expect(fs.existsSync(marker), "a tool ran after the committed result").toBe(false);
                     expect(state.denied).toBeGreaterThan(0);
                     expect(state.steps).toBeLessThan(40);
-                    if (witness.released) {
-                        // The read-back waited behind the held lock, and the real decision committed after it.
+                    if (writeFault === "its COMMIT still in flight") {
+                        // The decision waited behind the held lock, the read-back waited behind it too, and the real decision
+                        // committed after it.
+                        expect(witness.inFlight).toBe(true);
+                        expect(witness.writerWaited, "the decision was not seen waiting behind the held row lock").toBe(true);
+                        expect(witness.released, "the held row lock was never set to be released").toBeTruthy();
                         await witness.released;
                         expect(witness.readerWaited, "the worker's read-back was not seen waiting for the decision").toBe(true);
                         expect(await witness.deciding).toMatchObject({ kind: "accepted" });
@@ -607,6 +623,7 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
         } finally {
             WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
             WorkflowStore.prototype.completeAgentNode = original;
+            await witness.released?.catch(() => {});
             await witness.side.end();
         }
     });
