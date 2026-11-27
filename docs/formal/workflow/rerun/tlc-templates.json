@@ -1,0 +1,38 @@
+{
+  "WorkflowRerun": {
+    "indent": 4,
+    "constants": [
+      "SourceKind",
+      "Mode",
+      "Target",
+      "Generations",
+      "Actor",
+      "MaxVisits",
+      "StepLimit",
+      "AllowDeleters",
+      "AllowOwnerEnd",
+      "AllowClaimCrash",
+      "AllowCtrlCmds",
+      "AllowRetry",
+      "AllowCan",
+      "FitCheck",
+      "Guard",
+      "PlanBudget",
+      "FlatOrigin",
+      "AtomicCopy",
+      "ApprovalGate",
+      "StartsDecided",
+      "CopyKeepsIds",
+      "OrdinalsRestart",
+      "DropsCatchAll",
+      "NoSourceLock",
+      "RepickOnResume",
+      "CopyKeepsDeadline",
+      "DivergeInserts",
+      "CarryLateMessage",
+      "LockNewBeforeOwner"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  }
+}

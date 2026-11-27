@@ -52,6 +52,7 @@ Sub-folders (each has its own README, runner and case list):
 | `paired/` | The messaging request (intent and code models), `paired/recipient/` (durable intake) and `paired/request/` (variant B) | `store.ts`, `authority.ts` at `8021c75e`, `57fbb0d6`; the intake at `66739e07` and later |
 | `handoff/` | The move of a running Workflow to the latest controller at continue-as-new (FB-064; batch ch3: controller 1.2.0 and the frozen parsers that refuse a Decision plan) | `controller*/`, `controller-features.ts`, `controller-registry.ts` at `93710d97`; ch3 at `911c5558` |
 | `decision/` | One Decision state on controller 1.2.0: its effect or test interception, provider deliveries, ledger claim and settlement, the compare-and-swap | `controller/index.ts`, `effect_1_1_0/`, `runtime.ts` (`runDecision`), `store.ts` at `911c5558` |
+| `rerun/` | Re-run a Workflow from a chosen visit (`I7` v1): two-step claim/copy against `SweeperDirect`/`DeleteWorkflow`/`OwnerEnded`, unchanged 1.3.0 pass-over, cut guard, plan budget, approval gate, carried inbox, receive total anchor, 2-generation origin flattening | design model ahead of `rerun.ts`, `store.ts`, `runtime.ts`, `session-definitions.ts` |
 
 | Module | Checks | Section |
 |---|---|---|
