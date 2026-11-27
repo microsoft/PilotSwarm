@@ -92,6 +92,12 @@ export function workflowCompletionFailure(error: unknown): string {
         ...(error instanceof WorkflowStoreError && failure.details !== undefined ? { details: failure.details } : {}) } });
 }
 
+/**
+ * Issue I1: how long a Workflow agent step's turn may go on writing its reply after its result is recorded before it is
+ * stopped (session-proxy's runTurn). Not turned off by `turnTimeoutMs: 0`; tests shorten `ms`.
+ */
+export const WORKFLOW_AGENT_REPLY_SETTLE = { ms: 5 * 60_000 };
+
 export async function completeWorkflowNodeFromTool(args: Record<string, unknown>, context: {
     callerSessionId: string;
     store: Pick<WorkflowStore, "completeAgentNode">;

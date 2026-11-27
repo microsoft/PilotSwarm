@@ -85,7 +85,7 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { childWorkflowsFromTool, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/tools.js";
 import { WORKFLOW_UPDATE_DATA_LINE, isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/request-service.js";
-import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/agent-node-service.js";
+import { completeWorkflowNodeFromTool, WORKFLOW_AGENT_REPLY_SETTLE, workflowCompletionFailure } from "./workflow/agent-node-service.js";
 import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef, workflowBaseInstructionsText } from "./workflow/base-instructions.js";
 import { publishedScheduleActive } from "./workflow/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/agent-resolver.js";
@@ -2130,6 +2130,25 @@ export function registerActivities(
             return out;
         };
 
+        // Issue I1: a Workflow agent step's turn is not stopped when its result is recorded (complete_workflow_node); it
+        // finishes its reply, so its snapshot is committed. Its tools refuse from then on. A reply still running
+        // WORKFLOW_AGENT_REPLY_SETTLE.ms later (a model that keeps going; turnTimeoutMs may be 0) is stopped as a Stop stops a
+        // turn, so the next visit's prompt never waits behind it for long; that reply is not committed.
+        let visitDecidedThisTurn = false;
+        let replySettleTimer: ReturnType<typeof setTimeout> | null = null;
+        const noteVisitDecided = (): void => {
+            visitDecidedThisTurn = true;
+            if (replySettleTimer) return;
+            const reason = "The workflow step's result is recorded, and its turn did not finish its reply in time.";
+            replySettleTimer = setTimeout(() => {
+                sessionManager.abortWarmSessionTurn(input.sessionId, {
+                    reason, cancelTurnTasks: true, ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
+                }).then((outcome) => traceWarn(`[runTurn] session=${input.sessionId}: ${reason} (${outcome.outcome})`))
+                    .catch((err: any) => traceWarn(`[runTurn] session=${input.sessionId}: the reply's stop failed: ${err?.message ?? err}`));
+            }, WORKFLOW_AGENT_REPLY_SETTLE.ms);
+            (replySettleTimer as any).unref?.();
+        };
+
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
@@ -3382,7 +3401,7 @@ export function registerActivities(
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
                     await Promise.all(pendingWorkflowToolCalls);
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
-                        onDecided: () => session.decideWorkflowVisit(),
+                        onDecided: () => { session.decideWorkflowVisit(); noteVisitDecided(); },
                         // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
                         ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
@@ -5195,6 +5214,24 @@ export function registerActivities(
             if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });
             let result = await runTurnWithPrompt(session, effectivePrompt);
 
+            // Issue I1 (review R1-3): a turn whose Workflow visit is decided (its result was recorded in it, or its visit closed
+            // meanwhile) is not replayed after a lost live session or a corrupted transcript: the replay would run the visit's
+            // task again with its tools open. The turn ends as stopped instead, as a Stop would end it: nothing of it is
+            // committed (the next turn starts from the last committed snapshot), and it is not retried.
+            if (result.type === "error" && (result as any).transportLoss !== true
+                && (isLiveSessionLostErrorMessage((result as any).message) || isToolCallTranscriptCorruptionErrorMessage((result as any).message))) {
+                const nx = workflowTurnVisit?.nodeExecutionId ?? null;
+                const decided = visitDecidedThisTurn || (workflowFenceStore !== null && nx !== null
+                    && await workflowFenceStore.readNodeExecution(nx).then((node) => node !== null && node.state !== "pending", () => false));
+                if (decided) {
+                    traceWarn(`[runTurn] session=${input.sessionId}: the turn's workflow visit is decided; it is not run again after: ${(result as any).message}`);
+                    await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true }).catch((err: any) =>
+                        traceWarn(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`));
+                    result = { type: "stopped", reason: "The workflow step's result is recorded; the rest of its turn was lost with its "
+                        + "Copilot session, so the turn was not run again." } as TurnResult;
+                }
+            }
+
             if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
                 activityCtx.traceInfo(
                     `[runTurn] live Copilot session lost for ${input.sessionId}; invalidating warm session and attempting recovery`,
@@ -5728,6 +5765,7 @@ export function registerActivities(
             turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
             throw err;
         } finally {
+            if (replySettleTimer) clearTimeout(replySettleTimer);
             if (tc?.live) {
                 tc.live.retire();
                 sessionManager.getTurnControlHub?.()?.unregister(tc.live);

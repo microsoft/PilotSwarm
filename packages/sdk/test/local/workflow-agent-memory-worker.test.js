@@ -10,6 +10,10 @@
  * Before this change the visit's end stopped the turn: a stopped turn commits nothing, so the next visit started from the
  * snapshot before the earlier visit (and on another worker remembered nothing of it), and the CLI's built-in tools still
  * ran after the report.
+ *
+ * The turn's reply is bounded (review R1-1..R1-3): the run's end stops it before the session's end; a reply still running
+ * WORKFLOW_AGENT_REPLY_SETTLE.ms after the report is stopped, also with turnTimeoutMs 0; and a reply lost with its Copilot
+ * session is not replayed with the step's tools open.
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -20,8 +24,11 @@ import { startScriptedModel } from "../helpers/scripted-model.mjs";
 import { FIXTURE_QUALIFIED_MODEL, registerScriptedProvider } from "../helpers/scripted-workers.js";
 import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflow } from "../../src/workflow/service.ts";
+import { controlWorkflowRun, createWorkflow, respondWorkflowApproval } from "../../src/workflow/service.ts";
 import { workflowAgentSessionId } from "../../src/workflow/runtime.ts";
+import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { parseApprovalCommand } from "../../src/workflow/approval.ts";
+import { WORKFLOW_AGENT_REPLY_SETTLE } from "../../src/workflow/agent-node-service.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 
 const TIMEOUT = 300_000;
@@ -33,16 +40,23 @@ const MEMO = "MEMO-1: the secret word is zebra-42.";
 const PROBE = "memory_probe";
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-/** One agent step: `continue` visits it twice (again, then finish) with a wait of `waitSeconds` between; `new` once. */
-function stepYaml(session, waitSeconds = 1) {
+/**
+ * One agent step: `continue` visits it twice (again, then finish) with a wait of 1 second between, or with `gate` an approval
+ * the test answers; `new` once.
+ */
+function stepYaml(session, { gate = false } = {}) {
+    const between = gate
+        ? { gate: { type: "approval", question: "Run the next cycle?", timeoutSeconds: 3_600,
+            transition: { next: { approved: "talk", rejected: "failed", timed_out: "failed", failure: "failed" } } } }
+        : { gate: { type: "wait", seconds: 1, transition: { next: { elapsed: "talk" } } } };
     return JSON.stringify({
         apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: `memory-${session}`, version: "1.0.0" }, initial: "talk",
         states: {
             talk: {
                 type: "agent", invoke: { prompt: "Remember the secret word across cycles." }, session, timeoutSeconds: 600,
-                transition: { next: session === "continue" ? { again: "pause", finish: "done", failure: "failed" } : { finish: "done", failure: "failed" } },
+                transition: { next: session === "continue" ? { again: "gate", finish: "done", failure: "failed" } : { finish: "done", failure: "failed" } },
             },
-            ...(session === "continue" ? { pause: { type: "wait", seconds: waitSeconds, transition: { next: { elapsed: "talk" } } } } : {}),
+            ...(session === "continue" ? between : {}),
             done: { type: "terminal", outcome: "succeeded", output: "${input}" },
             failed: { type: "terminal", outcome: "failed", output: "${runtime.error}" },
         },
@@ -163,7 +177,21 @@ function continuedScript(state) {
 }
 
 async function agentSessionEvidence(ctx, agentSession, types) {
-    return (await ctx.catalog.getSessionEvents(agentSession, 0, 1_000, types)).map(event => ({ type: event.eventType, data: event.data }));
+    return (await ctx.catalog.getSessionEvents(agentSession, 0, 1_000, types))
+        .map(event => ({ seq: event.seq, type: event.eventType, worker: event.workerNodeId ?? null, data: event.data }));
+}
+
+/**
+ * The first visit's turn ended by itself and was committed: no Stop naming it, and no unpublished snapshot before the
+ * session's second turn started. (A Stop at the run's very end, of the last visit's reply, is allowed.)
+ */
+async function expectFirstTurnCommitted(ctx, agentSession, visit1) {
+    const agent = await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished", "session.turn_started"]);
+    const secondTurn = agent.filter(event => event.type === "session.turn_started")[1];
+    expect(secondTurn, JSON.stringify(agent)).toBeTruthy();
+    expect(agent.filter(event => event.type === "user.stop" && String(event.data?.requestId ?? "").includes(visit1)), JSON.stringify(agent)).toEqual([]);
+    expect(agent.filter(event => event.type !== "session.turn_started" && event.seq < secondTurn.seq), JSON.stringify(agent)).toEqual([]);
+    return { agent, secondTurn };
 }
 
 describe("a Workflow agent step's turn after its report (issue I1, real worker)", () => {
@@ -237,9 +265,8 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                 expect(state.visit2Turn).toBe(2);
                 expect(state.visit2SawFirstPrompt).toBe(true);
                 expect(state.visit2SawMemo).toBe(true);
-                // No Stop for a visit its agent completed, and every turn's snapshot was committed.
-                const agent = await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished"]);
-                expect(agent, JSON.stringify(agent)).toEqual([]);
+                // No Stop for a visit its agent completed while the run was active, and its turn's snapshot was committed.
+                await expectFirstTurnCommitted(ctx, agentSession, state.visit1);
                 const ended = (await ctx.catalog.getSessionEvents(workflowSessionId, 0, 500, ["workflow.agent_cycle_ended"])).map(event => event.data);
                 expect(ended.map(data => [data.nodeExecutionId, data.end, data.turnStopped])).toEqual([[state.visit1, "done", false], [state.visit2, "done", false]]);
             } finally {
@@ -256,31 +283,158 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
             const storeDir = path.join(path.dirname(ctx.env.sessionStateDir), "session-store");
             const bStateDir = `${ctx.env.sessionStateDir}-b`;
             fs.mkdirSync(bStateDir, { recursive: true });
+            const snapshots = new FilesystemSessionStore(storeDir, bStateDir);
             let worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", []);
             let workerB = null;
             try {
-                const { runId } = await startStep(ctx, stepYaml("continue", 20));
+                // The second visit waits for an approval the test gives after the worker restart.
+                const { runId, workflowSessionId } = await startStep(ctx, stepYaml("continue", { gate: true }));
                 const agentSession = workflowAgentSessionId(runId, "talk");
-                const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId),
+                const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId), snapshot: await snapshots.probeSnapshot(agentSession),
                     agent: await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished", "session.turn_started"]) });
-                // The first visit reports, its turn ends, and the run waits 20 s before the second visit.
-                await until("the first visit's turn ends", async () => state.memoServedAt
-                    && (await ctx.catalog.getSession(agentSession))?.state !== "running" ? true : null, 90_000, evidence);
-                await pause(1_000);
-                expect((await talkVisits(ctx.store, runId))).toHaveLength(1);
+                // The first visit reports and its turn ends; a committed snapshot of the session is the witness.
+                await until("the first visit's turn is committed", async () => state.memoServedAt
+                    && (await ctx.catalog.getSession(agentSession))?.state !== "running"
+                    && (await snapshots.probeSnapshot(agentSession)).exists ? true : null, 90_000, evidence);
+                const approvalId = nodeExecutionIdFor(runId, "root", "gate", 1);
+                const approval = await until("the approval between the visits", async () => (await ctx.store.approvals.readMany([approvalId])).get(approvalId) ?? null,
+                    60_000, evidence);
+                expect(await talkVisits(ctx.store, runId)).toHaveLength(1);
                 await worker.stop();
                 worker = null;
-                workerB = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-b", [], {
-                    sessionStateDir: bStateDir, sessionStore: new FilesystemSessionStore(storeDir, bStateDir),
-                });
+                workerB = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-b", [], { sessionStateDir: bStateDir, sessionStore: snapshots });
+                await respondWorkflowApproval({ catalog: ctx.catalog, store: ctx.store, duroxideClient: ctx.duroxide }, workflowSessionId,
+                    parseApprovalCommand({ operation: "approval_respond", operation_id: "next-cycle", run_id: runId, approval_id: approvalId,
+                        context_sha256: approval.contextSha256, decision: "approved" }),
+                    { kind: "user", provider: OWNER.provider, subject: OWNER.subject });
                 const run = await runEnded(ctx, runId, evidence);
                 expect(run, JSON.stringify(await evidence())).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { recalled: "zebra-42" } });
                 expect(state.visit2Turn).toBe(2);
                 expect(state.visit2SawMemo).toBe(true);
-                expect(await agentSessionEvidence(ctx, agentSession, ["session.snapshot_unpublished"])).toEqual([]);
+                // Worker B ran the second visit's turn.
+                const { secondTurn } = await expectFirstTurnCommitted(ctx, agentSession, state.visit1);
+                expect(secondTurn.worker).toBe("memory-b");
             } finally {
                 await worker?.stop();
                 await workerB?.stop();
+            }
+        });
+    });
+
+    it("the run's end stops a completed visit's reply that still runs, though a later visit's own Stop does not reach it", { timeout: TIMEOUT }, async () => {
+        let release = () => {};
+        const held = new Promise(resolve => { release = resolve; });
+        const state = {};
+        const respond = async (_body, position) => {
+            const nx = visitOf(position);
+            if (cycleOf(position) === 1 && position.step === 0) return { tools: [complete(nx, "again", "op-1", { said: "zebra-42" })] };
+            if (cycleOf(position) === 1 && position.step === 1) {
+                state.holding = true;
+                await Promise.race([held, pause(150_000)]);
+                state.released = true;
+                return { content: MEMO };
+            }
+            state.laterRequests = (state.laterRequests ?? 0) + 1;
+            return { content: "ok" };
+        };
+        await withFixture(respond, async ctx => {
+            const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", []);
+            try {
+                const { runId, workflowSessionId } = await startStep(ctx, stepYaml("continue"));
+                const agentSession = workflowAgentSessionId(runId, "talk");
+                const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId),
+                    session: await ctx.duroxide.getStatus(`session-${agentSession}`).then(s => s.status, String),
+                    agent: await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished", "session.turn_started"]) });
+                // The first visit reported and holds its reply; the second visit's prompt is queued behind it.
+                await until("the second visit's prompt is sent while the first reply is held", async () => state.holding
+                    && (await talkVisits(ctx.store, runId))[1]?.invocation?.spawnedAt ? true : null, 60_000, evidence);
+                await controlWorkflowRun({ catalog: ctx.catalog, store: ctx.store, duroxideClient: ctx.duroxide }, workflowSessionId,
+                    { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-held" });
+                // Before the held reply is released: the run's end stopped that turn and the agent session ended.
+                await until("the agent session ends", async () => {
+                    const status = (await ctx.duroxide.getStatus(`session-${agentSession}`)).status;
+                    return ["Completed", "Failed", "Terminated"].includes(status) ? status : null;
+                }, 90_000, evidence);
+                expect(state.released, "the held reply was not released").toBeUndefined();
+                const stops = (await agentSessionEvidence(ctx, agentSession, ["user.stop"])).map(event => event.data?.requestId);
+                expect(stops).toContain(`workflow-session-stop:${agentSession}`);
+                expect(await runEnded(ctx, runId, evidence)).toMatchObject({ status: "cancelled" });
+                // The second visit, decided by the cancel, never ran a model turn.
+                expect(state.laterRequests ?? 0).toBe(0);
+            } finally {
+                release();
+                await worker.stop();
+            }
+        });
+    });
+
+    it("a reply still running after the settle limit is stopped, with turnTimeoutMs 0; the next visit then runs", { timeout: TIMEOUT }, async () => {
+        const state = { denied: 0 };
+        const respond = async (_body, position) => {
+            const nx = visitOf(position);
+            if (cycleOf(position) === 1) {
+                if (position.step === 0) return { tools: [complete(nx, "again", "op-1", { said: "zebra-42" })] };
+                // The model never stops: after its result it keeps calling a tool, which is refused each time.
+                state.reportedAt ??= Date.now();
+                if (position.toolResults.some(text => /result of this workflow step is recorded/.test(text))) state.denied += 1;
+                await pause(300);
+                return { tools: [{ name: "bash", args: { command: "true", description: "keep going" } }] };
+            }
+            state.visit2At ??= Date.now();
+            return position.step === 0 ? { tools: [complete(nx, "finish", "op-2", { recalled: "nothing" })] } : { content: "done" };
+        };
+        const before = WORKFLOW_AGENT_REPLY_SETTLE.ms;
+        WORKFLOW_AGENT_REPLY_SETTLE.ms = 4_000;
+        try {
+            await withFixture(respond, async ctx => {
+                const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", [], { turnTimeoutMs: 0 });
+                try {
+                    const { runId } = await startStep(ctx, stepYaml("continue"));
+                    const agentSession = workflowAgentSessionId(runId, "talk");
+                    const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId),
+                        agent: await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished", "session.turn_started"]) });
+                    expect(await runEnded(ctx, runId, evidence)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                    expect(state.denied).toBeGreaterThan(0);
+                    // The reply was stopped about 4 s after the result; the second visit's turn started then.
+                    expect(state.visit2At - state.reportedAt).toBeLessThan(60_000);
+                    const lost = await agentSessionEvidence(ctx, agentSession, ["session.snapshot_unpublished"]);
+                    expect(lost.length, JSON.stringify(lost)).toBeGreaterThan(0);
+                } finally {
+                    await worker.stop();
+                }
+            });
+        } finally {
+            WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
+        }
+    });
+
+    it("a reply lost with its Copilot session after the report is not run again with the step's tools open", { timeout: TIMEOUT }, async () => {
+        const marker = path.join(getEnv().baseDir, `replayed-${randomUUID()}.txt`);
+        const state = { failed: 0, replays: 0 };
+        const respond = (_body, position) => {
+            const nx = visitOf(position);
+            if (state.failed === 0) {
+                if (position.step === 0) return { tools: [complete(nx, "finish", "op-1", { said: "one" })] };
+                // After the result, the provider refuses the conversation as a corrupted transcript.
+                state.failed += 1;
+                return { httpStatus: 400, message: "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'." };
+            }
+            // Any request after that is a replay of the step's task, which would run its tools again.
+            if (position.step === 0) state.replays += 1;
+            return position.step === 0 ? { tools: [{ name: "bash", args: { command: `echo replayed > ${marker}`, description: "replay" } }] } : { content: "ok" };
+        };
+        await withFixture(respond, async ctx => {
+            const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", []);
+            try {
+                const { runId } = await startStep(ctx, stepYaml("new"));
+                const run = await runEnded(ctx, runId, async () => ({ state, visits: await talkVisits(ctx.store, runId) }));
+                expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                await pause(5_000);
+                expect(state.failed).toBe(1);
+                expect(state.replays).toBe(0);
+                expect(fs.existsSync(marker), "the step's task ran again after its report").toBe(false);
+            } finally {
+                await worker.stop();
             }
         });
     });
