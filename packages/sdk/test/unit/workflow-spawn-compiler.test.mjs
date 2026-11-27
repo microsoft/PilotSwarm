@@ -427,4 +427,38 @@ test("WORKFLOW_ENDED_WHOLE_OUTPUT stays quiet when only part of the child's resu
     // One child's whole output fits the run's output: the child-dispatch pattern (terminal output "${input}") is quiet.
     assert.deepEqual(wholeOutputWarnings(relayYaml('    type: terminal\n    outcome: succeeded\n    output: "${input}"')), []);
     assert.deepEqual(wholeOutputWarnings(relayYaml('    type: terminal\n    outcome: succeeded\n    output: { ended: "${input}", child: "${states.collect.output.workflowId}" }')), []);
+    // The same child named twice is still one output.
+    assert.deepEqual(wholeOutputWarnings(relayYaml('    type: terminal\n    outcome: succeeded\n    output: { whole: "${input}", again: "${states.collect.output}" }')), []);
+    // Named branches: one branch with a child's whole output beside small ones joins at most one of them.
+    assert.deepEqual(wholeOutputWarnings(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: one-big-branch, version: "1.0.0" }
+initial: fork
+states:
+  fork:
+    type: parallel
+    timeoutSeconds: 3600
+    branches:
+      big:
+        initial: b_launch
+        states:
+          b_launch: { type: spawn, definition: child, transition: { next: { started: b_collect, failure: b_failed } } }
+          b_collect:
+            type: messaging
+            mode: receive
+            contract: WorkflowEnded@1
+            wait: { seconds: 600 }
+            transition: { next: { received: b_done, elapsed: b_failed, failure: b_failed } }
+          b_done: { type: terminal, outcome: succeeded, output: "\${input}" }
+          b_failed: { type: terminal, outcome: failed }
+      small:
+        initial: s_wait
+        states:
+          s_wait: { type: wait, seconds: 5, transition: { next: { elapsed: s_done } } }
+          s_done: { type: terminal, outcome: succeeded, output: { note: "small" } }
+    transition: { next: { joined: done, blocked: failed, timed_out: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`), []);
 });
