@@ -881,6 +881,10 @@ async function testCleanedOnceEveryAncestorEnded(env) {
         status.set(`session-${owner}`, { status: "Completed" });
         const scanned = await findTool(tools, "scan_completed_sessions").handler({ graceMinutes: 5 });
         assertEqual(scanned.sessions.some(s => s.sessionId === owner), true, "the ended owner is listed");
+        // The Workflow alone, once every session above it has ended: its full outcome stays with the owner after its cleanup.
+        const workflowCleaned = await findTool(tools, "cleanup_session").handler({ sessionId: workflow.id, graceMinutes: 0 });
+        assertEqual(workflowCleaned.ok, true, `the Workflow's cleanup succeeds: ${JSON.stringify(workflowCleaned)}`);
+        assertEqual((await catalog.getChildOutcome(workflow.id))?.parentSessionId, owner, "the owner keeps the Workflow's outcome after its cleanup");
         const cleaned = await findTool(tools, "cleanup_session").handler({ sessionId: owner, graceMinutes: 0 });
         assertEqual(cleaned.ok, true, `the owner's cleanup succeeds: ${JSON.stringify(cleaned)}`);
         for (const id of [owner, workflow.id, agent]) assertEqual(await isLive(catalog, id), false, `${id.slice(0, 8)} is cleaned`);
