@@ -1401,11 +1401,16 @@ export function workflowTurnStopOf(catalog: Partial<Pick<SessionCatalog, "turnCo
 /**
  * A decided visit of a state that continues its session (session: continue; owner decision agent-node-continue-20261106;
  * formal Q2 and Q5; the turn-to-visit fence, review RT-1..RT-3):
- * - the visit's turn is stopped if it still runs (a time limit, a cancel of the visit or of the run, the run's end, or the
- *   agent's own result that its turn goes on after; review G5: also when the run is no longer active), never the session. The Stop names the visit (its request id); the session's
+ * - the visit's turn is stopped if it still runs (a time limit, a cancel of the visit or of the run; review G5: also when the
+ *   run is stopping or no longer active), never the session. The Stop names the visit (its request id); the session's
  *   worker applies it only to a turn of that visit, so a later visit's turn is never stopped by it, and a turn of this
  *   visit that starts later does not run (its visit is decided: the fence checked at turn start). A spawn that sent the
  *   prompt after the visit was decided (a stale send) asks again (afterSpawn);
+ * - the agent's own result (done) while the run is active sends no Stop (issue I1, owner decision 2026-11-26): the turn that
+ *   reported goes on to write its reply, ends by itself, and its snapshot (the session's memory) is committed; a stopped
+ *   turn commits nothing, so the next visit would not remember this one. Its tools refuse once the visit is decided, and
+ *   the next visit's prompt waits behind it and starts a new turn. A send after such a visit is no stale send: the agent
+ *   decided it in a turn of this visit, so its prompt was sent before, and any later turn of the visit is not run (the fence);
  * - the visit's end is settled without a command (WORKFLOW_AGENT_SESSION_CONTINUES): the session stays open for the next visit;
  * - when the run is stopping or has ended, the session gets no more visits and is ended now (endContinuedSession), whichever
  *   of its visits this is: an older visit's late send can be the one that finds the session open (review RT-1, t2).
@@ -1415,8 +1420,9 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowAgentEndC
     : Promise<{ end: "done" | "cancel"; sent: boolean }> {
     const run = await store.readRun(invocation.runId);
     const active = run !== null && ACTIVE_RUN_STATUSES.includes(run.status);
+    const turnEnds = end === "cancel" || !active || Boolean(run?.stop);
     let turnStopped = false;
-    if (options.stopTurn && (invocation.endSentAt === null || options.afterSpawn === true)) {
+    if (options.stopTurn && turnEnds && (invocation.endSentAt === null || options.afterSpawn === true)) {
         await options.stopTurn(invocation.childSessionId, `The workflow ended this cycle of step ${node.nodeId} (${node.outcome ?? end}).`,
             // A stale send's stop is another Stop: the first may have been recorded for an earlier turn.
             `workflow-cycle-stop:${invocation.nodeExecutionId}${options.afterSpawn === true ? ":sent" : ""}`);
@@ -1810,8 +1816,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         return agentSessionEndedOnItsOwn(client, previous);
     };
     /**
-     * Review G2: end the earlier visits of `invocation`'s session whose end is not sent yet (endAgentChild: their turn's Stop,
-     * then the visit's end). A visit that cannot be ended yet throws, and so fails the calling attempt.
+     * Review G2: end the earlier visits of `invocation`'s session whose end is not sent yet (endAgentChild: the turn's Stop of
+     * one its agent did not complete, then the visit's end). A visit that cannot be ended yet throws, and so fails the calling attempt.
      */
     const endEarlierVisitsOf = async (client: WorkflowAgentEndClient, runId: string, invocation: WorkflowAgentInvocation): Promise<void> => {
         let after: string | null = null;
