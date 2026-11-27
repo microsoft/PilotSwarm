@@ -15,14 +15,14 @@
  *     "List the current sessions and tell me the server's default model."
  *
  * Supports two model wire formats:
- *   - OpenAI Responses API (default, from `.model_providers.json` + `FOUNDRY_DEV_KEY`)
- *   - Anthropic Messages API (`MCP_EVAL_PROVIDER=anthropic`, `MCP_EVAL_MODEL=claude-sonnet-5-5`,
+ *   - OpenAI Responses API (default, from `.model_providers.json` and its configured `env:` key)
+ *   - Anthropic Messages API (`MCP_EVAL_PROVIDER=anthropic`, `MCP_EVAL_MODEL=...`,
  *     using `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in env, never written to receipts)
  *
  * Env knobs:
  *   - `MCP_EVAL_PROVIDER`: "openai" (default) | "anthropic"
  *   - `MCP_EVAL_MODEL`: model name override (default: first model from .model_providers.json or claude-sonnet-5-5)
- *   - `MCP_EVAL_RECEIPT_PATH`: optional path to write full redacted JSON receipt
+ *   - `MCP_EVAL_RECEIPT_PATH`: optional path to write full JSON receipt
  *   - `MCP_EVAL_POSITIVE_RUNS`: number of positive runs (default 3)
  *
  * Usage: node packages/app/mcp/test/integration/workflows-mcp-agent.live.mjs
@@ -108,11 +108,12 @@ function resolveModelConfig() {
         }
         const baseUrl = (process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/+$/, "");
         const model = process.env.MCP_EVAL_MODEL || "claude-sonnet-5-5";
+        const providerId = process.env.MCP_EVAL_PROVIDER_ID || "anthropic";
         return {
             family: "anthropic",
-            providerId: process.env.MCP_EVAL_PROVIDER_ID || "anthropic-wif",
+            providerId,
             model,
-            qualifiedModel: `${process.env.MCP_EVAL_PROVIDER_ID || "anthropic-wif"}:${model}`,
+            qualifiedModel: `${providerId}:${model}`,
             baseUrl,
             apiKey,
             bearer,

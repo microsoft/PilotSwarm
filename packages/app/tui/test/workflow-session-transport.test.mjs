@@ -65,3 +65,9 @@ test("S2SF-F3: when the attach refuses (another version, or no package), the ses
         assert.equal(transport.sessionHandles.has("owner-1"), false);
     }
 });
+
+test("N-9: createSessionForWorkflow throws if NodeSdkTransport has not started (client is null)", async () => {
+    const { transport } = transportWith({ attach: async () => ({ revision: 1, created: true }) });
+    transport.client = null;
+    await assert.rejects(transport.createSessionForWorkflow(PREPARED.ref, {}), /not started/);
+});

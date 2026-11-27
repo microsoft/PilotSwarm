@@ -69,7 +69,11 @@ export async function validateWorkflowYaml(
     }
 
     const toolDiagnostics = workflowToolDiagnostics(compiled.ir, null, false)
-        .filter(d => !(d.code === "WORKFLOW_TOOLS_UNCHECKED" && d.path.endsWith(".source")));
+        .filter(d => !(
+            d.code === "WORKFLOW_TOOLS_UNCHECKED"
+            && d.path.endsWith(".source")
+            && d.message.includes("could not be checked at Save")
+        ));
     extraDiagnostics.push(...toolDiagnostics);
 
     const persisted = await workflowSaveCompilation(compiled, options?.decisionCapability, extraDiagnostics);

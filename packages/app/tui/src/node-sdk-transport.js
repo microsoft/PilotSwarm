@@ -1194,6 +1194,7 @@ export class NodeSdkTransport {
      * while preserving separate principal (from owner ?? currentUser) vs owner (only when given).
      */
     async createSessionForWorkflow(ref, opts = {}) {
+        if (!this.client) throw new Error("NodeSdkTransport is not started");
         const viewer = opts?.owner ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
         const principal = viewer
             ? { provider: viewer.provider, subject: viewer.subject, displayName: viewer.displayName ?? viewer.email ?? null }

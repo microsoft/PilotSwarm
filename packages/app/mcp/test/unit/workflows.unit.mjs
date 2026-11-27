@@ -575,6 +575,51 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
         assert.match(body.error, /create_session_for_workflow/);
     }
 
+    // SF-1: keyed start { update: true } retried with a different operation_id derives key:<k>:update so update replays
+    calls.length = 0;
+    const updSeen = new Map();
+    const keyedMgmt = {
+        readSessionWorkflowDefinition: async () => ({ definitionId: "d-pkg", name: "demo/pkg", locked: true, graph: { states: [{ id: "hold", type: "wait" }] } }),
+        updateSessionWorkflowPackage: async (_sid, req) => {
+            calls.push(["updatePkg", req.operationId]);
+            if (updSeen.has(req.operationId)) return { ...updSeen.get(req.operationId), replayed: true };
+            const receipt = { operation: "attach", definitionId: "d-pkg", name: "demo/pkg", revision: updSeen.size + 2 };
+            updSeen.set(req.operationId, receipt);
+            return { ...receipt, replayed: false };
+        },
+        startSessionWorkflowDefinition: async (_sid, req) => {
+            calls.push(["start", req.revision, req.operationId, req.key]);
+            return { operation: "start", definitionId: "d-pkg", name: "demo/pkg", revision: req.revision, workflowId: "wf-k", runId: "r-k", replayed: false };
+        },
+    };
+    const keyedWfDef = toolsWith({ workflowCommands: true, mgmt: keyedMgmt }).get("workflow_definition");
+    const kRun1 = JSON.parse((await keyedWfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, key: "k-upd", operation_id: "op-a", workspace: "none",
+    })).content[0].text);
+    const kRun2 = JSON.parse((await keyedWfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, key: "k-upd", operation_id: "op-b", workspace: "none",
+    })).content[0].text);
+    assert.equal(kRun1.revision, 2);
+    assert.equal(kRun2.revision, 2, "keyed retry with different operation_id must reuse key-derived update op id and pin original revision");
+    assert.deepEqual(calls.filter(c => c[0] === "updatePkg"), [["updatePkg", "key:k-upd:update"], ["updatePkg", "key:k-upd:update"]]);
+
+    // N-2: 256-char operation_id with update:true produces <=256-char hashed update operationId
+    calls.length = 0;
+    const longOpId = "x".repeat(256);
+    await keyedWfDef({ operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, operation_id: longOpId, workspace: "none" });
+    const longUpdCall = calls.find(c => c[0] === "updatePkg");
+    assert.ok(longUpdCall && longUpdCall[1].length <= 256, `update operationId exceeded 256 chars: ${longUpdCall?.[1]?.length}`);
+
+    // N-3: PERSON_START_TOOL_BINDING_WARNING carries severity: "warning"
+    assert.equal(scriptStart.warnings.find(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")?.severity, "warning");
+
+    // N-10: update: true combined with run_again_of is refused 400 WORKFLOW_COMMAND_INVALID
+    const badCombo = await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, run_again_of: "wf-old", operation_id: "op-combo",
+    });
+    assert.equal(badCombo.isError, true);
+    assert.equal(JSON.parse(badCombo.content[0].text).code, "WORKFLOW_COMMAND_INVALID");
+
     // delete & copy
     const delOut = JSON.parse((await wfDef({ operation: "delete", owner_session_id: OWNER_SID, name: "sum", operation_id: "op-d1" })).content[0].text);
     assert.equal(delOut.operation, "delete");

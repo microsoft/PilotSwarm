@@ -246,6 +246,20 @@ export interface CreatedWorkflowCoordinatingSession {
     title: string;
 }
 
+const cachedBaseWorkflowSkills: { loaded: ReturnType<typeof loadSkillsSync> | null } = { loaded: null };
+const cachedTestModeWorkflowSkills: { loaded: ReturnType<typeof loadSkillsSync> | null } = { loaded: null };
+
+function loadCachedWorkflowSkills(testMode: boolean): ReturnType<typeof loadSkillsSync> {
+    if (!cachedBaseWorkflowSkills.loaded) {
+        cachedBaseWorkflowSkills.loaded = loadSkillsSync(WORKFLOW_SKILLS_DIR);
+    }
+    if (!testMode) return cachedBaseWorkflowSkills.loaded;
+    if (!cachedTestModeWorkflowSkills.loaded) {
+        cachedTestModeWorkflowSkills.loaded = loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
+    }
+    return [...cachedBaseWorkflowSkills.loaded, ...cachedTestModeWorkflowSkills.loaded];
+}
+
 const STATUS_WAIT_SLICE_MS = 10_000;
 // The longest title a person may give a session. A named agent's prefix
 // ("Agent Smith: ") is extra: it never shortens what the person typed.
@@ -2582,10 +2596,7 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
         try {
             const testMode = resolveWorkflowTestMode(this.config.workflowCommands?.testMode);
-            const loaded = [
-                ...loadSkillsSync(WORKFLOW_SKILLS_DIR),
-                ...(testMode ? loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR) : []),
-            ];
+            const loaded = loadCachedWorkflowSkills(testMode);
             const byName = new Map<string, (typeof loaded)[number]>();
             for (const skill of loaded) {
                 if (!byName.has(skill.name)) byName.set(skill.name, skill);
@@ -2633,6 +2644,9 @@ export class PilotSwarmManagementClient {
     /**
      * Phase 4 / Stage 2.3: Create a coordinating session for a package Workflow Definition `<package>/<name>`:
      * prepare (version-pinned) -> createSession -> attachSessionWorkflowPackage (delete on failure, S2SF-F3) -> kickoff send.
+     *
+     * Callers that already hold a started `PilotSwarmClient` (TUI, Portal, MCP direct mode) should pass `options.client`
+     * to avoid the per-call cost of starting and initializing a temporary `PilotSwarmClient`.
      */
     async createSessionForWorkflow(ref: string, options: CreateSessionForWorkflowOptions = {}): Promise<CreatedWorkflowCoordinatingSession> {
         this._ensureStarted();
@@ -2653,14 +2667,19 @@ export class PilotSwarmManagementClient {
             } else {
                 tempClient = new PilotSwarmClient({
                     store: this.config.store!,
+                    ...(this.config.storageConfig ? { storageConfig: this.config.storageConfig } : {}),
                     ...(this.config.useManagedIdentity !== undefined ? { useManagedIdentity: this.config.useManagedIdentity } : {}),
                     ...(this.config.cmsFactsDatabaseUrl ? { cmsFactsDatabaseUrl: this.config.cmsFactsDatabaseUrl } : {}),
                     ...(this.config.aadDbUser ? { aadDbUser: this.config.aadDbUser } : {}),
                     ...(this.config.cmsSchema ? { cmsSchema: this.config.cmsSchema } : {}),
                     ...(this.config.duroxideSchema ? { duroxideSchema: this.config.duroxideSchema } : {}),
                     ...(this.config.factsSchema ? { factsSchema: this.config.factsSchema } : {}),
+                    ...(this.config.factsProvider ? { factsProvider: this.config.factsProvider } : {}),
+                    ...(this.config.enhancedFactsDatabaseUrl ? { enhancedFactsDatabaseUrl: this.config.enhancedFactsDatabaseUrl } : {}),
+                    ...(this.config.enhancedFactsSchema ? { enhancedFactsSchema: this.config.enhancedFactsSchema } : {}),
                     ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
-                });
+                    ...(this.config.traceWriter ? { traceWriter: this.config.traceWriter } : {}),
+                } as any);
                 await tempClient.start();
                 sessionClient = tempClient;
             }

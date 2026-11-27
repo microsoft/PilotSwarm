@@ -284,10 +284,11 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         // process holding DATABASE_URL is definitionally privileged.
         admin = true;
         ctxRole = "admin";
-        client = new PilotSwarmClient({ store: opts.store });
-        await client.start();
+        // Build artifactStore before starting client so a broken blob config fails fast without leaking a started client.
         const artifactStore = createDirectArtifactStore(process.env);
         const blobEnabled = Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING);
+        client = new PilotSwarmClient({ store: opts.store });
+        await client.start();
         mgmt = new PilotSwarmManagementClient({
             store: opts.store,
             blobEnabled,

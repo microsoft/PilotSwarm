@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { compileWorkflow, workflowScriptNodes, workflowTestModeFromEnv } from "pilotswarm-sdk";
@@ -12,6 +13,7 @@ const WORKFLOW_SKILL_MCP_NOTE =
     + "test, recover, send_workflow_input, respond_session_request and child_workflows are not available, and nothing notifies you: poll read_workflow.";
 
 const PERSON_START_TOOL_BINDING_WARNING = {
+    severity: "warning" as const,
     code: "WORKFLOW_PERSON_START_NO_TOOL_BINDING",
     path: "$",
     message:
@@ -19,6 +21,12 @@ const PERSON_START_TOOL_BINDING_WARNING = {
         + "finds no permitted tool except child_workflows (literal callTool requirements are refused at Start with 409 WORKFLOW_TOOLS_UNAVAILABLE). "
         + "To grant session tools to scripts, have the session's agent start the definition.",
 };
+
+function updateOperationIdFor(opId: string, key?: string): string {
+    const candidate = key !== undefined ? `key:${key}:update` : `${opId}:update`;
+    if (candidate.length <= 256) return candidate;
+    return `update:${createHash("sha256").update(candidate).digest("hex")}`;
+}
 
 function graphHasScriptState(states: unknown): boolean {
     if (!Array.isArray(states)) return false;
@@ -467,6 +475,12 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 let startRevision = revision;
 
                 if (update === true) {
+                    if (run_again_of) {
+                        return errorResult(
+                            "update cannot be combined with run_again_of: run_again_of repeats the prior run's pinned revision.",
+                            { code: "WORKFLOW_COMMAND_INVALID", status: 400, session_id: owner_session_id },
+                        );
+                    }
                     let target: any = null;
                     try {
                         target = await ctx.mgmt.readSessionWorkflowDefinition(owner_session_id, {
@@ -493,7 +507,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                         {
                             ...(definition_id !== undefined ? { definitionId: definition_id } : {}),
                             ...(name !== undefined ? { name } : {}),
-                            operationId: `${opId}:update`,
+                            operationId: updateOperationIdFor(opId, key),
                         },
                         mutOpts,
                     );
