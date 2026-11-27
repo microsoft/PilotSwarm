@@ -1199,6 +1199,7 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }

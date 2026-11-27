@@ -143,15 +143,19 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 reasoning_effort: z.string().optional().describe("Optional reasoning effort (low, medium, high, xhigh, max)"),
                 context_tier: z.enum(["default", "long_context"]).optional().describe("Optional context-window tier"),
                 group_id: z.string().optional().describe("Optional viewer session group ID to place the created session into"),
+                originating_session_id: z.string().optional()
+                    .describe("When proxied for an agent session, that session's ID; refused inside a Workflow (403 WORKFLOW_DEFINITION_TOOLS_REFUSED)"),
             },
         },
-        withToolErrors(async ({ ref, model, reasoning_effort, context_tier, group_id }) => {
+        withToolErrors(async ({ ref, model, reasoning_effort, context_tier, group_id, originating_session_id }) => {
             try {
+                const originatingSessionId = ctx.originatingSessionId ?? originating_session_id;
                 const created = await ctx.mgmt.createSessionForWorkflow(ref, {
                     ...(model !== undefined ? { model } : {}),
                     ...(reasoning_effort !== undefined ? { reasoningEffort: reasoning_effort } : {}),
                     ...(context_tier !== undefined ? { contextTier: context_tier } : {}),
                     ...(group_id !== undefined ? { groupId: group_id } : {}),
+                    ...(originatingSessionId !== undefined ? { originatingSessionId } : {}),
                     ...(!ctx.webMode ? { client: ctx.client, onSession: (s) => cacheSessionHandle(s) } : {}),
                 });
                 return jsonResult({

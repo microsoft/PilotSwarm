@@ -232,6 +232,11 @@ test("Task 3: Phase 4 Workflow skills, validate, card, and definition name/origi
         sessionId: "s1", name: "my-wf", yaml: "y", operationId: "op-1", originatingSessionId: "child-1",
     });
     assert.equal(saveReq.body.originatingSessionId, "child-1");
+
+    const csfwReq = buildOperationRequest("createSessionForWorkflow", {
+        ref: "demo/echo", originatingSessionId: "child-1",
+    });
+    assert.equal(csfwReq.body.originatingSessionId, "child-1");
 });
 
 test("artifact upload carries opt-in create-only semantics in the request body", () => {

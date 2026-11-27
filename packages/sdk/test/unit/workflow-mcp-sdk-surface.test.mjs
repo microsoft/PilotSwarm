@@ -369,3 +369,14 @@ test("Task 2: resolveDeleteTarget handles receipt-first replay, mismatch, live, 
     );
     assert.equal(delId, "d-new");
 });
+
+test("Proposed Q1: createSessionForWorkflow refuses inside-Workflow originatingSessionId with 403 WORKFLOW_DEFINITION_TOOLS_REFUSED", async () => {
+    let prepared = false;
+    const mgmt = makeMockMgmt();
+    mgmt.prepareSessionForWorkflow = async () => { prepared = true; return {}; };
+    await assert.rejects(
+        mgmt.createSessionForWorkflow("demo/echo", { originatingSessionId: "inside-wf" }),
+        err => err.code === WORKFLOW_DEFINITION_TOOLS_REFUSED && err.status === 403,
+    );
+    assert.equal(prepared, false, "must refuse before prepareSessionForWorkflow");
+});

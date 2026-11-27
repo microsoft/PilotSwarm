@@ -578,6 +578,26 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     assert.equal(delOut.operation, "delete");
     const copyOut = JSON.parse((await wfDef({ operation: "copy", owner_session_id: OWNER_SID, name: "demo/pkg", operation_id: "op-c1" })).content[0].text);
     assert.equal(copyOut.operation, "copy");
+
+    // Proposed Q1: ctx.originatingSessionId overrides caller arg on create_session_for_workflow
+    let seenCsfwOpts = null;
+    const csfw = toolsWith({
+        webMode: true,
+        originatingSessionId: "bound-wf-child",
+        mgmt: {
+            createSessionForWorkflow: async (_ref, opts) => {
+                seenCsfwOpts = opts;
+                throw Object.assign(new Error("Sessions inside a Workflow cannot create or change workflow definitions."), {
+                    code: "WORKFLOW_DEFINITION_TOOLS_REFUSED",
+                    status: 403,
+                });
+            },
+        },
+    }).get("create_session_for_workflow");
+    const csfwDenied = await csfw({ ref: "demo/echo", originating_session_id: "spoofed" });
+    assert.equal(seenCsfwOpts.originatingSessionId, "bound-wf-child");
+    assert.equal(csfwDenied.isError, true);
+    assert.equal(JSON.parse(csfwDenied.content[0].text).code, "WORKFLOW_DEFINITION_TOOLS_REFUSED");
 }
 
 console.log("✅ Phase 4 MCP workflow tools unit suite passed");

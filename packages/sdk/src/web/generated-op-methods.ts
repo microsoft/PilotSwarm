@@ -400,7 +400,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Stage 2.3: make a session for a package's Workflow Definition (ref, <package>/<name>): a session (model: default the deployment's) with the definition attached and locked at the package's version, instructions to coordinate it from its interface card, and a first message that asks the session to greet the person and ask for the inputs it needs. 404 PACKAGE_WORKFLOW_NOT_FOUND for a definition the caller cannot use.
+     * Stage 2.3: make a session for a package's Workflow Definition (ref, <package>/<name>): a session (model: default the deployment's) with the definition attached and locked at the package's version, instructions to coordinate it from its interface card, and a first message that asks the session to greet the person and ask for the inputs it needs. originatingSessionId inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED). 404 PACKAGE_WORKFLOW_NOT_FOUND for a definition the caller cannot use.
      * @remarks `POST /sessions/for-workflow` — access: `session:create`
      */
     createSessionForWorkflow(params: {
@@ -410,6 +410,7 @@ export interface ManagementOps {
         contextTier?: any;
         groupId?: any;
         visibility?: any;
+        originatingSessionId?: any;
     }): Promise<any>;
 
     /**

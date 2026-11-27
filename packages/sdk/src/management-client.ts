@@ -230,6 +230,8 @@ export interface CreateSessionForWorkflowOptions {
     principal?: { provider: string; subject: string; displayName?: string | null } | null;
     groupId?: string | null;
     visibility?: SessionVisibility | string | null;
+    /** When proxied for an agent session, refuses if that session is inside a Workflow (403 WORKFLOW_DEFINITION_TOOLS_REFUSED) (proposed; owner to confirm). */
+    originatingSessionId?: string | null;
     /** Direct mode only: reuse caller's started PilotSwarmClient instead of opening a temporary client. */
     client?: Pick<PilotSwarmClient, "createSession">;
     /** Direct mode only: invoked with the live PilotSwarmSession handle ONLY when options.client was supplied and attach succeeded. */
@@ -2635,6 +2637,9 @@ export class PilotSwarmManagementClient {
     async createSessionForWorkflow(ref: string, options: CreateSessionForWorkflowOptions = {}): Promise<CreatedWorkflowCoordinatingSession> {
         this._ensureStarted();
         try {
+            if (options.originatingSessionId !== undefined && options.originatingSessionId !== null) {
+                await refuseSessionDefinitionFromInsideWorkflow(this._catalog?.workflowStore?.() ?? null, options.originatingSessionId);
+            }
             const principal = options.principal !== undefined
                 ? options.principal
                 : (options.owner?.provider && options.owner?.subject

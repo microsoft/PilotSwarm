@@ -401,7 +401,7 @@ export class WebPilotSwarmManagementClient {
     }
 
     /** Phase 4: create a coordinating session for a package Workflow Definition (createSessionForWorkflow, session:create). */
-    async createSessionForWorkflow(ref: string, options: { model?: string; reasoningEffort?: string; contextTier?: string; groupId?: string | null; visibility?: string | null } = {}): Promise<any> {
+    async createSessionForWorkflow(ref: string, options: { model?: string; reasoningEffort?: string; contextTier?: string; groupId?: string | null; visibility?: string | null; originatingSessionId?: string | null } = {}): Promise<any> {
         return this._api.call("createSessionForWorkflow", {
             ref,
             ...(options.model !== undefined ? { model: options.model } : {}),
@@ -409,6 +409,7 @@ export class WebPilotSwarmManagementClient {
             ...(options.contextTier !== undefined ? { contextTier: options.contextTier } : {}),
             ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
             ...(options.visibility !== undefined ? { visibility: options.visibility } : {}),
+            ...(typeof options.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),
         });
     }
 

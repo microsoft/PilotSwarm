@@ -358,4 +358,8 @@ test("Task 3: PortalRuntime dispatches validateWorkflowDefinition, readWorkflowS
     await runtime.call("updateSessionWorkflowPackage", { sessionId: "shared", name: "pkg/w", operationId: "op-5", originatingSessionId: "orig-5" }, as("alice"));
     assert.equal(calls.at(-1)[2].name, "pkg/w");
     assert.equal(calls.at(-1)[3].originatingSessionId, "orig-5");
+
+    runtime.transport.createSessionForWorkflow = async (ref, opts) => { calls.push(["createForWf", ref, opts]); return { sessionId: "c1", workflowRef: ref, title: "t" }; };
+    await runtime.call("createSessionForWorkflow", { ref: "demo/echo", originatingSessionId: "orig-6" }, as("alice"));
+    assert.equal(calls.at(-1)[2].originatingSessionId, "orig-6");
 });
