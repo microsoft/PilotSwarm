@@ -23,6 +23,7 @@ import {
     workflowSendInstanceId,
 } from "../../src/workflow/controller/runtime.ts";
 import {
+    WORKFLOW_AGENT_SESSION_END_RETRIES_MAX,
     workflowAgentSessionEndInstanceId,
     workflowNotifyInstanceId,
 } from "../../src/workflow/runtime.ts";
@@ -306,6 +307,7 @@ export async function census({
             agentChildren.set(inv.child_session_id, {
                 childSessionId: inv.child_session_id,
                 latestEndSentAt: inv.end_sent_at,
+                latestEndChildStatus: inv.end_child_status,
                 latestRunStatus: inv.run_status,
                 anySpawnAttempt: Number(inv.spawn_attempts ?? 0) > 0,
             });
@@ -323,11 +325,11 @@ export async function census({
         statusByInstance.set(instanceId, st?.status ?? "Unknown");
     });
 
-    // If a continued-session detached retry #1 existed, probe numbered retries (#2, #3, ...) until NotFound.
+    // If a continued-session detached retry #1 existed, probe numbered retries (#2..MAX) until NotFound.
     for (const childSessionId of agentChildren.keys()) {
         const firstId = workflowAgentSessionEndInstanceId(childSessionId, 1);
         if (statusByInstance.get(firstId) !== "NotFound") {
-            for (let n = 2; n <= 50; n += 1) {
+            for (let n = 2; n <= WORKFLOW_AGENT_SESSION_END_RETRIES_MAX; n += 1) {
                 const retryId = workflowAgentSessionEndInstanceId(childSessionId, n);
                 const st = await duroxideClient.getStatus(retryId);
                 const status = st?.status ?? "Unknown";
@@ -355,7 +357,7 @@ export async function census({
             && !SWEEPER_ENDED_SESSION_STATES.includes(String(sessionRow.state));
         const endOwedOnTerminalRun = !ACTIVE_RUN_STATUSES.includes(info.latestRunStatus)
             && info.anySpawnAttempt
-            && info.latestEndSentAt === null;
+            && (info.latestEndSentAt === null || info.latestEndChildStatus === "AgentSessionContinues");
         if (orchLive || cmsLive || endOwedOnTerminalRun) {
             liveAgentSessions.push(childSessionId);
         }
