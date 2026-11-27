@@ -66,7 +66,9 @@ rr.design-supply-refused-approval	rr.design-supply-refused-approval.cfg	Workflow
 rr.design-supply-refused-never	rr.design-supply-refused-never.cfg	WorkflowRerun
 rr.design-gr1-top-spawn	rr.design-gr1-top-spawn.cfg	WorkflowRerun
 rr.design-gr1-lane-spawn	rr.design-gr1-lane-spawn.cfg	WorkflowRerun
+rr.design-gr1-explicit-continue	rr.design-gr1-explicit-continue.cfg	WorkflowRerun
 rr.design-sweeper-admission-race	rr.design-sweeper-admission-race.cfg	WorkflowRerun
+rr.design-sweeper-admission-owner-race	rr.design-sweeper-admission-owner-race.cfg	WorkflowRerun
 rr.live-supply-reaches-cut	rr.live-supply-reaches-cut.cfg	WorkflowRerun
 rr.live-supply-first	rr.live-supply-first.cfg	WorkflowRerun
 rr.live-supply-diverge	rr.live-supply-diverge.cfg	WorkflowRerun

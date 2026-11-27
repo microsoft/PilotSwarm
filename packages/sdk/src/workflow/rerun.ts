@@ -58,18 +58,18 @@ export interface WorkflowRerunKey {
     inputSha256: string;
     carrySha256: string | null;
     hasCarry: boolean;
-    carryByteLength?: number;
+    carryByteLength: number;
     byteLength: number;
     reusedFromExecutionId: string | null;
     reusedFromRunId: string | null;
     reusedFromWorkflowSessionId: string | null;
-    suppliedFromExecutionId?: string | null;
-    suppliedFromRunId?: string | null;
-    suppliedFromWorkflowSessionId?: string | null;
-    suppliedNote?: string | null;
+    suppliedFromExecutionId: string | null;
+    suppliedFromRunId: string | null;
+    suppliedFromWorkflowSessionId: string | null;
+    suppliedNote: string | null;
     spawnChildWorkflowId: string | null;
-    spawnChildCancelledBySourceEnd?: boolean;
-    spawnChildHasNotice?: boolean;
+    spawnChildCancelledBySourceEnd: boolean;
+    spawnChildHasNotice: boolean;
 }
 
 export interface WorkflowRerunResume {
@@ -112,6 +112,7 @@ export interface WorkflowRerunProblem {
         | "route_changed"
         | "no_route"
         | "undeclared_outcome"
+        | "supply_not_allowed"
         | "catch_all_changed"
         | "catch_all_twice"
         | "carry_changed"
@@ -245,10 +246,10 @@ export interface BuildRerunPlanInput {
     reused: readonly WorkflowRerunKey[];
     reusedRequests: ReadonlyArray<{ executionId: string; stateId: string; visit: number }>;
     dropped: ReadonlyArray<WorkflowRerunKey & { outputPreview: string | null }>;
-    sourceIr?: WorkflowIR | null;
+    sourceIr: WorkflowIR;
     targetIr: WorkflowIR;
     supplyOutcome?: string | null;
-    carried?: { count: number; contracts: string[] } | null;
+    carried: { count: number; contracts: string[] };
     warnings: readonly WorkflowRerunWarning[];
     allowed: boolean;
     blockedReason: string | null;
@@ -321,10 +322,14 @@ function modesAvailableFor(
     const modes: WorkflowRerunMode[] = [];
     if (visit.predecessorId !== null) modes.push("run_again");
     if (visit.nodeType !== "terminal" && !isCancelledByRunEnd(visit)) modes.push("continue");
+    const targetNode = targetIr?.nodes[visit.nodeId];
+    const targetAllowsSupply = !targetIr || (targetNode !== undefined && (targetNode.type === "script" || targetNode.type === "agent"));
     if (
         visit.scopeId === ROOT_SCOPE
+        && visit.state === "completed"
         && (visit.nodeType === "script" || visit.nodeType === "agent")
         && visit.outcome !== "exhausted"
+        && targetAllowsSupply
         && !isSupplyNeverOn(visit.nodeId, sourceIr, targetIr)
     ) {
         modes.push("supply");
@@ -879,6 +884,13 @@ export function validateRerunSupply(input: {
             { reason: "no_result", executionId: chosen.nodeExecutionId, stateId: chosen.nodeId, visit: chosen.ordinal },
         );
     }
+    if (chosen.state !== "completed") {
+        throw new WorkflowStoreError(
+            "RERUN_VISIT_NOT_ALLOWED",
+            `Visit ${chosen.nodeId} · visit ${chosen.ordinal} is not completed (state=${chosen.state}) and cannot be supplied.`,
+            { reason: "not_completed", executionId: chosen.nodeExecutionId, stateId: chosen.nodeId, visit: chosen.ordinal, state: chosen.state },
+        );
+    }
     // N6: refuse supply: never on EITHER S or T
     if (isSupplyNeverOn(chosen.nodeId, sourceIr, targetIr)) {
         throw new WorkflowStoreError(
@@ -898,8 +910,9 @@ export function validateRerunSupply(input: {
 
     const reusedTop = reused.filter(k => k.scopeId === ROOT_SCOPE);
     const preCutTop = [...reusedTop, chosen];
+    // M1: include V itself in catchAllUsedBeforeCut (matching C4 preCutTop) so catch-all self-loops match Start's catch_all_twice refusal.
     const catchAllUsedBeforeCut = targetIr.catchAll !== null
-        && reusedTop.some(k => k.arrivalRoute === CATCH_ALL_ROUTE || k.nodeId === targetIr.catchAll);
+        && preCutTop.some(k => k.arrivalRoute === CATCH_ALL_ROUTE || k.nodeId === targetIr.catchAll);
     const nextByOutcome: Record<string, { stateId: string; visit: number } | null> = {};
     for (const outcome of tNode.outcomes) {
         const route = selectRoute(tNode.next, { outcome, resultKind: "business" });
@@ -916,7 +929,7 @@ export function validateRerunSupply(input: {
         nextByOutcome[outcome] = { stateId: nextStateId, visit: priorVisits + 1 };
     }
 
-    const carryBytes = chosen.carryByteLength ?? 0;
+    const carryBytes = chosen.carryByteLength;
     const maxOutputBytes = Math.max(
         0,
         tNode.carry !== undefined
@@ -1655,8 +1668,11 @@ export function buildRerunResume(input: BuildRerunResumeInput): WorkflowRerunRes
         };
     }
     if (mode === "supply") {
-        if (!supplied) {
-            throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "buildRerunResume requires supplied metadata when mode is 'supply'.");
+        if (!supplied || supplied.nextStateId === null || supplied.nextOrdinal === null) {
+            throw new WorkflowStoreError(
+                "RERUN_ARGUMENT_REFUSED",
+                "buildRerunResume requires supplied metadata with non-null nextStateId and nextOrdinal when mode is 'supply'.",
+            );
         }
         return {
             v: 1,
@@ -1732,32 +1748,38 @@ export function buildRerunPlan(input: BuildRerunPlanInput): WorkflowRerunPlan {
     }
     const steps = [...stepCounts.entries()].map(([stateId, visits]) => ({ stateId, visits }));
 
-    // Supply contract & outcome-only preview (M6, S11: never throws 422 on preview)
+    // Supply contract & outcome-only preview (M6, S11: never throws 422 on preview; M2: catch only WorkflowStoreError)
     let supplyContract: WorkflowRerunSupplyContract | null = null;
+    let supplyContractError: WorkflowStoreError | null = null;
     let supplyPreview: WorkflowRerunSupplyPreview | null = null;
-    const effectiveSourceIr = sourceIr ?? targetIr;
     if (mode === "supply" || modesAvailable.includes("supply")) {
         try {
             supplyContract = validateRerunSupply({
                 chosen,
                 reused,
-                sourceIr: effectiveSourceIr,
+                sourceIr,
                 targetIr,
                 requireResultAndNote: false,
             }).contract;
-        } catch {
-            supplyContract = null;
+        } catch (error) {
+            if (error instanceof WorkflowStoreError) {
+                supplyContract = null;
+                supplyContractError = error;
+            } else {
+                throw error;
+            }
         }
     }
     if (mode === "supply" && supplyOutcome !== undefined && supplyOutcome !== null && supplyOutcome !== "") {
         const previewProblems: WorkflowRerunProblem[] = [];
         let previewNext: { stateId: string; visit: number } | null = null;
         if (!supplyContract) {
+            const targetMissing = !Object.hasOwn(targetIr.nodes, chosen.nodeId);
             previewProblems.push({
-                code: "step_missing",
+                code: targetMissing ? "step_missing" : "supply_not_allowed",
                 stateId: chosen.nodeId,
                 visit: chosen.ordinal,
-                message: `Step ${chosen.nodeId} cannot be supplied on target revision.`,
+                message: supplyContractError?.message ?? `Step ${chosen.nodeId} cannot be supplied on target revision.`,
             });
         } else if (!supplyContract.outcomes.includes(supplyOutcome)) {
             previewProblems.push({
@@ -1840,7 +1862,7 @@ export function buildRerunPlan(input: BuildRerunPlanInput): WorkflowRerunPlan {
             steps,
             requests: reusedRequests.map(r => ({ ...r })),
         },
-        carried: carried ? { count: carried.count, contracts: [...carried.contracts] } : { count: 0, contracts: [] },
+        carried: { count: carried.count, contracts: [...carried.contracts] },
         runs: {
             first: firstRun,
         },

@@ -40,6 +40,7 @@
       "SupplyNotePresent",
       "AllowRetrySupplyChange",
       "AutoPicked",
+      "ReqModeContinue",
       "AllowResumeAfterCrash",
       "AllowShellSweeper",
       "AllowPostSweepStart",

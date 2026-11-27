@@ -57,11 +57,18 @@ function makeKey(overrides) {
         inputSha256: `in-${nodeId}-${ordinal}`,
         carrySha256: null,
         hasCarry: false,
+        carryByteLength: 0,
         byteLength: 1024,
         reusedFromExecutionId: null,
         reusedFromRunId: null,
         reusedFromWorkflowSessionId: null,
+        suppliedFromExecutionId: null,
+        suppliedFromRunId: null,
+        suppliedFromWorkflowSessionId: null,
+        suppliedNote: null,
         spawnChildWorkflowId: null,
+        spawnChildCancelledBySourceEnd: false,
+        spawnChildHasNotice: true,
         ...overrides,
     };
 }
@@ -945,6 +952,7 @@ states:
         dropped: partDecide.dropped.map(k => ({ ...k, outputPreview: null })),
         sourceIr: compiled.ir,
         targetIr: compiled.ir,
+        carried: { count: 0, contracts: [] },
         warnings: warningsDecide,
         allowed: true,
         blockedReason: null,
@@ -995,9 +1003,13 @@ states:
     assert.equal(parsed.nodes.s1.supply, "never");
     assert.equal(parsed.nodes.a1.supply, "never");
 
-    // Re-compiling baseYaml gives exact same irSha256 (unset supply omitted from IR)
-    const baseRes2 = mustCompile(baseYaml);
-    assert.equal(baseRes2.irSha256, baseRes.irSha256);
+    // M13(a): pinned literal irSha256 from pre-amendment cf0e203cb compiler proves unset supply leaves irSha256 byte-identical
+    assert.equal(baseRes.irSha256, "c89da35ebe2b98f6fff861ac5393d0650c44a4ac0cfbcc31430eec16d57d7190");
+
+    // M13(b): parseWorkflowIr rejects invalid stored supply values
+    const badStored = JSON.parse(JSON.stringify(neverRes.ir));
+    badStored.nodes.s1.supply = "always";
+    assert.throws(() => parseWorkflowIr(badStored), /invalid/i);
 
     // Invalid supply value on script -> WORKFLOW_FIELD_INVALID
     const badVal = compileWorkflow(baseYaml.replace('    source:', '    supply: always\n    source:'));
@@ -1197,6 +1209,56 @@ states:
         ),
         (err) => err.code === "RERUN_VISIT_NOT_ALLOWED" && err.details?.reason === "first_visit",
     );
+
+    // 6. I3: auto-pick with explicit mode: "continue" (executionId omitted) skips G-R1 and emits reused_child_cancelled warning
+    const vCont = chainKeys([
+        { nodeId: "init", ordinal: 1, nodeType: "script", outcome: "ok" },
+        { nodeId: "top_sp", ordinal: 1, nodeType: "spawn", arrivalRoute: "ok", outcome: "started", spawnChildWorkflowId: "child-cont", spawnChildCancelledBySourceEnd: true, spawnChildHasNotice: false },
+        { nodeId: "finish", ordinal: 1, nodeType: "script", arrivalRoute: "started", outcome: "unrouted_x", resultKind: "business" },
+    ]);
+    const pExplicitContinue = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "no_route", details: { nodeExecutionId: vCont[2].nodeExecutionId } } },
+        vCont,
+        { mode: "continue" },
+    );
+    assert.equal(pExplicitContinue.chosen.nodeExecutionId, vCont[2].nodeExecutionId);
+    assert.equal(pExplicitContinue.mode, "continue");
+    assert.equal(pExplicitContinue.picked, "unrouted_outcome");
+    const partCont = partitionRerunVisits(vCont, pExplicitContinue.chosen.nodeExecutionId, "continue");
+    const warnsCont = buildRerunWarnings({
+        sourceNumber: 2, targetIr: compiled.ir, reused: partCont.reused, dropped: partCont.dropped,
+        chosen: pExplicitContinue.chosen, mode: "continue", changedReusedSteps: [],
+        deliveredOutboxExecIds: new Set(), droppedSpawnChildren: new Map(), reusedSpawnNoticeChildIds: new Set(),
+        droppedConsumedUncarriedExecIds: new Set(), reusedApprovals: [], droppedApprovals: [],
+    });
+    assert.ok(warnsCont.some(w => w.code === "reused_child_cancelled" && w.message.includes("child-cont") && w.message.includes("Choose top_sp instead")));
+
+    // 7. I3: reqMode === null where defaultMode would be "continue" (unrouted_outcome & limit_exceeded) STILL cuts back via G-R1!
+    const pUnroutedGr1 = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "no_route", details: { nodeExecutionId: vCont[2].nodeExecutionId } } },
+        vCont,
+    );
+    assert.equal(pUnroutedGr1.chosen.nodeExecutionId, vCont[1].nodeExecutionId);
+    assert.equal(pUnroutedGr1.mode, "run_again");
+    assert.equal(pUnroutedGr1.picked, "reused_spawn");
+
+    const pLimitGr1 = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "limit_exceeded", message: "hit limit" } },
+        vCont,
+    );
+    assert.equal(pLimitGr1.chosen.nodeExecutionId, vCont[1].nodeExecutionId);
+    assert.equal(pLimitGr1.mode, "run_again");
+    assert.equal(pLimitGr1.picked, "reused_spawn");
+
+    // 8. I3: explicit reqMode === "run_again" with executionId omitted applies G-R1 cut-back
+    const pExplicitRunAgain = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "no_route", details: { nodeExecutionId: vCont[2].nodeExecutionId } } },
+        vCont,
+        { mode: "run_again" },
+    );
+    assert.equal(pExplicitRunAgain.chosen.nodeExecutionId, vCont[1].nodeExecutionId);
+    assert.equal(pExplicitRunAgain.mode, "run_again");
+    assert.equal(pExplicitRunAgain.picked, "reused_spawn");
 });
 
 test("supply mode: validation (step types, supply: never on S or T, 400 vs 422, outputSchema, size, C4 incl. catchAll, visit 1, resume, preview)", () => {
@@ -1432,11 +1494,134 @@ states:
         sourceIr: src.ir,
         targetIr: src.ir,
         supplyOutcome: "undeclared_x",
+        carried: { count: 0, contracts: [] },
         warnings: [],
         allowed: true,
         blockedReason: null,
     });
     assert.equal(supPlanBad.supply?.valid, false);
     assert.equal(supPlanBad.supply?.next, null);
+    assert.equal(supPlanBad.revision.newestValidFits, true);
     assert.ok(supPlanBad.supply?.problems.some(p => p.code === "undeclared_outcome"));
+
+    // M1: Catch-all self-loop in supply mode: preview nextByOutcome matches C4 catch_all_twice refusal
+    const selfLoopCaIr = mustCompile(
+        yaml.replace('    source: \'await setResult("ok", {});\'\n    transition: { next: { ok: done } }',
+            '    outcomes: [ok, retry]\n    source: \'await setResult("ok", {});\'\n    transition: { next: { ok: done, retry: rescue } }'),
+    ).ir;
+    const vRescue = chainKeys([
+        { nodeId: "prov", ordinal: 1, nodeType: "script", outcome: "fallback", resultKind: "business", hasCarry: true },
+        { nodeId: "rescue", ordinal: 1, nodeType: "script", arrivalRoute: "fallback", outcome: "timed_out", resultKind: "runtime_error" },
+    ]);
+    const partRescSelf = partitionRerunVisits(vRescue, vRescue[1].nodeExecutionId, "supply");
+    const selfContract = validateRerunSupply({
+        chosen: vRescue[1], reused: partRescSelf.reused, sourceIr: selfLoopCaIr, targetIr: selfLoopCaIr, requireResultAndNote: false,
+    }).contract;
+    assert.equal(selfContract.nextByOutcome.retry, null, "M1: catch-all self-loop must report null in nextByOutcome");
+    assert.deepEqual(selfContract.nextByOutcome.ok, { stateId: "done", visit: 1 });
+    const selfCompat = checkRerunCompatibility({
+        sourceIr: selfLoopCaIr, targetIr: selfLoopCaIr,
+        reused: partRescSelf.reused, reusedTop: partRescSelf.reusedTop,
+        chosen: vRescue[1], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "retry",
+    });
+    assert.equal(selfCompat.fits, false);
+    assert.ok(selfCompat.problems.some(p => p.code === "catch_all_twice"));
+
+    // M2: buildRerunPlan maps supply_never to supply_not_allowed (not step_missing)
+    const supPlanNever = buildRerunPlan({
+        source: { workflowId: "wf-2", runId: "run-2", revision: 2, status: "failed", number: 2 },
+        chosen: v[0], picked: "requested", mode: "supply", modesAvailable: [],
+        revision: { newestValid: 3, newestValidFits: false, newestValidProblem: null, fits: true, problems: [], changedReusedSteps: [] },
+        reused: partFirst.reused, reusedRequests: [], dropped: [],
+        sourceIr: neverIr, targetIr: src.ir, supplyOutcome: "ready",
+        carried: { count: 0, contracts: [] }, warnings: [], allowed: false, blockedReason: "supply_never",
+    });
+    assert.equal(supPlanNever.supply?.valid, false);
+    assert.ok(supPlanNever.supply?.problems.some(p => p.code === "supply_not_allowed"));
+
+    // M3: modesAvailable excludes supply when targetIr changed V's type, or when supply: never, or exhausted
+    const waitProvIr = mustCompile(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: sup-flow, version: "1.0.0" }
+initial: prov
+states:
+  prov: { type: wait, seconds: 5, transition: { next: { elapsed: done } } }
+  done: { type: terminal, outcome: succeeded }
+`).ir;
+    const pNeverModes = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: null },
+        v,
+        { executionId: v[0].nodeExecutionId, mode: "continue", sourceIr: neverIr, targetIr: src.ir },
+    );
+    assert.ok(!pNeverModes.modesAvailable.includes("supply"));
+    const pWaitTargetModes = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: null },
+        v,
+        { executionId: v[0].nodeExecutionId, mode: "continue", sourceIr: src.ir, targetIr: waitProvIr },
+    );
+    assert.ok(!pWaitTargetModes.modesAvailable.includes("supply"));
+
+    // M4: buildRerunResume throws when nextStateId or nextOrdinal is null in supply mode
+    assert.throws(
+        () => buildRerunResume({
+            mode: "supply", chosen: v[0], mappedPredecessorId: null,
+            cutKvRevision: 1, sourceRevision: 2, sourceIrSha256: src.irSha256, targetIrSha256: src.irSha256,
+            supplied: { mappedSuppliedId: "nx-1", outcome: "ready", outputSha256: "h", note: "n", at: "2026-11-27T00:00:00Z", nextStateId: null, nextOrdinal: 1 },
+        }),
+        (err) => err.code === "RERUN_ARGUMENT_REFUSED",
+    );
+
+    // M5: validateRerunSupply refuses non-completed V
+    assert.throws(
+        () => validateRerunSupply({
+            chosen: makeKey({ ...v[0], state: "pending" }), reused: [], sourceIr: src.ir, targetIr: src.ir, requireResultAndNote: false,
+        }),
+        (err) => err.code === "RERUN_VISIT_NOT_ALLOWED" && err.details?.reason === "not_completed",
+    );
+
+    // M13(b): C4 supply with suppliedOutcome=null, C8 maxVisits for V', C6 carry on V, C1 V type change, C3 final pair (last reused, V)
+    const c4NullOk = checkRerunCompatibility({
+        sourceIr: src.ir, targetIr: src.ir,
+        reused: partFirst.reused, reusedTop: partFirst.reusedTop,
+        chosen: v[0], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: null,
+    });
+    assert.equal(c4NullOk.fits, true);
+
+    const vOrd3 = makeKey({ ...v[0], ordinal: 3 });
+    const c8MaxV = checkRerunCompatibility({
+        sourceIr: src.ir, targetIr: src.ir,
+        reused: [], reusedTop: [],
+        chosen: vOrd3, mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "ready",
+    });
+    assert.equal(c8MaxV.fits, false);
+    assert.ok(c8MaxV.problems.some(p => p.code === "limit_too_low"));
+
+    const noCarryIr = mustCompile(yaml.replace("    carry: { attempt: 1 }\n", "")).ir;
+    const c6CarryV = checkRerunCompatibility({
+        sourceIr: src.ir, targetIr: noCarryIr,
+        reused: [], reusedTop: [],
+        chosen: v[0], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "ready",
+    });
+    assert.equal(c6CarryV.fits, false);
+    assert.ok(c6CarryV.problems.some(p => p.code === "carry_changed"));
+
+    const c1TypeV = checkRerunCompatibility({
+        sourceIr: src.ir, targetIr: waitProvIr,
+        reused: [], reusedTop: [],
+        chosen: v[0], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "ready",
+    });
+    assert.equal(c1TypeV.fits, false);
+    assert.ok(c1TypeV.problems.some(p => p.code === "step_type_changed"));
+
+    // C3 final pair (last reused prov -> chosen review) when target reroutes prov away from review
+    const reroutedIr = mustCompile(yaml.replace("ready: review", "ready: approve")).ir;
+    const partRev = partitionRerunVisits(v, v[1].nodeExecutionId, "supply");
+    const c3FinalPair = checkRerunCompatibility({
+        sourceIr: src.ir, targetIr: reroutedIr,
+        reused: partRev.reused, reusedTop: partRev.reusedTop,
+        chosen: v[1], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "ok",
+    });
+    assert.equal(c3FinalPair.fits, false);
+    assert.ok(c3FinalPair.problems.some(p => p.code === "route_changed"));
 });

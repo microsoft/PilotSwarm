@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1, batch rr2).
+"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1 + supply, batch rr4).
 The .cfg files are generated from these by run-tlc.sh / check-packet.sh (../../tlc_cases.py)."""
 import json
 import os as _os
@@ -55,6 +55,7 @@ def c(
     supply_note_present=True,
     allow_retry_supply_change=False,
     auto_picked=False,
+    req_mode_continue=False,
     allow_resume_after_crash=True,
     allow_shell_sweeper=False,
     allow_post_sweep_start=False,
@@ -108,6 +109,7 @@ def c(
         SupplyNotePresent=supply_note_present,
         AllowRetrySupplyChange=allow_retry_supply_change,
         AutoPicked=auto_picked,
+        ReqModeContinue=req_mode_continue,
         AllowResumeAfterCrash=allow_resume_after_crash,
         AllowShellSweeper=allow_shell_sweeper,
         AllowPostSweepStart=allow_post_sweep_start,
@@ -1001,6 +1003,24 @@ CASES = [
         "S2a: G-R1 lifts cancelled parallel-lane spawn to enclosing PNode; Inv_AutoPickNoCancelledReuse & Inv_QuiescentNoLive hold.",
     ),
     (
+        "rr.design-gr1-explicit-continue",
+        "design",
+        "Spec",
+        c(
+            source_kind="spawn",
+            mode="continue",
+            auto_picked=True,
+            req_mode_continue=True,
+            allow_owner_end=False,
+            allow_deleters=True,
+        ),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "I2/R2-N3: auto-pick with explicit mode='continue' (ReqModeContinue=TRUE) skips G-R1 cut-back, reuses SPNode, and matches rerun.ts scope.",
+    ),
+    (
         "rr.design-sweeper-admission-race",
         "design",
         "Spec",
@@ -1018,6 +1038,25 @@ CASES = [
         "PASS",
         True,
         "R2-M1: full observable Sweeper-vs-admission & late-retry race (AdvanceClaimGrace in any pre-admission phase; no startPhase oracle; losing late retry ends refused_workflow_deleted).",
+    ),
+    (
+        "rr.design-sweeper-admission-owner-race",
+        "design",
+        "Spec",
+        c(
+            source_kind="loop",
+            mode="run_again",
+            allow_owner_end=True,
+            allow_deleters=False,
+            allow_claim_crash=True,
+            allow_resume_after_crash=True,
+            allow_shell_sweeper=True,
+        ),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "M8: combines AllowOwnerEnd=TRUE and AllowShellSweeper=TRUE to verify Prop_SweepRequiresLockAndNoRun holds even while OwnerEnd is parked at locked_def.",
     ),
     # ---- Unit 3A-Supply Liveness Cases ----
     (

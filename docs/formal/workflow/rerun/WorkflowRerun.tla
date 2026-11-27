@@ -13,9 +13,10 @@
 (*     AdmitRerunCopy (owner FOR SHARE -> def FOR SHARE -> #2 FOR SHARE    *)
 (*     -> #3 FOR NO KEY UPDATE in ascending session_id order);             *)
 (*   - Immediate refusal cleanup of claim shell (Inv_RefusedClaimDeleted-  *)
-(*     AtOnce) and Sweeper collection of stale no-run + NotFound claim     *)
-(*     shells after grace on its own without OwnerEnd (10:24 PST,          *)
-(*     SweeperCollectClaimShell, Inv_NoSweepDuringActiveClaim);            *)
+(*     AtOnce) and Sweeper collection of stale bare claim shells after     *)
+(*     grace on its own without OwnerEnd (R2-M1, SweeperReadBareShell +    *)
+(*     SweeperCollectClaimShell, Inv_AdmittedNotSwept,                     *)
+(*     Prop_SweepRequiresLockAndNoRun);                                    *)
 (*   - Three deleters with exact SQL lock modes:                           *)
 (*       * SweeperDirect: blocking FOR NO KEY UPDATE on target #2,         *)
 (*         NOWAIT on descendants (store.ts sweeperSoftDelete);             *)
@@ -78,6 +79,7 @@ CONSTANTS
     SupplyNotePresent,            \* TRUE = valid non-blank note present
     AllowRetrySupplyChange,       \* allow retry after claim crash with changed supply payload
     AutoPicked,                   \* TRUE = execution_id omitted (auto-pick with G-R1)
+    ReqModeContinue,              \* TRUE = caller explicitly passed mode="continue" (disables G-R1 per §5.5/§6.2/R2-N3)
     AllowResumeAfterCrash,        \* TRUE = crashed claim can retry; FALSE = unretried crash (S6)
     AllowShellSweeper,            \* enable SweeperReadBareShell + SweeperCollectClaimShell after grace without OwnerEnd
     AllowPostSweepStart,          \* allow one fresh Start (new key/opId) after Sweeper collects a stale shell
@@ -105,7 +107,7 @@ ASSUME {StartVars, InputHashMismatch, AllowDeleters, AllowOwnerEnd, AllowClaimCr
         FlatOrigin, AtomicCopy, ApprovalGate, StartsDecided, CopyKeepsIds, OrdinalsRestart,
         DropsCatchAll, NoSourceLock, RepickOnResume, CopyKeepsDeadline, DivergeInserts,
         CarryLateMessage, LockNewBeforeOwner,
-        SupplyNever, SupplyNotePresent, AllowRetrySupplyChange, AutoPicked, AllowResumeAfterCrash,
+        SupplyNever, SupplyNotePresent, AllowRetrySupplyChange, AutoPicked, ReqModeContinue, AllowResumeAfterCrash,
         AllowShellSweeper, AllowPostSweepStart, AllowSupplyOnForbiddenStep, StartsSupplied,
         AllowUndeclaredSupplyOutcome, IgnoreSupplyNever, IgnoreMissingSupplyNote,
         RepickSuppliedOnRetry, SkipGr1CutBack, SkipParentEndCancel, SkipImmediateRefusalCleanup,
@@ -148,8 +150,35 @@ NodeKindOf(x) ==
 IsCancelledOrNoticelessSpawn(x) ==
     (SourceKind = "spawn" /\ x = SPNode) \/ (SourceKind = "spawn_lane" /\ x = LSPNode)
 
-Gr1Active ==
-    AutoPicked /\ ~SkipGr1CutBack /\ SourceKind \in {"spawn", "spawn_lane"}
+\* G-R1 lift helper: top-level spawn maps to itself; lane spawn lifts to enclosing PNode.
+EnclosingTopOf(x) ==
+    IF x = LSPNode THEN PNode ELSE x
+
+\* G-R1 cut-back applies ONLY when execution_id is omitted AND caller did NOT explicitly ask for mode="continue" (§5.5/§6.2/R2-N3).
+Gr1Applies == AutoPicked /\ ~ReqModeContinue /\ ~SkipGr1CutBack
+
+\* Candidate pre-cut chain before G-R1 scan (used for spawn / spawn_lane)
+CandSpawnTop ==
+    CASE SourceKind = "spawn"      -> <<SNode(1), SPNode>>
+      [] SourceKind = "spawn_lane" -> <<SNode(1), PNode>>
+      [] OTHER                     -> <<>>
+
+CandSpawnLanes ==
+    IF SourceKind = "spawn_lane" THEN {LSPNode} ELSE {}
+
+CandSpawnAll == {CandSpawnTop[i] : i \in 1..Len(CandSpawnTop)} \cup CandSpawnLanes
+
+\* Scan candidate top + lane visits for cancelled/noticeless spawns, lift to enclosing top-level node, and pick earliest index.
+Gr1BadTopIndices ==
+    {i \in 1..Len(CandSpawnTop) :
+        \E x \in CandSpawnAll : IsCancelledOrNoticelessSpawn(x) /\ EnclosingTopOf(x) = CandSpawnTop[i]}
+
+Gr1EarliestIdx ==
+    IF Gr1Applies /\ Gr1BadTopIndices # {}
+      THEN CHOOSE i \in Gr1BadTopIndices : \A j \in Gr1BadTopIndices : i <= j
+      ELSE 0
+
+Gr1Active == (Gr1EarliestIdx > 0)
 
 \* Inbox message model (m0 consumed by reused visit, m1 waiting at cut, m2 late post-cut, m_child WorkflowEnded@1 for reused spawn)
 InboxMsgs == {"m0", "m1", "m2", "m_child"}
@@ -195,10 +224,8 @@ SrcReusedTop ==
       [] SourceKind = "parallel"                           -> <<PNode>>
       [] SourceKind = "approval"                           -> <<ANode>>
       [] SourceKind = "inbox"                              -> <<RNode(1)>>
-      [] SourceKind = "spawn" /\ Gr1Active                 -> <<SNode(1)>>
-      [] SourceKind = "spawn" /\ ~Gr1Active                -> <<SNode(1), SPNode>>
-      [] SourceKind = "spawn_lane" /\ Gr1Active            -> <<SNode(1)>>
-      [] SourceKind = "spawn_lane" /\ ~Gr1Active           -> <<SNode(1), PNode>>
+      [] SourceKind = "spawn"                              -> IF Gr1Active THEN SubSeq(CandSpawnTop, 1, Gr1EarliestIdx - 1) ELSE CandSpawnTop
+      [] SourceKind = "spawn_lane"                         -> IF Gr1Active THEN SubSeq(CandSpawnTop, 1, Gr1EarliestIdx - 1) ELSE CandSpawnTop
 
 SrcReusedLanes ==
     CASE SourceKind = "parallel"                  -> {LNode}
@@ -774,16 +801,25 @@ CopyLockSrc ==
                    copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
+\* M9: CopyLockStep2 acquires newLock (FOR NO KEY UPDATE) and immediately checks whether the Sweeper
+\* already soft-deleted #3's bare claim shell; if so, releases locks and refuses refused_workflow_deleted (0 rows written).
 CopyLockStep2 ==
     /\ startPhase = "lock_src"
     /\ IF LockNewBeforeOwner
          THEN /\ newLock = "free" /\ ownerLock = "free" /\ defLock = "free"
-              /\ newLock' = "copy_excl" /\ ownerLock' = "copy_share" /\ defLock' = "copy_share"
-              /\ UNCHANGED srcLock
+              /\ IF claimShellState = "soft_deleted"
+                   THEN /\ startPhase' = "refused_workflow_deleted"
+                        /\ ReleaseCopyLocks
+                   ELSE /\ newLock' = "copy_excl" /\ ownerLock' = "copy_share" /\ defLock' = "copy_share"
+                        /\ UNCHANGED srcLock
+                        /\ startPhase' = "lock_step2"
          ELSE /\ newLock = "free"
-              /\ newLock' = "copy_excl"
-              /\ UNCHANGED <<ownerLock, defLock, srcLock>>
-    /\ startPhase' = "lock_step2"
+              /\ IF claimShellState = "soft_deleted"
+                   THEN /\ startPhase' = "refused_workflow_deleted"
+                        /\ ReleaseCopyLocks
+                   ELSE /\ newLock' = "copy_excl"
+                        /\ UNCHANGED <<ownerLock, defLock, srcLock>>
+                        /\ startPhase' = "lock_step2"
     /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                    copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
@@ -1572,7 +1608,7 @@ Inv_SuppliedOutcomeDeclared ==
         /\ SupplyNotePresent
 
 Inv_AutoPickNoCancelledReuse ==
-    (AutoPicked /\ startPhase = "admitted") =>
+    (AutoPicked /\ ~ReqModeContinue /\ startPhase = "admitted") =>
         \A x \in reusedSet : ~IsCancelledOrNoticelessSpawn(x)
 
 Inv_RefusedClaimDeletedAtOnce ==
@@ -1584,15 +1620,18 @@ Inv_AdmittedNotSwept ==
     /\ ((startPhase = "admitted" /\ ~ownerEndedNew) => (claimShellState = "admitted"))
     /\ ((runStatus # "none" /\ ~ownerEndedNew) => (claimShellState = "admitted"))
 
-\* R2-M1 step property: Sweeper deletes a bare shell only when grace elapsed, newLock was free, and no run exists;
-\* and never deletes an admitted shell.
+\* R2-M1 / M8 step property: Sweeper deletes a bare shell only when grace elapsed, newLock was free, and no run exists;
+\* and never deletes an admitted shell. Identifies OwnerEndCommit strictly by (ownerEndPc = "locked_def" /\ ownerEndPc' = "done")
+\* so Sweeper deletions while OwnerEnd is parked at locked_def are still checked.
+OwnerEndCommitsThisStep == (ownerEndPc = "locked_def" /\ ownerEndPc' = "done")
+
 Prop_SweepRequiresLockAndNoRun ==
     [][
         /\ ((claimShellState = "live_unadmitted" /\ claimShellState' = "soft_deleted"
-             /\ ownerEndPc # "locked_def" /\ startPhase' \notin Refused) =>
+             /\ ~OwnerEndCommitsThisStep /\ startPhase' \notin Refused) =>
                 (claimGraceElapsed /\ newLock = "free" /\ runStatus = "none"))
         /\ ((claimShellState = "admitted" /\ claimShellState' = "soft_deleted"
-             /\ ownerEndPc # "locked_def") => FALSE)
+             /\ ~OwnerEndCommitsThisStep) => FALSE)
     ]_vars
 
 Inv_QuiescentNoLive ==

@@ -18,12 +18,13 @@ const ACTOR = { kind: "system", name: "workflow-rerun-migration-test" };
 function pgPoolConfig(connectionString) {
     const parsed = new URL(connectionString);
     const sslMode = (parsed.searchParams.get("sslmode") ?? "").toLowerCase();
-    const needsSsl = ["require", "prefer", "verify-ca", "verify-full"].includes(sslMode);
-    parsed.searchParams.delete("sslmode");
+    // Preserve strict verify-ca / verify-full semantics; only relax require / prefer for preview HorizonDB certs (M13d).
+    const relaxSsl = sslMode === "require" || sslMode === "prefer";
+    if (relaxSsl) parsed.searchParams.delete("sslmode");
     return {
         connectionString: parsed.toString(),
         max: 2,
-        ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+        ...(relaxSsl ? { ssl: { rejectUnauthorized: false } } : {}),
     };
 }
 
@@ -207,6 +208,32 @@ describe("migration 0104: workflow_rerun", () => {
                      AND state = 'completed' AND deadline_at IS NULL)
                 );
             `);
+            // Seed existing pre-supply 3A rerun + reused rows BEFORE self-upgrade to prove VALIDATE CONSTRAINT passes over live 3A data (M13c).
+            const preWf2 = `pre-wf2-${tag}`;
+            const preWf3 = `pre-wf3-${tag}`;
+            const preRun2 = `pre-run2-${tag}`;
+            const preRun3 = `pre-run3-${tag}`;
+            for (const wf of [preWf2, preWf3]) {
+                await query(`INSERT INTO ${su}.workflow_definitions (workflow_session_id, api_version, state, current_revision, published_revision, published_yaml_sha256, published_ir_sha256) VALUES ($1, 'pilotswarm.dev/v1', 'published', 1, 1, 'yh', 'ih')`, [wf]);
+                await query(`INSERT INTO ${su}.workflow_revisions (workflow_session_id, revision, yaml, yaml_sha256, valid, diagnostics, ir, ir_sha256, actor) VALUES ($1, 1, 'y', 'yh', true, '[]', '{}', 'ih', '{}')`, [wf]);
+            }
+            await query(
+                `INSERT INTO ${su}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id, finished_at)
+                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'failed', 'op-pre2', now())`,
+                [preRun2, preWf2, `session-${preWf2}`],
+            );
+            await query(
+                `INSERT INTO ${su}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id,
+                    rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
+                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op-pre3', $4, $5, 'nx-pre2', 'run_again', '{}', 1, 0, '{}')`,
+                [preRun3, preWf3, `session-${preWf3}`, preWf2, preRun2],
+            );
+            await query(
+                `INSERT INTO ${su}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, completed_at, deadline_at,
+                    reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at)
+                 VALUES ('nx-pre3', $1, 'root', 'step', 1, 'script', '{}', 'h', 'completed', 'ok', 'business', '{}', 'effect', now(), NULL, 'nx-pre2', $2, $3, now())`,
+                [preRun3, preRun2, preWf2],
+            );
             for (const stepSql of workflowRerunMigration(selfUpgraded)) {
                 await query(stepSql);
             }
@@ -318,6 +345,14 @@ describe("migration 0104: workflow_rerun", () => {
                     rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
                  VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-sup-bad-unwalked', $4, $5, $6, 'supply', '{}', 0, 1, '{}')`,
                 [`${run3}-sup-bad-unwalked`, wf3, `session-${wf3}-sup-bad-unwalked`, wf2, run2, nx2],
+            ), "23514");
+
+            // rerun_mode = 'supply' with rerun_reused >= 1 AND rerun_unwalked >= rerun_reused rejected (23514, M13c)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id,
+                    rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
+                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-sup-bad-ge', $4, $5, $6, 'supply', '{}', 2, 2, '{}')`,
+                [`${run3}-sup-bad-ge`, wf3, `session-${wf3}-sup-bad-ge`, wf2, run2, nx2],
             ), "23514");
 
             // rerun_mode = 'supply' with rerun_reused = 0, rerun_unwalked = 0 (visit 1) succeeds
