@@ -737,9 +737,12 @@ read, pause or cancel each of the three.
 | The Workflow's own agent step, and the sub-agents of that step | Yes | No | No |
 | Any other session | No | No | No |
 
-A session above a deleted session is refused: the chain is broken there. A
-session inside a Workflow (an agent step or one of its sub-agents) has no
-`update_workflow` at all. A refusal of a live Workflow is `FORBIDDEN`, and its
+A session above a deleted session is refused: the chain is broken there. The
+check is made when the command arrives: a command allowed then still finishes
+if a session in between is deleted while it runs. A session above the
+starter controls the live run only; a test run of the definition stays with
+the session that started the Workflow. A session inside a Workflow (an agent
+step or one of its sub-agents) has no `update_workflow` at all. A refusal of a live Workflow is `FORBIDDEN`, and its
 message names the rule. After a Workflow is cleaned up, the session that
 started it and the sessions above that one still read its outcome with
 `read_workflow`; anyone else gets `WORKFLOW_NOT_FOUND`. `send_workflow_input`
@@ -860,8 +863,9 @@ collect:
   transition: { next: { received: check, elapsed: failed, failure: failed } }
 ```
 
-A receive of `WorkflowEnded@1` with `correlate:` never takes the message, so
-saving it gives the warning `WORKFLOW_ENDED_CORRELATE`.
+A receive of `WorkflowEnded@1` with a non-empty `correlate:` never takes the
+message, so saving it gives the warning `WORKFLOW_ENDED_CORRELATE`. (An empty
+`correlate: {}` matches, and is not warned.)
 
 | Field | Meaning |
 |---|---|
@@ -874,9 +878,12 @@ saving it gives the warning `WORKFLOW_ENDED_CORRELATE`.
 
 The child keeps the output in the message when it fits a worst-case budget:
 195,584 bytes (about 190 KiB) and the JSON nesting limit, measured as a list
-`receive` inside a `carry` would pass it on. Within that budget the next step
-always takes the message whole. A run's output is at most 256 KiB, so only
-outputs near that size are left out. Then a script step reads it whole with
+`receive` inside a `carry` would pass it on. Within that budget the message
+holds the whole output, and passing it on never makes the next step's input
+too large; the next step still checks its input as usual (its schema, its own
+`input:` mapping). A run's output is at most 256 KiB, so only outputs near that
+size, or nested too deep to wrap, are left out. Then a script step reads it
+whole with
 `callTool("child_workflows", { operation: "read", workflow_id, full_output: true })`.
 With `full_output`, the answer holds only the child's result:
 `{ workflowId, run: { runId, status, outcome, terminalState, output, error } }`,

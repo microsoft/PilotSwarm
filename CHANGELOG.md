@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+**Upgrade: stop every worker, deploy, then start them. Do not roll the
+workers.** No CMS migration, and no session orchestration or Workflow
+controller version change. A child Workflow's end message now has a new form.
+An older worker that retries a message a newer worker already stored is
+refused (`OPERATION_CONFLICT`); the parent still has the message. Before you
+roll back, let running child Workflows finish.
+
+### Workflows: every session above a Workflow reads and controls it
+
+`read_workflow` and `update_workflow` now work on Workflows nested below the
+session's own: a grandparent reads, pauses, resumes, stops, cancels, recovers
+and sets the variables of a child Workflow of its batch, through any number of
+nested Workflows, when every session between is live and has the same owner.
+Changing, testing and starting a definition, and controlling a test run, stay
+with the session that started the Workflow. A Workflow's own agent step, and
+its sub-agents, read the Workflow but do not control it. Each refusal names its
+rule. A cleaned-up Workflow's kept outcome is readable by the same sessions
+above it.
+
+### Workflows: whole child results
+
+A child Workflow's `WorkflowEnded@1` message now carries its whole output up to
+195,584 bytes (was 16 KiB), measured on the widest form a receiving state passes
+on, and names the child's `runId`. `outputTruncated` is `true` only when the
+output was left out; then `child_workflows` `read` with `full_output: true`
+returns it whole, also after the child was cleaned up. Saving a receive of
+`WorkflowEnded@1` with a non-empty `correlate:` now warns
+`WORKFLOW_ENDED_CORRELATE`: the message has no correlation; match a child with
+`from:`.
+
 ## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start

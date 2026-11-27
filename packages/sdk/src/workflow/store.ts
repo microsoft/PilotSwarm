@@ -6641,12 +6641,23 @@ export class WorkflowStore {
     }
 
     /**
-     * I6: a run's terminal output as its stored canonical JSON text, exactly: "null" for a JSON null output, null when the
-     * run has none (readRun parses both to null).
+     * I6: a Workflow's newest live run and its result, read in one statement so its status and its output are of the same
+     * moment (review r2): the output is the stored canonical JSON text exactly, "null" for a JSON null output and null when
+     * the run has none (readRun parses both to null). Null when the Workflow has no live run.
      */
-    async readRunOutputText(runId: string): Promise<string | null> {
-        const { rows } = await this.pool.query(`SELECT terminal_output FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
-        return rows[0] ? strOrNull(rows[0], "terminal_output") : null;
+    async readLiveRunResult(workflowSessionId: string): Promise<{
+        runId: string; status: WorkflowRunStatus; outcome: string | null; terminalState: string | null; outputText: string | null; error: JsonValue;
+    } | null> {
+        const { rows } = await this.pool.query(
+            `SELECT run_id, status, terminal_outcome, terminal_node_id, terminal_output, terminal_error FROM ${this.t.runs}
+              WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC, run_id DESC LIMIT 1`, [workflowSessionId]);
+        if (!rows[0]) return null;
+        const status = str(rows[0], "status");
+        if (!isRunStatus(status)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Unknown run status ${status}.`);
+        return {
+            runId: str(rows[0], "run_id"), status, outcome: strOrNull(rows[0], "terminal_outcome"), terminalState: strOrNull(rows[0], "terminal_node_id"),
+            outputText: strOrNull(rows[0], "terminal_output"), error: redactWorkflowErrorValue(jsonOrNull(rows[0], "terminal_error")),
+        };
     }
 
     /**

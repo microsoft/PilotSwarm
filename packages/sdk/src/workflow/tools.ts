@@ -2096,14 +2096,12 @@ export async function childWorkflowsFromTool(
                 return payload({ ok: true, ...view });
             }
             if (fullOutput) {
-                const runs = await context.host.store.listRuns(workflowSessionId);
-                const run = runs.find(item => item.mode === "live");
+                const run = await context.host.store.readLiveRunResult(workflowSessionId);
                 if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", "This workflow has no live run.");
-                const outputText = await context.host.store.readRunOutputText(run.runId);
                 return payload({ ok: true, ...childResultView(workflowSessionId, false, {
-                    runId: run.runId, status: run.status, outcome: run.terminalOutcome, terminalState: run.terminalNodeId,
-                    error: run.terminalError === null ? null : previewJson(run.terminalError, 2_000),
-                }, outputText) });
+                    runId: run.runId, status: run.status, outcome: run.outcome, terminalState: run.terminalState,
+                    error: run.error === null ? null : previewJson(run.error, 2_000),
+                }, run.outputText) });
             }
             const view = await readWorkflowModel(context.host, workflowSessionId, {}, "tool", {
                 callerSessionId: context.callerWorkflowSessionId,
