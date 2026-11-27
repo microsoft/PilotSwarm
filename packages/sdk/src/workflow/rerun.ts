@@ -423,6 +423,19 @@ function validateVisitAndMode(
                 },
             );
         }
+        if (chosen.state !== "completed") {
+            throw new WorkflowStoreError(
+                "RERUN_VISIT_NOT_ALLOWED",
+                `Visit ${chosen.nodeId} · visit ${chosen.ordinal} is not completed (state=${chosen.state}) and cannot be supplied.`,
+                {
+                    reason: "not_completed",
+                    executionId: chosen.nodeExecutionId,
+                    stateId: chosen.nodeId,
+                    visit: chosen.ordinal,
+                    state: chosen.state,
+                },
+            );
+        }
         if (isSupplyNeverOn(chosen.nodeId, sourceIr, targetIr)) {
             throw new WorkflowStoreError(
                 "RERUN_SUPPLY_NOT_ALLOWED",
@@ -789,6 +802,25 @@ export function mapRerunExecutions(
     }
 
     return mapped;
+}
+
+/** Derives deterministic (newId, newPredecessorId) for the supplied visit V' in supply mode (§4.3.1, R2-m6). */
+export function mapRerunSuppliedExecution(
+    newRunId: string,
+    chosen: WorkflowRerunKey,
+    mappedReused: readonly MappedRerunExecution[],
+): { newId: string; newPredecessorId: string | null } {
+    const newId = nodeExecutionIdFor(newRunId, ROOT_SCOPE, chosen.nodeId, chosen.ordinal);
+    if (chosen.predecessorId === null) return { newId, newPredecessorId: null };
+    const pred = mappedReused.find(m => m.source.nodeExecutionId === chosen.predecessorId);
+    if (!pred) {
+        throw new WorkflowStoreError(
+            "RERUN_VISIT_NOT_ALLOWED",
+            `Supplied visit ${chosen.nodeId} · visit ${chosen.ordinal} is missing its predecessor in the reused set.`,
+            { reason: "missing_predecessor", executionId: chosen.nodeExecutionId, predecessorId: chosen.predecessorId },
+        );
+    }
+    return { newId, newPredecessorId: pred.newId };
 }
 
 function scopePlacementOf(ir: WorkflowIR): Map<string, string> {

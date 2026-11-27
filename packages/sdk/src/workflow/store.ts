@@ -33,6 +33,13 @@ import { workflowAgentSessionContinues } from "./agent-ids.js";
 import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
 import { workflowControllerFeatures } from "./controller-features.js";
 import { effectiveLevelDetail } from "./input-policy.js";
+import {
+    WORKFLOW_RERUN_MAX_COPY_BYTES,
+    type MappedRerunExecution,
+    type WorkflowRerunKey,
+    type WorkflowRerunMode,
+    type WorkflowRerunResume,
+} from "./rerun.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -272,6 +279,16 @@ export interface WorkflowRunRow {
     agentModels: string | null;
     /** Private immutable shared-provider bindings for Decision states (migration 0100). */
     decisionProviderBindings?: string | null;
+    /** Re-run from a chosen visit provenance & cut guard (migration 0104). */
+    rerunOfWorkflowSessionId?: string | null;
+    rerunOfRunId?: string | null;
+    rerunFromExecutionId?: string | null;
+    rerunMode?: WorkflowRerunMode | null;
+    rerunResume?: WorkflowRerunResume | null;
+    rerunResumedAt?: Date | null;
+    rerunReused?: number | null;
+    rerunUnwalked?: number | null;
+    rerunActor?: JsonValue;
 }
 
 /**
@@ -332,6 +349,44 @@ export interface WorkflowNodeExecutionRow {
     receive: { contract: string | string[]; from: string | null; correlation: JsonValue } | null;
     enteredAt: Date;
     completedAt: Date | null;
+    /** Re-run visit provenance (migration 0104): reused copy origin & supplied result metadata. */
+    reusedFromExecutionId?: string | null;
+    reusedFromRunId?: string | null;
+    reusedFromWorkflowSessionId?: string | null;
+    reusedAt?: Date | null;
+    suppliedFromExecutionId?: string | null;
+    suppliedFromRunId?: string | null;
+    suppliedFromWorkflowSessionId?: string | null;
+    suppliedActor?: JsonValue;
+    suppliedNote?: string | null;
+    suppliedAt?: Date | null;
+}
+
+export interface RerunAdmissionSpec {
+    sourceWorkflowSessionId: string;
+    sourceRunId: string;
+    fromExecutionId: string;
+    mode: WorkflowRerunMode;
+    resume: WorkflowRerunResume;
+    actor: WorkflowActor;
+    mapped: readonly MappedRerunExecution[];
+    unwalkedCount: number;
+    supplied: {
+        newExecutionId: string;
+        newPredecessorId: string | null;
+        sourceExecutionId: string;
+        outcome: string;
+        outputText: string;
+        note: string;
+        at: Date;
+    } | null;
+    cutKvRevision: number;
+    varsOverlay?: Record<string, JsonValue> | null;
+    inboxCutAt: Date;
+    reusedSpawnChildIds: readonly string[];
+    approvalOwnerCheck: { provider: string; subject: string } | null;
+    /** Override max copied bytes (default WORKFLOW_RERUN_MAX_COPY_BYTES = 256 MiB); for tests. */
+    maxCopyBytes?: number;
 }
 
 /**
@@ -562,6 +617,15 @@ function runFrom(row: Row): WorkflowRunRow {
         agentModels: Object.hasOwn(row, "agent_models") ? strOrNull(row, "agent_models") : null,
         decisionProviderBindings: Object.hasOwn(row, "decision_provider_bindings")
             ? strOrNull(row, "decision_provider_bindings") : null,
+        rerunOfWorkflowSessionId: Object.hasOwn(row, "rerun_of_workflow_session_id") ? strOrNull(row, "rerun_of_workflow_session_id") : null,
+        rerunOfRunId: Object.hasOwn(row, "rerun_of_run_id") ? strOrNull(row, "rerun_of_run_id") : null,
+        rerunFromExecutionId: Object.hasOwn(row, "rerun_from_execution_id") ? strOrNull(row, "rerun_from_execution_id") : null,
+        rerunMode: Object.hasOwn(row, "rerun_mode") ? (strOrNull(row, "rerun_mode") as WorkflowRerunMode | null) : null,
+        rerunResume: Object.hasOwn(row, "rerun_resume") ? (jsonOrNull(row, "rerun_resume") as WorkflowRerunResume | null) : null,
+        rerunResumedAt: Object.hasOwn(row, "rerun_resumed_at") ? dateOrNull(row, "rerun_resumed_at") : null,
+        rerunReused: Object.hasOwn(row, "rerun_reused") ? intOrNull(row, "rerun_reused") : null,
+        rerunUnwalked: Object.hasOwn(row, "rerun_unwalked") ? intOrNull(row, "rerun_unwalked") : null,
+        rerunActor: Object.hasOwn(row, "rerun_actor") ? jsonOrNull(row, "rerun_actor") : null,
     };
 }
 
@@ -607,6 +671,16 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         deadlineAt: dateOrNull(row, "deadline_at"),
         receive: receiveOf(row),
         enteredAt: date(row, "entered_at"), completedAt: dateOrNull(row, "completed_at"),
+        reusedFromExecutionId: Object.hasOwn(row, "reused_from_execution_id") ? strOrNull(row, "reused_from_execution_id") : null,
+        reusedFromRunId: Object.hasOwn(row, "reused_from_run_id") ? strOrNull(row, "reused_from_run_id") : null,
+        reusedFromWorkflowSessionId: Object.hasOwn(row, "reused_from_workflow_session_id") ? strOrNull(row, "reused_from_workflow_session_id") : null,
+        reusedAt: Object.hasOwn(row, "reused_at") ? dateOrNull(row, "reused_at") : null,
+        suppliedFromExecutionId: Object.hasOwn(row, "supplied_from_execution_id") ? strOrNull(row, "supplied_from_execution_id") : null,
+        suppliedFromRunId: Object.hasOwn(row, "supplied_from_run_id") ? strOrNull(row, "supplied_from_run_id") : null,
+        suppliedFromWorkflowSessionId: Object.hasOwn(row, "supplied_from_workflow_session_id") ? strOrNull(row, "supplied_from_workflow_session_id") : null,
+        suppliedActor: Object.hasOwn(row, "supplied_actor") ? jsonOrNull(row, "supplied_actor") : null,
+        suppliedNote: Object.hasOwn(row, "supplied_note") ? strOrNull(row, "supplied_note") : null,
+        suppliedAt: Object.hasOwn(row, "supplied_at") ? dateOrNull(row, "supplied_at") : null,
     };
 }
 
@@ -2476,7 +2550,7 @@ export class WorkflowStore {
         return revisionFrom(rows[0]);
     }
 
-    private async insertRun(client: PoolClient, definition: WorkflowDefinitionRow, revision: WorkflowRevisionRow, start: RunAdmission, operationId: string): Promise<WorkflowRunReceipt> {
+    private async insertRun(client: PoolClient, definition: WorkflowDefinitionRow, revision: WorkflowRevisionRow, start: RunAdmission, operationId: string, rerun?: RerunAdmissionSpec | null): Promise<WorkflowRunReceipt> {
         if (!revision.valid || !revision.irSha256) throw new WorkflowStoreError("DEFINITION_INVALID", "Only a valid revision can run.");
         if (start.mode === "live") {
             const { rows } = await client.query(
@@ -2499,6 +2573,16 @@ export class WorkflowStore {
             ...(typeof start.agentModelsText === "string" ? [["agent_models", start.agentModelsText] as [string, unknown]] : []),
             ...(typeof start.decisionProviderBindingsText === "string"
                 ? [["decision_provider_bindings", start.decisionProviderBindingsText] as [string, unknown]] : []),
+            ...(rerun ? [
+                ["rerun_of_workflow_session_id", rerun.sourceWorkflowSessionId] as [string, unknown],
+                ["rerun_of_run_id", rerun.sourceRunId] as [string, unknown],
+                ["rerun_from_execution_id", rerun.fromExecutionId] as [string, unknown],
+                ["rerun_mode", rerun.mode] as [string, unknown],
+                ["rerun_resume", canonicalJson(rerun.resume)] as [string, unknown],
+                ["rerun_reused", rerun.mapped.length] as [string, unknown],
+                ["rerun_unwalked", rerun.unwalkedCount] as [string, unknown],
+                ["rerun_actor", canonicalJson(rerun.actor)] as [string, unknown],
+            ] : []),
         ];
         await client.query(
             `INSERT INTO ${this.t.runs}
@@ -2511,6 +2595,9 @@ export class WorkflowStore {
         );
         await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, 1, $2, $3)`,
             [start.runId, start.kvText, operationId]);
+        if (rerun) {
+            await this.copyRerunNodesIn(client, start.runId, rerun);
+        }
         if (start.mode === "live") {
             // Review B1: the row follows its live run from its admission. A draft's test may have left it terminal, with
             // that test's error; the live run starts pending with none. Every caller returns a replayed receipt before
@@ -2637,10 +2724,15 @@ export class WorkflowStore {
         sessionPin?: { ownerSessionId: string; definitionId: string; revision: number } | null;
         /** Internal spawn mode: locks the exact spawning run and checks the visit before inserting the child. */
         spawn?: { nodeExecutionId: string } | null;
+        /** Re-run from a chosen visit (I7): locks source #2 FOR SHARE + #3 FOR NO KEY UPDATE in ascending order and copies/supplies visits atomically. */
+        rerun?: RerunAdmissionSpec | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         requireStoredYamlWithinLimit(input.yaml);
         requirePublishable(input.compiled, input.publish || Boolean(input.start));
         if (input.start && !input.publish) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "Starting a live run requires publication.");
+        if (input.rerun && (!input.start || input.start.mode !== "live")) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "A re-run admission requires a live run start.");
+        }
         return this.transaction(async client => {
             if (input.sessionPin) {
                 // Stage 2.1 (Q3): a replay of a stored Start is answered first (its session may have ended since); otherwise the
@@ -2679,7 +2771,49 @@ export class WorkflowStore {
                         { state: visit.rows[0] ? str(visit.rows[0], "state") : null });
                 }
             }
-            await this.requireLiveSession(client, input.workflowSessionId);
+            if (input.rerun) {
+                if (!input.sessionPin && !input.spawn) {
+                    const replay = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256);
+                    if (replay) return { receipt: replay, replayed: true };
+                }
+                // Lock #3 (FOR NO KEY UPDATE) and #2 (FOR SHARE) in sessionPairLockOrder (ascending session_id) to prevent deadlocks
+                // with OwnerEnded (0096), SweeperDirect, and DeleteWorkflow (R2-M1 / §4.4).
+                const locked = await this.lockSessionPair(client, input.workflowSessionId, input.rerun.sourceWorkflowSessionId);
+                if (!locked.workflow || locked.workflow.deleted) {
+                    throw new WorkflowStoreError(
+                        "WORKFLOW_DELETED",
+                        "The Workflow for this key was deleted before it started. Use a new key or operationId for another attempt.",
+                    );
+                }
+                if (!locked.other || locked.other.deleted) {
+                    throw new WorkflowStoreError(
+                        "RERUN_SOURCE_GONE",
+                        "The source Workflow was cleaned up. Only its result is kept. Use Run again.",
+                        { sourceWorkflowId: input.rerun.sourceWorkflowSessionId },
+                    );
+                }
+                const { rows: srcRunRows } = await client.query(
+                    `SELECT status FROM ${this.t.runs} WHERE run_id = $1 AND workflow_session_id = $2`,
+                    [input.rerun.sourceRunId, input.rerun.sourceWorkflowSessionId],
+                );
+                if (!srcRunRows[0]) {
+                    throw new WorkflowStoreError(
+                        "RERUN_SOURCE_GONE",
+                        "The source Workflow run was cleaned up. Only its result is kept. Use Run again.",
+                        { sourceWorkflowId: input.rerun.sourceWorkflowSessionId, sourceRunId: input.rerun.sourceRunId },
+                    );
+                }
+                if (ACTIVE_RUN_STATUSES.includes(str(srcRunRows[0], "status") as WorkflowRunStatus)) {
+                    throw new WorkflowStoreError(
+                        "RERUN_SOURCE_ACTIVE",
+                        "The source Workflow is still running. Stop it first.",
+                        { sourceWorkflowId: input.rerun.sourceWorkflowSessionId, status: str(srcRunRows[0], "status") },
+                    );
+                }
+                await this.verifyRerunLimitsAndApprovalsIn(client, input.rerun);
+            } else {
+                await this.requireLiveSession(client, input.workflowSessionId);
+            }
             const created = await client.query(
                 `INSERT INTO ${this.t.definitions}
                     (workflow_session_id, parent_session_id, api_version, semver, state, current_revision, notify_parent)
@@ -2715,7 +2849,7 @@ export class WorkflowStore {
                 definition = definitionFrom(rows[0]);
             }
             const revision = await this.readRevisionRow(client, input.workflowSessionId, 1);
-            if (input.start) run = await this.insertRun(client, definition, revision, input.start, input.operationId);
+            if (input.start) run = await this.insertRun(client, definition, revision, input.start, input.operationId, input.rerun);
             if (input.delegatedTools !== undefined) {
                 const events = [{ eventType: "workflow.tools_delegated",
                     data: jsonbSafeValue(redactWorkflowEventData({ delegated: input.delegatedTools })) }];
@@ -2732,6 +2866,379 @@ export class WorkflowStore {
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256, receipt);
             return { receipt, replayed: false };
         });
+    }
+
+    /**
+     * Key-only read of all node executions of a run for rerun planning and admission (never reads full JSON blobs).
+     * Computes carryByteLength, carrySha256 (built-in PG sha256), total byteLength, and G-R1 multi-generation spawn
+     * flags (`COALESCE(n.reused_from_run_id, n.run_id)` per R2-S5).
+     */
+    async listRerunKeys(runId: string, client?: PoolClient): Promise<WorkflowRerunKey[]> {
+        const runner = client ?? this.pool;
+        const { rows } = await runner.query(
+            `WITH base AS (
+                SELECT
+                    n.node_execution_id,
+                    n.run_id,
+                    n.scope_id,
+                    n.node_id,
+                    n.ordinal,
+                    n.node_type,
+                    n.predecessor_id,
+                    n.arrival_route,
+                    n.state,
+                    n.outcome,
+                    n.result_kind,
+                    n.winner,
+                    n.kv_revision,
+                    n.entered_at,
+                    n.completed_at,
+                    n.input_sha256,
+                    (n.carry_snapshot IS NOT NULL) AS has_carry,
+                    COALESCE(octet_length(n.carry_snapshot), 0)::bigint AS carry_byte_length,
+                    CASE WHEN n.carry_snapshot IS NULL THEN NULL
+                         ELSE encode(sha256(convert_to(n.carry_snapshot, 'UTF8')), 'hex') END AS carry_sha256,
+                    (COALESCE(octet_length(n.input), 0)
+                     + COALESCE(octet_length(n.output), 0)
+                     + COALESCE(octet_length(n.error), 0)
+                     + COALESCE(octet_length(n.carry_snapshot), 0))::bigint AS byte_length,
+                    n.reused_from_execution_id,
+                    n.reused_from_run_id,
+                    n.reused_from_workflow_session_id,
+                    n.supplied_from_execution_id,
+                    n.supplied_from_run_id,
+                    n.supplied_from_workflow_session_id,
+                    n.supplied_note,
+                    CASE WHEN n.node_type = 'spawn' AND n.outcome = 'started' THEN
+                        COALESCE(
+                            (SELECT cr.workflow_session_id
+                               FROM ${this.t.runs} cr
+                              WHERE cr.start_operation_id = ('spawn:' || COALESCE(n.reused_from_execution_id, n.node_execution_id))
+                                AND cr.mode = 'live'
+                              LIMIT 1),
+                            CASE WHEN n.output IS NOT NULL AND left(btrim(n.output), 1) = '{'
+                                 THEN (n.output::jsonb ->> 'workflowId') ELSE NULL END
+                        )
+                    ELSE NULL END AS spawn_child_workflow_id
+                  FROM ${this.t.nodes} n
+                 WHERE n.run_id = $1
+            )
+            SELECT b.*,
+                   CASE WHEN b.spawn_child_workflow_id IS NULL THEN FALSE ELSE EXISTS (
+                       SELECT 1 FROM ${this.t.operations} op
+                        WHERE op.workflow_session_id = b.spawn_child_workflow_id
+                          AND op.operation_id IN (
+                              'parent-end:' || COALESCE(b.reused_from_run_id, b.run_id),
+                              'parent-delete:' || COALESCE(b.reused_from_run_id, b.run_id)
+                          )
+                   ) END AS spawn_child_cancelled_by_source_end,
+                   CASE WHEN b.spawn_child_workflow_id IS NULL THEN FALSE ELSE EXISTS (
+                       SELECT 1 FROM ${this.t.inbox} ib
+                        WHERE ib.run_id = b.run_id
+                          AND ib.contract = $2
+                          AND ib.sender_session_id = b.spawn_child_workflow_id
+                   ) END AS spawn_child_has_notice
+              FROM base b
+             ORDER BY b.entered_at ASC, b.ordinal ASC, b.node_execution_id ASC`,
+            [runId, WORKFLOW_ENDED_CONTRACT],
+        );
+        return rows.map(row => ({
+            nodeExecutionId: str(row, "node_execution_id"),
+            runId: str(row, "run_id"),
+            scopeId: str(row, "scope_id"),
+            nodeId: str(row, "node_id"),
+            ordinal: int(row, "ordinal"),
+            nodeType: str(row, "node_type"),
+            predecessorId: strOrNull(row, "predecessor_id"),
+            arrivalRoute: strOrNull(row, "arrival_route"),
+            state: str(row, "state"),
+            outcome: strOrNull(row, "outcome"),
+            resultKind: strOrNull(row, "result_kind"),
+            winner: strOrNull(row, "winner"),
+            kvRevision: intOrNull(row, "kv_revision"),
+            enteredAt: date(row, "entered_at"),
+            completedAt: dateOrNull(row, "completed_at"),
+            inputSha256: str(row, "input_sha256"),
+            carrySha256: strOrNull(row, "carry_sha256"),
+            hasCarry: row.has_carry === true,
+            carryByteLength: Number(row.carry_byte_length ?? 0),
+            byteLength: Number(row.byte_length ?? 0),
+            reusedFromExecutionId: strOrNull(row, "reused_from_execution_id"),
+            reusedFromRunId: strOrNull(row, "reused_from_run_id"),
+            reusedFromWorkflowSessionId: strOrNull(row, "reused_from_workflow_session_id"),
+            suppliedFromExecutionId: strOrNull(row, "supplied_from_execution_id"),
+            suppliedFromRunId: strOrNull(row, "supplied_from_run_id"),
+            suppliedFromWorkflowSessionId: strOrNull(row, "supplied_from_workflow_session_id"),
+            suppliedNote: strOrNull(row, "supplied_note"),
+            spawnChildWorkflowId: strOrNull(row, "spawn_child_workflow_id"),
+            spawnChildCancelledBySourceEnd: row.spawn_child_cancelled_by_source_end === true,
+            spawnChildHasNotice: row.spawn_child_has_notice === true,
+        }));
+    }
+
+    /**
+     * R2-S6: count and distinct contract names of inbox messages that a re-run will carry into #3,
+     * using the exact predicate of copyRerunInboxIn without reading message payload bodies.
+     */
+    async summarizeRerunCarriedInbox(
+        runId: string,
+        cutAt: Date,
+        reusedSpawnChildIds: readonly string[],
+        client?: PoolClient,
+    ): Promise<{ count: number; contracts: string[] }> {
+        const runner = client ?? this.pool;
+        const { rows } = await runner.query(
+            `SELECT contract, COUNT(*)::int AS cnt
+               FROM ${this.t.inbox}
+              WHERE run_id = $1
+                AND consumed_by IS NULL
+                AND (
+                    (accepted_at <= $2::timestamptz AND expires_at > $2::timestamptz)
+                    OR (contract = $3 AND sender_session_id = ANY($4::text[]))
+                )
+              GROUP BY contract
+              ORDER BY contract ASC`,
+            [runId, cutAt.toISOString(), WORKFLOW_ENDED_CONTRACT, [...reusedSpawnChildIds]],
+        );
+        let count = 0;
+        const contracts: string[] = [];
+        for (const row of rows) {
+            count += int(row, "cnt");
+            contracts.push(str(row, "contract"));
+        }
+        return { count, contracts };
+    }
+
+    /** Clipped output previews (LEFT(output, 300)) for dropped visits only, never reading full JSON blobs. */
+    async readDroppedVisitPreviews(runId: string, nodeExecutionIds: readonly string[]): Promise<Map<string, string | null>> {
+        const out = new Map<string, string | null>();
+        if (nodeExecutionIds.length === 0) return out;
+        const { rows } = await this.pool.query(
+            `SELECT node_execution_id, CASE WHEN output IS NULL THEN NULL ELSE left(output, 300) END AS preview
+               FROM ${this.t.nodes}
+              WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`,
+            [runId, [...new Set(nodeExecutionIds)]],
+        );
+        for (const row of rows) {
+            out.set(str(row, "node_execution_id"), strOrNull(row, "preview"));
+        }
+        return out;
+    }
+
+    /** Recent re-runs created from `sourceWorkflowSessionId`, newest first (uses partial index workflow_runs_by_rerun_of_workflow). */
+    async listWorkflowReruns(sourceWorkflowSessionId: string, limit = 50): Promise<Array<{
+        workflowSessionId: string;
+        runId: string;
+        mode: WorkflowRerunMode;
+        fromExecutionId: string;
+        status: WorkflowRunStatus;
+        createdAt: Date;
+    }>> {
+        const { rows } = await this.pool.query(
+            `SELECT workflow_session_id, run_id, rerun_mode, rerun_from_execution_id, status, created_at
+               FROM ${this.t.runs}
+              WHERE rerun_of_workflow_session_id = $1
+              ORDER BY created_at DESC, run_id DESC
+              LIMIT $2`,
+            [sourceWorkflowSessionId, limit],
+        );
+        return rows.map(row => ({
+            workflowSessionId: str(row, "workflow_session_id"),
+            runId: str(row, "run_id"),
+            mode: str(row, "rerun_mode") as WorkflowRerunMode,
+            fromExecutionId: str(row, "rerun_from_execution_id"),
+            status: str(row, "status") as WorkflowRunStatus,
+            createdAt: date(row, "created_at"),
+        }));
+    }
+
+    /** Reads answered approval provenance for reused approval visits (checks both workflow_approvals and output.decidedBy; fails closed if missing). */
+    async readReusedApprovalsForRerun(
+        runId: string,
+        nodeExecutionIds: readonly string[],
+        client?: PoolClient,
+    ): Promise<Array<{
+        executionId: string;
+        stateId: string;
+        visit: number;
+        question: string;
+        outcome: string;
+        decidedBy: { provider: string; subject: string } | null;
+        decidedAt: string | null;
+    }>> {
+        if (nodeExecutionIds.length === 0) return [];
+        const runner = client ?? this.pool;
+        const approvalsTable = `"${this.schema.replace(/"/g, "\"\"")}".workflow_approvals`;
+        const { rows } = await runner.query(
+            `SELECT n.node_execution_id, n.node_id, n.ordinal, n.outcome, n.output,
+                    a.snapshot AS approval_snapshot, a.decided_by AS approval_decided_by, a.decided_at AS approval_decided_at
+               FROM ${this.t.nodes} n
+               LEFT JOIN ${approvalsTable} a
+                 ON a.node_execution_id = COALESCE(n.reused_from_execution_id, n.node_execution_id)
+              WHERE n.run_id = $1 AND n.node_execution_id = ANY($2::text[]) AND n.node_type = 'approval'
+              ORDER BY n.entered_at ASC, n.ordinal ASC`,
+            [runId, [...new Set(nodeExecutionIds)]],
+        );
+        return rows.map(row => {
+            const outJson = jsonOrNull(row, "output");
+            const outObj = isJsonObject(outJson) ? outJson : null;
+            const snapJson = jsonOrNull(row, "approval_snapshot");
+            const snapObj = isJsonObject(snapJson) ? snapJson : null;
+            const decidedByRaw = jsonOrNull(row, "approval_decided_by") ?? (outObj?.decidedBy ?? null);
+            const decidedByObj = isJsonObject(decidedByRaw) ? decidedByRaw : null;
+            const decidedBy = decidedByObj && typeof decidedByObj.provider === "string" && typeof decidedByObj.subject === "string"
+                ? { provider: decidedByObj.provider, subject: decidedByObj.subject }
+                : null;
+            const decidedAtDate = dateOrNull(row, "approval_decided_at");
+            const decidedAt = decidedAtDate ? decidedAtDate.toISOString()
+                : (outObj && typeof outObj.decidedAt === "string" ? outObj.decidedAt : null);
+            const question = (snapObj && typeof snapObj.question === "string" ? snapObj.question : null)
+                ?? (outObj && typeof outObj.question === "string" ? outObj.question : str(row, "node_id"));
+            return {
+                executionId: str(row, "node_execution_id"),
+                stateId: str(row, "node_id"),
+                visit: int(row, "ordinal"),
+                question,
+                outcome: strOrNull(row, "outcome") ?? "unknown",
+                decidedBy,
+                decidedAt,
+            };
+        });
+    }
+
+    private async verifyRerunLimitsAndApprovalsIn(client: PoolClient, rerun: RerunAdmissionSpec): Promise<void> {
+        const maxCopyBytes = rerun.maxCopyBytes ?? WORKFLOW_RERUN_MAX_COPY_BYTES;
+        const reusedIds = rerun.mapped.map(m => m.source.nodeExecutionId);
+        let totalBytes = 0;
+        if (reusedIds.length > 0) {
+            const { rows } = await client.query(
+                `SELECT COALESCE(SUM(
+                    COALESCE(octet_length(input), 0)
+                    + COALESCE(octet_length(output), 0)
+                    + COALESCE(octet_length(error), 0)
+                    + COALESCE(octet_length(carry_snapshot), 0)
+                 ), 0)::bigint AS total_bytes,
+                 COUNT(*)::int AS matched_count,
+                 COUNT(*) FILTER (WHERE state <> 'completed')::int AS non_completed_count
+                   FROM ${this.t.nodes}
+                  WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`,
+                [rerun.sourceRunId, reusedIds],
+            );
+            if (int(rows[0], "matched_count") !== reusedIds.length) {
+                throw new WorkflowStoreError("RERUN_VISIT_NOT_FOUND", "One or more reused visits are missing from the source run.");
+            }
+            if (int(rows[0], "non_completed_count") > 0) {
+                throw new WorkflowStoreError("RERUN_VISIT_NOT_ALLOWED", "Every reused visit must be completed.", { reason: "not_completed" });
+            }
+            totalBytes += Number(rows[0].total_bytes ?? 0);
+        }
+        if (rerun.supplied) {
+            const { rows } = await client.query(
+                `SELECT state,
+                        (COALESCE(octet_length(input), 0) + COALESCE(octet_length(carry_snapshot), 0))::bigint AS base_bytes
+                   FROM ${this.t.nodes}
+                  WHERE run_id = $1 AND node_execution_id = $2`,
+                [rerun.sourceRunId, rerun.supplied.sourceExecutionId],
+            );
+            if (!rows[0]) {
+                throw new WorkflowStoreError("RERUN_VISIT_NOT_FOUND", `Supplied source visit ${rerun.supplied.sourceExecutionId} is missing.`);
+            }
+            if (str(rows[0], "state") !== "completed") {
+                throw new WorkflowStoreError("RERUN_VISIT_NOT_ALLOWED", "Supplied visit must be completed in the source run.", { reason: "not_completed" });
+            }
+            totalBytes += Number(rows[0].base_bytes ?? 0) + utf8ByteLength(rerun.supplied.outputText);
+        }
+        if (totalBytes > maxCopyBytes) {
+            const actualMB = (totalBytes / (1024 * 1024)).toFixed(1);
+            const limitMB = Math.round(maxCopyBytes / (1024 * 1024));
+            throw new WorkflowStoreError(
+                "RERUN_TOO_LARGE",
+                `The reused steps hold ${actualMB} MB; the limit is ${limitMB} MB. Choose an earlier step or use Run again.`,
+                { bytes: totalBytes, maxBytes: maxCopyBytes },
+            );
+        }
+        const reusedApprovalIds = rerun.mapped
+            .filter(m => m.source.nodeType === "approval" && (m.source.outcome === "approved" || m.source.outcome === "rejected"))
+            .map(m => m.source.nodeExecutionId);
+        if (reusedApprovalIds.length > 0) {
+            const approvals = await this.readReusedApprovalsForRerun(rerun.sourceRunId, reusedApprovalIds, client);
+            for (const ap of approvals) {
+                if (
+                    !rerun.approvalOwnerCheck
+                    || !ap.decidedBy
+                    || ap.decidedBy.provider !== rerun.approvalOwnerCheck.provider
+                    || ap.decidedBy.subject !== rerun.approvalOwnerCheck.subject
+                ) {
+                    throw new WorkflowStoreError(
+                        "RERUN_APPROVAL_REUSED",
+                        `Choose ${ap.stateId} · visit ${ap.visit} or an earlier step. Only the owner in the portal can reuse an approval.`,
+                        { executionId: ap.executionId, stateId: ap.stateId, visit: ap.visit },
+                    );
+                }
+            }
+        }
+    }
+
+    private async copyRerunNodesIn(client: PoolClient, newRunId: string, rerun: RerunAdmissionSpec): Promise<void> {
+        const nowIso = new Date().toISOString();
+        const CHUNK = 1_000;
+        for (let offset = 0; offset < rerun.mapped.length; offset += CHUNK) {
+            const slice = rerun.mapped.slice(offset, offset + CHUNK);
+            const oldIds = slice.map(m => m.source.nodeExecutionId);
+            const newIds = slice.map(m => m.newId);
+            const newScopes = slice.map(m => m.newScopeId);
+            const newPreds = slice.map(m => m.newPredecessorId);
+            const ords = slice.map((_, idx) => offset + idx);
+            await client.query(
+                `INSERT INTO ${this.t.nodes} (
+                    node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                    input, input_sha256, carry_snapshot, state, outcome, result_kind, output, error, winner,
+                    effect_attempts, entered_at, completed_at, kv_revision, deadline_at,
+                    receive_contract, receive_from, receive_correlation,
+                    reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id,
+                    supplied_actor, supplied_note, supplied_at
+                 )
+                 SELECT m.new_id, $1, m.new_scope, m.new_pred, s.node_id, s.ordinal, s.node_type, s.arrival_route,
+                        s.input, s.input_sha256, s.carry_snapshot, s.state, s.outcome, s.result_kind, s.output, s.error, s.winner,
+                        s.effect_attempts, s.entered_at, s.completed_at, s.kv_revision, NULL,
+                        s.receive_contract, s.receive_from, s.receive_correlation,
+                        COALESCE(s.reused_from_execution_id, s.node_execution_id),
+                        COALESCE(s.reused_from_run_id, s.run_id),
+                        COALESCE(s.reused_from_workflow_session_id, $2),
+                        $3::timestamptz,
+                        s.supplied_from_execution_id, s.supplied_from_run_id, s.supplied_from_workflow_session_id,
+                        s.supplied_actor, s.supplied_note, s.supplied_at
+                 FROM unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::int[])
+                      AS m(old_id, new_id, new_scope, new_pred, ord)
+                 JOIN ${this.t.nodes} s ON s.run_id = $9 AND s.node_execution_id = m.old_id
+                 ORDER BY m.ord ASC`,
+                [newRunId, rerun.sourceWorkflowSessionId, nowIso, oldIds, newIds, newScopes, newPreds, ords, rerun.sourceRunId],
+            );
+        }
+        if (rerun.supplied) {
+            const sup = rerun.supplied;
+            await client.query(
+                `INSERT INTO ${this.t.nodes} (
+                    node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                    input, input_sha256, carry_snapshot, state, outcome, result_kind, output, error, winner,
+                    effect_attempts, entered_at, completed_at, kv_revision, deadline_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id,
+                    supplied_actor, supplied_note, supplied_at
+                 )
+                 SELECT $1, $2, 'root', $3, s.node_id, s.ordinal, s.node_type, s.arrival_route,
+                        s.input, s.input_sha256, s.carry_snapshot, 'completed', $4, 'business', $5, NULL, 'supplied',
+                        0, s.entered_at, GREATEST($6::timestamptz, s.entered_at), s.kv_revision, NULL,
+                        s.node_execution_id, s.run_id, $7, $8, $9, $6::timestamptz
+                 FROM ${this.t.nodes} s
+                 WHERE s.run_id = $10 AND s.node_execution_id = $11`,
+                [
+                    sup.newExecutionId, newRunId, sup.newPredecessorId, sup.outcome, sup.outputText,
+                    sup.at.toISOString(), rerun.sourceWorkflowSessionId, canonicalJson(rerun.actor), sup.note,
+                    rerun.sourceRunId, sup.sourceExecutionId,
+                ],
+            );
+        }
     }
 
     /** Replace a draft's YAML at the expected revision (one semantic version per workflow child). */
@@ -3795,7 +4302,7 @@ export class WorkflowStore {
      * session can be created under a locked one). Then those are soft-deleted and the session last; the deletion triggers
      * end what each owned, in the same transaction. A failed statement rolls it all back.
      */
-    async sweeperSoftDelete(input: { sessionId: string; version: string; cascade: boolean; orchestrationNotFound: boolean }): Promise<
+    async sweeperSoftDelete(input: { sessionId: string; version: string; cascade: boolean; orchestrationNotFound: boolean; bareClaimShell?: boolean }): Promise<
         | { deleted: string[] }
         | { refused: { status: "Changed" | "System" | "ActiveRun" | "StartUnresolved" | "Busy"; detail: string; runId?: string; runStatus?: WorkflowRunStatus } }> {
         const s = `"${this.schema}"`;
@@ -3822,6 +4329,19 @@ export class WorkflowStore {
                         const runStatus = str(active.rows[0], "status") as WorkflowRunStatus;
                         return { refused: { status: "ActiveRun" as const, runId: str(active.rows[0], "run_id"), runStatus,
                             detail: `its run ${str(active.rows[0], "run_id")} is ${runStatus} in the store` } };
+                    }
+                    // R2-S1: when sweeping a bare claim shell, re-verify under the FOR NO KEY UPDATE session lock that
+                    // neither a workflow_definitions row nor any workflow_runs row (live or test) exists.
+                    if (input.bareClaimShell) {
+                        const defOrRun = await client.query(
+                            `SELECT EXISTS (SELECT 1 FROM ${this.t.definitions} WHERE workflow_session_id = $1) AS has_def,
+                                    EXISTS (SELECT 1 FROM ${this.t.runs} WHERE workflow_session_id = $1) AS has_run`,
+                            [input.sessionId],
+                        );
+                        if (defOrRun.rows[0]?.has_def === true || defOrRun.rows[0]?.has_run === true) {
+                            return { refused: { status: "Changed" as const,
+                                detail: "a workflow definition or run was created for this claim shell before the Sweeper locked it" } };
+                        }
                     }
                 }
                 const enumerate = async (): Promise<string[]> => {

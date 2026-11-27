@@ -45,7 +45,7 @@ export function createSweeperTools(opts: {
     const ACTIVE_WORKFLOW_RUN = new Set(["admitted", "running", "paused"]);
 
     type OrchestrationRead =
-        | { status: string; instanceId: string; controllers?: string[] }
+        | { status: string; instanceId: string; controllers?: string[]; bareClaimShell?: boolean }
         | { unreadable: string }
         | { noRun: true }
         | { activeRun: { runId: string; status: string } }
@@ -112,7 +112,8 @@ export function createSweeperTools(opts: {
                 }
                 if (!definition) {
                     const read = await readInstanceStatus(`session-${session.sessionId}`);
-                    if ("unreadable" in read || read.status === "NotFound") return read;
+                    if ("unreadable" in read) return read;
+                    if (read.status === "NotFound") return { ...read, bareClaimShell: true };
                 }
             }
             return { noRun: true };
@@ -125,7 +126,7 @@ export function createSweeperTools(opts: {
 
     /** The catalog's Workflow store, when it has the Sweeper's final check (a test double may not). */
     function sweeperStore(): { sweeperRowVersion: (id: string) => Promise<{ version: string; updatedAt: Date; deleted: boolean } | null>;
-        sweeperSoftDelete: (input: { sessionId: string; version: string; cascade: boolean; orchestrationNotFound: boolean }) => Promise<any> } | null {
+        sweeperSoftDelete: (input: { sessionId: string; version: string; cascade: boolean; orchestrationNotFound: boolean; bareClaimShell?: boolean }) => Promise<any> } | null {
         const store = typeof catalog.workflowStore === "function" ? catalog.workflowStore() : null;
         return store && typeof store.sweeperSoftDelete === "function" && typeof store.sweeperRowVersion === "function" ? store : null;
     }
@@ -149,7 +150,7 @@ export function createSweeperTools(opts: {
      * before, one row at a time.
      */
     async function softDeleteChecked(sessionId: string, version: { version: string } | null,
-        options: { cascade: boolean; orchestrationNotFound: boolean })
+        options: { cascade: boolean; orchestrationNotFound: boolean; bareClaimShell?: boolean })
         : Promise<{ deleted: string[] } | { refused: { status: string; detail: string } }> {
         const store = sweeperStore();
         if (store) {
@@ -193,7 +194,7 @@ export function createSweeperTools(opts: {
     async function evaluateCleanupEligibility(
         session: { sessionId: string; parentSessionId: string | null; updatedAt: Date; sessionKind?: string; serviceKind?: string | null },
         graceMinutes: number,
-    ): Promise<{ eligible: boolean; status: string; reason: string; instanceId?: string; controllers?: string[] }> {
+    ): Promise<{ eligible: boolean; status: string; reason: string; instanceId?: string; controllers?: string[]; bareClaimShell?: boolean }> {
         const read = await readOrchestrationStatus(session);
         if ("startUnresolved" in read) {
             return {
@@ -250,7 +251,8 @@ export function createSweeperTools(opts: {
                 };
             }
             return { eligible: true, status: orchStatus, reason: `Orchestration ${orchStatus.toLowerCase()}`, instanceId: read.instanceId,
-                ...(read.controllers ? { controllers: read.controllers } : {}) };
+                ...(read.controllers ? { controllers: read.controllers } : {}),
+                ...(read.bareClaimShell ? { bareClaimShell: true } : {}) };
         }
 
         if (isRoot) {
@@ -398,7 +400,11 @@ export function createSweeperTools(opts: {
 
         // All descendants go with it (a parent's lifecycle owns its children's), then the session itself: one final check
         // of the session and every soft delete in one transaction (reviews AS-02, AR-01..AR-03).
-        const result = await softDeleteChecked(sessionId, version, { cascade: true, orchestrationNotFound: eligibility.status === "NotFound" });
+        const result = await softDeleteChecked(sessionId, version, {
+            cascade: true,
+            orchestrationNotFound: eligibility.status === "NotFound",
+            bareClaimShell: Boolean(eligibility.bareClaimShell),
+        });
         if ("refused" in result) {
             return { ok: false, sessionId, refused: true, status: result.refused.status, error: finalCheckRefusal(sessionId, result.refused) };
         }

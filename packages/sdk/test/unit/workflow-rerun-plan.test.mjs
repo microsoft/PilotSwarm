@@ -1614,13 +1614,23 @@ states:
     assert.equal(c1TypeV.fits, false);
     assert.ok(c1TypeV.problems.some(p => p.code === "step_type_changed"));
 
-    // C3 final pair (last reused prov -> chosen review) when target reroutes prov away from review
+    // C3 final pair (last reused prov -> chosen review) when target reroutes prov away from review (R2-m1 discriminating chain)
+    const vReady = chainKeys([
+        { nodeId: "prov", ordinal: 1, nodeType: "script", outcome: "ready", resultKind: "business", hasCarry: true, carryByteLength: 64 },
+        { nodeId: "review", ordinal: 1, nodeType: "agent", arrivalRoute: "ready", outcome: "timed_out", resultKind: "runtime_error" },
+    ]);
+    const partRev = partitionRerunVisits(vReady, vReady[1].nodeExecutionId, "supply");
+    const c3FitsBase = checkRerunCompatibility({
+        sourceIr: src.ir, targetIr: src.ir,
+        reused: partRev.reused, reusedTop: partRev.reusedTop,
+        chosen: vReady[1], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "ok",
+    });
+    assert.equal(c3FitsBase.fits, true, "consistent chain fits source revision before reroute");
     const reroutedIr = mustCompile(yaml.replace("ready: review", "ready: approve")).ir;
-    const partRev = partitionRerunVisits(v, v[1].nodeExecutionId, "supply");
     const c3FinalPair = checkRerunCompatibility({
         sourceIr: src.ir, targetIr: reroutedIr,
         reused: partRev.reused, reusedTop: partRev.reusedTop,
-        chosen: v[1], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "ok",
+        chosen: vReady[1], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "ok",
     });
     assert.equal(c3FinalPair.fits, false);
     assert.ok(c3FinalPair.problems.some(p => p.code === "route_changed"));

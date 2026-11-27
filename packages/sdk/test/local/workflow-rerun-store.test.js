@@ -1,0 +1,556 @@
+import { describe, it, expect } from "vitest";
+import pg from "pg";
+import { randomUUID } from "node:crypto";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
+import { withClient } from "../helpers/local-workers.js";
+import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { branchScopeId } from "../../src/workflow/controller/runtime.ts";
+import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
+import {
+    WORKFLOW_RERUN_MAX_COPY_BYTES,
+    buildRerunResume,
+    mapRerunExecutions,
+    mapRerunSuppliedExecution,
+    partitionRerunVisits,
+} from "../../src/workflow/rerun.ts";
+import { WorkflowStoreError, nodeExecutionIdFor } from "../../src/workflow/store.ts";
+
+const getEnv = useSuiteEnv(import.meta.url);
+const ACTOR = { kind: "user", provider: "entra", subject: "owner-sub-1", name: "Owner" };
+const OTHER_USER = { kind: "user", provider: "entra", subject: "other-sub-2", name: "Other" };
+
+function pgPoolConfig(connectionString) {
+    const parsed = new URL(connectionString);
+    const sslMode = (parsed.searchParams.get("sslmode") ?? "").toLowerCase();
+    const relaxSsl = sslMode === "require" || sslMode === "prefer";
+    if (relaxSsl) parsed.searchParams.delete("sslmode");
+    return {
+        connectionString: parsed.toString(),
+        max: 4,
+        ...(relaxSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+    };
+}
+
+const SIMPLE_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: rerun-store-wf, version: "1.0.0" }
+limits: { maxNodeExecutions: 50 }
+initial: step1
+states:
+  step1:
+    type: script
+    source: 'await setResult("ok", { v: 1 });'
+    transition: { next: { ok: step2 } }
+  step2:
+    type: script
+    source: 'await setResult("ok", { v: 2 });'
+    transition: { next: { ok: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+async function seedEndedSourceWorkflow(client, opts = {}) {
+    const store = client._catalog.workflowStore();
+    const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+    const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+    const ownerId = opts.ownerId ?? randomUUID();
+    const wfId = randomUUID();
+    const runId = randomUUID();
+    const yaml = opts.yaml ?? SIMPLE_YAML;
+    const compiled = compileWorkflow(yaml);
+    if (!compiled.valid) throw new Error(JSON.stringify(compiled.diagnostics));
+    try {
+        if (!opts.ownerId) {
+            await client._catalog.createSession(ownerId);
+        }
+        await client._catalog.createWorkflowSession(wfId, {
+            parentSessionId: ownerId,
+            title: "source-wf",
+            creationConfig: { workflow: { name: compiled.name, version: compiled.version } },
+        });
+        const created = await store.createDefinition({
+            workflowSessionId: wfId,
+            parentSessionId: ownerId,
+            notifyParent: true,
+            yaml,
+            compiled,
+            actor: ACTOR,
+            operationId: `create-${wfId}`,
+            requestSha256: sha256Hex(`create-${wfId}`),
+            publish: true,
+            start: {
+                runId,
+                mode: "live",
+                inputsText: canonicalJson(opts.inputs ?? {}),
+                kvText: canonicalJson(opts.kv ?? {}),
+                controllerInstanceId: `session-${wfId}`,
+                controllerVersion: "1.3.0",
+                testAgentMode: null,
+            },
+            title: "source-wf",
+        });
+        const visits = opts.visits ?? [
+            { nodeId: "step1", ordinal: 1, nodeType: "script", outcome: "ok", resultKind: "business", output: { v: 1 }, input: {} },
+            { nodeId: "step2", ordinal: 1, nodeType: "script", arrivalRoute: "ok", outcome: "execution_failed", resultKind: "runtime_error", error: { code: "execution_failed", message: "boom" }, input: { v: 1 } },
+        ];
+        let prevRootId = null;
+        const ids = {};
+        const baseMs = Date.now() - 60_000;
+        for (let i = 0; i < visits.length; i += 1) {
+            const v = visits[i];
+            const scopeId = v.scopeId ?? "root";
+            const id = v.nodeExecutionId ?? nodeExecutionIdFor(runId, scopeId, v.nodeId, v.ordinal);
+            const pred = v.predecessorId !== undefined ? v.predecessorId : (scopeId === "root" ? prevRootId : null);
+            const inputText = canonicalJson(v.input ?? {});
+            const carryText = v.carry !== undefined ? canonicalJson(v.carry) : null;
+            const outputText = v.resultKind === "business" ? canonicalJson(v.output ?? null) : null;
+            const errorText = v.resultKind === "runtime_error" ? canonicalJson(v.error ?? { code: v.outcome ?? "error", message: "err" }) : null;
+            const enteredAt = new Date(baseMs + i * 1000).toISOString();
+            const completedAt = new Date(baseMs + i * 1000 + 500).toISOString();
+            await pool.query(
+                `INSERT INTO ${s}.workflow_node_executions (
+                    node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                    input, input_sha256, carry_snapshot, state, outcome, result_kind, output, error, winner,
+                    effect_attempts, entered_at, completed_at, kv_revision, deadline_at,
+                    reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id,
+                    supplied_actor, supplied_note, supplied_at
+                 ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8,
+                    $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                    $18, $19::timestamptz, $20::timestamptz, $21, NULL,
+                    $22, $23, $24, $25::timestamptz,
+                    $26, $27, $28, $29, $30, $31::timestamptz
+                 )`,
+                [
+                    id, runId, scopeId, pred, v.nodeId, v.ordinal, v.nodeType, v.arrivalRoute ?? null,
+                    inputText, sha256Hex(inputText), carryText, v.state ?? "completed", v.outcome ?? "ok", v.resultKind ?? "business",
+                    outputText, errorText, v.winner ?? "effect",
+                    v.effectAttempts ?? 1, enteredAt, completedAt, v.kvRevision ?? 1,
+                    v.reusedFromExecutionId ?? null, v.reusedFromRunId ?? null, v.reusedFromWorkflowSessionId ?? null, v.reusedAt ?? null,
+                    v.suppliedFromExecutionId ?? null, v.suppliedFromRunId ?? null, v.suppliedFromWorkflowSessionId ?? null,
+                    v.suppliedActor ? canonicalJson(v.suppliedActor) : null, v.suppliedNote ?? null, v.suppliedAt ?? null,
+                ],
+            );
+            ids[`${v.nodeId}#${v.ordinal}${scopeId === "root" ? "" : `@${scopeId}`}`] = id;
+            if (scopeId === "root") prevRootId = id;
+        }
+        await pool.query(
+            `UPDATE ${s}.workflow_runs SET status = $2, finished_at = now(), updated_at = now() WHERE run_id = $1`,
+            [runId, opts.status ?? "failed"],
+        );
+        return { ownerId, wfId, runId, compiled, receipt: created.receipt, ids };
+    } finally {
+        await pool.end();
+    }
+}
+
+describe("Task 4a: WorkflowStore rerun keys, bare-shell lock re-check, atomic copy/supply & lock races", () => {
+    it("listRerunKeys computes byteLength, carryByteLength, multi-gen G-R1 spawn flags (R2-S5), summarizeRerunCarriedInbox (R2-S6), and readDroppedVisitPreviews", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const store = client._catalog.workflowStore();
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            try {
+                // Multi-generation #1 -> #2 -> #3: child started in #1 (run1), cancelled by parent-end:<run1>, reused in #2 (run2).
+                const run1Id = randomUUID();
+                const wf1Id = randomUUID();
+                const nx1Spawn = nodeExecutionIdFor(run1Id, "root", "sp", 1);
+                const childWfId = randomUUID();
+
+                const src = await seedEndedSourceWorkflow(client, {
+                    visits: [
+                        { nodeId: "step1", ordinal: 1, nodeType: "script", outcome: "ok", resultKind: "business", output: { big: "a".repeat(2048) }, carry: { round: 1 } },
+                        {
+                            nodeId: "sp", ordinal: 1, nodeType: "spawn", arrivalRoute: "ok", outcome: "started", resultKind: "business",
+                            output: { workflowId: childWfId },
+                            reusedFromExecutionId: nx1Spawn, reusedFromRunId: run1Id, reusedFromWorkflowSessionId: wf1Id,
+                            reusedAt: new Date().toISOString(),
+                        },
+                        { nodeId: "step2", ordinal: 1, nodeType: "script", arrivalRoute: "started", outcome: "execution_failed", resultKind: "runtime_error", output: null, error: { code: "execution_failed", message: "boom" } },
+                    ],
+                });
+
+                // Record parent-end:<run1Id> operation on childWfId (multi-gen R2-S5!)
+                await client._catalog.createWorkflowSession(childWfId, { parentSessionId: src.ownerId, title: "child-wf" });
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_definitions (workflow_session_id, parent_session_id, api_version, state, current_revision, published_revision, published_yaml_sha256, published_ir_sha256) VALUES ($1, $2, 'pilotswarm.dev/v1', 'published', 1, 1, 'yh', 'ih')`,
+                    [childWfId, src.ownerId],
+                );
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_operations (workflow_session_id, operation_id, kind, request_sha256, receipt) VALUES ($1, $2, 'cancel', 'h', '{}')`,
+                    [childWfId, `parent-end:${run1Id}`],
+                );
+
+                // Seed one waiting inbox message before cut and one message accepted after cut
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_inbox (message_id, workflow_session_id, run_id, sender_session_id, operation_id, contract, correlation, payload, request_sha256, accepted_at, expires_at)
+                     VALUES
+                       ($1, $2, $3, $4, 'op-msg-1', 'HumanNote@1', '{}', '{"text":"hi"}', 'r1', now() - interval '120 seconds', now() + interval '1 hour'),
+                       ($5, $2, $3, $4, 'op-msg-2', 'LateNote@1', '{}', '{"text":"late"}', 'r2', now() + interval '10 seconds', now() + interval '1 hour')`,
+                    [`msg-${randomUUID()}`, src.wfId, src.runId, src.ownerId, `msg-${randomUUID()}`],
+                );
+
+                const keys = await store.listRerunKeys(src.runId);
+                expect(keys.length).toBe(3);
+                const kStep1 = keys.find(k => k.nodeId === "step1");
+                expect(kStep1.hasCarry).toBe(true);
+                expect(kStep1.carryByteLength).toBe(canonicalJson({ round: 1 }).length);
+                expect(kStep1.carrySha256).toBe(sha256Hex(canonicalJson({ round: 1 })));
+                expect(kStep1.byteLength).toBeGreaterThan(2048);
+
+                const kSpawn = keys.find(k => k.nodeId === "sp");
+                expect(kSpawn.spawnChildWorkflowId).toBe(childWfId);
+                expect(kSpawn.spawnChildCancelledBySourceEnd, "R2-S5: COALESCE(reused_from_run_id, run_id) detects parent-end:<run1>").toBe(true);
+                expect(kSpawn.spawnChildHasNotice).toBe(false);
+
+                // R2-S6: summarizeRerunCarriedInbox returns { count, contracts } without reading bodies
+                const carried = await store.summarizeRerunCarriedInbox(src.runId, new Date(), []);
+                expect(carried).toEqual({ count: 1, contracts: ["HumanNote@1"] });
+
+                // Dropped previews clip to 300 chars
+                const previews = await store.readDroppedVisitPreviews(src.runId, [kStep1.nodeExecutionId]);
+                expect(previews.get(kStep1.nodeExecutionId)?.length).toBe(300);
+            } finally {
+                await pool.end();
+            }
+        });
+    });
+
+    it("atomically copies reused top-level + parallel lane visits, writes supplied V' (including 0 reused & #3->#4 preservation), leaves #2 untouched, and enforces 256 MiB cap", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const store = client._catalog.workflowStore();
+            const parId = nodeExecutionIdFor("tmp", "root", "fan", 1);
+            const src = await seedEndedSourceWorkflow(client, {
+                visits: [
+                    { nodeId: "step1", ordinal: 1, nodeType: "script", outcome: "ok", resultKind: "business", output: { a: 1 } },
+                    { nodeId: "fan", ordinal: 1, nodeType: "parallel", arrivalRoute: "ok", outcome: "joined", resultKind: "business", output: [{ ok: true }], nodeExecutionId: parId },
+                    { scopeId: branchScopeId(parId, 0), predecessorId: parId, nodeId: "worker", ordinal: 1, nodeType: "script", arrivalRoute: "@branch", outcome: "ok", resultKind: "business", output: { ok: true } },
+                    { nodeId: "step2", ordinal: 1, nodeType: "script", arrivalRoute: "joined", outcome: "timed_out", resultKind: "runtime_error", error: { code: "timed_out", message: "slow" } },
+                ],
+            });
+            const srcKeys = await store.listRerunKeys(src.runId);
+            const step2Key = srcKeys.find(k => k.nodeId === "step2");
+
+            // 1. Supply mode on step2 with 3 reused visits (2 root + 1 lane)
+            const wf3Id = randomUUID();
+            const run3Id = randomUUID();
+            const part3 = partitionRerunVisits(srcKeys, step2Key.nodeExecutionId, "supply");
+            const mapped3 = mapRerunExecutions(run3Id, part3.reused);
+            const mappedV3 = mapRerunSuppliedExecution(run3Id, step2Key, mapped3);
+            const suppliedAt3 = new Date();
+            const outputText3 = "null"; // N4: omitted output -> 'null' JSON text
+            const resume3 = buildRerunResume({
+                mode: "supply", chosen: step2Key, mappedPredecessorId: mappedV3.newPredecessorId,
+                cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256, targetIrSha256: src.compiled.irSha256,
+                supplied: {
+                    mappedSuppliedId: mappedV3.newId, outcome: "ok", outputSha256: sha256Hex(outputText3),
+                    note: "verified via az cli", at: suppliedAt3.toISOString(), nextStateId: "done", nextOrdinal: 1,
+                },
+            });
+
+            await client._catalog.createWorkflowSession(wf3Id, { parentSessionId: src.ownerId, title: "rerun-3" });
+            await store.createDefinition({
+                workflowSessionId: wf3Id,
+                parentSessionId: src.ownerId,
+                notifyParent: true,
+                yaml: SIMPLE_YAML,
+                compiled: src.compiled,
+                actor: ACTOR,
+                operationId: `rerun-3-${wf3Id}`,
+                requestSha256: sha256Hex(`rerun-3-${wf3Id}`),
+                publish: true,
+                start: {
+                    runId: run3Id, mode: "live", inputsText: "{}", kvText: "{}",
+                    controllerInstanceId: `session-${wf3Id}`, controllerVersion: "1.3.0", testAgentMode: null,
+                },
+                title: "rerun-3",
+                rerun: {
+                    sourceWorkflowSessionId: src.wfId,
+                    sourceRunId: src.runId,
+                    fromExecutionId: step2Key.nodeExecutionId,
+                    mode: "supply",
+                    resume: resume3,
+                    actor: ACTOR,
+                    mapped: mapped3,
+                    unwalkedCount: part3.unwalkedCount,
+                    supplied: {
+                        newExecutionId: mappedV3.newId,
+                        newPredecessorId: mappedV3.newPredecessorId,
+                        sourceExecutionId: step2Key.nodeExecutionId,
+                        outcome: "ok",
+                        outputText: outputText3,
+                        note: "verified via az cli",
+                        at: suppliedAt3,
+                    },
+                    cutKvRevision: 1,
+                    inboxCutAt: new Date(),
+                    reusedSpawnChildIds: [],
+                    approvalOwnerCheck: null,
+                },
+            });
+
+            const run3 = await store.readRun(run3Id);
+            expect(run3.rerunOfWorkflowSessionId).toBe(src.wfId);
+            expect(run3.rerunOfRunId).toBe(src.runId);
+            expect(run3.rerunMode).toBe("supply");
+            expect(run3.rerunReused).toBe(3);
+            expect(run3.rerunUnwalked).toBe(1);
+            expect(run3.rerunResumedAt).toBeNull();
+            expect(run3.rerunResume?.mode).toBe("supply");
+
+            const suppliedNode = await store.readNodeExecution(mappedV3.newId);
+            expect(suppliedNode.state).toBe("completed");
+            expect(suppliedNode.winner).toBe("supplied");
+            expect(suppliedNode.resultKind).toBe("business");
+            expect(suppliedNode.effectAttempts).toBe(0);
+            expect(suppliedNode.output).toBeNull();
+            expect(suppliedNode.hasOutput).toBe(true);
+            expect(suppliedNode.suppliedFromExecutionId).toBe(step2Key.nodeExecutionId);
+            expect(suppliedNode.suppliedNote).toBe("verified via az cli");
+            expect(suppliedNode.reusedFromExecutionId).toBeNull();
+
+            // Source #2 is completely untouched
+            const srcAfter = await store.readNodeExecution(step2Key.nodeExecutionId);
+            expect(srcAfter.outcome).toBe("timed_out");
+            expect(srcAfter.winner).toBe("effect");
+
+            // 2. Generation #3 -> #4 copies #3's supplied row preserving supplied_* AND setting flattened reused_from_*
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            try {
+                await pool.query(`UPDATE ${s}.workflow_runs SET status = 'failed', finished_at = now() WHERE run_id = $1`, [run3Id]);
+            } finally {
+                await pool.end();
+            }
+            const run3Keys = await store.listRerunKeys(run3Id);
+            const wf4Id = randomUUID();
+            const run4Id = randomUUID();
+            const mapped4 = mapRerunExecutions(run4Id, run3Keys); // copy all 4 rows (continue after supplied step2)
+            const resume4 = buildRerunResume({
+                mode: "continue", chosen: run3Keys.find(k => k.nodeId === "step2"),
+                mappedPredecessorId: mapped4.find(m => m.source.nodeId === "step2").newId,
+                cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256, targetIrSha256: src.compiled.irSha256,
+            });
+            await client._catalog.createWorkflowSession(wf4Id, { parentSessionId: src.ownerId, title: "rerun-4" });
+            await store.createDefinition({
+                workflowSessionId: wf4Id, parentSessionId: src.ownerId, notifyParent: true,
+                yaml: SIMPLE_YAML, compiled: src.compiled, actor: ACTOR,
+                operationId: `rerun-4-${wf4Id}`, requestSha256: sha256Hex(`rerun-4-${wf4Id}`),
+                publish: true,
+                start: { runId: run4Id, mode: "live", inputsText: "{}", kvText: "{}", controllerInstanceId: `session-${wf4Id}`, controllerVersion: "1.3.0", testAgentMode: null },
+                title: "rerun-4",
+                rerun: {
+                    sourceWorkflowSessionId: wf3Id, sourceRunId: run3Id,
+                    fromExecutionId: mappedV3.newId, mode: "continue", resume: resume4, actor: ACTOR,
+                    mapped: mapped4, unwalkedCount: 1, supplied: null,
+                    cutKvRevision: 1, inboxCutAt: new Date(), reusedSpawnChildIds: [], approvalOwnerCheck: null,
+                },
+            });
+            const gen4Step1 = await store.readNodeExecution(mapped4.find(m => m.source.nodeId === "step1").newId);
+            expect(gen4Step1.reusedFromWorkflowSessionId, "COALESCE origin flattens to #2").toBe(src.wfId);
+            const gen4Supplied = await store.readNodeExecution(mapped4.find(m => m.source.nodeId === "step2").newId);
+            expect(gen4Supplied.reusedFromExecutionId).toBe(mappedV3.newId);
+            expect(gen4Supplied.reusedFromWorkflowSessionId).toBe(wf3Id);
+            expect(gen4Supplied.suppliedFromExecutionId).toBe(step2Key.nodeExecutionId);
+            expect(gen4Supplied.suppliedNote).toBe("verified via az cli");
+            expect(gen4Supplied.winner).toBe("supplied");
+
+            // 3. listWorkflowReruns finds #3 under #2
+            const reruns = await store.listWorkflowReruns(src.wfId);
+            expect(reruns.some(r => r.workflowSessionId === wf3Id && r.runId === run3Id)).toBe(true);
+
+            // 4. Supply on visit 1 (0 reused visits) succeeds
+            const step1Key = srcKeys.find(k => k.nodeId === "step1");
+            const wfVisit1 = randomUUID();
+            const runVisit1 = randomUUID();
+            const mappedV1 = mapRerunSuppliedExecution(runVisit1, step1Key, []);
+            const resumeV1 = buildRerunResume({
+                mode: "supply", chosen: step1Key, mappedPredecessorId: null,
+                cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256, targetIrSha256: src.compiled.irSha256,
+                supplied: { mappedSuppliedId: mappedV1.newId, outcome: "ok", outputSha256: sha256Hex("{}"), note: "visit 1 supplied", at: new Date().toISOString(), nextStateId: "step2", nextOrdinal: 1 },
+            });
+            await client._catalog.createWorkflowSession(wfVisit1, { parentSessionId: src.ownerId, title: "rerun-v1" });
+            await store.createDefinition({
+                workflowSessionId: wfVisit1, parentSessionId: src.ownerId, notifyParent: true,
+                yaml: SIMPLE_YAML, compiled: src.compiled, actor: ACTOR,
+                operationId: `rerun-v1-${wfVisit1}`, requestSha256: sha256Hex(`rerun-v1-${wfVisit1}`),
+                publish: true,
+                start: { runId: runVisit1, mode: "live", inputsText: "{}", kvText: "{}", controllerInstanceId: `session-${wfVisit1}`, controllerVersion: "1.3.0", testAgentMode: null },
+                title: "rerun-v1",
+                rerun: {
+                    sourceWorkflowSessionId: src.wfId, sourceRunId: src.runId,
+                    fromExecutionId: step1Key.nodeExecutionId, mode: "supply", resume: resumeV1, actor: ACTOR,
+                    mapped: [], unwalkedCount: 0,
+                    supplied: { newExecutionId: mappedV1.newId, newPredecessorId: null, sourceExecutionId: step1Key.nodeExecutionId, outcome: "ok", outputText: "{}", note: "visit 1 supplied", at: new Date() },
+                    cutKvRevision: 1, inboxCutAt: new Date(), reusedSpawnChildIds: [], approvalOwnerCheck: null,
+                },
+            });
+            const rV1 = await store.readRun(runVisit1);
+            expect(rV1.rerunReused).toBe(0);
+            expect(rV1.rerunUnwalked).toBe(0);
+
+            // 5. 256 MiB cap enforced inside transaction via configurable limit override
+            const wfBig = randomUUID();
+            const runBig = randomUUID();
+            await client._catalog.createWorkflowSession(wfBig, { parentSessionId: src.ownerId, title: "rerun-big" });
+            let capErr = null;
+            try {
+                await store.createDefinition({
+                    workflowSessionId: wfBig, parentSessionId: src.ownerId, notifyParent: true,
+                    yaml: SIMPLE_YAML, compiled: src.compiled, actor: ACTOR,
+                    operationId: `rerun-big-${wfBig}`, requestSha256: sha256Hex(`rerun-big-${wfBig}`),
+                    publish: true,
+                    start: { runId: runBig, mode: "live", inputsText: "{}", kvText: "{}", controllerInstanceId: `session-${wfBig}`, controllerVersion: "1.3.0", testAgentMode: null },
+                    title: "rerun-big",
+                    rerun: {
+                        sourceWorkflowSessionId: src.wfId, sourceRunId: src.runId,
+                        fromExecutionId: step2Key.nodeExecutionId, mode: "run_again",
+                        resume: buildRerunResume({ mode: "run_again", chosen: step2Key, mappedPredecessorId: mapped3[1].newId, cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256, targetIrSha256: src.compiled.irSha256 }),
+                        actor: ACTOR, mapped: mapRerunExecutions(runBig, part3.reused), unwalkedCount: 1,
+                        supplied: null, cutKvRevision: 1, inboxCutAt: new Date(), reusedSpawnChildIds: [],
+                        approvalOwnerCheck: null, maxCopyBytes: 10,
+                    },
+                });
+            } catch (err) {
+                capErr = err;
+            }
+            expect(capErr).toBeInstanceOf(WorkflowStoreError);
+            expect(capErr.code).toBe("RERUN_TOO_LARGE");
+            expect(await store.readRun(runBig)).toBeNull();
+        });
+    });
+
+    it("50-interleaving races: (A) source deleter vs rerun copy (0 deadlocks) and (B) Sweeper bare-shell delete vs late admission (R2-M1/R2-S1)", { timeout: testTime.ms(240_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const store = client._catalog.workflowStore();
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            try {
+                // Race A: 25 interleavings of source deleter (sweeperSoftDelete / softDeleteSession) vs rerun createDefinition
+                let copyWonA = 0;
+                let delWonA = 0;
+                for (let i = 0; i < 25; i += 1) {
+                    const src = await seedEndedSourceWorkflow(client);
+                    const srcKeys = await store.listRerunKeys(src.runId);
+                    const step2Key = srcKeys.find(k => k.nodeId === "step2");
+                    const part = partitionRerunVisits(srcKeys, step2Key.nodeExecutionId, "run_again");
+                    const wf3Id = randomUUID();
+                    const run3Id = randomUUID();
+                    const mapped = mapRerunExecutions(run3Id, part.reused);
+                    await client._catalog.createWorkflowSession(wf3Id, { parentSessionId: src.ownerId, title: `raceA-${i}` });
+                    const ver = await store.sweeperRowVersion(src.wfId);
+                    const copyP = store.createDefinition({
+                        workflowSessionId: wf3Id, parentSessionId: src.ownerId, notifyParent: true,
+                        yaml: SIMPLE_YAML, compiled: src.compiled, actor: ACTOR,
+                        operationId: `raceA-op-${i}`, requestSha256: sha256Hex(`raceA-op-${i}`),
+                        publish: true,
+                        start: { runId: run3Id, mode: "live", inputsText: "{}", kvText: "{}", controllerInstanceId: `session-${wf3Id}`, controllerVersion: "1.3.0", testAgentMode: null },
+                        title: `raceA-${i}`,
+                        rerun: {
+                            sourceWorkflowSessionId: src.wfId, sourceRunId: src.runId,
+                            fromExecutionId: step2Key.nodeExecutionId, mode: "run_again",
+                            resume: buildRerunResume({ mode: "run_again", chosen: step2Key, mappedPredecessorId: mapped[0].newId, cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256, targetIrSha256: src.compiled.irSha256 }),
+                            actor: ACTOR, mapped, unwalkedCount: 0, supplied: null,
+                            cutKvRevision: 1, inboxCutAt: new Date(), reusedSpawnChildIds: [], approvalOwnerCheck: null,
+                        },
+                    }).then(() => ({ ok: true })).catch(err => ({ ok: false, err }));
+                    const delP = (i % 2 === 0
+                        ? store.sweeperSoftDelete({ sessionId: src.wfId, version: ver.version, cascade: false, orchestrationNotFound: false })
+                        : client._catalog.softDeleteSession(src.wfId)
+                    ).then(res => ({ ok: true, res })).catch(err => ({ ok: false, err }));
+
+                    const [cRes, dRes] = await Promise.all([copyP, delP]);
+                    expect(dRes.err?.code, "no PostgreSQL 40P01 deadlock on deleter").not.toBe("40P01");
+                    expect(cRes.err?.code, "no PostgreSQL 40P01 deadlock on copy").not.toBe("40P01");
+                    if (cRes.ok) {
+                        copyWonA += 1;
+                        expect(await store.readRun(run3Id)).not.toBeNull();
+                    } else {
+                        delWonA += 1;
+                        expect(cRes.err).toBeInstanceOf(WorkflowStoreError);
+                        expect(cRes.err.code).toBe("RERUN_SOURCE_GONE");
+                        expect(await store.readRun(run3Id)).toBeNull();
+                    }
+                }
+                expect(copyWonA + delWonA).toBe(25);
+
+                // Race B (R2-M1 & R2-S1): 25 interleavings of Sweeper bare-shell delete vs late admission on #3
+                let admitWonB = 0;
+                let sweepWonB = 0;
+                const sharedSrc = await seedEndedSourceWorkflow(client);
+                const sharedKeys = await store.listRerunKeys(sharedSrc.runId);
+                const sharedStep2 = sharedKeys.find(k => k.nodeId === "step2");
+                const sharedPart = partitionRerunVisits(sharedKeys, sharedStep2.nodeExecutionId, "run_again");
+                for (let i = 0; i < 25; i += 1) {
+                    const wf3Id = randomUUID();
+                    const run3Id = randomUUID();
+                    const mapped = mapRerunExecutions(run3Id, sharedPart.reused);
+                    await client._catalog.createWorkflowSession(wf3Id, { parentSessionId: sharedSrc.ownerId, title: `raceB-${i}` });
+                    const ver = await store.sweeperRowVersion(wf3Id);
+                    expect(ver).not.toBeNull();
+
+                    const admitP = store.createDefinition({
+                        workflowSessionId: wf3Id, parentSessionId: sharedSrc.ownerId, notifyParent: true,
+                        yaml: SIMPLE_YAML, compiled: sharedSrc.compiled, actor: ACTOR,
+                        operationId: `raceB-op-${i}`, requestSha256: sha256Hex(`raceB-op-${i}`),
+                        publish: true,
+                        start: { runId: run3Id, mode: "live", inputsText: "{}", kvText: "{}", controllerInstanceId: `session-${wf3Id}`, controllerVersion: "1.3.0", testAgentMode: null },
+                        title: `raceB-${i}`,
+                        rerun: {
+                            sourceWorkflowSessionId: sharedSrc.wfId, sourceRunId: sharedSrc.runId,
+                            fromExecutionId: sharedStep2.nodeExecutionId, mode: "run_again",
+                            resume: buildRerunResume({ mode: "run_again", chosen: sharedStep2, mappedPredecessorId: mapped[0].newId, cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: sharedSrc.compiled.irSha256, targetIrSha256: sharedSrc.compiled.irSha256 }),
+                            actor: ACTOR, mapped, unwalkedCount: 0, supplied: null,
+                            cutKvRevision: 1, inboxCutAt: new Date(), reusedSpawnChildIds: [], approvalOwnerCheck: null,
+                        },
+                    }).then(() => ({ ok: true })).catch(err => ({ ok: false, err }));
+
+                    const sweepP = store.sweeperSoftDelete({
+                        sessionId: wf3Id, version: ver.version, cascade: false, orchestrationNotFound: true, bareClaimShell: true,
+                    });
+
+                    const [aRes, sRes] = await Promise.all([admitP, sweepP]);
+                    const { rows: sessRows } = await pool.query(`SELECT deleted_at FROM ${s}.sessions WHERE session_id = $1`, [wf3Id]);
+                    const runRow = await store.readRun(run3Id);
+                    const defRow = await store.readDefinition(wf3Id);
+
+                    if (aRes.ok) {
+                        admitWonB += 1;
+                        // Sweeper MUST have refused once admission committed, and session MUST NOT be deleted!
+                        expect("refused" in sRes).toBe(true);
+                        expect(sessRows[0].deleted_at).toBeNull();
+                        expect(runRow).not.toBeNull();
+                    } else {
+                        sweepWonB += 1;
+                        // Losing admission MUST fail with WORKFLOW_DELETED and write ZERO rows!
+                        expect(aRes.err).toBeInstanceOf(WorkflowStoreError);
+                        expect(aRes.err.code).toBe("WORKFLOW_DELETED");
+                        expect("deleted" in sRes).toBe(true);
+                        expect(sessRows[0].deleted_at).not.toBeNull();
+                        expect(runRow).toBeNull();
+                        expect(defRow).toBeNull();
+                    }
+                }
+                expect(admitWonB + sweepWonB).toBe(25);
+                // Sanity check R2-S1 under-lock re-check: even with a current xmin, bareClaimShell refuses if a definition exists!
+                const wfDraft = randomUUID();
+                await client._catalog.createWorkflowSession(wfDraft, { parentSessionId: sharedSrc.ownerId, title: "draft-guard" });
+                await store.createDefinition({
+                    workflowSessionId: wfDraft, parentSessionId: sharedSrc.ownerId, notifyParent: true,
+                    yaml: SIMPLE_YAML, compiled: sharedSrc.compiled, actor: ACTOR,
+                    operationId: `draft-${wfDraft}`, requestSha256: sha256Hex(`draft-${wfDraft}`),
+                    publish: false, start: null, title: "draft-guard",
+                });
+                const draftVer = await store.sweeperRowVersion(wfDraft);
+                const draftSweep = await store.sweeperSoftDelete({
+                    sessionId: wfDraft, version: draftVer.version, cascade: false, orchestrationNotFound: true, bareClaimShell: true,
+                });
+                expect("refused" in draftSweep && draftSweep.refused.status === "Changed").toBe(true);
+            } finally {
+                await pool.end();
+            }
+        });
+    });
+});
