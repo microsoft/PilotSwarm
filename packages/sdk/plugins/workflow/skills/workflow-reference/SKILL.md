@@ -273,7 +273,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 ### spawn
 
-`definition` (literal name or `<package>/<name>`), `inputs` (object template), `revision` (fixed positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (use `from: "${states.<spawn>.output.workflowId}"`). Child end sends built-in `WorkflowEnded@1` while parent is active (inbox order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; >16 KiB sets `outputTruncated: true`). Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
+`definition` (literal name or `<package>/<name>`), `inputs` (object template), `revision` (fixed positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (use `from: "${states.<spawn>.output.workflowId}"`). Every child end sends built-in `WorkflowEnded@1` while parent is active (success only if its `outcome` is `succeeded`; inbox order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; >16 KiB sets `outputTruncated: true`). Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
 
 ### terminal
 
@@ -336,7 +336,7 @@ Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
 metadata: { name: change-review, version: "1.0.0" }
-description: Bounded review with explicit accepted and rejected routes.
+description: Bounded review with accepted and rejected routes.
 initial: review
 states:
   review:
@@ -370,7 +370,7 @@ states:
     contract: WorkflowEnded@1
     from: "${states.go.output.workflowId}"
     wait: { seconds: 300 }
-    transition: { next: { received: done, elapsed: fail, failure: fail } }
+    transition: { next: { received: done, elapsed: fail, failure: fail } } # check input.outcome
   done: { type: terminal, outcome: succeeded, output: "${input}" }
   fail: { type: terminal, outcome: failed, output: "${runtime.error}" }
 ```
