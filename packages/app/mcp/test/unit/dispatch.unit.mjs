@@ -510,6 +510,24 @@ async function main() {
             && instructions.includes("list_creatable_workflows")
             && instructions.includes("create_session_for_workflow")
             && instructions.includes("workflow_definition start creates a Workflow session as a child of owner_session_id"));
+
+        // get_agent_tree accepts session_id and keeps root_session_id as an alias
+        const treeBySessionId = await client.callTool({ name: "get_agent_tree", arguments: { session_id: "s-agent" } });
+        const treeBySessionBody = parse(treeBySessionId);
+        record("get_agent_tree accepts session_id",
+            !treeBySessionId.isError && treeBySessionBody?.root_session_id === "s-agent" && treeBySessionBody?.total_nodes === 2);
+
+        const treeByRootAlias = await client.callTool({ name: "get_agent_tree", arguments: { root_session_id: "s-agent" } });
+        const treeByRootBody = parse(treeByRootAlias);
+        record("get_agent_tree keeps root_session_id alias",
+            !treeByRootAlias.isError && treeByRootBody?.root_session_id === "s-agent" && treeByRootBody?.total_nodes === 2);
+
+        const treeMismatch = await client.callTool({ name: "get_agent_tree", arguments: { session_id: "s-agent", root_session_id: "s-wf" } });
+        record("get_agent_tree rejects mismatched session_id and root_session_id", treeMismatch.isError === true);
+
+        const treeMissing = await client.callTool({ name: "get_agent_tree", arguments: {} });
+        record("get_agent_tree rejects missing session_id and root_session_id", treeMissing.isError === true);
+
         await client.close();
     }
 

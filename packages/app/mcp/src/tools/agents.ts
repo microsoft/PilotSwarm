@@ -170,13 +170,19 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
                 "Bounded by max_depth (default 5). " +
                 "include_system filters system descendants; the root session is always returned regardless.",
             inputSchema: {
-                root_session_id: z
+                session_id: z
                     .string()
                     .min(1)
+                    .optional()
                     .describe(
                         "Root session id to walk from (top-level or any sub-agent). " +
                         "Accepts any non-empty string; PilotSwarm system-agent UUIDs are not strictly RFC-4122 compliant.",
                     ),
+                root_session_id: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("Alias for session_id."),
                 max_depth: z
                     .number()
                     .int()
@@ -190,8 +196,21 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
                     .describe("Include system sub-agents in the tree (default true)"),
             },
         },
-        async ({ root_session_id, max_depth, include_system }) => {
+        async ({ session_id, root_session_id, max_depth, include_system }) => {
             try {
+                if (session_id && root_session_id && session_id !== root_session_id) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session_id and root_session_id must match when both are provided" }) }],
+                        isError: true,
+                    };
+                }
+                const targetSessionId = session_id ?? root_session_id;
+                if (!targetSessionId) {
+                    return {
+                        content: [{ type: "text" as const, text: JSON.stringify({ error: "session_id (or root_session_id) is required" }) }],
+                        isError: true,
+                    };
+                }
                 const limit = max_depth ?? 5;
                 const includeSystem = include_system ?? true;
                 const sessions = await ctx.mgmt.listSessions();
@@ -208,7 +227,7 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
                     }
                 }
 
-                const root = sessionById.get(root_session_id);
+                const root = sessionById.get(targetSessionId);
                 if (!root) {
                     return {
                         content: [
@@ -216,7 +235,7 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
                                 type: "text" as const,
                                 text: JSON.stringify({
                                     error: "session not found",
-                                    root_session_id,
+                                    root_session_id: targetSessionId,
                                 }),
                             },
                         ],
@@ -262,7 +281,7 @@ export function registerAgentTools(server: McpServer, ctx: ServerContext) {
                         {
                             type: "text" as const,
                             text: JSON.stringify(
-                                { root_session_id, depth_reached: depthReached, total_nodes: totalNodes, tree },
+                                { root_session_id: targetSessionId, depth_reached: depthReached, total_nodes: totalNodes, tree },
                                 null,
                                 2,
                             ),
