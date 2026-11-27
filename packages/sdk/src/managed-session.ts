@@ -1107,6 +1107,8 @@ export class ManagedSession {
      * session before it commits the snapshot or reuses the session.
      */
     private unsettledRun = false;
+    /** How many runs (runTurn calls) this handle started: a lock-bypassing Stop acts only on the run it saw (review R2-2). */
+    private runGeneration = 0;
     /**
      * Issue 329: the runtime process this session's client ran on when the
      * session was opened. A running turn settles as soon as that runtime
@@ -1729,6 +1731,7 @@ export class ManagedSession {
         this.nativeFeatureRevoked = false;
         this.nativeAdmissionFence = null;
         this.nativeTaskCallsInFlight.clear();
+        this.runGeneration += 1;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
         const interrupt: RunInterrupt = { reason: null, aborted: false, wake: null };
         this.runInterrupt = interrupt;
@@ -1874,6 +1877,16 @@ export class ManagedSession {
         const unsettled = this.unsettledRun;
         this.unsettledRun = false;
         return unsettled;
+    }
+
+    /** A Stop settled the running turn by force (its idle never came): its activity drops this handle (review R2-2). */
+    markRunUnsettled(): void {
+        this.unsettledRun = true;
+    }
+
+    /** How many runs this handle started (review R2-2). */
+    getRunGeneration(): number {
+        return this.runGeneration;
     }
 
     /** Issue 329: watch the runtime process this session runs on (SessionManager binds it when it opens the session). */

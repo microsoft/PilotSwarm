@@ -5194,11 +5194,12 @@ export function registerActivities(
                     throw new Error(TURN_CUT_BY_SHUTDOWN_MESSAGE);
                 }
                 throwIfDrainCut("after the model run");
-                // Review RT-F1: a model run aborted after a turn-control failure that did not settle is not reused or saved
-                // live: its warm session is dropped (destroyed, so the CLI stops and flushes) before the snapshot is committed.
+                // Review RT-F1: a model run aborted after a turn-control failure that did not settle (or, review R2-2 of
+                // issue I1, a run a Stop settled by force) is not reused or saved live: its warm session is dropped
+                // (destroyed, so the CLI stops and flushes) before the snapshot is committed and the session lock is released.
                 const unsettled = (targetSession as { takeUnsettledRun?: () => boolean }).takeUnsettledRun;
                 if (typeof unsettled === "function" && unsettled.call(targetSession)) {
-                    traceWarn(`[runTurn] session=${input.sessionId}: the model run aborted after a turn-control failure did not settle; dropping its warm session`);
+                    traceWarn(`[runTurn] session=${input.sessionId}: the model run did not settle after its abort; dropping its warm session`);
                     try {
                         await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true });
                     } catch (err: any) {

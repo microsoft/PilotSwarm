@@ -2395,25 +2395,32 @@ export class SessionManager {
             }
         }
 
+        // Review R2-2 (issue I1): from here on, only this turn's own run on this handle is settled or dropped. The turn may
+        // end during an await above or below, and the next turn may then run on the same warm handle (the session lock is
+        // free once the stopped turn's activity ends); that next turn is never settled by force or invalidated by this Stop.
+        const stillRunning = () => this.sessions.get(sessionId) === managed && managed.getActiveTurn() === active;
         const graceMs = opts.unwindGraceMs ?? 8_000;
         const deadline = Date.now() + graceMs;
-        while (managed.getActiveTurn() && Date.now() < deadline) {
+        while (stillRunning() && Date.now() < deadline) {
             await sleep(200);
         }
-        if (!managed.getActiveTurn()) {
+        if (!stillRunning()) {
             return { outcome: "stopped", turnIndex: active.turnIndex };
         }
 
         // Escalation: the SDK never fired session.idle. Settle the turn promise
         // ourselves, then drop the warm session so the next turn recreates it.
-        // invalidateWarmSession takes the session lock, so fire-and-forget: the
-        // lock serializes it behind the (now settling) turn's unwind.
+        // The turn's own activity drops it before it releases the session lock
+        // (the unsettled run); the invalidation below is the backstop, and
+        // drops the handle only if no later run started on it.
+        const run = managed.getRunGeneration();
         managed.forceSettleTurn(opts.reason);
+        managed.markRunUnsettled();
         const settleDeadline = Date.now() + 2_000;
-        while (managed.getActiveTurn() && Date.now() < settleDeadline) {
+        while (managed.getActiveTurn() === active && Date.now() < settleDeadline) {
             await sleep(100);
         }
-        void this.invalidateWarmSession(sessionId).catch(() => {});
+        void this.invalidateWarmSession(sessionId, { onlyRun: { session: managed, run } }).catch(() => {});
         return { outcome: "stop_forced", turnIndex: active.turnIndex };
     }
 
@@ -4398,12 +4405,15 @@ export class SessionManager {
      * it the handle is forgotten anyway and its disconnect settles in the
      * background (issue 329: its runtime connection is gone).
      */
-    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean; destroyDeadlineMs?: number }): Promise<void> {
+    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean; destroyDeadlineMs?: number;
+        /** Only that handle, and only while its newest run is `run` (no later turn ran on it). */
+        onlyRun?: { session: ManagedSession; run: number } }): Promise<void> {
         if (!options?.lockHeld) {
             return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { ...options, lockHeld: true }));
         }
         const session = this.sessions.get(sessionId);
         if (!session) return;
+        if (options?.onlyRun && (session !== options.onlyRun.session || session.getRunGeneration() !== options.onlyRun.run)) return;
         // Review RT-F1-L1: an invalidated handle is forgotten whatever fails on the way, so it is never reused.
         try {
             await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
