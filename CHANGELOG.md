@@ -4,12 +4,16 @@
 
 **Upgrade: stop every worker, deploy, then start them. Do not roll the
 workers.** No CMS migration, and no session orchestration or Workflow
-controller version change. A child Workflow's end message now has a new form.
-An older worker that retries a message a newer worker already stored is
-refused (`OPERATION_CONFLICT`); the parent still has the message. Before you
-roll back, let running child Workflows finish and keep the new workers up
+controller version change. Why: a child Workflow's `WorkflowEnded@1` notice to
+its parent now has a new form (`runId`, and outputs up to 195,584 bytes). An
+old worker that replays a new-style `WorkflowEnded@1` notice fails with
+`OPERATION_CONFLICT`, because the stored notice differs from the one it
+builds; the parent still has the message. **Rollback:** drain child end
+notices first. Let running child Workflows finish and keep the new workers up
 until every ended child has told its parent (no child end notice pending or
-retrying).
+retrying), then stop every worker, deploy the older release, and start them.
+See "Upgrading to whole child Workflow results" in
+[`docs/developer/deploy/aks.md`](docs/developer/deploy/aks.md).
 
 ### Workflows: every session above a Workflow reads and controls it
 
