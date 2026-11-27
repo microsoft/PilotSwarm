@@ -201,11 +201,13 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   turn (a session takes a Workflow prompt only between turns) and starts a
   new turn bound to the new visit. The reply is bounded: 5 minutes after the
   report (`WORKFLOW_AGENT_REPLY_SETTLE`, also when `turnTimeoutMs` is 0) a
-  reply still running is stopped as a Stop stops it (the abort, then up to
-  about 12 seconds for its task cancel and grace before the turn is settled
-  by force, and then at most 5 seconds for the dropped session's disconnect,
-  so the session lock is released even when the CLI no longer answers); the
-  abort acts only on that turn's own run, never on the next turn that may have
+  reply still running is stopped as a Stop stops it. Each stage of that stop
+  is bounded on its own: the turn's task cancel (1.5 seconds) and grace (8
+  seconds) before the turn is settled by force, then, when the warm session
+  is dropped, the workspace-task cancel (20 seconds) and the disconnect (5
+  seconds), so the session lock is released even when the CLI no longer
+  answers. Dropping the handle does not repair a CLI runtime that stopped
+  answering. The abort acts only on that turn's own run, never on the next turn that may have
   started on the same warm session. A reply lost with its Copilot session (a
   lost live session, a corrupted transcript) is not run again: each recovery
   reads the visit before it resets anything and again before its model run,
@@ -222,7 +224,11 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   the open visit its prompt names, or, for a turn a timer or a sub-agent's
   update starts, the visit of the session's newest visit prompt. A turn whose
   visit is already decided does not run (no model call), and neither does a
-  turn of a `session: new` step whose own visit is decided (issue I1). A decided visit's
+  turn of a `session: new` step whose own visit is decided (issue I1). The
+  turn's visit is read again at admission under a row lock that waits for a
+  decision still committing (up to 10 seconds; past it the turn fails and is
+  retried), so a retry on another worker does not run a visit whose result
+  was being written when the first worker was lost. A decided visit's
   Stop (request id `workflow-cycle-stop:<visit>`) is applied only to a turn of
   that visit; a person's Stop applies as always. The step reminder and the
   completion name only the turn's own visit. When the run ends before the
@@ -231,9 +237,9 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   cleanup, recovery) ends it.
   **Known limits:** the next visit's prompt can wait behind the earlier
   visit's turn: until the abort of a timed-out turn lands, or until a
-  completed visit's turn finishes its reply (usually seconds; the 5-minute
-  reply limit then starts the stop, which can take about 12 seconds more).
-  The next visit's time limit runs during that wait;
+  completed visit's turn finishes its reply (usually seconds; past the
+  5-minute reply limit the stop starts, and its bounded stages above add to
+  the wait). The next visit's time limit runs during that wait;
   that visit's Stop names the next visit and does not end the earlier turn.
   Results stay correct: each binds to its own visit. A tool call made in the
   same model message as the report is not refused (the CLI runs a message's

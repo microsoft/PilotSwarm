@@ -767,8 +767,8 @@ recorded, no later message in that turn can start a tool, the shell and file
 tools included: write a short final reply and stop. Usually the turn then
 ends by itself and its session is saved, so a `session: continue` step
 remembers it in its next visit. A turn that is not saved is not remembered:
-a reply still running 5 minutes after the result is stopped (stopping it
-can take a few seconds more), and the run's end, a lost connection to the
+a reply still running 5 minutes after the result is stopped (the stop itself
+takes a little longer), and the run's end, a lost connection to the
 model, or a worker crash can also end a turn before it is saved. The result
 itself is kept in every case.
 
