@@ -62,7 +62,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -143,7 +147,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -227,7 +235,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -311,7 +323,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -388,7 +404,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -465,7 +485,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -542,7 +566,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -610,7 +638,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_PromptNotDropped"
@@ -673,7 +705,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_NoLoudFail"
@@ -745,7 +781,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -817,7 +857,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_NoPromptBehindStaleTurn"
@@ -893,7 +937,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -976,7 +1024,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1053,7 +1105,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1131,7 +1187,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1202,7 +1262,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_StopAtRunEnd"
@@ -1274,7 +1338,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1359,7 +1427,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1444,7 +1516,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1525,7 +1601,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1600,7 +1680,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1667,7 +1751,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1731,7 +1819,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_PromptNotDropped"
@@ -1797,7 +1889,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1872,7 +1968,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -1953,7 +2053,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2038,7 +2142,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2122,7 +2230,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2202,7 +2314,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2274,7 +2390,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoRecheckFail"
@@ -2338,7 +2458,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2403,7 +2527,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2469,7 +2597,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2536,7 +2668,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2603,7 +2739,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2678,7 +2818,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2761,7 +2905,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2847,7 +2995,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2926,7 +3078,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -2995,7 +3151,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3064,7 +3224,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3139,7 +3303,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3219,7 +3387,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3303,7 +3475,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3392,7 +3568,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3477,7 +3657,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3562,7 +3746,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3651,7 +3839,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3736,7 +3928,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3808,7 +4004,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoCarry"
@@ -3881,7 +4081,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -3964,7 +4168,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4038,7 +4246,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4106,7 +4318,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4186,7 +4402,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4275,7 +4495,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4360,7 +4584,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4445,7 +4673,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4531,7 +4763,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4612,7 +4848,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4692,7 +4932,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4774,7 +5018,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4856,7 +5104,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -4929,7 +5181,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5004,7 +5260,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5091,7 +5351,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5176,7 +5440,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5252,7 +5520,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5333,7 +5605,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5421,7 +5697,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5496,7 +5776,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5570,7 +5854,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5644,7 +5932,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5712,7 +6004,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5780,7 +6076,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5856,7 +6156,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -5934,7 +6238,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6004,7 +6312,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6085,7 +6397,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6174,7 +6490,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6256,7 +6576,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6333,7 +6657,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6412,7 +6740,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6494,7 +6826,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6569,7 +6905,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6634,7 +6974,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_ResultOwnVisit"
@@ -6697,7 +7041,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoFailDecided"
@@ -6770,7 +7118,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6850,7 +7202,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -6920,7 +7276,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoDroppedThenResult"
@@ -6983,7 +7343,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoDroppedThenTimeout"
@@ -7046,7 +7410,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoReuseAfterFail"
@@ -7110,7 +7478,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7175,7 +7547,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7246,7 +7622,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "TRUE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7329,7 +7709,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7419,7 +7803,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7507,7 +7895,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "TRUE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7594,7 +7986,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7684,7 +8080,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -7761,7 +8161,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_StopOwnVisit"
@@ -7824,7 +8228,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoDoneCommitted"
@@ -7887,7 +8295,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoRanAfterDone"
@@ -7950,7 +8362,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoRanWithMemory"
@@ -8013,7 +8429,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoStopFenced"
@@ -8076,7 +8496,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoDoneStoppedAtEnd"
@@ -8139,7 +8563,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoEndStoppedTurn"
@@ -8202,7 +8630,11 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "TRUE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoReplyExpired"
@@ -8265,10 +8697,711 @@
     "NoStopOnDone": "TRUE",
     "SessionEndStop": "TRUE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "TRUE"
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoCycleStop"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.cc-abort-unfenced",
+  "module": "WfContinuedSession",
+  "config": "i1.cc-abort-unfenced.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_StopOwnVisit"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "Review R2-2 at 0dae9760: the reply limit fires for the completed visit's turn; that turn ends by itself and the next visit's turn starts on the same session before the abort lands, which then ends the next visit's turn.",
+  "tlc": {
+   "comment": "i1.cc-abort-unfenced (expected safety): Review R2-2 at 0dae9760: the reply limit fires for the completed visit's turn; that turn ends by itself and the next visit's turn starts on the same session before the abort lands, which then ends the next visit's turn.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"abort-unfenced\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StopOwnVisit"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "i1.cc-ack-lost",
+  "module": "WfContinuedSession",
+  "config": "i1.cc-ack-lost.cfg",
+  "mode": "reviewed",
+  "meaning": "finding",
+  "spec": "LiveSpec",
+  "expected": "liveness",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce"
+  ],
+  "properties": [
+   "Prop_PromptTaken"
+  ],
+  "deadlock": true,
+  "note": "Review R2-3 at 0dae9760: the result's write commits but the worker sees a failure; no reply limit is armed, so a reply that never ends keeps the next visit's prompt queued (time limits not forced).",
+  "tlc": {
+   "comment": "i1.cc-ack-lost (expected liveness): Review R2-3 at 0dae9760: the result's write commits but the worker sees a failure; no reply limit is armed, so a reply that never ends keeps the next visit's prompt queued (time limits not forced).",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "FALSE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "TRUE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce"
+   ],
+   "properties": [
+    "Prop_PromptTaken"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.fault-replay-decided",
+  "module": "WfContinuedSession",
+  "config": "i1.fault-replay-decided.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_NoTurnForDecided"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "A recovery that does not read the visit runs a decided visit's prompt again, with its tools open. Review R2-1 found one at 0dae9760: the check after the live-session recovery's own run, when that run reported and its transcript was then refused.",
+  "tlc": {
+   "comment": "i1.fault-replay-decided (expected safety): A recovery that does not read the visit runs a decided visit's prompt again, with its tools open. Review R2-1 found one at 0dae9760: the check after the live-session recovery's own run, when that run reported and its transcript was then refused.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"replay-decided\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_NoTurnForDecided"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "i1.fix-r2-safety",
+  "module": "WfContinuedSession",
+  "config": "i1.fix-r2-safety.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_PromptNotDropped",
+   "Inv_NoLoudFail",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_StopAtRunEnd",
+   "Inv_NoStopOnActiveDone",
+   "Inv_StopOwnVisit",
+   "Inv_TurnsInOrder",
+   "Inv_EndStopsTurn"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Review R2 fixes: every safety property of i1.fix-safety, with the abort landing later, lost acknowledgements and lost sessions (three visits, a person's end or delete, failing Stops).",
+  "tlc": {
+   "comment": "i1.fix-r2-safety (expected PASS): Review R2 fixes: every safety property of i1.fix-safety, with the abort landing later, lost acknowledgements and lost sessions (three visits, a person's end or delete, failing Stops).",
+   "spec": "Spec",
+   "constants": {
+    "V": "3",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_PromptNotDropped",
+    "Inv_NoLoudFail",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_StopAtRunEnd",
+    "Inv_NoStopOnActiveDone",
+    "Inv_StopOwnVisit",
+    "Inv_TurnsInOrder",
+    "Inv_EndStopsTurn"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.fix-r2-live",
+  "module": "WfContinuedSession",
+  "config": "i1.fix-r2-live.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoStopOnActiveDone",
+   "Inv_StopOwnVisit",
+   "Inv_TurnsInOrder",
+   "Inv_EndStopsTurn"
+  ],
+  "properties": [
+   "Prop_VisitsDecided",
+   "Prop_AllEnded",
+   "Prop_OwedSent",
+   "Prop_PromptTaken"
+  ],
+  "deadlock": true,
+  "note": "Review R2 fixes: every visit decided, every agent session ended, owed ends sent, every queued prompt taken.",
+  "tlc": {
+   "comment": "i1.fix-r2-live (expected PASS): Review R2 fixes: every visit decided, every agent session ended, owed ends sent, every queued prompt taken.",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"any\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "TRUE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoStopOnActiveDone",
+    "Inv_StopOwnVisit",
+    "Inv_TurnsInOrder",
+    "Inv_EndStopsTurn"
+   ],
+   "properties": [
+    "Prop_VisitsDecided",
+    "Prop_AllEnded",
+    "Prop_OwedSent",
+    "Prop_PromptTaken"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.fix-r2-stalled-reply",
+  "module": "WfContinuedSession",
+  "config": "i1.fix-r2-stalled-reply.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_OneLive",
+   "Inv_ResultOwnVisit",
+   "Inv_ReplaceOnlyEnded",
+   "Inv_NoTurnForDecided",
+   "Inv_EndOnce",
+   "Inv_NoStopOnActiveDone",
+   "Inv_StopOwnVisit",
+   "Inv_TurnsInOrder",
+   "Inv_EndStopsTurn"
+  ],
+  "properties": [
+   "Prop_PromptTaken"
+  ],
+  "deadlock": true,
+  "note": "Review R2 fixes: a reply that never ends by itself, also after a lost acknowledgement, is ended by the reply limit, and the queued prompt is taken (time limits not forced).",
+  "tlc": {
+   "comment": "i1.fix-r2-stalled-reply (expected PASS): Review R2 fixes: a reply that never ends by itself, also after a lost acknowledgement, is ended by the reply limit, and the queued prompt is taken (time limits not forced).",
+   "spec": "LiveSpec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "FALSE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "TRUE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_OneLive",
+    "Inv_ResultOwnVisit",
+    "Inv_ReplaceOnlyEnded",
+    "Inv_NoTurnForDecided",
+    "Inv_EndOnce",
+    "Inv_NoStopOnActiveDone",
+    "Inv_StopOwnVisit",
+    "Inv_TurnsInOrder",
+    "Inv_EndStopsTurn"
+   ],
+   "properties": [
+    "Prop_PromptTaken"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.wit-abort-fenced",
+  "module": "WfContinuedSession",
+  "config": "i1.wit-abort-fenced.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoAbortFenced"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Review R2-2 fix: the reply limit's abort lands while the next visit's turn runs, and leaves that turn.",
+  "tlc": {
+   "comment": "i1.wit-abort-fenced (expected safety): Review R2-2 fix: the reply limit's abort lands while the next visit's turn runs, and leaves that turn.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "W_NoAbortFenced"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.wit-ack-reconciled",
+  "module": "WfContinuedSession",
+  "config": "i1.wit-ack-reconciled.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoAckReconciled"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Review R2-3 fix: a result whose acknowledgement was lost is read back as decided, and the turn's reply limit is armed.",
+  "tlc": {
+   "comment": "i1.wit-ack-reconciled (expected safety): Review R2-3 fix: a result whose acknowledgement was lost is read back as decided, and the turn's reply limit is armed.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "TRUE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "W_NoAckReconciled"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i1.wit-lost-not-run",
+  "module": "WfContinuedSession",
+  "config": "i1.wit-lost-not-run.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoLostNotRun"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Review R2-1 fix: a decided visit's turn that lost its session ends without running again.",
+  "tlc": {
+   "comment": "i1.wit-lost-not-run (expected safety): Review R2-1 fix: a decided visit's turn that lost its session ends without running again.",
+   "spec": "Spec",
+   "constants": {
+    "V": "2",
+    "Person": "\"none\"",
+    "AllowStop": "TRUE",
+    "AllowCancel": "TRUE",
+    "AllowStopFail": "FALSE",
+    "FailAgentSession": "0",
+    "RecoverFair": "FALSE",
+    "SpawnRecheck": "TRUE",
+    "RecheckSeesEnding": "FALSE",
+    "EndMark": "TRUE",
+    "StopBeforeSpawn": "TRUE",
+    "PerAgentSessionEnd": "TRUE",
+    "StopAtRunEnd": "TRUE",
+    "Fault": "\"none\"",
+    "SplitSpawn": "FALSE",
+    "CheckAll": "FALSE",
+    "Fence": "\"none\"",
+    "Backstop": "FALSE",
+    "AllowSpawnCrash": "FALSE",
+    "MarkSplit": "FALSE",
+    "MarkFail": "\"none\"",
+    "Withdraw": "FALSE",
+    "Outbox": "FALSE",
+    "Carry": "FALSE",
+    "CarryDelete": "\"none\"",
+    "TurnGuard": "FALSE",
+    "MarkCreating": "FALSE",
+    "CarryNotFound": "FALSE",
+    "AllowTurnFail": "FALSE",
+    "FailReport": "\"none\"",
+    "TimeoutFair": "TRUE",
+    "AllowRecover": "FALSE",
+    "SplitTurn": "TRUE",
+    "NoStopOnDone": "TRUE",
+    "SessionEndStop": "TRUE",
+    "AllowStall": "FALSE",
+    "ReplyLimit": "TRUE",
+    "AsyncAbort": "TRUE",
+    "AckLost": "TRUE",
+    "Reconcile": "TRUE",
+    "AllowLoss": "TRUE"
+   },
+   "invariants": [
+    "W_NoLostNotRun"
    ],
    "properties": [],
    "deadlock": true
@@ -8328,7 +9461,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_ResultOwnVisit"
@@ -8391,7 +9528,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_OneLive"
@@ -8461,7 +9602,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "TypeOK",
@@ -8531,7 +9676,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_EndOnce"
@@ -8594,7 +9743,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "Inv_NoTurnForDecided"
@@ -8657,7 +9810,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoReplacement"
@@ -8720,7 +9877,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoOwedEnd"
@@ -8783,7 +9944,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoCycleStop"
@@ -8846,7 +10011,11 @@
     "NoStopOnDone": "FALSE",
     "SessionEndStop": "FALSE",
     "AllowStall": "FALSE",
-    "ReplyLimit": "FALSE"
+    "ReplyLimit": "FALSE",
+    "AsyncAbort": "FALSE",
+    "AckLost": "FALSE",
+    "Reconcile": "FALSE",
+    "AllowLoss": "FALSE"
    },
    "invariants": [
     "W_NoSkip"

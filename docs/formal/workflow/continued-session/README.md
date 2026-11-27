@@ -190,7 +190,35 @@ Batch i1 (TLC 2.19, two workers, 1,800 s per case; 17 cases):
 | `i1.fault-stop-unfenced` | `Inv_StopOwnVisit` violated | violated |
 | `i1.wit-*` (eight witnesses) | reached | all reached |
 
-The earlier cases on the changed model: see the full run below.
+### Review R2 of i1 (bound to 85c3ad9d)
+
+Review R2 found three gaps in the R1 fixes. R2-2: the reply limit's abort is a background step on the worker; it
+checked its turn once, so it could settle by force the next visit's turn, started meanwhile on the same session. R2-3:
+a result whose write committed but whose acknowledgement was lost left the turn's tools open and no reply limit armed.
+R2-1: a decided visit's turn could run again when its report came in a recovery's own run. The fixes: the abort acts
+only on the run it was sent for; such a write reads the visit back; every recovery reads the visit before it resets
+anything and before its model run.
+
+New constants: `AsyncAbort` (the limit's abort is two steps: `ReplyFire`, then `ReplyAbort`), `AckLost` (a result's
+acknowledgement may be lost), `Reconcile` (the R2-3 fix) and `AllowLoss` (`SessionLost`: a decided turn loses its
+session); faults `"abort-unfenced"` and `"replay-decided"`. All four constants are `FALSE` in every earlier case, whose
+behavior does not change. Witnesses: `W_NoAbortFenced` (the abort lands while the next visit's turn runs and leaves
+it), `W_NoAckReconciled` (a lost acknowledgement is read back) and `W_NoLostNotRun` (a decided turn that lost its
+session ends without running again). `CORRESPONDENCE-i1-r2-85c3ad9d.md` maps the new actions to the code.
+
+Batch r2a (TLC 2.19, two workers, 3,600 s per case; 9 cases; model sha256 `8ae4e8ffa716...`):
+
+| Case | Expected | Result |
+|---|---|---|
+| `i1.cc-abort-unfenced` (`0dae9760`: a visit's time limit stops its reported turn after the limit fired; the next visit's turn starts; the abort lands on it) | `Inv_StopOwnVisit` violated | violated |
+| `i1.cc-ack-lost` (`0dae9760`: a lost acknowledgement, then a reply that stalls; time limits not forced) | `Prop_PromptTaken` violated | violated (liveness), 10,299 distinct states |
+| `i1.fault-replay-decided` (a recovery that does not read the visit) | `Inv_NoTurnForDecided` violated | violated |
+| `i1.fix-r2-safety` (three visits, a person's end or delete, failing Stops, the R2 environment; every earlier invariant and the four of i1) | PASS | PASS, 6,521,296 distinct states |
+| `i1.fix-r2-live` (two visits; `LIVE` and `Prop_PromptTaken`) | PASS | PASS, 188,101 distinct states |
+| `i1.fix-r2-stalled-reply` (a reply that stalls, also after a lost acknowledgement) | PASS | PASS, 13,908 distinct states |
+| `i1.wit-abort-fenced`, `i1.wit-ack-reconciled`, `i1.wit-lost-not-run` | reached | all three reached |
+
+(`i1.fault-replay-decided` ran as `i1.cc-replay-decided` in batch r2a; only its name and note changed.)
 
 ## How to run
 

@@ -38,7 +38,11 @@
       "NoStopOnDone",
       "SessionEndStop",
       "AllowStall",
-      "ReplyLimit"
+      "ReplyLimit",
+      "AsyncAbort",
+      "AckLost",
+      "Reconcile",
+      "AllowLoss"
     ],
     "lists": "block",
     "deadlockFirst": false

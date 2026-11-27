@@ -37,7 +37,8 @@ CONSTANTS
     StopBeforeSpawn,\* fix G2: the next visit's spawn first ends earlier visits whose Stop was not sent
     PerAgentSessionEnd,     \* fix G3: one agent session's failed end does not keep the others from being ended
     StopAtRunEnd,   \* fix G5: a visit ended by the run's end also stops its running turn
-    Fault,          \* "none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided"
+    Fault,          \* "none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided",
+                    \* "stop-unfenced", "abort-unfenced" (i1 review R2-2), "replay-decided" (i1 review R2-1)
     \* DRR-1 and DRR-2 (the delta review of the G1 fixes): the spawn and a person's end in separate steps.
     SplitSpawn,     \* the spawn is three steps: the G1 check, the child create (cms_create_session), the send
     CheckAll,       \* the check also covers a first visit, a replacement session and a retried attempt (FALSE: the code
@@ -83,14 +84,26 @@ CONSTANTS
     SessionEndStop, \* fix review R1-1: the session's end (the run ended or is stopping) stops whichever turn still runs
                     \* (a Stop that names no visit) before its command; FALSE: the command waits behind that turn
     AllowStall,     \* a reported turn may never finish its reply by itself (TurnFinish is not fair)
-    ReplyLimit      \* fix review R1-2: a reported turn still running after the reply limit is stopped (ReplyExpire); its
+    ReplyLimit,     \* fix review R1-2: a reported turn still running after the reply limit is stopped (ReplyExpire); its
                     \* reply is not committed
+    \* i1 review R2 (2026-11-27).
+    AsyncAbort,     \* the reply limit's stop is two steps, as on the worker: the timer fires for the running turn
+                    \* (ReplyFire), and its abort lands later (ReplyAbort), when that turn may have ended and the next
+                    \* turn may run on the same session (fault "abort-unfenced": the abort ends whichever turn runs)
+    AckLost,        \* the result's write commits but the worker may not learn it (a lost acknowledgement)
+    Reconcile,      \* fix review R2-3: after such a write the worker reads the visit, and a decided visit closes the
+                    \* turn's tools and arms its reply limit as an acknowledged result does
+    AllowLoss       \* the running turn may lose its live Copilot session (or its transcript may be refused) after its
+                    \* visit is decided; fix review R2-1: it then ends without a commit and is not run again (fault
+                    \* "replay-decided": the turn's prompt is run again)
 
 ASSUME V \in 1..3 /\ Person \in {"none", "end", "delete", "any"}
 ASSUME {AllowStop, AllowCancel, AllowStopFail, RecoverFair, SpawnRecheck, RecheckSeesEnding, EndMark, StopBeforeSpawn, PerAgentSessionEnd, StopAtRunEnd} \subseteq BOOLEAN
 ASSUME FailAgentSession \in 0..V
-ASSUME Fault \in {"none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided", "stop-unfenced"}
+ASSUME Fault \in {"none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided", "stop-unfenced",
+                  "abort-unfenced", "replay-decided"}
 ASSUME {SplitTurn, NoStopOnDone, SessionEndStop, AllowStall, ReplyLimit} \subseteq BOOLEAN
+ASSUME {AsyncAbort, AckLost, Reconcile, AllowLoss} \subseteq BOOLEAN
 ASSUME {SplitSpawn, CheckAll, Backstop, AllowSpawnCrash, MarkSplit, Withdraw, Outbox, Carry} \subseteq BOOLEAN
 ASSUME CarryDelete \in {"none", "visible", "owed", "queued", "queued-skew", "queued-race"}
 ASSUME {TurnGuard, MarkCreating, CarryNotFound} \subseteq BOOLEAN
@@ -121,10 +134,11 @@ vars == <<marked, run, nv, vis, ses, readers, afterDone, acted, pend, reports, f
 
 (* i1: `mem`, the visit's turn ended by itself and its snapshot was committed; `qb`, the visit's prompt was sent while a *)
 (* turn of a visit its agent completed still ran. A session's `rep`: its running turn has reported; `last`: the last  *)
-(* visit whose turn ran (SplitTurn only).                                                                         *)
+(* visit whose turn ran (SplitTurn only). Review R2: `ab`, the visit whose turn a fired reply-limit abort is for (0:   *)
+(* none on its way); `ack`, the worker knows its running turn's result (AckLost only).                            *)
 NoVisit == [node |-> "none", how |-> "none", s |-> 0, sent |-> FALSE, endReq |-> FALSE, stopOk |-> FALSE, gaveUp |-> FALSE,
             ph |-> "idle", cr |-> FALSE, mem |-> FALSE, qb |-> FALSE]
-NoSes == [st |-> "none", turn |-> 0, q |-> {}, endState |-> "open", ends |-> 0, rep |-> FALSE, last |-> 0]
+NoSes == [st |-> "none", turn |-> 0, q |-> {}, endState |-> "open", ends |-> 0, rep |-> FALSE, last |-> 0, ab |-> 0, ack |-> FALSE]
 
 Init == /\ marked = {} /\ run = "active" /\ nv = 0 /\ vis = [v \in Vis |-> NoVisit] /\ ses = [s \in Ses |-> NoSes]
         /\ readers = {} /\ afterDone = FALSE /\ acted = FALSE /\ pend = [ph |-> "none", s |-> 0] /\ gh = {}
@@ -325,14 +339,19 @@ TurnEnd(s) ==
 (* (complete_workflow_node): it decides only its own pending visit, as     *)
 (* TurnEnd does, and the turn goes on to write its reply; its tools refuse *)
 (* from now on (decideWorkflowVisit and the pre-tool hook).                *)
+(* Review R2-3 (AckLost): the write may commit while the worker sees a     *)
+(* failure; without Reconcile the worker then does not know the result     *)
+(* (`ack` FALSE): its tools stay open and no reply limit is armed.         *)
 TurnReport(s) ==
     /\ SplitTurn /\ ses[s].turn # 0 /\ ~ses[s].rep
-    /\ LET u == ses[s].turn
+    /\ \E lost \in (IF AckLost THEN BOOLEAN ELSE {FALSE}) :
+       LET u == ses[s].turn
            pendVis == {w \in Vis : vis[w].s = s /\ vis[w].node = "pending"}
            t == IF Fault = "bind-newest" /\ pendVis # {} THEN CHOOSE w \in pendVis : \A x \in pendVis : x <= w ELSE u
        IN /\ vis' = IF vis[t].node = "pending" THEN Decide(t, "result") ELSE vis
           /\ gh' = gh \cup (IF vis[t].node = "pending" /\ t # u THEN {"wrongResult"} ELSE {})
-    /\ ses' = [ses EXCEPT ![s].rep = TRUE]
+                      \cup (IF lost /\ Reconcile THEN {"ackReconciled"} ELSE {})
+          /\ ses' = [ses EXCEPT ![s].rep = TRUE, ![s].ack = IF AckLost THEN ~lost \/ Reconcile ELSE @]
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 
 (* i1 (SplitTurn): the turn ends by itself after its reply and its        *)
@@ -348,10 +367,47 @@ TurnFinish(s) ==
 (* Review R1-2 (ReplyLimit): a reported turn still running after the reply *)
 (* limit is stopped (session-proxy's settle timer, also with a turn time   *)
 (* limit of 0); its reply is not committed. Not a Workflow Stop.           *)
+ReplyArmed(s) == SplitTurn /\ ReplyLimit /\ ses[s].turn # 0 /\ ses[s].rep /\ (~AckLost \/ ses[s].ack)
 ReplyExpire(s) ==
-    /\ SplitTurn /\ ReplyLimit /\ ses[s].turn # 0 /\ ses[s].rep
+    /\ ~AsyncAbort /\ ReplyArmed(s)
     /\ ses' = [ses EXCEPT ![s].turn = 0, ![s].rep = FALSE]
     /\ gh' = gh \cup {"replyExpired"}
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
+
+(* Review R2-2 (AsyncAbort): the limit's timer fires for the running turn  *)
+(* (ReplyFire); its abort lands in a later step (ReplyAbort). By then that *)
+(* turn may have ended by itself, and the next visit's turn may run on the *)
+(* same session: the abort ends only the turn it fired for ("abortFenced"  *)
+(* when it finds another), unless the fault "abort-unfenced".               *)
+ReplyFire(s) ==
+    /\ AsyncAbort /\ ReplyArmed(s) /\ ses[s].ab = 0
+    /\ ses' = [ses EXCEPT ![s].ab = ses[s].turn]
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV, gh>>
+ReplyAbort(s) ==
+    /\ ses[s].ab # 0
+    /\ LET a == ses[s].ab
+           t == ses[s].turn
+           hits == t # 0 /\ (t = a \/ Fault = "abort-unfenced")
+       IN /\ ses' = [ses EXCEPT ![s].ab = 0, ![s].turn = IF hits THEN 0 ELSE @, ![s].rep = IF hits THEN FALSE ELSE @]
+          /\ gh' = gh \cup (IF hits THEN {"replyExpired"} ELSE {}) \cup (IF hits /\ t # a THEN {"stopOther"} ELSE {})
+                      \cup (IF ~hits /\ t # 0 THEN {"abortFenced"} ELSE {})
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
+
+(* Review R2-1 (AllowLoss): the running turn loses its live Copilot        *)
+(* session, or its transcript is refused, after its visit is decided (in   *)
+(* this turn, or by its time limit or a cancel meanwhile). Each recovery   *)
+(* checks first: the turn ends without a commit ("lostNotRun"). Fault      *)
+(* "replay-decided": its prompt runs again, the decided visit's task with  *)
+(* its tools open. A loss before the visit is decided replays the pending  *)
+(* visit's prompt: a step that changes nothing here.                       *)
+SessionLost(s) ==
+    /\ AllowLoss /\ SplitTurn /\ ses[s].turn # 0
+    /\ ses[s].rep \/ vis[ses[s].turn].node = "decided"
+    /\ IF Fault = "replay-decided"
+       THEN /\ ses' = [ses EXCEPT ![s].rep = FALSE]
+            /\ gh' = gh \cup {"ranDecided"}
+       ELSE /\ ses' = [ses EXCEPT ![s].turn = 0, ![s].rep = FALSE]
+            /\ gh' = gh \cup {"lostNotRun"}
     /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 
 (* i1: what a Stop that ends visit u's running turn costs: a stopped turn  *)
@@ -572,6 +628,7 @@ Next ==
     \/ \E s \in Ses : Visible(s) \/ TurnStart(s) \/ TurnEnd(s) \/ LookLocked(s) \/ LookRead(s) \/ LookSend(s)
                       \/ Finish(s) \/ PersonEnd(s) \/ PersonMark(s) \/ PersonDelete(s) \/ RaceResolve(s) \/ OrphanTurn(s)
                       \/ TurnFails(s) \/ TurnReport(s) \/ TurnFinish(s) \/ ReplyExpire(s)
+                      \/ ReplyFire(s) \/ ReplyAbort(s) \/ SessionLost(s)
 
 Spec == Init /\ [][Next]_vars
 Fairness ==
@@ -581,6 +638,7 @@ Fairness ==
                       /\ WF_vars(ReportDecide(v))
     \* i1: a turn reports and then ends by itself, unless it may stall (AllowStall); the reply limit (ReplyLimit) then ends it
     /\ \A s \in Ses : WF_vars(TurnReport(s)) /\ WF_vars(~AllowStall /\ TurnFinish(s)) /\ WF_vars(ReplyExpire(s))
+                      /\ WF_vars(ReplyFire(s)) /\ WF_vars(ReplyAbort(s))
     /\ \A s \in Ses : WF_vars(Visible(s)) /\ WF_vars(TurnStart(s)) /\ WF_vars(TurnEnd(s)) /\ WF_vars(LookLocked(s))
                       /\ WF_vars(LookSend(s)) /\ WF_vars(Finish(s)) /\ WF_vars(RaceResolve(s))
                       /\ WF_vars(TurnGuard /\ OrphanTurn(s))
@@ -592,7 +650,7 @@ TypeOK == /\ run \in {"active", "stopping", "ended"} /\ nv \in 0..V
           /\ \A v \in Vis : vis[v].node \in {"none", "pending", "decided"} /\ vis[v].s \in 0..V
           /\ \A s \in Ses : ses[s].st \in {"none", "row", "creating", "live", "ending", "ended", "deleted", "zombie", "revived", "tomb0", "orphan", "orphanq"}
                             /\ ses[s].turn \in 0..V /\ ses[s].q \subseteq Vis /\ ses[s].endState \in {"open", "owed", "ended"}
-                            /\ ses[s].rep \in BOOLEAN /\ ses[s].last \in 0..V
+                            /\ ses[s].rep \in BOOLEAN /\ ses[s].last \in 0..V /\ ses[s].ab \in 0..V /\ ses[s].ack \in BOOLEAN
 (* One agent session per agent state goes on at a time.                    *)
 (* An agent session whose end command is on its way does not count.       *)
 Inv_OneLive == Cardinality({s \in Ses : ses[s].st \in Alive /\ ~EndComing(s)}) <= 1
@@ -680,4 +738,10 @@ W_NoDoneStoppedAtEnd == "doneTurnStopped" \notin gh
 W_NoRanWithMemory == "ranAfterDoneCommitted" \notin gh
 W_NoEndStoppedTurn == "endStoppedTurn" \notin gh
 W_NoReplyExpired == "replyExpired" \notin gh
+(* Review R2: a fired abort finds the next visit's turn and leaves it; a   *)
+(* result whose acknowledgement was lost is reconciled; a decided turn     *)
+(* that lost its session ends without running again.                       *)
+W_NoAbortFenced == "abortFenced" \notin gh
+W_NoAckReconciled == "ackReconciled" \notin gh
+W_NoLostNotRun == "lostNotRun" \notin gh
 =============================================================================

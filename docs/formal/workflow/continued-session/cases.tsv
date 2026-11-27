@@ -107,6 +107,15 @@ i1.wit-run-end-stops-done	i1.wit-run-end-stops-done.cfg	WfContinuedSession
 i1.wit-end-stops-turn	i1.wit-end-stops-turn.cfg	WfContinuedSession
 i1.wit-reply-expired	i1.wit-reply-expired.cfg	WfContinuedSession
 i1.wit-cancel-stops	i1.wit-cancel-stops.cfg	WfContinuedSession
+i1.cc-abort-unfenced	i1.cc-abort-unfenced.cfg	WfContinuedSession
+i1.cc-ack-lost	i1.cc-ack-lost.cfg	WfContinuedSession
+i1.fault-replay-decided	i1.fault-replay-decided.cfg	WfContinuedSession
+i1.fix-r2-safety	i1.fix-r2-safety.cfg	WfContinuedSession
+i1.fix-r2-live	i1.fix-r2-live.cfg	WfContinuedSession
+i1.fix-r2-stalled-reply	i1.fix-r2-stalled-reply.cfg	WfContinuedSession
+i1.wit-abort-fenced	i1.wit-abort-fenced.cfg	WfContinuedSession
+i1.wit-ack-reconciled	i1.wit-ack-reconciled.cfg	WfContinuedSession
+i1.wit-lost-not-run	i1.wit-lost-not-run.cfg	WfContinuedSession
 fault.bind-newest	fault.bind-newest.cfg	WfContinuedSession
 fault.replace-without-check	fault.replace-without-check.cfg	WfContinuedSession
 fault.no-owed-mark	fault.no-owed-mark.cfg	WfContinuedSession

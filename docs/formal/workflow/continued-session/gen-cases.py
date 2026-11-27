@@ -13,7 +13,8 @@ def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failagentsess
        split=False, checkall=False, fence="none", backstop=False, crash=False, marksplit=False, markfail="none",
        withdraw=False, outbox=False, carry=False, carrydelete="none",
        turnguard=False, markcreating=False, carrynotfound=False, turnfail=False, failreport="none", tofair=True, tfrecover=False,
-       splitturn=False, nostopondone=False, sessionendstop=False, allowstall=False, replylimit=False):
+       splitturn=False, nostopondone=False, sessionendstop=False, allowstall=False, replylimit=False,
+       asyncabort=False, acklost=False, reconcile=False, allowloss=False):
     return dict(V=v, Person=q(person), AllowStop=b(stop), AllowCancel=b(cancel), AllowStopFail=b(stopfail), FailAgentSession=failagentsession,
                 RecoverFair=b(recover), SpawnRecheck=b(recheck), RecheckSeesEnding=b(seesending), EndMark=b(endmark), StopBeforeSpawn=b(stopspawn), PerAgentSessionEnd=b(peragentsession),
                 StopAtRunEnd=b(stopend), Fault=q(fault), SplitSpawn=b(split), CheckAll=b(checkall), Fence=q(fence),
@@ -22,7 +23,7 @@ def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failagentsess
                 TurnGuard=b(turnguard), MarkCreating=b(markcreating), CarryNotFound=b(carrynotfound),
                 AllowTurnFail=b(turnfail), FailReport=q(failreport), TimeoutFair=b(tofair), AllowRecover=b(tfrecover),
                 SplitTurn=b(splitturn), NoStopOnDone=b(nostopondone), SessionEndStop=b(sessionendstop), AllowStall=b(allowstall),
-                ReplyLimit=b(replylimit))
+                ReplyLimit=b(replylimit), AsyncAbort=b(asyncabort), AckLost=b(acklost), Reconcile=b(reconcile), AllowLoss=b(allowloss))
 M = "WfContinuedSession"
 CORE = ["TypeOK", "Inv_OneLive", "Inv_ResultOwnVisit", "Inv_ReplaceOnlyEnded", "Inv_NoTurnForDecided", "Inv_EndOnce"]
 ALL = CORE + ["Inv_PromptNotDropped", "Inv_NoLoudFail", "Inv_NoPromptBehindStaleTurn", "Inv_StopAtRunEnd"]
@@ -61,6 +62,10 @@ I1R1 = os.environ.get("I1_R1_HEAD", "4753e1cd")   # i1 before the review R1 fixe
 I1INV = ["Inv_NoStopOnActiveDone", "Inv_StopOwnVisit", "Inv_TurnsInOrder", "Inv_EndStopsTurn"]
 I1R = dict(IMPL2, splitturn=True, nostopondone=True)                         # the code at I1R1
 I1F = dict(I1R, sessionendstop=True, replylimit=True)                          # with the review R1-1 and R1-2 fixes
+I1R2 = os.environ.get("I1_R2_HEAD", "0dae9760")   # i1 at review R2 (the R1 fixes)
+I1E = dict(I1F, asyncabort=True, acklost=True, allowloss=True)                # review R2's environment: the abort lands later,
+                                                                              # an acknowledgement is lost, a session is lost
+I1F2 = dict(I1E, reconcile=True)                                               # with the review R2 fixes
 CASES = [
  # the code as written, where no gap is triggered
  ("cc.safety", "reviewed", "confirmed", "Spec", cc(stopend=True), ALL, [], "PASS", True,
@@ -306,6 +311,27 @@ CASES = [
   "Review R1-2 fix: a reply still running is ended by the reply limit."),
  ("i1.wit-cancel-stops", "proposal", "witness", "Spec", cc(v=2, **I1F), ["W_NoCycleStop"], [], "safety", True,
   "i1 fix: a visit ended by its time limit or a cancel still stops its own running turn."),
+ # Review R2 of i1: the reply limit's abort lands in a later step (AsyncAbort, R2-2); a result's write may commit while the
+ # worker sees a failure (AckLost, R2-3; the fix reads the visit: Reconcile); a decided turn may lose its live session
+ # (AllowLoss, R2-1). Faults: "abort-unfenced" (the abort ends whichever turn runs), "replay-decided" (the turn runs again).
+ ("i1.cc-abort-unfenced", "reviewed", "finding", "Spec", cc(v=2, fault="abort-unfenced", **I1E), ["TypeOK", "Inv_StopOwnVisit"], [], "safety", False,
+  f"Review R2-2 at {I1R2}: the reply limit fires for the completed visit's turn; that turn ends by itself and the next visit's turn starts on the same session before the abort lands, which then ends the next visit's turn."),
+ ("i1.cc-ack-lost", "reviewed", "finding", "LiveSpec", cc(v=2, allowstall=True, tofair=False, **I1E), CORE, ["Prop_PromptTaken"], "liveness", True,
+  f"Review R2-3 at {I1R2}: the result's write commits but the worker sees a failure; no reply limit is armed, so a reply that never ends keeps the next visit's prompt queued (time limits not forced)."),
+ ("i1.fault-replay-decided", "deliberate", "deliberate", "Spec", cc(v=2, fault="replay-decided", **I1E), ["TypeOK", "Inv_NoTurnForDecided"], [], "safety", False,
+  f"A recovery that does not read the visit runs a decided visit's prompt again, with its tools open. Review R2-1 found one at {I1R2}: the check after the live-session recovery's own run, when that run reported and its transcript was then refused."),
+ ("i1.fix-r2-safety", "proposal", "proposed-fix", "Spec", cc(person="any", stopfail=True, **I1F2), ALL + I1INV, [], "PASS", True,
+  "Review R2 fixes: every safety property of i1.fix-safety, with the abort landing later, lost acknowledgements and lost sessions (three visits, a person's end or delete, failing Stops)."),
+ ("i1.fix-r2-live", "proposal", "proposed-fix", "LiveSpec", cc(v=2, person="any", stopfail=True, **I1F2), CORE + I1INV, LIVE + ["Prop_PromptTaken"], "PASS", True,
+  "Review R2 fixes: every visit decided, every agent session ended, owed ends sent, every queued prompt taken."),
+ ("i1.fix-r2-stalled-reply", "proposal", "proposed-fix", "LiveSpec", cc(v=2, allowstall=True, tofair=False, **I1F2), CORE + I1INV, ["Prop_PromptTaken"], "PASS", True,
+  "Review R2 fixes: a reply that never ends by itself, also after a lost acknowledgement, is ended by the reply limit, and the queued prompt is taken (time limits not forced)."),
+ ("i1.wit-abort-fenced", "proposal", "witness", "Spec", cc(v=2, **I1F2), ["W_NoAbortFenced"], [], "safety", True,
+  "Review R2-2 fix: the reply limit's abort lands while the next visit's turn runs, and leaves that turn."),
+ ("i1.wit-ack-reconciled", "proposal", "witness", "Spec", cc(v=2, allowstall=True, **I1F2), ["W_NoAckReconciled"], [], "safety", True,
+  "Review R2-3 fix: a result whose acknowledgement was lost is read back as decided, and the turn's reply limit is armed."),
+ ("i1.wit-lost-not-run", "proposal", "witness", "Spec", cc(v=2, **I1F2), ["W_NoLostNotRun"], [], "safety", True,
+  "Review R2-1 fix: a decided visit's turn that lost its session ends without running again."),
  # faults
  ("fault.bind-newest", "deliberate", "deliberate", "Spec", cc(stopfail=True, fault="bind-newest"), ["Inv_ResultOwnVisit"], [], "safety", False,
   "A result bound to the newest pending visit instead of its own: an old turn decides the next visit."),
