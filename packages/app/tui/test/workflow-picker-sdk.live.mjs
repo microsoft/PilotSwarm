@@ -157,7 +157,7 @@ async function main() {
         for (const id of createdIds) {
             await transport.mgmt.deleteSession(id).catch(() => {});
         }
-        await transport.mgmt.deleteAgentPackage(PKG_NAME, { scope: "shared" }, null, true).catch(() => {});
+        await transport.mgmt.deleteAgentPackage(PKG_NAME, null, true, { scope: "shared" }).catch(() => {});
         await transport.stop();
     }
 }

@@ -473,7 +473,7 @@ async function main() {
                     );
                 },
                 async (pkgName) => {
-                    await env.mgmt.deleteAgentPackage(pkgName, { scope: "shared" }, null, true).catch(() => {});
+                    await env.mgmt.deleteAgentPackage(pkgName, null, true, { scope: "shared" }).catch(() => {});
                 },
             );
         } finally {
