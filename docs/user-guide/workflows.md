@@ -668,7 +668,7 @@ It exposes six Workflow tools (and projects `session_kind: "agent" | "workflow"`
 | Tool | What it does |
 |---|---|
 | `list_creatable_workflows` | List ready-made packaged Workflows (`<package>/<name>`) available to start on this deployment. |
-| `create_session_for_workflow` | Create a coordinating agent session for a packaged `<package>/<name>` Workflow (attaches the locked package definition and sends the bootstrap kickoff). |
+| `create_session_for_workflow` | Create a coordinating chat agent session for a packaged `<package>/<name>` Workflow (greets and asks for inputs; call `workflow_definition` `start` with `name: "<package>/<name>"` and `inputs` on the returned session to start directly). |
 | `read_workflow_skill` | List packaged Workflow authoring skills (omit `name`) or read one skill's Markdown guide by `name` (start with `workflow-authoring`). |
 | `workflow_definition` | Validate (`validate`, no session or DB write needed), `list`, `read`, inspect package `card`, `save`, `start`, `delete`, or `copy` session Workflow Definitions on an `owner_session_id` (created via `create_session`). Pass `key` (preferred) or `operation_id` on `start`, a fresh `operation_id` on `save`/`delete`/`copy`, and `workspace: "none"` when starting on a fresh 0-turn session. |
 | `read_workflow` | Read a Workflow: `session_id` (the Workflow's), and optionally `run_id`, `limit` and `cursor` for older pages. |
@@ -683,7 +683,7 @@ To write and run your own Workflow directly from an MCP client:
 1. Call `read_workflow_skill { name: "workflow-authoring" }` for the YAML guide.
 2. Call `create_session {}` to create a top-level `owner_session_id`.
 3. Call `workflow_definition { operation: "validate", yaml }` to check the YAML without writing a revision.
-4. Call `workflow_definition { operation: "save", owner_session_id, name, yaml, operation_id }` and then `workflow_definition { operation: "start", owner_session_id, name, inputs, workspace: "none", key }`. Note that person starts have no captured session tool grant (literal `callTool` requirements fail with `409 WORKFLOW_TOOLS_UNAVAILABLE` and script starts emit `WORKFLOW_PERSON_START_NO_TOOL_BINDING`; have the session's agent start definitions whose scripts need session tools).
+4. Call `workflow_definition { operation: "save", owner_session_id, name, yaml, operation_id }` and then `workflow_definition { operation: "start", owner_session_id, name, inputs, workspace: "none", key }`. Note that person starts have no captured session tool grant (literal `callTool` requirements fail with `409 WORKFLOW_TOOLS_UNAVAILABLE` and scripts that call `callTool` emit `WORKFLOW_PERSON_START_NO_TOOL_BINDING`; have the session's agent start definitions whose scripts need session tools).
 5. Poll `read_workflow { session_id: "<workflowId>" }` for progress and output, and control runs with `update_workflow`. To answer a Workflow `request` step, message `owner_session_id` with `send_and_wait`.
 
 ## 2.4 The terminal UI

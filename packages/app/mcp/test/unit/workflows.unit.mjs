@@ -459,11 +459,33 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     assert.equal(skillList.count, 1);
     assert.equal(skillList.skills[0].name, "workflow-authoring");
 
-    const skillBody = JSON.parse((await handlers.get("read_workflow_skill")({ name: "workflow-authoring" })).content[0].text);
+    const skillRaw = (await handlers.get("read_workflow_skill")({ name: "workflow-authoring" })).content[0].text;
+    assert.ok(skillRaw.indexOf('"note"') >= 0 && skillRaw.indexOf('"note"') < skillRaw.indexOf('"content"'), "read_workflow_skill note must appear before content");
+    const skillBody = JSON.parse(skillRaw);
     assert.equal(skillBody.name, "workflow-authoring");
     assert.equal(skillBody.content, "# Authoring");
     assert.match(skillBody.note, /load_skill\(name\) is read_workflow_skill \{ name \}/);
     assert.match(skillBody.note, /poll read_workflow/);
+    assert.match(skillBody.note, /send_and_wait/);
+    assert.match(skillBody.note, /messaging/);
+
+    // B1, B3, B4: tool descriptions & schema text for workflow_definition, update_workflow, create_session_for_workflow
+    {
+        const specs = new Map();
+        registerWorkflowTools({ registerTool: (name, spec) => { specs.set(name, spec); } }, { workflowCommands: true, workflowTestMode: false, mgmt: {} });
+        const wdSpec = specs.get("workflow_definition");
+        const uwSpec = specs.get("update_workflow");
+        const csfwSpec = specs.get("create_session_for_workflow");
+        for (const [label, desc] of [["workflow_definition", wdSpec.description], ["update_workflow", uwSpec.description]]) {
+            assert.match(desc, /no .*test.*send_workflow_input/i, `${label} must state missing test and send_workflow_input`);
+            assert.match(desc, /send_and_wait/, `${label} must mention send_and_wait workaround`);
+            assert.match(desc, /messaging/, `${label} must mention messaging send workaround`);
+        }
+        assert.match(csfwSpec.description, /chat/i, "create_session_for_workflow must explain it starts a chat, not a run");
+        assert.match(csfwSpec.description, /workflow_definition.*start/i, "create_session_for_workflow must explain direct workflow_definition start");
+        assert.match(wdSpec.inputSchema.name.description, /Required for save/i, "workflow_definition.name must mark required for save");
+        assert.match(wdSpec.inputSchema.yaml.description, /metadata\.version.*quoted semver.*"1\.0\.0"/i, "workflow_definition.yaml must document quoted semver metadata.version");
+    }
 
     const skill404 = await handlers.get("read_workflow_skill")({ name: "nope" });
     assert.equal(skill404.isError, true);

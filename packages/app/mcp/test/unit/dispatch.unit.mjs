@@ -509,7 +509,9 @@ async function main() {
             && instructions.includes("workflow_definition")
             && instructions.includes("list_creatable_workflows")
             && instructions.includes("create_session_for_workflow")
-            && instructions.includes("workflow_definition start creates a Workflow session as a child of owner_session_id"));
+            && instructions.includes("workflow_definition start creates a Workflow session as a child of owner_session_id")
+            && instructions.includes("send_workflow_input")
+            && instructions.includes("send_and_wait"));
 
         // get_agent_tree accepts session_id and keeps root_session_id as an alias
         const treeBySessionId = await client.callTool({ name: "get_agent_tree", arguments: { session_id: "s-agent" } });

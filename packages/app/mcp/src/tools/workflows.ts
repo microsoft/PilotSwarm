@@ -7,10 +7,15 @@ import type { ServerContext } from "../context.js";
 import { cacheSessionHandle } from "./sessions.js";
 import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../util/respond.js";
 
+const WORKFLOW_MCP_GAP_WORKAROUND =
+    "Over MCP there is no test and no send_workflow_input; workaround: ask the owner session to run it via send_and_wait, "
+    + "or use a Workflow with a messaging send state.";
+
 const WORKFLOW_SKILL_MCP_NOTE =
     "This skill is written for agents inside a PilotSwarm session. Over MCP: load_skill(name) is read_workflow_skill { name }; "
     + "definitions are workflow_definition with your own operation_id; runs are read_workflow / update_workflow (pause, resume, stop, cancel, set_vars); "
-    + "test, recover, send_workflow_input, respond_session_request and child_workflows are not available, and nothing notifies you: poll read_workflow.";
+    + "test, recover, send_workflow_input, respond_session_request and child_workflows are not available, and nothing notifies you: poll read_workflow. "
+    + WORKFLOW_MCP_GAP_WORKAROUND;
 
 const PERSON_START_TOOL_BINDING_WARNING = {
     severity: "warning" as const,
@@ -151,6 +156,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             title: "Create Session For Workflow",
             description:
                 "Create a coordinating agent session for a packaged Workflow Definition '<package>/<name>' from list_creatable_workflows. "
+                + "It creates a chat session whose agent greets and asks for inputs (not a Workflow run); to start the run directly, "
+                + "call workflow_definition start with name: '<package>/<name>' and inputs on the returned session. "
                 + "Attaches the exact prepared package version, sets the session title, and sends a bootstrap kickoff message. "
                 + "Non-idempotent: calling twice creates two sessions.",
             inputSchema: {
@@ -219,10 +226,10 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 }
                 const skill: any = await ctx.mgmt.readWorkflowSkills({ name });
                 return jsonResult({
+                    note: WORKFLOW_SKILL_MCP_NOTE,
                     name: skill.name,
                     description: skill.description,
                     content: skill.content,
-                    note: WORKFLOW_SKILL_MCP_NOTE,
                 });
             } catch (err: unknown) {
                 return refusal(err, undefined, "readWorkflowSkills");
@@ -279,6 +286,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 "Send one command to a running Workflow, as a person: "
                 + operations
                 + "Persons are refused recover (the parent agent recovers runs) and approval_respond (answer approvals in the portal). "
+                + `${WORKFLOW_MCP_GAP_WORKAROUND} `
                 + "Answers the command's receipt. "
                 + "A workflow started under another workflow's agent step takes only pause, stop and cancel; read a workflow with read_workflow "
                 + "first.",
@@ -314,14 +322,15 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "Use operation 'validate' (no owner_session_id needed) to compile and check YAML without writing a revision. "
                 + "All other operations act on owner_session_id (create a top-level session with create_session). "
                 + "Pass key (preferred) or operation_id on start; pass a fresh operation_id on save, delete, and copy (reuse unchanged only to retry). "
-                + "On a fresh 0-turn owner_session_id, pass workspace: 'none' on start (or send one turn first to capture default folders).",
+                + "On a fresh 0-turn owner_session_id, pass workspace: 'none' on start (or send one turn first to capture default folders). "
+                + WORKFLOW_MCP_GAP_WORKAROUND,
             inputSchema: {
                 operation: z.enum(["list", "read", "save", "start", "delete", "copy", "card", "validate"])
                     .describe("Operation to run: validate needs only yaml; all other operations act on owner_session_id"),
                 owner_session_id: sessionIdShape().optional()
                     .describe("Live non-Workflow session that owns the definitions (create one with create_session). Required except for validate"),
                 name: z.string().optional()
-                    .describe("Definition metadata.name, or '<package>/<name>' for card (and for copy/start when already attached to owner_session_id)"),
+                    .describe("Required for save (definition metadata.name); optional for read/start/delete/copy when definition_id is given; '<package>/<name>' for card (and for copy/start when already attached to owner_session_id)"),
                 definition_id: z.string().optional()
                     .describe("Definition ID returned by list/read/save"),
                 revision: z.number().int().positive().optional()
@@ -329,7 +338,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 expected_revision: z.number().int().positive().optional()
                     .describe("save over an existing definition: the current revision you read (omit on first save of a new name)"),
                 yaml: z.string().max(262144).optional()
-                    .describe("Workflow YAML (apiVersion: pilotswarm.dev/v1, <= 256 KiB) for validate or save"),
+                    .describe('Workflow YAML (apiVersion: pilotswarm.dev/v1, metadata.version must be a quoted semver such as "1.0.0", <= 256 KiB) for validate or save'),
                 inputs: z.record(z.string(), z.unknown()).optional()
                     .describe("start: Workflow run inputs matching inputs.schema"),
                 vars: z.record(z.string(), z.unknown()).optional()

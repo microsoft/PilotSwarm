@@ -57,11 +57,15 @@ session orchestration or Workflow controller version changes:
 - **MCP Server:** Wired direct-mode `artifactStore` in `context.ts` for package
   Workflows; projected `session_kind` on `list_sessions`; added
   `list_creatable_workflows`, `create_session_for_workflow`,
-  `read_workflow_skill` (with fixed MCP adaptation `note`), and
-  `workflow_definition` (`validate`, `list`, `read`, `card`, `save`, `start`
-  with conditional `WORKFLOW_PERSON_START_NO_TOOL_BINDING` warning and
-  `update: true`, `delete`, `copy`); expanded `workflow_tools` capabilities and
-  added `501 WORKFLOW_API_UNAVAILABLE` fallback when `pilotswarm-mcp` is
+  `read_workflow_skill` (with MCP adaptation `note` at the top of the reply),
+  and `workflow_definition` (`validate`, `list`, `read`, `card`, `save`, `start`
+  with conditional `WORKFLOW_PERSON_START_NO_TOOL_BINDING` warning when a
+  script calls `callTool`, `update: true`, `delete`, `copy`); typed
+  `update_workflow.command` per operation; accepted `session_id` on
+  `get_agent_tree` (keeping `root_session_id` as an alias); warned
+  (`WORKFLOW_SCRIPT_CONTEXT_VARS`) in SDK validation when script states read
+  `context.vars` instead of `context.kv`; expanded `workflow_tools` capabilities
+  and added `501 WORKFLOW_API_UNAVAILABLE` fallback when `pilotswarm-mcp` is
   upgraded ahead of an older portal.
 
 ### Workflows: `session: continue` in named parallel branches
