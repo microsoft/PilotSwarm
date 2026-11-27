@@ -554,3 +554,128 @@ describe("Task 4a: WorkflowStore rerun keys, bare-shell lock re-check, atomic co
         });
     });
 });
+
+describe("Task 4b: KV revisions 1..R (+ vars R+1), copyRerunInboxIn (TTL restart + 180 KiB child notice), and state_reused/state_supplied events", () => {
+    it("copies KV 1..R + optional vars R+1, carries waiting inbox & 180 KiB WorkflowEnded@1 notice with restarted TTL, and records workflow.state_reused + workflow.state_supplied events", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const store = client._catalog.workflowStore();
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            try {
+                const childWfId = randomUUID();
+                const src = await seedEndedSourceWorkflow(client, {
+                    kv: { a: 1 },
+                    visits: [
+                        { nodeId: "step1", ordinal: 1, nodeType: "script", outcome: "ok", resultKind: "business", output: { ok: 1 }, kvRevision: 1 },
+                        { nodeId: "sp", ordinal: 1, nodeType: "spawn", arrivalRoute: "ok", outcome: "started", resultKind: "business", output: { workflowId: childWfId }, kvRevision: 2 },
+                        { nodeId: "step2", ordinal: 1, nodeType: "script", arrivalRoute: "started", outcome: "timed_out", resultKind: "runtime_error", kvRevision: 2 },
+                    ],
+                });
+                // Add KV rev 2 and rev 3 on source #2 (rev 3 is after cut R=2)
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_kv_revisions (run_id, revision, kv, operation_id)
+                     VALUES ($1, 2, '{"a":1,"b":2}', 'kv-2'), ($1, 3, '{"a":1,"b":2,"c":3}', 'kv-3')`,
+                    [src.runId],
+                );
+                await pool.query(
+                    `UPDATE ${s}.workflow_runs SET kv = '{"a":1,"b":2,"c":3}', kv_revision = 3 WHERE run_id = $1`,
+                    [src.runId],
+                );
+
+                // Seed 4 inbox rows on #2: (1) consumed (excluded), (2) waiting before cut (carried, TTL restarted),
+                // (3) accepted after cut (excluded), (4) 180 KiB WorkflowEnded@1 from childWfId (carried even if accepted after cut!)
+                const bigNoticePayload = canonicalJson({ workflowId: childWfId, status: "completed", output: { blob: "z".repeat(180 * 1024) } });
+                const cutAt = new Date(Date.now() - 10_000);
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_inbox (message_id, workflow_session_id, run_id, sender_session_id, operation_id, contract, correlation, payload, request_sha256, accepted_at, expires_at, consumed_by, consumed_at)
+                     VALUES
+                       ($1, $2, $3, $4, 'in-1', 'Note@1', '{}', '{"n":1}', 'r1', now() - interval '60 seconds', now() + interval '1 hour', $10, now() - interval '30 seconds'),
+                       ($5, $2, $3, $4, 'in-2', 'Note@1', '{"k":"v"}', '{"n":2}', 'r2', now() - interval '50 seconds', now() + interval '10 minutes', NULL, NULL),
+                       ($6, $2, $3, $4, 'in-3', 'Late@1', '{}', '{"n":3}', 'r3', now() - interval '1 second', now() + interval '10 minutes', NULL, NULL),
+                       ($7, $2, $3, $8, 'in-4', 'WorkflowEnded@1', '{}', $9, 'r4', now() - interval '1 second', now() + interval '1 hour', NULL, NULL)`,
+                    [
+                        `m1-${randomUUID()}`, src.wfId, src.runId, src.ownerId,
+                        `m2-${randomUUID()}`, `m3-${randomUUID()}`, `m4-${randomUUID()}`, childWfId, bigNoticePayload, src.ids["step1#1"],
+                    ],
+                );
+
+                const srcKeys = await store.listRerunKeys(src.runId);
+                const step2Key = srcKeys.find(k => k.nodeId === "step2");
+                const part = partitionRerunVisits(srcKeys, step2Key.nodeExecutionId, "supply");
+
+                // Re-run #3 in supply mode with cutKvRevision = 2 AND varsOverlay { extra: "yes" } -> KV rev 3 = { a:1, b:2, extra:"yes" }
+                const wf3Id = randomUUID();
+                const run3Id = randomUUID();
+                const mapped3 = mapRerunExecutions(run3Id, part.reused);
+                const mappedV3 = mapRerunSuppliedExecution(run3Id, step2Key, mapped3);
+                const suppliedAt = new Date();
+                await client._catalog.createWorkflowSession(wf3Id, { parentSessionId: src.ownerId, title: "rerun-4b" });
+                await store.createDefinition({
+                    workflowSessionId: wf3Id, parentSessionId: src.ownerId, notifyParent: true,
+                    yaml: SIMPLE_YAML, compiled: src.compiled, actor: ACTOR,
+                    operationId: `rerun-4b-${wf3Id}`, requestSha256: sha256Hex(`rerun-4b-${wf3Id}`),
+                    publish: true,
+                    start: { runId: run3Id, mode: "live", inputsText: "{}", kvText: "{}", controllerInstanceId: `session-${wf3Id}`, controllerVersion: "1.3.0", testAgentMode: null },
+                    title: "rerun-4b",
+                    rerun: {
+                        sourceWorkflowSessionId: src.wfId, sourceRunId: src.runId,
+                        fromExecutionId: step2Key.nodeExecutionId, mode: "supply",
+                        resume: buildRerunResume({
+                            mode: "supply", chosen: step2Key, mappedPredecessorId: mappedV3.newPredecessorId,
+                            cutKvRevision: 2, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256, targetIrSha256: src.compiled.irSha256,
+                            supplied: { mappedSuppliedId: mappedV3.newId, outcome: "ok", outputSha256: sha256Hex('{"ok":2}'), note: "checked live", at: suppliedAt.toISOString(), nextStateId: "done", nextOrdinal: 1 },
+                        }),
+                        actor: ACTOR, mapped: mapped3, unwalkedCount: 0,
+                        supplied: { newExecutionId: mappedV3.newId, newPredecessorId: mappedV3.newPredecessorId, sourceExecutionId: step2Key.nodeExecutionId, outcome: "ok", outputText: '{"ok":2}', note: "checked live", at: suppliedAt },
+                        cutKvRevision: 2,
+                        varsOverlay: { extra: "yes" },
+                        inboxCutAt: cutAt,
+                        reusedSpawnChildIds: [childWfId],
+                        approvalOwnerCheck: null,
+                    },
+                });
+
+                // 1. Verify KV revisions 1, 2 (copied from #2) and 3 (varsOverlay R+1)
+                const run3 = await store.readRun(run3Id);
+                expect(run3.kvRevision).toBe(3);
+                expect(run3.kv).toEqual({ a: 1, b: 2, extra: "yes" });
+                const { rows: kvRows } = await pool.query(
+                    `SELECT revision, kv FROM ${s}.workflow_kv_revisions WHERE run_id = $1 ORDER BY revision ASC`,
+                    [run3Id],
+                );
+                expect(kvRows.map(r => r.revision)).toEqual([1, 2, 3]);
+                expect(JSON.parse(kvRows[0].kv)).toEqual({ a: 1 });
+                expect(JSON.parse(kvRows[1].kv)).toEqual({ a: 1, b: 2 });
+                expect(JSON.parse(kvRows[2].kv)).toEqual({ a: 1, b: 2, extra: "yes" });
+
+                // 2. Verify carried inbox: exactly 2 messages (in-2 + 180 KiB WorkflowEnded@1), in seq ASC order, TTL restarted
+                const openInbox = await store.listOpenInbox(run3Id, 20);
+                expect(openInbox.rows.length).toBe(2);
+                expect(openInbox.rows.map(m => m.contract)).toEqual(["Note@1", "WorkflowEnded@1"]);
+                expect(openInbox.rows[0].correlation).toEqual({ k: "v" });
+                expect(openInbox.rows[0].payload).toEqual({ n: 2 });
+                expect(Date.parse(openInbox.rows[0].expiresAt) - Date.parse(openInbox.rows[0].acceptedAt)).toBeGreaterThan(600_000);
+                expect(openInbox.rows[1].senderSessionId).toBe(childWfId);
+                expect(JSON.stringify(openInbox.rows[1].payload).length).toBeGreaterThan(180 * 1024);
+
+                // 3. Verify workflow.state_reused (2 events) + workflow.state_supplied (1 event) in session_events
+                const { rows: evRows } = await pool.query(
+                    `SELECT event_type, data FROM ${s}.session_events WHERE session_id = $1 AND event_type IN ('workflow.state_reused', 'workflow.state_supplied') ORDER BY seq ASC`,
+                    [wf3Id],
+                );
+                const reusedEvs = evRows.filter(r => r.event_type === "workflow.state_reused");
+                const suppliedEvs = evRows.filter(r => r.event_type === "workflow.state_supplied");
+                expect(reusedEvs.length).toBe(2);
+                expect(reusedEvs[0].data.stateId).toBe("step1");
+                expect(reusedEvs[0].data.reusedFrom.workflowId).toBe(src.wfId);
+                expect(suppliedEvs.length).toBe(1);
+                expect(suppliedEvs[0].data.stateId).toBe("step2");
+                expect(suppliedEvs[0].data.outcome).toBe("ok");
+                expect(suppliedEvs[0].data.note).toBe("checked live");
+                expect(suppliedEvs[0].data.suppliedFrom.executionId).toBe(step2Key.nodeExecutionId);
+            } finally {
+                await pool.end();
+            }
+        });
+    });
+});

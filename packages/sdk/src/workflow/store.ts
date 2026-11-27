@@ -2584,19 +2584,62 @@ export class WorkflowStore {
                 ["rerun_actor", canonicalJson(rerun.actor)] as [string, unknown],
             ] : []),
         ];
+        let runKvText = start.kvText;
+        let runKvRev = 1;
+        let hasVarsOverlay = false;
+        let cutKvRev = 1;
+        if (rerun) {
+            cutKvRev = Math.max(1, rerun.cutKvRevision);
+            const { rows: srcKvRows } = await client.query(
+                `SELECT kv FROM ${this.t.kvRevisions} WHERE run_id = $1 AND revision <= $2 ORDER BY revision DESC LIMIT 1`,
+                [rerun.sourceRunId, cutKvRev],
+            );
+            const kvAtRText = srcKvRows[0] ? str(srcKvRows[0], "kv") : start.kvText;
+            const overlay = rerun.varsOverlay && Object.keys(rerun.varsOverlay).length > 0 ? rerun.varsOverlay : null;
+            if (overlay) {
+                const baseObj = parseStoredJson(kvAtRText, "kv");
+                const merged: JsonObject = { ...(isJsonObject(baseObj) ? baseObj : {}), ...overlay };
+                runKvText = canonicalJson(merged);
+                if (utf8ByteLength(runKvText) > WORKFLOW_PAYLOAD_MAX_BYTES) {
+                    throw new WorkflowStoreError("WORKFLOW_KV_TOO_LARGE", `Merged variables exceed ${WORKFLOW_PAYLOAD_MAX_BYTES} bytes.`);
+                }
+                runKvRev = cutKvRev + 1;
+                hasVarsOverlay = true;
+            } else {
+                runKvText = kvAtRText;
+                runKvRev = cutKvRev;
+            }
+        }
         await client.query(
             `INSERT INTO ${this.t.runs}
                 (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, test_agent_mode, start_operation_id, kv, kv_revision
                  ${extra.map(([column]) => `, ${column}`).join("")})
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, 1 ${extra.map((_, index) => `, $${12 + index}`).join("")})`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, $12 ${extra.map((_, index) => `, $${13 + index}`).join("")})`,
             [start.runId, definition.workflowSessionId, start.mode, revision.revision, revision.yamlSha256, revision.irSha256,
-                start.inputsText, start.controllerInstanceId, test ? start.testAgentMode : null, operationId, start.kvText,
+                start.inputsText, start.controllerInstanceId, test ? start.testAgentMode : null, operationId, runKvText, runKvRev,
                 ...extra.map(([, value]) => value)],
         );
-        await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, 1, $2, $3)`,
-            [start.runId, start.kvText, operationId]);
         if (rerun) {
+            await client.query(
+                `INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id)
+                 SELECT $1, revision, kv, operation_id
+                   FROM ${this.t.kvRevisions}
+                  WHERE run_id = $2 AND revision <= $3
+                  ORDER BY revision ASC`,
+                [start.runId, rerun.sourceRunId, cutKvRev],
+            );
+            if (hasVarsOverlay) {
+                await client.query(
+                    `INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, $2, $3, $4)`,
+                    [start.runId, runKvRev, runKvText, operationId],
+                );
+            }
             await this.copyRerunNodesIn(client, start.runId, rerun);
+            await this.copyRerunInboxIn(client, definition.workflowSessionId, start.runId, rerun);
+            await this.recordRerunEventsIn(client, definition.workflowSessionId, start.runId, rerun);
+        } else {
+            await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, 1, $2, $3)`,
+                [start.runId, start.kvText, operationId]);
         }
         if (start.mode === "live") {
             // Review B1: the row follows its live run from its admission. A draft's test may have left it terminal, with
@@ -3238,6 +3281,88 @@ export class WorkflowStore {
                     rerun.sourceRunId, sup.sourceExecutionId,
                 ],
             );
+        }
+    }
+
+    /**
+     * Copies eligible waiting inbox messages + unconsumed WorkflowEnded@1 child notices from source run #2 into #3
+     * in seq ASC order with fresh message_id / operation_id and restarted TTL (`now() + (expires_at - accepted_at)`).
+     */
+    private async copyRerunInboxIn(client: PoolClient, newWorkflowSessionId: string, newRunId: string, rerun: RerunAdmissionSpec): Promise<void> {
+        await client.query(
+            `INSERT INTO ${this.t.inbox} (
+                message_id, workflow_session_id, run_id, sender_session_id, operation_id, contract, correlation, payload,
+                request_sha256, accepted_at, expires_at, consumed_by, consumed_at
+             )
+             SELECT
+                'msg-' || substr(encode(sha256(convert_to($2 || ':' || s.message_id, 'UTF8')), 'hex'), 1, 36),
+                $1, $2, s.sender_session_id, 'rerun-carry:' || s.message_id, s.contract, s.correlation, s.payload,
+                s.request_sha256, now(), now() + GREATEST(s.expires_at - s.accepted_at, interval '1 second'), NULL, NULL
+               FROM ${this.t.inbox} s
+              WHERE s.run_id = $3
+                AND s.consumed_by IS NULL
+                AND (
+                    (s.accepted_at <= $4::timestamptz AND s.expires_at > $4::timestamptz)
+                    OR (s.contract = $5 AND s.sender_session_id = ANY($6::text[]))
+                )
+              ORDER BY s.seq ASC`,
+            [
+                newWorkflowSessionId, newRunId, rerun.sourceRunId, rerun.inboxCutAt.toISOString(),
+                WORKFLOW_ENDED_CONTRACT, [...rerun.reusedSpawnChildIds],
+            ],
+        );
+    }
+
+    /** Records batched (<=1,000/chunk) workflow.state_reused events and one workflow.state_supplied event on #3's session_events. */
+    private async recordRerunEventsIn(client: PoolClient, newWorkflowSessionId: string, newRunId: string, rerun: RerunAdmissionSpec): Promise<void> {
+        const events: SessionEventRecord[] = rerun.mapped.map(m => ({
+            eventType: "workflow.state_reused",
+            data: jsonbSafeValue(redactWorkflowEventData({
+                runId: newRunId,
+                nodeExecutionId: m.newId,
+                stateId: m.source.nodeId,
+                scopeId: m.newScopeId,
+                ordinal: m.source.ordinal,
+                type: m.source.nodeType,
+                outcome: m.source.outcome,
+                resultKind: m.source.resultKind,
+                reusedFrom: {
+                    workflowId: m.source.reusedFromWorkflowSessionId ?? rerun.sourceWorkflowSessionId,
+                    runId: m.source.reusedFromRunId ?? m.source.runId,
+                    executionId: m.source.reusedFromExecutionId ?? m.source.nodeExecutionId,
+                },
+                ...(m.source.suppliedFromExecutionId !== null ? { supplied: true } : {}),
+                originalEnteredAt: m.source.enteredAt.toISOString(),
+                originalCompletedAt: m.source.completedAt ? m.source.completedAt.toISOString() : null,
+            })) as JsonObject,
+        }));
+        if (rerun.supplied) {
+            const sup = rerun.supplied;
+            events.push({
+                eventType: "workflow.state_supplied",
+                data: jsonbSafeValue(redactWorkflowEventData({
+                    runId: newRunId,
+                    nodeExecutionId: sup.newExecutionId,
+                    stateId: rerun.resume.fromStateId,
+                    scopeId: "root",
+                    ordinal: rerun.resume.fromVisit,
+                    outcome: sup.outcome,
+                    resultKind: "business",
+                    suppliedFrom: {
+                        workflowId: rerun.sourceWorkflowSessionId,
+                        runId: rerun.sourceRunId,
+                        executionId: sup.sourceExecutionId,
+                    },
+                    by: actorJson(rerun.actor),
+                    note: sup.note,
+                    suppliedAt: sup.at.toISOString(),
+                })) as JsonObject,
+            });
+        }
+        const CHUNK = 1_000;
+        for (let offset = 0; offset < events.length; offset += CHUNK) {
+            const slice = events.slice(offset, offset + CHUNK);
+            await client.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [newWorkflowSessionId, JSON.stringify(slice), null]);
         }
     }
 
