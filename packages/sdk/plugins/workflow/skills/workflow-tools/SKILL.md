@@ -57,8 +57,8 @@ every save is a new revision, and a Workflow runs the revision it started with.
 - Start checks literal `callTool("name", ...)` names against the grant it
   captures. Missing/excluded/ambiguous tools refuse Start
   (`WORKFLOW_TOOLS_UNAVAILABLE`); attach or enable them first.
-- Dynamic or indirect `callTool` calls are checked at run time (Start warns
-  on dynamic/unanalyzed direct calls).
+- Dynamic/indirect `callTool` names are unchecked at Start (Start warns);
+  every actual call is checked at run time.
 - Scripts may call `draw_canvas`, `update_canvas`, `show_canvas`, `read_canvas`
   and `canvas_kv`, not `publish_canvas_app` or `find_canvas_app`. Pass
   `session_id: "parent"` (or an ancestor): a Workflow has no canvas. `slot` is
@@ -298,7 +298,7 @@ Workflow scripts (`callTool("child_workflows", ...)`) and direct agent steps onl
 | Code | Meaning |
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
-| `DEFINITION_IN_USE` | An active Workflow uses this definition. Never stop or cancel a running Workflow on your own just to delete its definition; ask the person first. |
+| `DEFINITION_IN_USE` | Active Workflow uses it. Never stop/cancel a running Workflow on your own to delete its definition; ask first. Also keep defs named by active `spawn` states. |
 | `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks. Read the named state/tool; attach the missing tool. Nothing started. |
 | `REVISION_STALE` | Another save won. Read the newest revision and redo your change. |
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |

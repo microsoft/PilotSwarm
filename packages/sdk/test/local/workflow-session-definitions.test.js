@@ -771,10 +771,18 @@ states:
                 deletedAt: deletedA.deletedAt,
                 replayed: true,
             });
-            // Reusing operation_id for a different definition refuses with OPERATION_CONFLICT.
-            const otherOwn = (await save(host, session, YAML(10, "keep-me"), null, { name: "keep-me" })).receipt;
+            // Reusing operation_id for a different definition (by id or by name) or for another operation kind refuses with OPERATION_CONFLICT.
+            const otherOwn = (await save(host, session, YAML(10, "keep-me"), null, { name: "keep-me", operationId: "save-op-conflict" })).receipt;
             const conflict = await callTool(session, { operation: "delete", definition_id: otherOwn.definitionId, operation_id: "del-a-1" });
             expect(conflict).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
+            const conflictByName = await callTool(session, { operation: "delete", name: "keep-me", operation_id: "del-a-1" });
+            expect(conflictByName).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
+            const conflictByKind = await callTool(session, { operation: "delete", definition_id: otherOwn.definitionId, operation_id: "save-op-conflict" });
+            expect(conflictByKind).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
+            // Mismatched definition_id and name for own definition is refused with WORKFLOW_COMMAND_INVALID.
+            const mismatchedRef = await callTool(session, { operation: "delete", definition_id: otherOwn.definitionId, name: "wrong-name", operation_id: "del-mismatch-1" });
+            expect(mismatchedRef).toMatchObject({ ok: false, error: { code: "WORKFLOW_COMMAND_INVALID" } });
+            expect((await h.store.sessionDefinitions.readDefinition(otherOwn.definitionId)).deletedAt).toBeNull();
 
             // 3. Second delete with a new operation_id gets DEFINITION_DELETED (both by definition_id and by name).
             const secondA = await callTool(session, { operation: "delete", definition_id: first.definitionId, operation_id: "del-a-2" });
@@ -803,6 +811,14 @@ states:
             expect(inUse.error.details.workflowSessionIds).toEqual([wf1.workflowId]);
             expect(inUse.error.message).toContain(wf1.workflowId);
             expect(inUse.error.message).toMatch(/stop or cancel/i);
+            expect(inUse.error.message).toMatch(/ask the person/i);
+            // Person-facing deleteSessionWorkflowDefinition keeps the store wording without the agent-only caveat.
+            const personInUse = await refused(deleteSessionWorkflowDefinition(host, {
+                ownerSessionId: session, definitionId: liveDef.definitionId, actor: PERSON, operationId: "person-inuse-1",
+            }), "DEFINITION_IN_USE");
+            expect(personInUse.message).toContain(wf1.workflowId);
+            expect(personInUse.message).toMatch(/stop or cancel/i);
+            expect(personInUse.message).not.toMatch(/ask the person/i);
             // Cancel the Workflow, then delete succeeds and finished Workflow keeps its revision copy.
             await controlWorkflowRun(host, wf1.workflowId, { operation: "cancel", runId: null, reason: "test" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
             const deletedAfterCancel = await callTool(session, { operation: "delete", name: "active-watch", operation_id: "del-inuse-2" });
@@ -837,10 +853,14 @@ states:
             expect((await deleteSessionWorkflowDefinition(host, { ownerSessionId: session, definitionId: attachedPkg.definitionId, actor: PERSON, operationId: "person-del-pkg" })).receipt.definitionId)
                 .toBe(attachedPkg.definitionId);
 
-            // 7. Another session's definition is refused with DEFINITION_NOT_FOUND (unlocked and locked alike, no cross-session leak).
+            // 7. Another session's definition is refused with DEFINITION_NOT_FOUND (unlocked and locked alike, no cross-session metadata leak).
             const foreign = (await save(host, otherSession, YAML(10, "foreign-wf"), null, { name: "foreign-wf" })).receipt;
             const foreignRefused = await callTool(session, { operation: "delete", definition_id: foreign.definitionId, operation_id: "del-foreign-1" });
             expect(foreignRefused).toMatchObject({ ok: false, error: { code: "DEFINITION_NOT_FOUND" } });
+            expect(foreignRefused.error.message).not.toContain("foreign-wf");
+            const foreignWithName = await callTool(session, { operation: "delete", definition_id: foreign.definitionId, name: "probe-name", operation_id: "del-foreign-name" });
+            expect(foreignWithName).toMatchObject({ ok: false, error: { code: "DEFINITION_NOT_FOUND" } });
+            expect(foreignWithName.error.message).not.toContain("foreign-wf");
             expect((await h.store.sessionDefinitions.readDefinition(foreign.definitionId)).deletedAt).toBeNull();
             const foreignPkg = (await h.store.sessionDefinitions.attachPackage({
                 ownerSessionId: otherSession,
@@ -856,11 +876,11 @@ states:
             })).receipt;
             const foreignPkgRefused = await callTool(session, { operation: "delete", definition_id: foreignPkg.definitionId, operation_id: "del-foreign-2" });
             expect(foreignPkgRefused).toMatchObject({ ok: false, error: { code: "DEFINITION_NOT_FOUND" } });
+            expect(foreignPkgRefused.error.message).not.toContain("other-pkg");
 
-            // 8. A Workflow session cannot own definitions; calling delete as a Workflow session is refused.
+            // 8. A Workflow session cannot own definitions; calling delete as a Workflow session is refused with SESSION_NOT_FOUND.
             const wfCallerRefused = await callTool(wf1.workflowId, { operation: "delete", definition_id: otherOwn.definitionId, operation_id: "del-wf-caller-1" });
-            expect(wfCallerRefused.ok).toBe(false);
-            expect(["SESSION_NOT_FOUND", "DEFINITION_NOT_FOUND"]).toContain(wfCallerRefused.error.code);
+            expect(wfCallerRefused).toMatchObject({ ok: false, error: { code: "SESSION_NOT_FOUND" } });
             expect((await h.store.sessionDefinitions.readDefinition(otherOwn.definitionId)).deletedAt).toBeNull();
 
             // 9. Inside-a-Workflow session (agent step child) is refused with WORKFLOW_HUMAN_INPUT_DENIED (same guard as save/start).

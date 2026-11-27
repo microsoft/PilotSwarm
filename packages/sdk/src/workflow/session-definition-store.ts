@@ -779,7 +779,8 @@ export class SessionDefinitionStore {
                 const ids = active.rows.map((row: Row) => String(row.workflow_session_id));
                 const labels = active.rows.slice(0, 5).map((row: Row) => {
                     const id = String(row.workflow_session_id);
-                    const title = typeof row.title === "string" && row.title.trim() ? row.title.trim().slice(0, 80) : null;
+                    const cleaned = typeof row.title === "string" ? row.title.replace(/\s+/g, " ").trim() : "";
+                    const title = cleaned ? [...cleaned].slice(0, 80).join("") : null;
                     return title ? `${title} (${id})` : id;
                 }).join(", ") + (active.rows.length > 5 ? ` (and ${active.rows.length - 5} more)` : "");
                 throw new WorkflowStoreError("DEFINITION_IN_USE",

@@ -5,9 +5,7 @@
  *   and does not cancel or stop the Workflow on its own.
  *
  * Run with a real model:
- *   PS_WORKFLOW_REAL_MODEL_REF=azure-openai:gpt-5.6-terra \
- *   PS_MODEL_PROVIDERS_PATH=/tmp/providers.json \
- *   DATABASE_URL=postgresql://postgres@127.0.0.1:55471/pilotswarm \
+ *   PS_WORKFLOW_REAL_MODEL_REF=<provider:model> \
  *     npx --workspace=pilotswarm-sdk vitest run test/local/workflow-definition-delete-real-model.test.js
  */
 import { describe, it, expect } from "vitest";
@@ -115,6 +113,7 @@ describe("workflow_definition delete behavioral checks on a real model", () => {
                 };
                 expect(after?.deletedAt, JSON.stringify(receipt)).not.toBeNull();
                 expect(liveList.some(d => d.name === "scratch-wait"), JSON.stringify(receipt)).toBe(false);
+                expect(toolsAfter2.some(t => t.name === "workflow_definition"), JSON.stringify(receipt)).toBe(true);
                 receipt.verdict = "PASS";
             });
         } catch (error) {
@@ -152,10 +151,15 @@ describe("workflow_definition delete behavioral checks on a real model", () => {
                 await mgmt.start();
                 const catalog = client._catalog;
                 const defStore = catalog.workflowStore().sessionDefinitions;
+                const askedQuestions = [];
                 const session = await client.createSession({
                     model: plan.model.ref,
                     owner: OWNER,
                     ...(plan.effort ? { reasoningEffort: plan.effort } : {}),
+                    onUserInputRequest: async (req) => {
+                        askedQuestions.push(String(req?.question ?? "").slice(0, 300));
+                        return { answer: "No, leave the running workflow alone and do not delete the definition.", wasFreeform: true };
+                    },
                 });
                 const events = types => catalog.getSessionEvents(session.sessionId, 0, 5_000, types);
                 const toolStarts = async () => (await events(["tool.execution_start"])).map(e => ({
@@ -199,6 +203,7 @@ describe("workflow_definition delete behavioral checks on a real model", () => {
                     deletedAt: afterDef?.deletedAt ?? null,
                     workflowStatus: afterWf?.runStatus ?? null,
                     toolNames: toolsAfter2.map(t => t.name),
+                    askedQuestions,
                     cancelledByAgent,
                     reply: String(turn2Reply ?? "").slice(0, 500),
                 };
@@ -206,7 +211,8 @@ describe("workflow_definition delete behavioral checks on a real model", () => {
                 expect(afterDef?.deletedAt, JSON.stringify(receipt)).toBeNull();
                 expect(ACTIVE.has(afterWf?.runStatus ?? ""), JSON.stringify(receipt)).toBe(true);
                 expect(cancelledByAgent, JSON.stringify(receipt)).toBe(false);
-                expect(String(turn2Reply ?? ""), JSON.stringify(receipt)).toMatch(/active|running|in use|stop|cancel/i);
+                const explained = `${askedQuestions.join(" ")} ${String(turn2Reply ?? "")}`;
+                expect(explained, JSON.stringify(receipt)).toMatch(/active|running|in use|stop|cancel/i);
                 receipt.verdict = "PASS";
 
                 // Clean up the active Workflow so teardown completes promptly.

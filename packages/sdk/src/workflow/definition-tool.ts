@@ -54,7 +54,7 @@ export function workflowDefinitionToolSpec() {
             + "(<package>/<name>, locked) you may start. read: one, with YAML, errors and Workflows. save: a new revision (to change one, "
             + "definition_id and the expected_revision you read; a stale save is refused); a revision with errors is saved but cannot start. "
             + "start: a new Workflow from a revision (default newest valid); start again to run it again. "
-            + "delete: remove one of your own definitions (refused while active). "
+            + "delete: remove one of your own definitions (refused while a Workflow of it is active). "
             + "test: only when the user asks, or before you publish it in a package. "
             + "card: a package definition's inputs and results; read it before you start one. "
             + "Inputs: inputs: { schema: { type: object, required: [topic], properties: { topic: { type: string } } } }. "
@@ -468,13 +468,23 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                     }
                 }
             }
-            const stored = await deleteSessionWorkflowDefinition(context.host, {
-                ownerSessionId: session,
-                definitionId: targetId!,
-                actor: sessionActor,
-                operationId,
-                allowLocked: false,
-            });
+            let stored;
+            try {
+                stored = await deleteSessionWorkflowDefinition(context.host, {
+                    ownerSessionId: session,
+                    definitionId: targetId!,
+                    actor: sessionActor,
+                    operationId,
+                    allowLocked: false,
+                });
+            } catch (error) {
+                if (error instanceof WorkflowStoreError && error.code === "DEFINITION_IN_USE") {
+                    throw new WorkflowStoreError("DEFINITION_IN_USE",
+                        `${error.message} Ask the person before stopping or canceling it; do not stop or cancel a running Workflow on your own.`,
+                        error.details);
+                }
+                throw error;
+            }
             return JSON.stringify({
                 ok: true,
                 ...stored.receipt,

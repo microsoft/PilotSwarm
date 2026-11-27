@@ -228,9 +228,9 @@ dynamic names stay unchecked.
    (prepared answers) and `expect` (the end it must reach); a failed test's
    report gives the fixture to add.
 5. Delete unused definitions you own with `delete` (`name` or `definition_id`,
-   optional `operation_id`). Package definitions and definitions with active
-   Workflows (`DEFINITION_IN_USE`) are refused; never cancel a running Workflow
-   on your own to delete its definition.
+   optional `operation_id`). Package defs and active-Workflow defs
+   (`DEFINITION_IN_USE`) are refused; never cancel a running Workflow on your
+   own, and keep defs named by active `spawn` states.
 
 ## 10. Diagnose a failure
 
