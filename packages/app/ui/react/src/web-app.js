@@ -1378,6 +1378,79 @@ export function computeAnchoredScrollTop(
         : Math.min(maxScroll, offsetPixels);
 }
 
+function scrollAnchorChildKey(child) {
+    if (!child || child.nodeType !== 1) return "";
+    const clientId = child.dataset?.clientMessageId;
+    if (clientId) return `msg:${clientId}`;
+    const text = String(child.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    return `txt:${text.slice(0, 120)}`;
+}
+
+export function captureScrollAnchor(node) {
+    if (!node) return null;
+    const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+    if (maxScroll <= 0) return null;
+    const nodeTop = node.getBoundingClientRect().top;
+    const children = Array.from(node.children || []);
+    let anchorEl = null;
+    let anchorKey = "";
+    for (const child of children) {
+        const key = scrollAnchorChildKey(child);
+        if (!key) continue;
+        const rect = child.getBoundingClientRect();
+        if (rect.height <= 0) continue;
+        if (rect.bottom > nodeTop + 6) {
+            anchorEl = child;
+            anchorKey = key;
+            break;
+        }
+    }
+    if (!anchorEl) {
+        return { key: "", occurrence: 0, offsetPx: 0, scrollTop: Math.round(node.scrollTop) };
+    }
+    let occurrence = 0;
+    for (const child of children) {
+        if (child === anchorEl) break;
+        if (scrollAnchorChildKey(child) === anchorKey) occurrence += 1;
+    }
+    return {
+        key: anchorKey,
+        occurrence,
+        offsetPx: Math.round(anchorEl.getBoundingClientRect().top - nodeTop),
+        scrollTop: Math.round(node.scrollTop),
+    };
+}
+
+export function resolveAnchoredScrollTop(node, anchor, scrollOffset, scrollMode) {
+    if (!node) return 0;
+    const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+    if (scrollMode === "bottom") {
+        const offsetPixels = Math.max(0, Number(scrollOffset) || 0) * SCROLL_ROW_HEIGHT;
+        return Math.max(0, maxScroll - offsetPixels);
+    }
+    if (anchor && typeof anchor === "object") {
+        if (anchor.key) {
+            const children = Array.from(node.children || []);
+            let seen = 0;
+            for (const child of children) {
+                if (scrollAnchorChildKey(child) !== anchor.key) continue;
+                if (seen === (anchor.occurrence || 0)) {
+                    const nodeTop = node.getBoundingClientRect().top;
+                    const childTop = child.getBoundingClientRect().top;
+                    const delta = (childTop - nodeTop) - (Number(anchor.offsetPx) || 0);
+                    return Math.max(0, Math.min(maxScroll, node.scrollTop + delta));
+                }
+                seen += 1;
+            }
+        }
+        if (Number.isFinite(Number(anchor.scrollTop))) {
+            return Math.max(0, Math.min(maxScroll, Number(anchor.scrollTop)));
+        }
+    }
+    return computeAnchoredScrollTop(node, scrollOffset, scrollMode, false);
+}
+
 function scrollLineIdentity(line) {
     if (!line) return "";
     if (line.kind === "runs") return line.runs?.map((run) => run?.text || "").join("") || "";
@@ -1418,13 +1491,27 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     // and clamps nextScrollTop downward). The flag tells onScroll to
     // ignore the matching scroll event after we set scrollTop ourselves.
     const programmaticScrollRef = React.useRef(null);
-    const previousViewportStateRef = React.useRef({
-        scrollMode,
-        scrollOffset,
-    });
+    // Start unsynced (null) so a freshly mounted pane restores its saved
+    // scroll position/anchor instead of treating the fresh DOM's scrollTop=0
+    // as a paused position to preserve.
+    const previousViewportStateRef = React.useRef(null);
     const previousContentRef = React.useRef(null);
+    const pendingMountAnchorRef = React.useRef(null);
+    const mountedSessionIdRef = React.useRef(historySessionId);
+    mountedSessionIdRef.current = historySessionId;
     const historyScrollRef = React.useRef(null);
     React.useEffect(() => () => { historyScrollRef.current = null; }, []);
+    React.useLayoutEffect(() => () => {
+        const node = ref.current;
+        const sessionId = mountedSessionIdRef.current || controller.getState().sessions.activeSessionId;
+        if (!node || paneKey !== "chat" || !stickyBottom || !sessionId || pendingMountAnchorRef.current) return;
+        if (node.dataset?.sessionId && node.dataset.sessionId !== sessionId) return;
+        if (controller.getState().ui.followBottom?.chat !== false) return;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        if (maxScroll <= 0 || isScrollViewportAtBottom(node)) return;
+        const anchor = captureScrollAnchor(node);
+        if (anchor) controller.setChatScrollAnchor?.(sessionId, anchor);
+    }, [controller, paneKey, ref, stickyBottom]);
     const [topPullDistance, setTopPullDistance] = React.useState(0);
     const [loadingHistorySessionId, setLoadingHistorySessionId] = React.useState(null);
     React.useEffect(() => { setTopPullDistance(0); }, [historySessionId]);
@@ -1474,10 +1561,13 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         const lastLine = scrollBoundaryIdentity(normalizedLines, true);
         const previousContent = previousContentRef.current;
         let historyScroll = historyScrollRef.current;
-        const activeSessionId = controller.getState().sessions.activeSessionId;
+        const activeSessionId = historySessionId || controller.getState().sessions.activeSessionId;
         if (historyScroll && historyScroll.sessionId !== activeSessionId) {
             historyScrollRef.current = null;
             historyScroll = null;
+        }
+        if (pendingMountAnchorRef.current && pendingMountAnchorRef.current.sessionId !== activeSessionId) {
+            pendingMountAnchorRef.current = null;
         }
         const oldestSeq = controller.getState().history.bySessionId.get(activeSessionId)?.events?.[0]?.seq;
         const pageArrived = historyScroll && !historyScroll.applied && oldestSeq < historyScroll.oldestSeq;
@@ -1513,37 +1603,99 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             || (now - (interaction.lastUserScrollAt || 0)) < TOUCH_MOMENTUM_GRACE_MS;
         const isEchoOffset = interaction.lastDispatchedOffset != null
             && Math.abs((Number(scrollOffset) || 0) - interaction.lastDispatchedOffset) < 2;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        const savedChatAnchor = paneKey === "chat" && stickyBottom && activeSessionId
+            ? controller.getChatScrollAnchor?.(activeSessionId) || null
+            : null;
+        const sameSession = previousViewportState != null
+            && previousViewportState.sessionId === activeSessionId;
+        const widthChanged = previousContent != null
+            && Number.isFinite(previousContent.clientWidth)
+            && Math.abs(node.clientWidth - previousContent.clientWidth) > 1;
+        // Wait for scrollable content before finalizing an initial paused
+        // restore so an empty loading frame does not lock scrollTop at 0.
+        if (
+            previousViewportState === null
+            && stickyBottom
+            && scrollMode === "top"
+            && maxScroll <= 0
+            && (savedChatAnchor != null || (Number(scrollOffset) || 0) > 0)
+        ) {
+            previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight, clientWidth: node.clientWidth };
+            return;
+        }
+        const restorePendingAnchor = Boolean(
+            pendingMountAnchorRef.current
+            && pendingMountAnchorRef.current.sessionId === activeSessionId
+            && stickyBottom
+            && scrollMode === "top"
+            && !interacting
+            && maxScroll > 0,
+        );
+        const restoreInitialPaused = Boolean(
+            previousViewportState === null
+            && stickyBottom
+            && scrollMode === "top"
+            && maxScroll > 0
+            && (savedChatAnchor != null || (Number(scrollOffset) || 0) > 0),
+        );
+        const restoreOnSessionSwitch = Boolean(
+            previousViewportState !== null
+            && !sameSession
+            && stickyBottom
+            && scrollMode === "top"
+            && maxScroll > 0
+            && savedChatAnchor != null,
+        );
+        const restoreOnWidthResize = Boolean(
+            sameSession
+            && widthChanged
+            && stickyBottom
+            && scrollMode === "top"
+            && !interacting
+            && maxScroll > 0
+            && savedChatAnchor != null,
+        );
+        const useAnchorRestore = restoreInitialPaused || restorePendingAnchor || restoreOnSessionSwitch || restoreOnWidthResize;
         const preservePausedStickyScroll = stickyBottom
             && scrollMode === "top"
+            && sameSession
             && previousViewportState?.scrollMode === "top"
-            && previousViewportState?.scrollOffset === scrollOffset;
+            && previousViewportState?.scrollOffset === scrollOffset
+            && !useAnchorRestore;
         // A backward page inserts DOM above the reader. Top-anchored paused
         // state normally preserves scrollTop, which would push the same visible
         // message down by the inserted height. Compensate with the measured DOM
         // height delta. Appended live text keeps the old scrollTop unchanged.
-        const prependedWhilePaused = !historyScroll && stickyBottom
+        const prependedWhilePaused = !historyScroll && !useAnchorRestore && stickyBottom
             && previousContent?.lastLine === lastLine
             && previousContent?.firstLine !== firstLine
             && node.scrollHeight > previousContent.scrollHeight
             && (preservePausedStickyScroll || node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX);
         if (
-            !pageArrived && !prependedWhilePaused
+            !pageArrived && !prependedWhilePaused && !useAnchorRestore
             && interacting
             && !(stickyBottom && scrollMode === "bottom" && !interaction.touching
                 && previousContent && previousContent.scrollHeight !== node.scrollHeight)
+            && sameSession
             && scrollMode === previousViewportState?.scrollMode
             && (scrollOffset === previousViewportState?.scrollOffset || isEchoOffset)
         ) {
-            previousViewportStateRef.current = { scrollMode, scrollOffset };
-            previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
+            previousViewportStateRef.current = { sessionId: activeSessionId, scrollMode, scrollOffset };
+            previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight, clientWidth: node.clientWidth };
             return;
         }
+        const activeAnchor = restorePendingAnchor
+            ? pendingMountAnchorRef.current.anchor
+            : savedChatAnchor;
         const nextScrollTop = pageArrived ? pageScrollTop : prependedWhilePaused
             ? Math.max(0, Math.min(
                 node.scrollTop + (node.scrollHeight - previousContent.scrollHeight),
-                node.scrollHeight - node.clientHeight,
+                maxScroll,
             ))
-            : computeAnchoredScrollTop(node, scrollOffset, scrollMode, preservePausedStickyScroll);
+            : useAnchorRestore
+                ? resolveAnchoredScrollTop(node, activeAnchor, scrollOffset, scrollMode)
+                : computeAnchoredScrollTop(node, scrollOffset, scrollMode, preservePausedStickyScroll);
         if (Math.abs(node.scrollTop - nextScrollTop) > PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
             const pendingProgrammaticScroll = { target: nextScrollTop };
             programmaticScrollRef.current = pendingProgrammaticScroll;
@@ -1556,7 +1708,18 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
                 }
             });
         }
-        if ((pageArrived || prependedWhilePaused) && paneKey && typeof controller.updatePaneScrollFromViewport === "function") {
+        if ((restoreInitialPaused || restoreOnSessionSwitch) && savedChatAnchor && !pendingMountAnchorRef.current) {
+            // Re-apply the same anchor if measured column width settles on the
+            // next paint after mount; any user scroll/touch clears it at once.
+            const settling = { sessionId: activeSessionId, anchor: savedChatAnchor };
+            pendingMountAnchorRef.current = settling;
+            window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+                if (pendingMountAnchorRef.current === settling) {
+                    pendingMountAnchorRef.current = null;
+                }
+            }));
+        }
+        if ((pageArrived || prependedWhilePaused || restoreOnWidthResize) && paneKey && typeof controller.updatePaneScrollFromViewport === "function") {
             // The measured DOM compensation above is the new durable paused
             // position. Persist it too: otherwise switching sessions and back
             // reapplies the pre-page offset and moves the reader by the full
@@ -1564,13 +1727,18 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             const rowOffset = Math.max(0, nextScrollTop) / SCROLL_ROW_HEIGHT;
             userScrollRef.current.lastDispatchedOffset = rowOffset;
             controller.updatePaneScrollFromViewport(paneKey, rowOffset, { atBottom: false });
+            if ((pageArrived || prependedWhilePaused) && paneKey === "chat" && activeSessionId) {
+                const updatedAnchor = captureScrollAnchor(node);
+                if (updatedAnchor) controller.setChatScrollAnchor?.(activeSessionId, updatedAnchor);
+            }
         }
         previousViewportStateRef.current = {
+            sessionId: activeSessionId,
             scrollMode,
             scrollOffset,
         };
-        previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
-    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision, tailRevision]);
+        previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight, clientWidth: node.clientWidth };
+    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision, tailRevision, historySessionId, paneKey, controller]);
 
     const dispatchScrollOffset = useFrameCoalescedCallback((offset) => {
         controller.dispatch({ type: "ui/scroll", pane: paneKey, offset });
@@ -1596,6 +1764,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             programmaticScrollRef.current = null;
         }
         userScrollRef.current.lastUserScrollAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+        pendingMountAnchorRef.current = null;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         // When the pane has no scrollable content (transient loading state
         // that briefly collapses the body to one line), the browser auto-
@@ -1605,13 +1774,20 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         // the desired scroll position from preserved state.
         if (maxScroll <= 0) return;
         if (stickyBottom && typeof controller.updatePaneScrollFromViewport === "function") {
+            const atBottom = isScrollViewportAtBottom(node);
             const rowOffset = Math.max(0, node.scrollTop) / SCROLL_ROW_HEIGHT;
             userScrollRef.current.lastDispatchedOffset = rowOffset;
             controller.updatePaneScrollFromViewport(
                 paneKey,
                 rowOffset,
-                { atBottom: isScrollViewportAtBottom(node) },
+                { atBottom },
             );
+            if (paneKey === "chat") {
+                const sessionId = mountedSessionIdRef.current || controller.getState().sessions.activeSessionId;
+                if (sessionId) {
+                    controller.setChatScrollAnchor?.(sessionId, atBottom ? null : captureScrollAnchor(node));
+                }
+            }
             // Pausing bottom-follow changes chat to top-anchored scroll state,
             // but reaching the DOM's actual top must still arm backward CMS
             // paging. Keep this next to the native measurement so the history
@@ -1690,6 +1866,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const touchPullRef = React.useRef({ startY: null, lastY: null, distance: 0 });
     const onTouchStart = React.useCallback((event) => {
         userScrollRef.current.touching = true;
+        pendingMountAnchorRef.current = null;
         if (historyScrollRef.current?.applied) historyScrollRef.current = null;
         const node = ref.current;
         touchPullRef.current = {
@@ -18550,8 +18727,15 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         })
         : null;
 
+    const mobileArtifactOverlayActive = mobile
+        && !state.adminVisible
+        && (filesFullscreenActive || (state.artifactPaneOpen && Boolean(state.selectedArtifactId)));
+
     if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement(Toolbar, { controller, mobile: false, moa, viewNavigation }),
+        !moa?.active && mobileArtifactOverlayActive
+            ? React.createElement(MobileArtifactOverlay, { controller })
+            : null,
         React.createElement(ModalLayer, { controller }),
         React.createElement(MotdOverlay, { controller, mobile }));
     return React.createElement(ControllerContext.Provider, { value: controller },
@@ -18598,11 +18782,11 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 ? React.createElement(AdminConsolePanel, { controller, mobile, navigation: mobileAdminNavigation })
                 : state.budgetOpen
                     ? React.createElement(ProviderBudgetView, { controller })
-                    : (filesFullscreenActive
+                    : (filesFullscreenActive && !mobile
                         ? fullscreenWorkspace
                         : (mobile ? mobileContent : desktopWorkspace)),
             mobileCanvasLayer),
-        mobile && filesFullscreenActive && !state.adminVisible
+        mobileArtifactOverlayActive
             ? React.createElement(MobileArtifactOverlay, { controller })
             : null,
         React.createElement(ModalLayer, { controller }),

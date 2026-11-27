@@ -2080,17 +2080,62 @@ function baseReducer(state, action) {
                 return state;
             }
             const nextFollowBottom = Boolean(action.followBottom);
-            if (state.ui.followBottom?.[action.pane] === nextFollowBottom) {
+            const activeSessionId = state.sessions.activeSessionId;
+            const clearChatAnchor = action.pane === "chat"
+                && nextFollowBottom
+                && Boolean(activeSessionId)
+                && state.ui.chatScrollAnchorBySession?.[activeSessionId] != null;
+            if (state.ui.followBottom?.[action.pane] === nextFollowBottom && !clearChatAnchor) {
                 return state;
+            }
+            let nextChatAnchors = state.ui.chatScrollAnchorBySession;
+            if (clearChatAnchor) {
+                nextChatAnchors = { ...(state.ui.chatScrollAnchorBySession || {}) };
+                delete nextChatAnchors[activeSessionId];
             }
             return {
                 ...state,
                 ui: {
                     ...state.ui,
+                    ...(clearChatAnchor ? { chatScrollAnchorBySession: nextChatAnchors } : {}),
                     followBottom: {
                         ...(state.ui.followBottom || {}),
                         [action.pane]: nextFollowBottom,
                     },
+                },
+            };
+        }
+
+        case "ui/chatScrollAnchor": {
+            const sessionId = String(action.sessionId || "").trim();
+            if (!sessionId) return state;
+            const current = state.ui.chatScrollAnchorBySession?.[sessionId] ?? null;
+            const next = action.anchor && typeof action.anchor === "object"
+                ? {
+                    key: String(action.anchor.key || ""),
+                    occurrence: Math.max(0, Math.floor(Number(action.anchor.occurrence) || 0)),
+                    offsetPx: Number.isFinite(Number(action.anchor.offsetPx)) ? Math.round(Number(action.anchor.offsetPx)) : 0,
+                    scrollTop: Number.isFinite(Number(action.anchor.scrollTop)) ? Math.max(0, Math.round(Number(action.anchor.scrollTop))) : 0,
+                }
+                : null;
+            if (
+                current === next
+                || (current && next
+                    && current.key === next.key
+                    && current.occurrence === next.occurrence
+                    && current.offsetPx === next.offsetPx
+                    && current.scrollTop === next.scrollTop)
+            ) {
+                return state;
+            }
+            const nextAnchors = { ...(state.ui.chatScrollAnchorBySession || {}) };
+            if (next) nextAnchors[sessionId] = next;
+            else delete nextAnchors[sessionId];
+            return {
+                ...state,
+                ui: {
+                    ...state.ui,
+                    chatScrollAnchorBySession: nextAnchors,
                 },
             };
         }
@@ -3062,6 +3107,8 @@ function baseReducer(state, action) {
             for (const id of ids) delete nextChatScroll[id];
             const nextChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
             for (const id of ids) delete nextChatFollowBottom[id];
+            const nextChatAnchors = { ...(state.ui.chatScrollAnchorBySession || {}) };
+            for (const id of ids) delete nextChatAnchors[id];
             const nextDrafts = { ...(state.ui.promptDraftBySession || {}) };
             const nextStatuses = { ...(state.ui.promptStatusBySession || {}) };
             for (const id of ids) {
@@ -3083,6 +3130,7 @@ function baseReducer(state, action) {
                     ...state.ui,
                     chatScrollBySession: nextChatScroll,
                     chatFollowBottomBySession: nextChatFollowBottom,
+                    chatScrollAnchorBySession: nextChatAnchors,
                     promptDraftBySession: nextDrafts,
                     promptStatusBySession: nextStatuses,
                     // This is memory-pressure eviction, not terminal session

@@ -65,11 +65,35 @@ test("new chat preserves a reader's paused viewport and follows only at the bott
 test("paused chat position survives switching sessions", () => {
     const { store, controller } = setup();
     controller.updatePaneScrollFromViewport("chat", 12, { atBottom: false });
+    controller.setChatScrollAnchor(FIRST, { key: "txt:Assessment 21", occurrence: 0, offsetPx: -14, scrollTop: 3724 });
 
     store.dispatch({ type: "sessions/selected", sessionId: SECOND });
     assert.equal(store.getState().ui.followBottom.chat, true);
+    assert.equal(controller.getChatScrollAnchor(SECOND), null);
     store.dispatch({ type: "sessions/selected", sessionId: FIRST });
 
     assert.equal(store.getState().ui.followBottom.chat, false);
     assert.equal(store.getState().ui.scroll.chat, 12);
+    assert.deepEqual(controller.getChatScrollAnchor(FIRST), {
+        key: "txt:Assessment 21",
+        occurrence: 0,
+        offsetPx: -14,
+        scrollTop: 3724,
+    });
+});
+
+test("chat scroll anchor clears when returning to bottom-follow and on session eviction", () => {
+    const { store, controller } = setup();
+    controller.updatePaneScrollFromViewport("chat", 18, { atBottom: false });
+    controller.setChatScrollAnchor(FIRST, { key: "txt:Assessment 21", occurrence: 0, offsetPx: -8, scrollTop: 1200 });
+    assert.ok(controller.getChatScrollAnchor(FIRST));
+
+    controller.updatePaneScrollFromViewport("chat", 40, { atBottom: true });
+    assert.equal(store.getState().ui.followBottom.chat, true);
+    assert.equal(controller.getChatScrollAnchor(FIRST), null, "returning to bottom clears any paused anchor");
+
+    controller.updatePaneScrollFromViewport("chat", 15, { atBottom: false });
+    controller.setChatScrollAnchor(FIRST, { key: "txt:Assessment 11", occurrence: 1, offsetPx: 4, scrollTop: 900 });
+    store.dispatch({ type: "history/evict", sessionIds: [FIRST] });
+    assert.equal(controller.getChatScrollAnchor(FIRST), null, "evicting a session drops its scroll anchor");
 });

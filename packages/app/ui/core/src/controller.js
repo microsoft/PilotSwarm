@@ -11278,11 +11278,11 @@ export class PilotSwarmUiController {
             const wasHidden = Boolean(this.getCurrentLayout()?.rightHidden);
             if (wasHidden) this.expandRightColumn();
             this.dispatch({ type: "files/pane", open: true, restoresToHidden: wasHidden });
-        } else {
-            // Focus the inspector, not just the tab. On desktop this makes j/k
-            // drive the artifact list immediately; on mobile the visible pane is
-            // derived from focusRegion, so without this the preview would open on
-            // a pane the user cannot see.
+        } else if (!fullscreen) {
+            // Focus the inspector when revealing inline in the Files tab (desktop
+            // split or TUI), NOT when opening a full-viewport overlay from chat:
+            // on a phone, inspector focus switches mobilePane away from chat so
+            // closing the overlay would strand the reader on the Files list.
             this.setFocus("inspector");
         }
         await this.ensureFilesForSession(resolvedSessionId, { force }).catch(() => null);
@@ -11355,6 +11355,7 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const origin = state.files.previewOrigin;
         this.dispatch({ type: "files/fullscreen", fullscreen: false });
+        if (state.files.paneOpen) this.dispatch({ type: "files/pane", open: false });
 
         if (origin !== "chat") {
             this.dispatch({ type: "files/previewOrigin", origin: null });
@@ -11376,6 +11377,9 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "files/select", sessionId: null, filename: null });
         }
         this.dispatch({ type: "files/previewOrigin", origin: null });
+        if (this.mobileView && this.mobileView.get?.() !== "workspace") {
+            this.mobileView.set("workspace");
+        }
         // Dispatch the focus DIRECTLY rather than via setFocus: that runs the
         // region through normalizeFocusRegion, which falls back to order[0]
         // when the region is missing from the current layout's focus order —
@@ -13860,6 +13864,17 @@ export class PilotSwarmUiController {
             return;
         }
         this.scrollPaneTo(pane, offset);
+    }
+
+    setChatScrollAnchor(sessionId, anchor) {
+        const resolved = sessionId || this.getState().sessions.activeSessionId;
+        if (!resolved) return;
+        this.dispatch({ type: "ui/chatScrollAnchor", sessionId: resolved, anchor: anchor || null });
+    }
+
+    getChatScrollAnchor(sessionId = this.getState().sessions.activeSessionId) {
+        if (!sessionId) return null;
+        return this.getState().ui.chatScrollAnchorBySession?.[sessionId] || null;
     }
 
     /**
