@@ -17,14 +17,15 @@
  *                                        or unstarted drafts left behind)
  *   6. open_work_on_terminal_runs      — open requests, open approvals, undelivered outbox rows, pending
  *                                        node executions, and awaiting_parent test interceptions on terminal runs
- *   7. inbox_pending_on_terminal_runs  — unconsumed, unexpired workflow_inbox rows on terminal runs
+ *   7. inbox_pending_on_terminal_runs  — inbox messages still surfaced by WorkflowStore.listOpenInbox()
+ *                                        on terminal runs, or terminal-run inbox rows without a finite expiry
  *   8. sessions_not_swept              — sessions in the tree with deleted_at IS NULL (checked after owner end + Sweeper)
  *
  * Also returns `orchestrationStatuses` (instanceId -> status) for every Duroxide instance checked so
  * callers can prove non-vacuity (e.g. asserting `wfx-`/`wfr-`/`wfa-`/`wft-` existed and are Completed).
  */
 
-import { ACTIVE_RUN_STATUSES, SWEEPER_ENDED_SESSION_STATES } from "../../src/workflow/store.ts";
+import { ACTIVE_RUN_STATUSES, SWEEPER_ENDED_SESSION_STATES, WorkflowStore } from "../../src/workflow/store.ts";
 import {
     workflowAgentInstanceId,
     workflowEffectInstanceId,
@@ -276,8 +277,7 @@ export async function census({
                JOIN ${s}.workflow_runs r ON r.run_id = i.run_id
               WHERE r.workflow_session_id = ANY($1::text[])
                 AND NOT (r.status = ANY($2::text[]))
-                AND i.consumed_by IS NULL
-                AND i.expires_at > now()
+                AND (i.expires_at IS NULL OR NOT isfinite(i.expires_at))
               ORDER BY i.message_id`,
             [treeSessionIds, ACTIVE_RUN_STATUSES],
         );
@@ -413,6 +413,19 @@ export async function census({
         }
     }
 
+    // Category 7: open inbox rows still surfaced by listOpenInbox() for terminal runs, plus any non-finite expiry.
+    const inboxStore = resolvedStore ?? new WorkflowStore(resolvedPool, resolvedSchema);
+    const terminalRunIds = runsRes.rows
+        .filter(run => !ACTIVE_RUN_STATUSES.includes(run.status))
+        .map(run => run.run_id);
+    const openInboxIds = new Set(inboxPendingRes.rows.map(r => r.message_id));
+    await mapConcurrent(terminalRunIds, STATUS_CONCURRENCY, async (runId) => {
+        const open = await inboxStore.listOpenInbox(runId, 500);
+        for (const msg of open.rows) openInboxIds.add(msg.messageId);
+        if (open.more) openInboxIds.add(`more:${runId}`);
+    });
+    const inboxPendingIds = [...openInboxIds].sort();
+
     const categories = {
         orchestrations_live: { count: liveOrchestrations.length, ids: liveOrchestrations },
         runs_active: { count: activeRunsRes.rows.length, ids: activeRunsRes.rows.map(r => r.run_id) },
@@ -420,7 +433,7 @@ export async function census({
         agent_sessions_live: { count: liveAgentSessions.length, ids: liveAgentSessions },
         claim_shells: { count: claimShellsRes.rows.length, ids: claimShellsRes.rows.map(r => r.session_id) },
         open_work_on_terminal_runs: { count: openWorkRes.rows.length, ids: openWorkRes.rows.map(r => r.id) },
-        inbox_pending_on_terminal_runs: { count: inboxPendingRes.rows.length, ids: inboxPendingRes.rows.map(r => r.message_id) },
+        inbox_pending_on_terminal_runs: { count: inboxPendingIds.length, ids: inboxPendingIds },
         sessions_not_swept: { count: unsweptRes.rows.length, ids: unsweptRes.rows.map(r => r.session_id) },
     };
 

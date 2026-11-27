@@ -3,13 +3,8 @@
  *
  * Verifies resource cleanup on plain Workflow runs (no re-runs) across all 8 census categories
  * (orchestrations, active runs, child workflows, agent sessions, bare claim shells, open work on
- * terminal runs, pending inbox rows on terminal runs, and unswept sessions after owner end +
+ * terminal runs, open/non-finite inbox rows on terminal runs, and unswept sessions after owner end +
  * Sweeper + prune_orchestrations).
- *
- * Known baseline leak (pinned by exact message_id in B10b / B10c pending owner design decision for I7):
- *   - B10b / B10c: unconsumed default-TTL `workflow_inbox` rows (both direct `sendTypedWorkflowInput`
- *     and fire-and-forget child `WorkflowEnded@1` notices) remain unexpired after the target run ends
- *     and are still surfaced by `WorkflowStore.listOpenInbox()`.
  *
  * Scenarios (3 iterations each for B1–B10a):
  *   B1   Parent fails while a spawned child has pending wait, receive, approval, and delivered request
@@ -28,15 +23,16 @@
  *        including a run with a pending outbox delivery when the owner ends.
  *   B10a Messages sent to a run that then ends: consumed before end, short-TTL expired, and post-end
  *        send refused with RUN_ENDED (zero inbox rows inserted).
- *   B10b (KNOWN LEAK) Unconsumed default-TTL inbox message stays unexpired on a terminal run (pinned to exact message_id).
- *   B10c (KNOWN LEAK) Fire-and-forget child completes before parent ends; unconsumed WorkflowEnded@1
- *        stays unexpired on the terminal parent run (pinned to exact message_id).
+ *   B10b Unconsumed default-TTL inbox message is excluded from openInbox on a terminal run, keeps a
+ *        finite expiry as history, and reports zero leaks.
+ *   B10c Fire-and-forget child completes before parent ends; unconsumed WorkflowEnded@1 is excluded
+ *        from openInbox on the terminal parent run, keeps a finite expiry as history, and reports zero leaks.
  *   B11  Claim-shell lifecycle + test-mode (`wft-`) bench: bare claim shell is reported in category 5,
- *        skipped by standalone Sweeper scan (`noRun`), removed immediately on parent delete, and removed
- *        by ancestor cascade when owner ends + Sweeper runs; test bench `wft-` is observed Completed and
- *        pruned by `prune_orchestrations`.
- *   Control (non-vacuity): deliberately leaked resources across all 8 categories (including pending node
- *        and awaiting_parent test interception) are caught and reported by census + assertNoLeaks.
+ *        removed immediately on parent delete, skipped by standalone Sweeper while younger than the grace
+ *        period, removed by standalone Sweeper after the grace period (while test bench stays excluded),
+ *        and test bench `wft-` is observed Completed and pruned by `prune_orchestrations` on owner end.
+ *   Control (non-vacuity): deliberately leaked resources across all 8 categories (including pending node,
+ *        awaiting_parent test interception, and non-finite inbox expiry) are caught and reported by census + assertNoLeaks.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createRequire } from "node:module";
@@ -56,7 +52,7 @@ import {
     createWorkflow,
     sendTypedWorkflowInput,
 } from "../../src/workflow/service.ts";
-import { updateWorkflowFromTool } from "../../src/workflow/tools.ts";
+import { readWorkflowView, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
 import { buildPgPoolConfig } from "../../src/pg-pool-factory.ts";
@@ -1185,13 +1181,7 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
         }
     });
 
-    // KNOWN LEAK (pinned to exact message_id until owner chooses I7 design):
-    // Unconsumed default-TTL (24h) workflow_inbox rows stay unexpired when the target run ends
-    // (endRunIn, finishStoppedRun, expireRun, cancelBeforeBegin, workflow_on_session_deleted,
-    // workflow_on_owner_session_ended never close/expire inbox rows; listOpenInbox() still surfaces
-    // them on terminal runs). Asserts the exact leaked message_id so setup errors cannot pass
-    // silently and fixing the leak flips this test red immediately.
-    it("B10b (KNOWN LEAK): unconsumed default-TTL inbox message stays unexpired on terminal run", { timeout: TIMEOUT }, async () => {
+    it("B10b: unconsumed default-TTL inbox message is excluded from openInbox on terminal run and keeps finite expiry", { timeout: TIMEOUT }, async () => {
         const h = await startRuntimeHarness(getEnv());
         try {
             const ownerId = await h.createLiveOwner();
@@ -1205,27 +1195,30 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
                 workflowSessionId: wUnconsumed.workflowId, senderSessionId: ownerId, contract: "Ping@1",
                 payload: { unconsumed: true }, operationId: "b10b-u-msg-1",
             });
-            const leakedMessageId = sent.receipt.messageId;
-            expect(leakedMessageId).toBeTruthy();
+            const unconsumedMessageId = sent.receipt.messageId;
+            expect(unconsumedMessageId).toBeTruthy();
             await sendTypedWorkflowInput(h.host, {
                 workflowSessionId: wUnconsumed.workflowId, senderSessionId: ownerId, contract: "Go@1",
                 payload: { go: true }, operationId: "b10b-u-go-1",
             });
             expect((await h.waitRunStatus(wUnconsumed.runId, ["completed"])).status).toBe("completed");
             const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
-            expect(c.categories.inbox_pending_on_terminal_runs.ids).toEqual([leakedMessageId]);
-            assertNoLeaks(c, { allow: ["sessions_not_swept", "inbox_pending_on_terminal_runs"] });
-            expect(() => assertNoLeaks(c, { allow: ["sessions_not_swept"] })).toThrow(/inbox_pending_on_terminal_runs/);
+            assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            expect((await h.store.listOpenInbox(wUnconsumed.runId, 50)).rows).toEqual([]);
+            const pagedView = await readWorkflowView(h.store, wUnconsumed.workflowId, { limit: 1 });
+            expect(pagedView.run.openInbox).toEqual([]);
+            const view = await readWorkflowView(h.store, wUnconsumed.workflowId);
+            expect(view.run.openInbox).toEqual([]);
+            expect(view.run.inbox.map(m => m.messageId)).toContain(unconsumedMessageId);
+            const [row] = await h.q("SELECT isfinite(expires_at) AS finite FROM SCHEMA.workflow_inbox WHERE message_id = $1", [unconsumedMessageId]);
+            expect(row?.finite).toBe(true);
+            await h.endOwnerAndSweep(ownerId);
         } finally {
             await h.stop();
         }
     });
 
-    // KNOWN LEAK (pinned to exact message_id until owner chooses I7 design):
-    // Fire-and-forget child Workflow completes before its parent ends -> writes WorkflowEnded@1 (24h TTL)
-    // into parent's workflow_inbox (`runtime.ts:3036-3048`). When the parent ends without receiving it,
-    // the WorkflowEnded@1 row stays unconsumed and unexpired on the terminal parent run.
-    it("B10c (KNOWN LEAK): fire-and-forget child WorkflowEnded@1 stays unexpired on terminal parent run", { timeout: TIMEOUT }, async () => {
+    it("B10c: fire-and-forget child WorkflowEnded@1 is excluded from openInbox on terminal parent run and keeps finite expiry", { timeout: TIMEOUT }, async () => {
         const h = await startRuntimeHarness(getEnv());
         try {
             const ownerId = await h.createLiveOwner();
@@ -1255,15 +1248,22 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             });
             expect((await h.waitRunStatus(parent.runId, ["completed"])).status).toBe("completed");
             const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
-            expect(c.categories.inbox_pending_on_terminal_runs.ids).toEqual([endedNotice.message_id]);
-            assertNoLeaks(c, { allow: ["sessions_not_swept", "inbox_pending_on_terminal_runs"] });
-            expect(() => assertNoLeaks(c, { allow: ["sessions_not_swept"] })).toThrow(/inbox_pending_on_terminal_runs/);
+            assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            expect((await h.store.listOpenInbox(parent.runId, 50)).rows).toEqual([]);
+            const pagedView = await readWorkflowView(h.store, parent.workflowId, { limit: 1 });
+            expect(pagedView.run.openInbox).toEqual([]);
+            const view = await readWorkflowView(h.store, parent.workflowId);
+            expect(view.run.openInbox).toEqual([]);
+            expect(view.run.inbox.map(m => m.messageId)).toContain(endedNotice.message_id);
+            const [row] = await h.q("SELECT isfinite(expires_at) AS finite FROM SCHEMA.workflow_inbox WHERE message_id = $1", [endedNotice.message_id]);
+            expect(row?.finite).toBe(true);
+            await h.endOwnerAndSweep(ownerId);
         } finally {
             await h.stop();
         }
     });
 
-    it("B11: bare claim-shell cleanup (parent delete vs owner cascade sweep) and test-mode (wft-) bench pruning", { timeout: TIMEOUT }, async () => {
+    it("B11: bare claim-shell cleanup (parent delete, standalone Sweeper grace gate, and owner cascade) and test-mode (wft-) bench pruning", { timeout: TIMEOUT }, async () => {
         const h = await startRuntimeHarness(getEnv());
         try {
             const ownerId = await h.createLiveOwner();
@@ -1272,7 +1272,8 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
                 ["sleep-child", SLEEP_CHILD_YAML],
             ]);
 
-            // Part 1: test-mode bench (`wft-<run>`) completes, is observed Completed by census, and is pruned by Sweeper.
+            // Part 1: test-mode bench (`wft-<run>`) completes, is observed Completed by census, stays excluded
+            // from standalone Sweeper, and is pruned when owner ends.
             const report = JSON.parse(await workflowDefinitionFromTool({ name: "quick-child", operation: "test", fixtures: [] }, {
                 callerSessionId: ownerId, host: h.host, toolCallId: randomUUID(), owner: OWNER, binding: async () => null,
                 testWait: { waitMs: testTime.ms(90_000), pollMs: 50, graceMs: 10_000 },
@@ -1300,9 +1301,9 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             });
             await until("bare shell deleted with parent", async () => (await h.store.readSessionLink(delShellId))?.deleted === true);
 
-            // Part 3: bare claim shell left under a live owner/workflow (crashed spawn before run admission):
-            // census reports category 5 non-zero, standalone Sweeper scan skips it (`noRun`), and owner-end
-            // cascade sweep removes it (category 5 = 0, category 8 = 0, wft- pruned to NotFound).
+            // Part 3: bare claim shell left under a live owner (crashed spawn before definition/run admission):
+            // younger than graceMinutes is NOT swept; once past graceMinutes, standalone Sweeper removes it
+            // while the owner is still live and the test bench stays excluded.
             const orphanShellId = randomUUID();
             await h.q("SELECT SCHEMA.cms_create_workflow_session($1, $2, '{}'::jsonb)", [orphanShellId, ownerId]);
             const beforeSweep = await h.waitTreeSettled(ownerId, { liveOwner: true });
@@ -1310,14 +1311,41 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             expect(beforeSweep.orchestrationStatuses[benchRun.controllerInstanceId]).toBe("Completed");
             assertNoLeaks(beforeSweep, { allow: ["claim_shells", "sessions_not_swept"] });
 
-            // Standalone Sweeper scan does NOT return a bare workflow session with no run (`noRun`).
             const tools = createSweeperTools({ catalog: h.catalog, duroxideClient: h.client, factStore: null });
             const scan = tools.find(t => t.name === "scan_completed_sessions");
-            await pause(50);
-            const scanned = await scan.handler({ graceMinutes: 0 });
-            expect((scanned.sessions ?? []).map(s => s.sessionId)).not.toContain(orphanShellId);
+            const cleanup = tools.find(t => t.name === "cleanup_session");
+            const prune = tools.find(t => t.name === "prune_orchestrations");
 
-            // Owner ends + Sweeper cascades -> claim_shells = 0, sessions_not_swept = 0, wft- pruned to NotFound.
+            // Negative case: a shell younger than the grace period is NOT swept by scan, cleanup, or prune.
+            const youngScan = await scan.handler({ graceMinutes: 5 });
+            expect((youngScan.sessions ?? []).map(s => s.sessionId)).not.toContain(orphanShellId);
+            const youngClean = await cleanup.handler({ sessionId: orphanShellId, graceMinutes: 5, reason: "b11 young shell" });
+            expect(youngClean, JSON.stringify(youngClean)).toMatchObject({ ok: false, refused: true, status: "NotFound" });
+            expect(youngClean.error).toMatch(/not yet stale/i);
+            const youngPrune = await prune.handler({ deleteTerminalOlderThanMinutes: 5 });
+            expect(youngPrune.ok, JSON.stringify(youngPrune)).toBe(true);
+            expect((await h.store.readSessionLink(orphanShellId))?.deleted).toBe(false);
+
+            // Positive case: once older than the grace period, standalone Sweeper lists and removes the shell
+            // while keeping the test bench excluded.
+            const agedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+            await h.q(
+                "UPDATE SCHEMA.sessions SET updated_at = LEAST(updated_at, $2::timestamptz) WHERE session_id = ANY($1::text[])",
+                [[orphanShellId, report.testId], agedAt],
+            );
+            const staleScan = await scan.handler({ graceMinutes: 5 });
+            expect((staleScan.sessions ?? []).map(s => s.sessionId)).toContain(orphanShellId);
+            expect((staleScan.sessions ?? []).map(s => s.sessionId)).not.toContain(report.testId);
+            const staleClean = await cleanup.handler({ sessionId: orphanShellId, graceMinutes: 5, reason: "b11 stale shell" });
+            expect(staleClean, JSON.stringify(staleClean)).toMatchObject({ ok: true });
+            expect((await h.store.readSessionLink(orphanShellId))?.deleted).toBe(true);
+            expect((await h.store.readSessionLink(report.testId))?.deleted).toBe(false);
+
+            const afterStandalone = await h.waitTreeSettled(ownerId, { liveOwner: true });
+            expect(afterStandalone.categories.claim_shells.count).toBe(0);
+            assertNoLeaks(afterStandalone, { allow: ["sessions_not_swept"] });
+
+            // Owner ends + Sweeper cascades -> all 8 categories 0, wft- pruned to NotFound.
             await h.endOwnerAndSweep(ownerId);
         } finally {
             await h.stop();
@@ -1418,7 +1446,7 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             await h.q(
                 `INSERT INTO SCHEMA.workflow_inbox
                     (message_id, workflow_session_id, run_id, sender_session_id, operation_id, request_sha256, contract, correlation, payload, accepted_at, expires_at)
-                 VALUES ($1, $2, $3, $4, 'ctrl-inbox', '0', 'Ping@1', '{}', '{}', now(), now() + interval '1 hour')`,
+                 VALUES ($1, $2, $3, $4, 'ctrl-inbox', '0', 'Ping@1', '{}', '{}', now(), 'infinity'::timestamptz)`,
                 [fakeInboxId, parent.workflowId, parent.runId, ownerId],
             );
 
