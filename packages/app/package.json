@@ -66,7 +66,7 @@
         "test:mcp": "node mcp/test/unit/sendCommandAndWait.unit.mjs && node mcp/test/unit/registration.unit.mjs && node mcp/test/unit/dispatch.unit.mjs && node mcp/test/unit/session-id.unit.mjs && node mcp/test/unit/no-raw-op-calls.unit.mjs && node mcp/test/unit/auth.unit.mjs && node mcp/test/unit/workspaces.unit.mjs && node mcp/test/unit/turn-control.unit.mjs && node mcp/test/unit/workflows.unit.mjs && node mcp/test/unit/models-decision-isolation.unit.mjs",
         "test:mcp:integration": "node mcp/test/integration/smoke.live.mjs",
         "test:mcp:integration:horizondb": "MCP_PARITY_REQUIRE=search,graph node --env-file=../../.env.horizondb mcp/test/integration/parity.live.mjs",
-        "test:mcp:integration:all": "node mcp/test/integration/smoke.live.mjs && node mcp/test/integration/tools.live.mjs && node mcp/test/integration/edge-cases.live.mjs && node mcp/test/integration/verify.live.mjs && node mcp/test/integration/parity.live.mjs && node mcp/test/integration/workflows-mcp.live.mjs",
+        "test:mcp:integration:all": "node mcp/test/integration/smoke.live.mjs && node mcp/test/integration/tools.live.mjs && node mcp/test/integration/edge-cases.live.mjs && node mcp/test/integration/verify.live.mjs && node mcp/test/integration/parity.live.mjs && node mcp/test/integration/workflows-mcp.live.mjs && node mcp/test/integration/workflow-surface-mcp.live.mjs",
         "clean": "rm -rf web/dist mcp/dist",
         "test:e2e": "npm run build:web && playwright test --config=web/playwright.config.mjs",
         "test:e2e:ui": "npm run build:web && playwright test --config=web/playwright.config.mjs --ui"
