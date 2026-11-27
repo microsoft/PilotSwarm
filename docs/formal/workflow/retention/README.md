@@ -115,7 +115,7 @@ under `O` adds it with a run that has not ended.
 |---|---|
 | `Inv_KeptShown` | Never a kept `W` (run ended, `O` active, or `R` active and not deleted) under a deleted `R`, also when `W` is created after the prune committed. |
 | `Inv_Locks`, `TypeOK` | Lock compatibility; types. |
-| `Wit_*` | Witnesses: the delete, `WorkflowBelow`, `Busy`, `Changed`, and a creation that waited for the prune and then refused. |
+| `Wit_*` | Witnesses: the delete, `WorkflowBelow`, `Busy`, `Changed`, and a creation after the prune's delete that refuses. |
 
 | Model | Code |
 |---|---|
@@ -124,7 +124,7 @@ under `O` adds it with a run that has not ended.
 | `S_LockLeft` | the same NOWAIT statement locks the delete set and the sessions left below; SQLSTATE `55P03` throws `SweeperBusy` |
 | `S_Check` | the DR-02 re-read of both sets (`Changed`), then a live Workflow among the locked rows left below: `WorkflowBelow` |
 | `S_Commit` | `cms_soft_delete_session` of the target, then the commit |
-| `C_Lock`, `C_Commit` | `cms.ts` `lockLiveParent` (`FOR SHARE`, or `FOR NO KEY UPDATE` under the child budget), then the insert of the Workflow session; `StartCheck`: `SessionDefinitionStore.requireChildBudgetLocked` reads the sessions above the owner after that lock and refuses (`SESSION_NOT_FOUND`) when one is deleted. Every session Start's claim runs it (the child budget, so its lock on `O` is `nku`); the `share` cases show that the check needs no stronger lock on `O` than the one the prune's NOWAIT lock conflicts with. |
+| `C_Lock`, `C_Commit` | `cms.ts` `lockLiveParent` (`FOR SHARE`, or `FOR NO KEY UPDATE` under the child budget), then the insert of the Workflow session; `StartCheck`: `requireNoDeletedAncestor` reads the sessions above the owner after that lock and refuses (`SESSION_NOT_FOUND`) when one is deleted. A new Start's claim runs it (`requireChildBudgetLocked`: the child budget, so its lock on `O` is `nku`), and so does the admission of a resumed claim (`requireSessionStartLocked`, under the owner's `FOR SHARE`). The `share` cases are hypothetical in this release (no new Workflow is claimed under a parent with that lock); they show that the check needs no stronger lock on `O` than one the prune's NOWAIT lock conflicts with. The prune locks every session it leaves under its target, system sessions included, as `S_LockLeft` does. |
 | `E_Lock`, `E_Commit` | `lockLiveSession`, then the run's end |
 
 ## Results

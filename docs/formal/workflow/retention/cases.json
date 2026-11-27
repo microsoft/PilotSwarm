@@ -1176,11 +1176,11 @@
   "properties": [],
   "expected": "VIOLATION:Wit_StartRefused",
   "deadlock": true,
-  "note": "A creation that waited for the prune's lock reads R deleted and refuses: nothing is created.",
+  "note": "A creation after the prune's delete reads R deleted and refuses: nothing is created.",
   "batch": "ret3",
   "head": "pr415-round4",
   "tlc": {
-   "comment": "wit.ret-prune-start-refused (ret3; expected VIOLATION:Wit_StartRefused): A creation that waited for the prune's lock reads R deleted and refuses: nothing is created.",
+   "comment": "wit.ret-prune-start-refused (ret3; expected VIOLATION:Wit_StartRefused): A creation after the prune's delete reads R deleted and refuses: nothing is created.",
    "spec": "Spec",
    "constants": {
     "WInit": "\"none\"",

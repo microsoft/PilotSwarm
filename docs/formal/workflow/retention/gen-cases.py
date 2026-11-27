@@ -104,7 +104,7 @@ PRUNE_CASES = [
  ("wit.ret-prune-changed", "witness", P_CREATE, ["Wit_Changed"], "VIOLATION:Wit_Changed",
   "A Workflow created between the read and the locks makes the prune refuse (Changed)."),
  ("wit.ret-prune-start-refused", "witness", P_CREATE, ["Wit_StartRefused"], "VIOLATION:Wit_StartRefused",
-  "A creation that waited for the prune's lock reads R deleted and refuses: nothing is created."),
+  "A creation after the prune's delete reads R deleted and refuses: nothing is created."),
 ]
 
 
