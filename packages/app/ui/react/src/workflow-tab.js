@@ -461,14 +461,14 @@ export function BottomPanel({ controller, panels, panel, onPanel, mobile, childr
  */
 function PanelTabs({ panels, panel, onPanel, mobile = false, vertical = false, steps = null }) {
     const labels = { node: "Node", log: "Log", variables: "Variables", revisions: "Revisions", test: "Test" };
-    // UX round 1 (P2): a tab may show the step it holds ("Node · gate"); the tab keeps its own name ("Node"), and its title
-    // names the step.
+    // UX round 1 (P2): a tab may show the step it holds ("Node · gate", drawn by the stylesheet from data-step); the tab's
+    // name and text stay its own ("Node"), and its title names the step.
     const stepOf = id => (typeof steps?.[id] === "string" && steps[id] ? steps[id] : null);
     return h("div", { className: "ps-wf-panel-tabs", role: "tablist", "aria-label": "Workflow panel", ...(vertical ? { "aria-orientation": "vertical" } : {}) },
         panels.map(id => h("button", { key: id, type: "button", role: "tab", "aria-selected": panel === id, className: panel === id ? "is-on" : "",
             ...(stepOf(id) ? { title: `${labels[id]}: ${stepOf(id)}` } : {}),
             onClick: () => onPanel(panel === id && !mobile ? null : id) }, labels[id],
-        stepOf(id) ? h("span", { "aria-hidden": "true" }, " · ", h("span", { className: "ps-wf-panel-tab-step", "data-step": stepOf(id) }, stepOf(id))) : null)));
+        stepOf(id) ? h("span", { className: "ps-wf-panel-tab-step", "aria-hidden": "true", "data-step": stepOf(id) }) : null)));
 }
 
 /** The bottom panel, as it was (normal mode, and a phone's sheet). */

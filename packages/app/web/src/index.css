@@ -14641,16 +14641,17 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   background: var(--ps-chrome);
 }
 .ps-workflow-graph-controls.is-docked { flex-direction: column; padding: 4px; border: 0; border-radius: 0; background: transparent; }
-/* P2: the Node tab names the step it holds. */
+/* P2: the Node tab names the step it holds. The words are drawn here, so the tab's own name and text stay "Node". */
 .ps-wf-panel-tab-step {
   display: inline-block;
-  max-width: 10em;
+  max-width: 11em;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre;
   vertical-align: bottom;
 }
-.ps-wf-tab.is-phone .ps-wf-panel-tab-step { max-width: 6.5em; }
+.ps-wf-panel-tab-step::before { content: " · " attr(data-step); }
+.ps-wf-tab.is-phone .ps-wf-panel-tab-step { max-width: 7.5em; }
 /* P1: on a phone, while a graph is shown, the header folds into one line (the toggle with the definition, the Workflow and
    its state, and full screen); the lines and the Workflow's bar under it are hidden until it is opened. Errors, a failed
    run's failure line (with Details) and a run command's notice stay. */
