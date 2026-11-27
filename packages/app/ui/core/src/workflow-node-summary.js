@@ -6,7 +6,7 @@
  * said twice. Pure: `now` only decides whether a time shows its date.
  */
 import { shortSessionId } from "./formatting.js";
-import { formatSeconds, workflowAgentSessionMode, workflowAgentTask, workflowAgentTools, workflowAgentToolsTitle, workflowRouteKind } from "./workflow-view.js";
+import { compareWorkflowVisitRank, formatSeconds, workflowAgentSessionMode, workflowAgentTask, workflowAgentTools, workflowAgentToolsTitle, workflowRouteKind } from "./workflow-view.js";
 import { workflowErrorParts, workflowErrorLeavesOut, workflowServerErrorWords } from "./workflow-error-words.js";
 import { workflowDecisionSummary } from "./workflow-decision.js";
 import { workflowAskAnswerWords, workflowDuration, workflowErrorRouteWords, workflowFailureDetail, workflowOutcomeWord, workflowRunsText, workflowShortTime } from "./workflow-words.js";
@@ -125,7 +125,7 @@ function lastEnded(node, execution, ended = undefined) {
     if (ended !== undefined) return ended?.status === "completed" ? ended : null;
     if (typeof node?.parallel === "string") return node.result?.status === "completed" ? node.result : null;
     const done = (Array.isArray(node?.executions) ? node.executions : []).filter(item => item?.status === "completed");
-    return done.reduce((best, item) => (!best || (item.ordinal ?? 0) > (best.ordinal ?? 0) ? item : best), null);
+    return done.reduce((best, item) => (!best || compareWorkflowVisitRank(item, best) > 0 ? item : best), null);
 }
 
 /** Words joined as a Workflow value is: "Running · since 17:40:01 · limit 17:41:34" (an empty part is left out). */
@@ -227,7 +227,7 @@ function noResultText(node, execution, ended) {
 function chatOf(node, execution) {
     if (execution?.agent?.childSessionId) return execution.agent.childSessionId;
     const visits = (Array.isArray(node?.executions) ? node.executions : []).filter(item => item?.agent?.childSessionId);
-    const latest = visits.reduce((best, item) => (!best || (item.ordinal ?? 0) > (best.ordinal ?? 0) ? item : best), null);
+    const latest = visits.reduce((best, item) => (!best || compareWorkflowVisitRank(item, best) > 0 ? item : best), null);
     return latest?.agent.childSessionId ?? null;
 }
 
