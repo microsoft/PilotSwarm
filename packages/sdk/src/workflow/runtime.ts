@@ -137,6 +137,7 @@ import {
     type SessionProjection,
     type WorkflowNodeExecutionRow,
     type WorkflowOutboxMessage,
+    type WorkflowReusedAgentVisit,
     type WorkflowRunRow,
     type WorkflowRunStatus,
     type WorkflowSendInputAcceptance,
@@ -1760,31 +1761,44 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
      * revisions), and the earlier session when this visit's is a new one (the earlier session ended on its own).
      */
     const agentSessionCycle = async (runId: string, invocation: WorkflowAgentInvocation, node: WorkflowNodeExecutionRow)
-        : Promise<WorkflowAgentCycle | null> => {
+        : Promise<{ cycle: WorkflowAgentCycle | null; rerunRecap: { cycle: number; visits: WorkflowReusedAgentVisit[]; variables: { [key: string]: JsonValue } } | null }> => {
         // The visits before this one, counted, and the one right before it (review RT-5: no cap on a run's visits).
-        const { count: earlier, previous: last } = await store.readAgentVisitsBefore(runId, node.nodeId, invocation.nodeExecutionId);
-        if (earlier === 0 || last === null) return null;
-        const previous = await store.readNodeExecution(last.nodeExecutionId);
-        // A pinned KV revision is read as it is (review RT-7): a read that fails throws, so this spawn attempt fails before
-        // anything is sent and is retried, and a revision that is not an object is corrupt. Only a visit with no pinned
-        // revision (null) has no variables to read: it counts as none.
+        const [{ count: earlier, previous: last }, preCut] = await Promise.all([
+            store.readAgentVisitsBefore(runId, node.nodeId, invocation.nodeExecutionId),
+            store.readReusedAgentVisits(runId, node.nodeId),
+        ]);
         const pinnedKv = async (revision: number | null | undefined): Promise<{ [key: string]: JsonValue } | null> => {
             if (revision === null || revision === undefined) return null;
             const kv = await store.readKv(runId, revision);
             if (!isJsonObject(kv)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId}'s KV revision ${revision} is not an object.`);
             return kv;
         };
+        if (earlier === 0 || last === null) {
+            if (preCut.count === 0) return { cycle: null, rerunRecap: null };
+            const now = (await pinnedKv(node.kvRevision)) ?? {};
+            return {
+                cycle: null,
+                rerunRecap: { cycle: preCut.count + 1, visits: preCut.visits, variables: now },
+            };
+        }
+        const previous = await store.readNodeExecution(last.nodeExecutionId);
+        // A pinned KV revision is read as it is (review RT-7): a read that fails throws, so this spawn attempt fails before
+        // anything is sent and is retried, and a revision that is not an object is corrupt. Only a visit with no pinned
+        // revision (null) has no variables to read: it counts as none.
         const now = (await pinnedKv(node.kvRevision)) ?? {};
         const before = (previous ? await pinnedKv(previous.kvRevision) : null) ?? {};
         const changed = [...new Set([...Object.keys(now), ...Object.keys(before)])]
             .filter(key => canonicalJson(now[key] ?? null) !== canonicalJson(before[key] ?? null) || Object.hasOwn(now, key) !== Object.hasOwn(before, key))
             .sort();
         return {
-            cycle: earlier + 1,
-            previous: previous ? { outcome: previous.outcome, resultKind: previous.resultKind, output: previous.hasOutput ? previous.output : null,
-                error: previous.resultKind === "runtime_error" ? previous.error : null } : null,
-            variables: now, changedVariables: changed,
-            endedSessionId: last.childSessionId !== invocation.childSessionId ? last.childSessionId : null,
+            cycle: {
+                cycle: preCut.count + earlier + 1,
+                previous: previous ? { outcome: previous.outcome, resultKind: previous.resultKind, output: previous.hasOutput ? previous.output : null,
+                    error: previous.resultKind === "runtime_error" ? previous.error : null } : null,
+                variables: now, changedVariables: changed,
+                endedSessionId: last.childSessionId !== invocation.childSessionId ? last.childSessionId : null,
+            },
+            rerunRecap: null,
         };
     };
     /**
@@ -2110,6 +2124,14 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             events: [{ eventType: "workflow.started", data: {
                 runId, mode: run.mode, revision: run.revision, definitionHash: run.yamlSha256, irSha256: run.irSha256,
                 name: ir.name, version: ir.version, initial: ir.initial, states: describeWorkflowStates(ir),
+                ...(run.rerunOfWorkflowSessionId ? {
+                    rerunOf: {
+                        workflowId: run.rerunOfWorkflowSessionId,
+                        runId: run.rerunOfRunId ?? null,
+                        fromExecutionId: run.rerunFromExecutionId ?? null,
+                        mode: run.rerunMode ?? null,
+                    },
+                } : {}),
             } }],
             update: { state: "running", lastError: null, touch: true },
         }, ir.limits.timeoutSeconds !== undefined ? { deadlineSeconds: ir.limits.timeoutSeconds } : {});
@@ -2150,7 +2172,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             } else nodes[node.id] = { type: node.type, next: node.type === "terminal" ? {} : node.next };
         }
         const plan: ControllerPlan = {
-            name: ir.name, version: ir.version, initial: ir.initial, maxNodeExecutions: ir.limits.maxNodeExecutions,
+            name: ir.name, version: ir.version, initial: ir.initial,
+            maxNodeExecutions: Math.max(1, ir.limits.maxNodeExecutions - (run.rerunUnwalked ?? 0)),
             wakeBackstopMs: deps.wakeBackstopMs ?? WORKFLOW_DEFAULT_WAKE_BACKSTOP_MS, catchAll: ir.catchAll, nodes,
             // A test run.
             ...(run.mode === "test" ? { test: true as const, ...(run.testAgentMode === "real" ? { realAgents: true as const } : {}) } : {}),
@@ -3794,6 +3817,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             return { wake: true };
         };
         let cycle: WorkflowAgentCycle | null = null;
+        let rerunRecap: { cycle: number; visits: WorkflowReusedAgentVisit[]; variables: { [key: string]: JsonValue } } | null = null;
         // OF-S2-7 review OF7-R8: the model, effort and tier this visit's session runs on, as its session row says after the spawn.
         let used: WorkflowAgentModelUsed | null = null;
         if (begun.action === "spawn") {
@@ -3817,7 +3841,11 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             // new cycle, with what changed since the state's last visit; the first visit's prompt says the session continues; a
             // later visit whose earlier session ended on its own starts a new session, whose first prompt says so (formal Q4).
             const continues = workflowAgentSessionContinues(invocation);
-            cycle = continues ? await agentSessionCycle(run.runId, invocation, begun.node) : null;
+            if (continues) {
+                const cycleInfo = await agentSessionCycle(run.runId, invocation, begun.node);
+                cycle = cycleInfo.cycle;
+                rerunRecap = cycleInfo.rerunRecap;
+            }
             const restartFrom = cycle?.endedSessionId ?? null;
             // Formal review of continue mode: a continued session gets a visit's prompt, and a replacement session is created, only
             // while the visit is open. A retried spawn of a visit whose result arrived meanwhile sends nothing and creates no
@@ -3859,7 +3887,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 ...(agentModel ? { agentModel } : {}),
                 ...(run.mode === "test" ? { testRun: true } : {}),
                 clientMessageId: workflowAgentClientMessageId(run.workflowSessionId, run.runId, input.nodeExecutionId),
-                prompt: cycle === null ? workflowAgentPrompt({ ...promptOf, continues })
+                prompt: cycle === null ? workflowAgentPrompt({ ...promptOf, continues, ...(rerunRecap ? { rerunRecap } : {}) })
                     : restartFrom !== null ? workflowAgentPrompt({ ...promptOf, continues, restart: { ...cycle, endedSessionId: restartFrom } })
                     : workflowAgentCyclePrompt({ ...promptOf, ...cycle }),
             });
@@ -3879,7 +3907,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         }
         const continued = workflowAgentSessionContinues(begun.invocation);
         const restarted = cycle !== null && cycle.endedSessionId ? { endedSessionId: cycle.endedSessionId, cycle: cycle.cycle } : null;
-        const cycleNumber = cycle?.cycle ?? 1;
+        const cycleNumber = cycle?.cycle ?? rerunRecap?.cycle ?? 1;
         await store.recordAgentSpawned(input.nodeExecutionId, invocation => ({
             sessionId: run.workflowSessionId,
             events: [
@@ -3958,7 +3986,15 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const client = actx.getClient();
         if (!client) throw new Error("Workflow agent end needs the durable client.");
         const invocation = await store.readAgentInvocation(nodeExecutionId);
-        if (!invocation || invocation.runId !== runId) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not an agent state of run ${runId}.`);
+        if (!invocation) {
+            const node = await store.readNodeExecution(nodeExecutionId);
+            if (node && node.runId === runId && node.nodeType === "agent"
+                && (node.reusedFromExecutionId !== null || node.suppliedFromExecutionId !== null)) {
+                return { end: "done" as const, sent: false };
+            }
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not an agent state of run ${runId}.`);
+        }
+        if (invocation.runId !== runId) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not an agent state of run ${runId}.`);
         return await endAgentChild(client, nodeExecutionId);
     });
 
@@ -4637,16 +4673,23 @@ export function workflowAgentPrompt(invocation: {
      * new session's first prompt says so and carries where the earlier cycles ended.
      */
     restart?: WorkflowAgentCycle & { endedSessionId: string };
+    /**
+     * Phase 3 I7: first post-cut visit (K+1) of a continued agent state in a re-run; carries a recap of earlier reused and
+     * supplied visits (1..K) from the previous Workflow run so the fresh session starts informed without touching #2's session.
+     */
+    rerunRecap?: { cycle: number; visits: WorkflowReusedAgentVisit[]; variables: { [key: string]: JsonValue } };
 }): string {
     const restart = invocation.continues === true && invocation.restart ? invocation.restart : null;
+    const rerunRecap = invocation.continues === true && !restart && invocation.rerunRecap ? invocation.rerunRecap : null;
     const json = promptSafeJson({
-        ...(restart ? { cycle: restart.cycle } : {}),
+        ...(restart ? { cycle: restart.cycle } : rerunRecap ? { cycle: rerunRecap.cycle } : {}),
         workflowSessionId: invocation.workflowSessionId, runId: invocation.runId, nodeExecutionId: invocation.nodeExecutionId,
         stateId: invocation.stateId, controllingParentSessionId: invocation.controllingSessionId,
         taskSource: invocation.task.source === "prompt" ? "inline prompt"
             : { agent: invocation.task.name, package: invocation.task.package, version: invocation.task.version },
         input: invocation.input, inputSchema: invocation.inputSchema,
         ...(restart ? { variables: restart.variables, changedVariables: restart.changedVariables, previousResult: restart.previous } : {}),
+        ...(rerunRecap ? { variables: rerunRecap.variables, rerunRecap: rerunRecap.visits as unknown as JsonValue } : {}),
         outcomes: invocation.outcomes, outputSchema: invocation.outputSchema,
         schemas: invocation.schemas, deadline: invocation.deadlineAt,
     });
@@ -4669,7 +4712,11 @@ export function workflowAgentPrompt(invocation: {
                     ? `This is cycle ${restart.cycle} of this state in this run. The agent session of its earlier cycles ended (session `
                         + `${restart.endedSessionId}), so this is a new agent session and their work is not here: previousResult, `
                         + "variables and changedVariables in the JSON say where they ended. "
-                    : "")
+                    : rerunRecap
+                        ? `This is cycle ${rerunRecap.cycle} of this state in a re-run. Earlier cycles (1..${rerunRecap.cycle - 1}) ran in a `
+                            + "previous Workflow run and their conversation is not in this session: rerunRecap and variables in the JSON "
+                            + "summarize those earlier cycles (including any suppliedNote). "
+                        : "")
             : "The workflow cancels this session at the deadline. ")
         + WORKFLOW_AGENT_SLEEP_WORDS + WORKFLOW_AGENT_INPUT_WORDS + "]\n"
         + json + "\n[SYSTEM: The task of this state, from the workflow's definition:]\n" + task;

@@ -362,6 +362,16 @@ export interface WorkflowNodeExecutionRow {
     suppliedAt?: Date | null;
 }
 
+/** Phase 3 I7: summary of a pre-cut reused or supplied visit of a continued agent state (for K+1 rerunRecap). */
+export interface WorkflowReusedAgentVisit {
+    visit: number;
+    source: "reused" | "supplied";
+    outcome: string | null;
+    resultKind: string | null;
+    outputPreview: JsonValue;
+    suppliedNote?: string | null;
+}
+
 export interface RerunAdmissionSpec {
     sourceWorkflowSessionId: string;
     sourceRunId: string;
@@ -7638,6 +7648,45 @@ export class WorkflowStore {
     }
 
     /**
+     * Phase 3 I7: pre-cut reused and supplied visits of `stateId` in a re-run, ordered by `(COALESCE(p.ordinal, 0), n.ordinal)`
+     * so I8 named-branch continued agents see visits in execution order. Leaves `readAgentVisitsBefore` untouched.
+     */
+    async readReusedAgentVisits(runId: string, stateId: string)
+        : Promise<{ count: number; visits: WorkflowReusedAgentVisit[] }> {
+        const { rows } = await this.pool.query(
+            `SELECT n.ordinal, n.reused_from_execution_id, n.supplied_from_execution_id,
+                    n.outcome, n.result_kind, n.output, n.supplied_note
+               FROM ${this.t.nodes} n
+               ${this.parallelJoinSql("n", "p")}
+              WHERE n.run_id = $1 AND n.node_id = $2
+                AND (n.reused_from_execution_id IS NOT NULL OR n.supplied_from_execution_id IS NOT NULL)
+              ORDER BY COALESCE(p.ordinal, 0) ASC, n.ordinal ASC, n.entered_at ASC, n.node_execution_id ASC`,
+            [runId, stateId],
+        );
+        const visits: WorkflowReusedAgentVisit[] = rows.map((row, idx) => {
+            const isSupplied = typeof row.supplied_from_execution_id === "string" && row.supplied_from_execution_id.length > 0;
+            let outputPreview: JsonValue = null;
+            if (typeof row.output === "string") {
+                if (row.output.length <= 2_000) {
+                    try { outputPreview = JSON.parse(row.output) as JsonValue; }
+                    catch { outputPreview = row.output.slice(0, 500); }
+                } else {
+                    outputPreview = `${row.output.slice(0, 500)}… (${row.output.length} chars)`;
+                }
+            }
+            return {
+                visit: idx + 1,
+                source: isSupplied ? "supplied" : "reused",
+                outcome: typeof row.outcome === "string" ? row.outcome : null,
+                resultKind: typeof row.result_kind === "string" ? row.result_kind : null,
+                outputPreview,
+                ...(isSupplied && typeof row.supplied_note === "string" ? { suppliedNote: row.supplied_note } : {}),
+            };
+        });
+        return { count: visits.length, visits };
+    }
+
+    /**
      * Issue I1, review D-2: a continued session's visit whose conversation was not saved after its agent reported its result
      * (`reason`: its reply stopped at the reply limit or by force, its Copilot session lost, or its snapshot not committed).
      * Recorded once, on the Workflow session (workflow.agent_cycle_memory_lost), for a visit its agent decided, while the run
@@ -7653,10 +7702,13 @@ export class WorkflowStore {
         const run = await this.readRun(invocation.runId);
         if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return { recorded: false };
         if ((await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).has(input.nodeExecutionId)) return { recorded: false };
-        const { count } = await this.readAgentVisitsBefore(invocation.runId, node.nodeId, input.nodeExecutionId);
+        const [{ count }, preCut] = await Promise.all([
+            this.readAgentVisitsBefore(invocation.runId, node.nodeId, input.nodeExecutionId),
+            this.readReusedAgentVisits(invocation.runId, node.nodeId),
+        ]);
         await this.recordSessionEvents(invocation.workflowSessionId, [{ eventType: WORKFLOW_AGENT_MEMORY_LOST_EVENT, data: {
             runId: invocation.runId, nodeExecutionId: input.nodeExecutionId, stateId: node.nodeId, childSessionId: input.childSessionId,
-            cycle: count + 1, reason: input.reason,
+            cycle: preCut.count + count + 1, reason: input.reason,
         } }]);
         return { recorded: true };
     }
@@ -7690,7 +7742,11 @@ export class WorkflowStore {
         if (lost.length === 0) return { cycle: 0, lost };
         const node = await this.readNodeExecution(nodeExecutionId);
         if (!node) return null;
-        return { cycle: (await this.readAgentVisitsBefore(invocation.runId, node.nodeId, nodeExecutionId)).count + 1, lost };
+        const [{ count }, preCut] = await Promise.all([
+            this.readAgentVisitsBefore(invocation.runId, node.nodeId, nodeExecutionId),
+            this.readReusedAgentVisits(invocation.runId, node.nodeId),
+        ]);
+        return { cycle: preCut.count + count + 1, lost };
     }
 
     /**

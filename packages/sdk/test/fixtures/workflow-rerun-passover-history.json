@@ -1,0 +1,1285 @@
+{
+  "controllerVersion": "1.3.0",
+  "histories": [
+    {
+      "scenario": {
+        "name": "rerun-passover-script-and-agent"
+      },
+      "version": "1.3.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "rerun-history-wf",
+        "runId": "rerun-history-run"
+      },
+      "events": [
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.begin",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "status": "running",
+            "irSha256": "rerun-ir",
+            "initial": "step1",
+            "outcome": null
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.plan",
+            "input": {
+              "runId": "rerun-history-run",
+              "irSha256": "rerun-ir"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "name": "rerun-passover",
+            "version": "1.0.0",
+            "initial": "step1",
+            "maxNodeExecutions": 30,
+            "wakeBackstopMs": 30000,
+            "catchAll": null,
+            "nodes": {
+              "step1": {
+                "type": "script",
+                "next": {
+                  "ok": "agent1"
+                }
+              },
+              "agent1": {
+                "type": "agent",
+                "next": {
+                  "approved": "step2"
+                }
+              },
+              "step2": {
+                "type": "script",
+                "next": {
+                  "ok": "done"
+                }
+              },
+              "done": {
+                "type": "terminal",
+                "next": {}
+              }
+            }
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "step1",
+              "ordinal": 1,
+              "predecessorId": null,
+              "arrivalRoute": null
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-step1",
+            "state": "completed",
+            "outcome": "ok",
+            "resultKind": "business"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-step1"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": [
+              {
+                "nodeExecutionId": "nx-step1",
+                "outcome": "ok",
+                "resultKind": "business"
+              }
+            ]
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "agent1",
+              "ordinal": 1,
+              "predecessorId": "nx-step1",
+              "arrivalRoute": "ok"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-agent1",
+            "state": "completed",
+            "outcome": "approved",
+            "resultKind": "business"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-agent1"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": [
+              {
+                "nodeExecutionId": "nx-agent1",
+                "outcome": "approved",
+                "resultKind": "business"
+              }
+            ]
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.endAgent",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionId": "nx-agent1"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "end": "done",
+            "sent": false
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "step2",
+              "ordinal": 1,
+              "predecessorId": "nx-agent1",
+              "arrivalRoute": "approved"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-step2",
+            "state": "pending"
+          }
+        },
+        {
+          "task": {
+            "kind": "start",
+            "name": "workflow-effect",
+            "version": "1.0.0",
+            "id": "wfx-nx-step2",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionId": "nx-step2",
+              "controllerInstanceId": "history-controller"
+            }
+          },
+          "reply": null
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-step2"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": []
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 30000
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-step2"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": [
+              {
+                "nodeExecutionId": "nx-step2",
+                "outcome": "ok",
+                "resultKind": "business"
+              }
+            ]
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "done",
+              "ordinal": 1,
+              "predecessorId": "nx-step2",
+              "arrivalRoute": "ok"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-done",
+            "state": "completed"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.finish",
+            "input": {
+              "runId": "rerun-history-run",
+              "terminalNodeExecutionId": "nx-done"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "runId": "rerun-history-run",
+            "status": "completed",
+            "outcome": "succeeded"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.endAgents",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": null
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.notifyParent",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": null
+        }
+      ],
+      "result": {
+        "runId": "rerun-history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-passover",
+            "stateId": "step1",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-passover",
+            "stateId": "agent1",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-passover",
+            "stateId": "step2",
+            "step": 2
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-passover",
+            "stateId": "step2",
+            "step": 3
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-passover",
+            "stateId": "done",
+            "step": 3
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "rerun-passover-supply-to-terminal"
+      },
+      "version": "1.3.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "rerun-history-wf",
+        "runId": "rerun-history-run"
+      },
+      "events": [
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.begin",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "status": "running",
+            "irSha256": "rerun-ir",
+            "initial": "step1",
+            "outcome": null
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.plan",
+            "input": {
+              "runId": "rerun-history-run",
+              "irSha256": "rerun-ir"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "name": "rerun-supply-terminal",
+            "version": "1.0.0",
+            "initial": "step1",
+            "maxNodeExecutions": 30,
+            "wakeBackstopMs": 30000,
+            "catchAll": null,
+            "nodes": {
+              "step1": {
+                "type": "script",
+                "next": {
+                  "ok": "step2"
+                }
+              },
+              "step2": {
+                "type": "script",
+                "next": {
+                  "ok": "done"
+                }
+              },
+              "done": {
+                "type": "terminal",
+                "next": {}
+              }
+            }
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "step1",
+              "ordinal": 1,
+              "predecessorId": null,
+              "arrivalRoute": null
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-step1",
+            "state": "completed",
+            "outcome": "ok",
+            "resultKind": "business"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-step1"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": [
+              {
+                "nodeExecutionId": "nx-step1",
+                "outcome": "ok",
+                "resultKind": "business"
+              }
+            ]
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "step2",
+              "ordinal": 1,
+              "predecessorId": "nx-step1",
+              "arrivalRoute": "ok"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-step2",
+            "state": "completed",
+            "outcome": "ok",
+            "resultKind": "business"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-step2"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": [
+              {
+                "nodeExecutionId": "nx-step2",
+                "outcome": "ok",
+                "resultKind": "business"
+              }
+            ]
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "done",
+              "ordinal": 1,
+              "predecessorId": "nx-step2",
+              "arrivalRoute": "ok"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-done",
+            "state": "completed"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.finish",
+            "input": {
+              "runId": "rerun-history-run",
+              "terminalNodeExecutionId": "nx-done"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "runId": "rerun-history-run",
+            "status": "completed",
+            "outcome": "succeeded"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.endAgents",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": null
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.notifyParent",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": null
+        }
+      ],
+      "result": {
+        "runId": "rerun-history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-supply-terminal",
+            "stateId": "step1",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-supply-terminal",
+            "stateId": "step2",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-supply-terminal",
+            "stateId": "done",
+            "step": 2
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "name": "rerun-passover-parallel"
+      },
+      "version": "1.3.0",
+      "input": {
+        "v": 1,
+        "workflowSessionId": "rerun-history-wf",
+        "runId": "rerun-history-run"
+      },
+      "events": [
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.begin",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "status": "running",
+            "irSha256": "rerun-ir",
+            "initial": "step1",
+            "outcome": null
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.plan",
+            "input": {
+              "runId": "rerun-history-run",
+              "irSha256": "rerun-ir"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "name": "rerun-parallel",
+            "version": "1.0.0",
+            "initial": "step1",
+            "maxNodeExecutions": 26,
+            "wakeBackstopMs": 30000,
+            "catchAll": null,
+            "nodes": {
+              "step1": {
+                "type": "script",
+                "next": {
+                  "ok": "fan"
+                }
+              },
+              "fan": {
+                "type": "parallel",
+                "next": {
+                  "joined": "finish"
+                },
+                "parallel": {
+                  "initial": "lane",
+                  "concurrency": 2,
+                  "failFast": false
+                }
+              },
+              "lane": {
+                "type": "script",
+                "next": {
+                  "ok": "lane_done"
+                }
+              },
+              "lane_done": {
+                "type": "terminal",
+                "next": {}
+              },
+              "finish": {
+                "type": "script",
+                "next": {
+                  "ok": "done"
+                }
+              },
+              "done": {
+                "type": "terminal",
+                "next": {}
+              }
+            }
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "step1",
+              "ordinal": 1,
+              "predecessorId": null,
+              "arrivalRoute": null
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-step1",
+            "state": "completed",
+            "outcome": "ok",
+            "resultKind": "business"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-step1"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": [
+              {
+                "nodeExecutionId": "nx-step1",
+                "outcome": "ok",
+                "resultKind": "business"
+              }
+            ]
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "fan",
+              "ordinal": 1,
+              "predecessorId": "nx-step1",
+              "arrivalRoute": "ok"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-fan",
+            "state": "completed",
+            "outcome": "joined",
+            "resultKind": "business"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-fan"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": [
+              {
+                "nodeExecutionId": "nx-fan",
+                "outcome": "joined",
+                "resultKind": "business"
+              }
+            ]
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "finish",
+              "ordinal": 1,
+              "predecessorId": "nx-fan",
+              "arrivalRoute": "joined"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-finish",
+            "state": "pending"
+          }
+        },
+        {
+          "task": {
+            "kind": "start",
+            "name": "workflow-effect",
+            "version": "1.0.0",
+            "id": "wfx-nx-finish",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionId": "nx-finish",
+              "controllerInstanceId": "history-controller"
+            }
+          },
+          "reply": null
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-finish"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": []
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 30000
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.collect",
+            "input": {
+              "runId": "rerun-history-run",
+              "nodeExecutionIds": [
+                "nx-finish"
+              ]
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "collected": [
+              {
+                "nodeExecutionId": "nx-finish",
+                "outcome": "ok",
+                "resultKind": "business"
+              }
+            ]
+          }
+        },
+        {
+          "task": {
+            "kind": "race",
+            "tasks": [
+              {
+                "kind": "queue",
+                "queue": "messages"
+              },
+              {
+                "kind": "timer",
+                "ms": 10
+              }
+            ]
+          },
+          "reply": {
+            "index": 1
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.enter",
+            "input": {
+              "runId": "rerun-history-run",
+              "scopeId": "root",
+              "nodeId": "done",
+              "ordinal": 1,
+              "predecessorId": "nx-finish",
+              "arrivalRoute": "ok"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "admitted": true,
+            "nodeExecutionId": "nx-done",
+            "state": "completed"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.finish",
+            "input": {
+              "runId": "rerun-history-run",
+              "terminalNodeExecutionId": "nx-done"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": {
+            "runId": "rerun-history-run",
+            "status": "completed",
+            "outcome": "succeeded"
+          }
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.endAgents",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": null
+        },
+        {
+          "task": {
+            "kind": "activity",
+            "name": "workflow.notifyParent",
+            "input": {
+              "runId": "rerun-history-run"
+            },
+            "tag": "pilotswarm.workflow-request.v1"
+          },
+          "reply": null
+        }
+      ],
+      "result": {
+        "runId": "rerun-history-run",
+        "status": "completed",
+        "outcome": "succeeded"
+      },
+      "statuses": [
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": null,
+            "stateId": null,
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-parallel",
+            "stateId": "step1",
+            "step": 0
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-parallel",
+            "stateId": "fan",
+            "step": 1
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-parallel",
+            "stateId": "finish",
+            "step": 2
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-parallel",
+            "stateId": "finish",
+            "step": 3
+          }
+        },
+        {
+          "status": "running",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "name": "rerun-parallel",
+            "stateId": "done",
+            "step": 3
+          }
+        },
+        {
+          "status": "completed",
+          "sessionKind": "workflow",
+          "workflow": {
+            "v": 1,
+            "runId": "rerun-history-run",
+            "outcome": "succeeded"
+          }
+        }
+      ]
+    }
+  ]
+}
