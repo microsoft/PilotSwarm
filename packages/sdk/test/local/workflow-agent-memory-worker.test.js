@@ -13,7 +13,8 @@
  *
  * The turn's reply is bounded (review R1-1..R1-3): the run's end stops it before the session's end; a reply still running
  * WORKFLOW_AGENT_REPLY_SETTLE.ms after the report is stopped, also with turnTimeoutMs 0; and a reply lost with its Copilot
- * session is not replayed with the step's tools open.
+ * session is not replayed with the step's tools open. Review R2: neither when the report came in a recovery's own run
+ * (R2-1), and a result written whose acknowledgement was lost closes the tools and bounds the reply as well (R2-3).
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -26,7 +27,7 @@ import { PilotSwarmClient, PilotSwarmWorker, defineTool } from "../helpers/local
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { controlWorkflowRun, createWorkflow, respondWorkflowApproval } from "../../src/workflow/service.ts";
 import { workflowAgentSessionId } from "../../src/workflow/runtime.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { WorkflowStore, nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { parseApprovalCommand } from "../../src/workflow/approval.ts";
 import { WORKFLOW_AGENT_REPLY_SETTLE } from "../../src/workflow/agent-node-service.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
@@ -192,6 +193,25 @@ async function expectFirstTurnCommitted(ctx, agentSession, visit1) {
     expect(agent.filter(event => event.type === "user.stop" && String(event.data?.requestId ?? "").includes(visit1)), JSON.stringify(agent)).toEqual([]);
     expect(agent.filter(event => event.type !== "session.turn_started" && event.seq < secondTurn.seq), JSON.stringify(agent)).toEqual([]);
     return { agent, secondTurn };
+}
+
+const CORRUPTED = "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'.";
+
+/**
+ * A session: new step's turn ended after a fault that came after its result, and was not run again: the step's session
+ * ended (so no run of that turn is still to come), no model request came after the fault, and the turn was not committed.
+ */
+async function expectSettledUnreplayed(ctx, runId, state) {
+    const [visit] = await talkVisits(ctx.store, runId);
+    const agentSession = visit.invocation.childSessionId;
+    const evidence = async () => ({ state, agent: await agentSessionEvidence(ctx, agentSession, ["session.turn_started", "session.snapshot_unpublished", "system.message"]) });
+    await until("the step's session ends", async () => {
+        const status = (await ctx.duroxide.getStatus(`session-${agentSession}`)).status;
+        return ["Completed", "Failed", "Terminated"].includes(status) ? status : null;
+    }, 90_000, evidence);
+    expect(state.afterFault, JSON.stringify(await evidence())).toBe(0);
+    const unpublished = await agentSessionEvidence(ctx, agentSession, ["session.snapshot_unpublished"]);
+    expect(unpublished.length, JSON.stringify(await evidence())).toBeGreaterThan(0);
 }
 
 describe("a Workflow agent step's turn after its report (issue I1, real worker)", () => {
@@ -410,17 +430,17 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
 
     it("a reply lost with its Copilot session after the report is not run again with the step's tools open", { timeout: TIMEOUT }, async () => {
         const marker = path.join(getEnv().baseDir, `replayed-${randomUUID()}.txt`);
-        const state = { failed: 0, replays: 0 };
+        const state = { failed: 0, afterFault: 0 };
         const respond = (_body, position) => {
             const nx = visitOf(position);
             if (state.failed === 0) {
                 if (position.step === 0) return { tools: [complete(nx, "finish", "op-1", { said: "one" })] };
                 // After the result, the provider refuses the conversation as a corrupted transcript.
                 state.failed += 1;
-                return { httpStatus: 400, message: "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'." };
+                return { httpStatus: 400, message: CORRUPTED };
             }
-            // Any request after that is a replay of the step's task, which would run its tools again.
-            if (position.step === 0) state.replays += 1;
+            // Any request after that runs the step's task again, which would run its tools again.
+            state.afterFault += 1;
             return position.step === 0 ? { tools: [{ name: "bash", args: { command: `echo replayed > ${marker}`, description: "replay" } }] } : { content: "ok" };
         };
         await withFixture(respond, async ctx => {
@@ -429,13 +449,97 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                 const { runId } = await startStep(ctx, stepYaml("new"));
                 const run = await runEnded(ctx, runId, async () => ({ state, visits: await talkVisits(ctx.store, runId) }));
                 expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
-                await pause(5_000);
+                await expectSettledUnreplayed(ctx, runId, state);
                 expect(state.failed).toBe(1);
-                expect(state.replays).toBe(0);
                 expect(fs.existsSync(marker), "the step's task ran again after its report").toBe(false);
             } finally {
                 await worker.stop();
             }
         });
+    });
+
+    it("a step that reports in the recovery of a lost live session is not run again when that recovery's transcript is then refused", { timeout: TIMEOUT }, async () => {
+        const marker = path.join(getEnv().baseDir, `replayed-${randomUUID()}.txt`);
+        const state = { phase: "start", afterFault: 0 };
+        const respond = (_body, position) => {
+            const nx = visitOf(position);
+            if (state.phase === "start") {
+                // The first run loses its live Copilot session before the step reports.
+                state.phase = "lost";
+                return { httpStatus: 400, message: "Session not found: the live session is gone." };
+            }
+            if (state.phase === "lost") {
+                // The recovery's own run reports the result; then the provider refuses its conversation.
+                if (position.step === 0) return { tools: [complete(nx, "finish", "op-1", { said: "one" })] };
+                state.phase = "corrupted";
+                return { httpStatus: 400, message: CORRUPTED };
+            }
+            state.afterFault += 1;
+            return position.step === 0 ? { tools: [{ name: "bash", args: { command: `echo replayed > ${marker}`, description: "replay" } }] } : { content: "ok" };
+        };
+        await withFixture(respond, async ctx => {
+            const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", []);
+            try {
+                const { runId } = await startStep(ctx, stepYaml("new"));
+                const run = await runEnded(ctx, runId, async () => ({ state, visits: await talkVisits(ctx.store, runId) }));
+                expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { said: "one" } });
+                await expectSettledUnreplayed(ctx, runId, state);
+                expect(state.phase).toBe("corrupted");
+                expect(fs.existsSync(marker), "the step's task ran again after its report").toBe(false);
+            } finally {
+                await worker.stop();
+            }
+        });
+    });
+
+    it("a result whose write committed but whose acknowledgement was lost closes the turn's tools and bounds its reply", { timeout: TIMEOUT }, async () => {
+        const marker = path.join(getEnv().baseDir, `after-lost-ack-${randomUUID()}.txt`);
+        const state = { denied: 0, steps: 0 };
+        const respond = async (_body, position) => {
+            const nx = visitOf(position);
+            if (cycleOf(position) === 1) {
+                if (position.step === 0) return { tools: [complete(nx, "again", "op-1", { said: "zebra-42" })] };
+                if (position.step === 1) state.reported = JSON.parse(position.toolResults[0] ?? "null");
+                if (position.toolResults.some(text => /result of this workflow step is recorded/.test(text))) state.denied += 1;
+                // The model keeps going after the failed-looking completion (bounded, so a run without the fix ends too).
+                state.steps += 1;
+                if (state.steps > 40) return { content: "giving up" };
+                await pause(300);
+                return { tools: [{ name: "bash", args: { command: `echo after-ack > ${marker}`, description: "keep going" } }] };
+            }
+            state.visit2At ??= Date.now();
+            return position.step === 0 ? { tools: [complete(nx, "finish", "op-2", { recalled: "nothing" })] } : { content: "done" };
+        };
+        const original = WorkflowStore.prototype.completeAgentNode;
+        WorkflowStore.prototype.completeAgentNode = async function (input) {
+            const result = await original.call(this, input);
+            if (input.operationId === "op-1") throw new Error("Connection terminated unexpectedly");
+            return result;
+        };
+        const before = WORKFLOW_AGENT_REPLY_SETTLE.ms;
+        WORKFLOW_AGENT_REPLY_SETTLE.ms = 4_000;
+        try {
+            await withFixture(respond, async ctx => {
+                const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", [], { turnTimeoutMs: 0 });
+                try {
+                    const { runId } = await startStep(ctx, stepYaml("continue"));
+                    const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId) });
+                    expect(await runEnded(ctx, runId, evidence)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                    // The model saw a failed completion, but the write had committed: the first visit's result is the one recorded.
+                    expect(state.reported).toMatchObject({ ok: false });
+                    const [visit1] = await talkVisits(ctx.store, runId);
+                    expect(visit1.node).toMatchObject({ state: "completed", winner: "agent", outcome: "again" });
+                    // No tool ran after it, and the reply was stopped by the reply limit rather than going on.
+                    expect(fs.existsSync(marker), "a tool ran after the committed result").toBe(false);
+                    expect(state.denied).toBeGreaterThan(0);
+                    expect(state.steps).toBeLessThan(40);
+                } finally {
+                    await worker.stop();
+                }
+            });
+        } finally {
+            WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
+            WorkflowStore.prototype.completeAgentNode = original;
+        }
     });
 });

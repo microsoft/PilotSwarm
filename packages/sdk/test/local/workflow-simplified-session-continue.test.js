@@ -584,7 +584,9 @@ describe("the default session mode on the controller", () => {
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.session, data.cycle]))
                 .toEqual([[agentSession, "continue", 1], [agentSession, "continue", 2]]);
             // Issue I1: a visit its agent completed sends its turn no Stop; the turn ends by itself and its memory is committed.
-            // The run's end stops whatever turn of the session still runs, with a Stop that names no visit, before its end.
+            // The run's end stops whatever turn of the session still runs, with a Stop that names no visit, before its end (the
+            // run's cleanup, which may come after the run reads completed).
+            await until(async () => (await commandsOf(h, agentSession)).length > 0, `the end of ${agentSession}`, 30_000);
             expect(h.stops.map(stop => stop.requestId)).toEqual([`workflow-session-stop:${agentSession}`]);
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_cycle_ended")).map(data => [data.end, data.turnStopped]))
                 .toEqual([["done", false], ["done", false]]);

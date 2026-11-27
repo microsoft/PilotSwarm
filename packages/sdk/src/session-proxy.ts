@@ -74,6 +74,7 @@ import { workflowVisitOfStopRequestId, type WorkflowLineage, type WorkflowStore,
 import { CapabilityGrantError } from "./tool-grant.js";
 import type { WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "./workflow/agent-turn-failure.js";
+import { workflowAgentSessionContinues } from "./workflow/agent-ids.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
 import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
 import { faultPoint, faultPointAsync } from "./fault-injection.js";
@@ -2735,6 +2736,19 @@ export function registerActivities(
         // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
         // and its reminder and completion name only that visit. Null for every other session (session: new included).
         const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
+        // Issue I1 (reviews R1-3, R2-1, R2-3): whether the store has this turn's Workflow visit decided. The visit is the one the
+        // turn is bound to: a continued session's turn visit (none when the turn has no visit), or a session: new step's own
+        // visit. Null when the turn has no such visit. A read that fails throws (after the store retries).
+        const storedTurnVisitDecided = async (): Promise<boolean | null> => {
+            const root = workflowLineage?.agentRoot;
+            const visit = workflowTurnVisit?.nodeExecutionId
+                ?? (root && !workflowAgentSessionContinues({ nodeExecutionId: root.nodeExecutionId, childSessionId: input.sessionId })
+                    ? root.nodeExecutionId : null);
+            if (!workflowFenceStore || !visit) return null;
+            const node = await cmsRetryCritical(`runTurn.visitDecided session=${input.sessionId}`,
+                () => workflowFenceStore.readNodeExecution(visit), (msg) => activityCtx.traceInfo(msg));
+            return node !== null && node.state !== "pending";
+        };
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -3402,6 +3416,7 @@ export function registerActivities(
                     await Promise.all(pendingWorkflowToolCalls);
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
                         onDecided: () => { session.decideWorkflowVisit(); noteVisitDecided(); },
+                        visitDecided: storedTurnVisitDecided,
                         // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
                         ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
@@ -5215,23 +5230,23 @@ export function registerActivities(
             if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });
             let result = await runTurnWithPrompt(session, effectivePrompt);
 
-            // Issue I1 (review R1-3): a turn whose Workflow visit is decided (its result was recorded in it, or its visit closed
-            // meanwhile) is not replayed after a lost live session or a corrupted transcript: the replay would run the visit's
-            // task again with its tools open. The turn ends as stopped instead, as a Stop would end it: nothing of it is
-            // committed (the next turn starts from the last committed snapshot), and it is not retried.
-            if (result.type === "error" && (result as any).transportLoss !== true
-                && (isLiveSessionLostErrorMessage((result as any).message) || isToolCallTranscriptCorruptionErrorMessage((result as any).message))) {
-                const nx = workflowTurnVisit?.nodeExecutionId ?? null;
-                const decided = visitDecidedThisTurn || (workflowFenceStore !== null && nx !== null
-                    && await workflowFenceStore.readNodeExecution(nx).then((node) => node !== null && node.state !== "pending", () => false));
-                if (decided) {
-                    traceWarn(`[runTurn] session=${input.sessionId}: the turn's workflow visit is decided; it is not run again after: ${(result as any).message}`);
-                    await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true }).catch((err: any) =>
-                        traceWarn(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`));
-                    result = { type: "stopped", reason: "The workflow step's result is recorded; the rest of its turn was lost with its "
-                        + "Copilot session, so the turn was not run again." } as TurnResult;
-                }
-            }
+            // Issue I1 (reviews R1-3, R2-1): a turn whose Workflow visit is decided (its result was recorded in this turn, in
+            // any of its runs, or its visit closed meanwhile) is not replayed after a lost live session or a corrupted
+            // transcript: the replay would run the visit's task again with its tools open. Each recovery checks before it
+            // resets anything, and again just before its model run. The turn ends as stopped instead, as a Stop would end it:
+            // nothing of it is committed (the next turn starts from the last committed snapshot), and it is not retried. A
+            // store that cannot be read fails the turn (it is retried, and the turn-start fence reads the visit again).
+            const visitDecidedNow = async (): Promise<boolean> => visitDecidedThisTurn || await storedTurnVisitDecided() === true;
+            const notRunAgain = async (why: string): Promise<TurnResult> => {
+                traceWarn(`[runTurn] session=${input.sessionId}: the turn's workflow visit is decided; it is not run again after: ${why}`);
+                await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true }).catch((err: any) =>
+                    traceWarn(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`));
+                return { type: "stopped", reason: "The workflow step's result is recorded; the rest of its turn was lost with its "
+                    + "Copilot session, so the turn was not run again." } as TurnResult;
+            };
+            const replayable = (): boolean => result.type === "error" && (result as any).transportLoss !== true
+                && (isLiveSessionLostErrorMessage((result as any).message) || isToolCallTranscriptCorruptionErrorMessage((result as any).message));
+            if (replayable() && await visitDecidedNow()) result = await notRunAgain((result as any).message);
 
             if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
                 activityCtx.traceInfo(
@@ -5283,7 +5298,9 @@ export function registerActivities(
                 // Turn control: the lost conversation took any steers applied
                 // to it; count from the start again so turn end carries them.
                 tc?.live?.conversationLost();
-                result = await runTurnWithPrompt(session, recoveredPrompt);
+                result = await visitDecidedNow()
+                    ? await notRunAgain("a lost live Copilot session")
+                    : await runTurnWithPrompt(session, recoveredPrompt);
 
                 if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
                     const fatalMessage = buildUnrecoverableSessionLossMessage(input.sessionId, (result as any).message);
@@ -5309,6 +5326,9 @@ export function registerActivities(
                 });
                 result = { ...result, message: lostMessage } as TurnResult;
             }
+
+            // The live-session recovery's own run may have reported the result (review R2-1).
+            if (replayable() && await visitDecidedNow()) result = await notRunAgain((result as any).message);
 
             if (result.type === "error" && isToolCallTranscriptCorruptionErrorMessage((result as any).message)) {
                 const transcriptError = (result as any).message;
@@ -5373,7 +5393,9 @@ export function registerActivities(
                 // Turn control: the lost conversation took any steers applied
                 // to it; count from the start again so turn end carries them.
                 tc?.live?.conversationLost();
-                result = await runTurnWithPrompt(session, recoveredPrompt);
+                result = await visitDecidedNow()
+                    ? await notRunAgain("an inconsistent live Copilot transcript")
+                    : await runTurnWithPrompt(session, recoveredPrompt);
             }
 
             if (

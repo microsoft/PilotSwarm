@@ -106,6 +106,12 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
     turnVisit?: string | null;
     /** Close local tool admission before waiting for the controller wake. */
     onDecided?: () => void;
+    /**
+     * Issue I1 (review R2-3): whether the store has the turn's visit decided, read after a completion write whose outcome is
+     * unknown (it failed with anything but a store refusal, so it may have committed). True or a read that fails: onDecided
+     * runs (the visit is decided, or that cannot be verified: no more tools run in the turn). False: the call can be retried.
+     */
+    visitDecided?: () => Promise<boolean | null>;
 }): Promise<string> {
     try {
         const call: Record<string, unknown> = {};
@@ -150,6 +156,10 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
         if (result.attemptsLeft !== null) error.attemptsLeft = result.attemptsLeft;
         return JSON.stringify({ ok: false, replayed: result.replayed, error, state: result.state });
     } catch (error) {
+        if (!(error instanceof WorkflowStoreError) && context.visitDecided && context.onDecided) {
+            const decided = await context.visitDecided().catch(() => null);
+            if (decided !== false) context.onDecided();
+        }
         return workflowCompletionFailure(error);
     }
 }

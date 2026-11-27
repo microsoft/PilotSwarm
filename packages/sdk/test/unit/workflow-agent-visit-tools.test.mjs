@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { WORKFLOW_VISIT_DECIDED_DENIAL, withWorkflowVisitDeny } from "../../dist/session-manager.js";
+import { completeWorkflowNodeFromTool } from "../../dist/workflow/agent-node-service.js";
+import { WorkflowStoreError } from "../../dist/workflow/store.js";
 import { managedSessionFence } from "../helpers/managed-session-fence.mjs";
 
 // Issue I1: once a Workflow agent step's result is recorded, its turn is not stopped; it only finishes its reply. Every
@@ -36,4 +38,26 @@ test("a turn whose binding is refused keeps complete_workflow_node: only a decid
     session.closeWorkflowTools();
     assert.throws(() => session.assertWorkflowToolsOpen(), { message: "Workflow agent visit is no longer available." });
     assert.equal(await hooks.onPreToolUse({ toolName: "complete_workflow_node" }), undefined);
+});
+
+test("a completion write whose outcome is unknown closes the turn's tools when the visit is decided or cannot be read (review R2-3)", async () => {
+    const lostAck = { completeAgentNode: async () => { throw new Error("Connection terminated unexpectedly"); } };
+    const call = async (store, visitDecided) => {
+        let decided = 0;
+        const answer = JSON.parse(await completeWorkflowNodeFromTool({ outcome: "again", operation_id: "op-1" },
+            { callerSessionId: "s", store, onDecided: () => { decided += 1; }, visitDecided }));
+        assert.equal(answer.ok, false);
+        return decided;
+    };
+    // The write committed, its acknowledgement was lost: the visit reads decided, so the turn's tools close.
+    assert.equal(await call(lostAck, async () => true), 1);
+    // The write did not commit: the call can be retried with its operation_id.
+    assert.equal(await call(lostAck, async () => false), 0);
+    // Neither can be verified: no more tools run in the turn.
+    assert.equal(await call(lostAck, async () => { throw new Error("read failed"); }), 1);
+    // A store refusal wrote nothing: no read.
+    let reads = 0;
+    const refused = { completeAgentNode: async () => { throw new WorkflowStoreError("COMPLETION_INVALID", "bad call"); } };
+    assert.equal(await call(refused, async () => { reads += 1; return true; }), 0);
+    assert.equal(reads, 0);
 });
