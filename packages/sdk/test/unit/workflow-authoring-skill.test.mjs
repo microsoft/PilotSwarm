@@ -10,6 +10,7 @@ import { compileWorkflow } from "../../dist/workflow/compiler.js";
 import { WORKFLOW_ENDED_NOTICE_MAX_BYTES, WORKFLOW_MAX_SEND_PAYLOAD_BYTES } from "../../dist/workflow/runtime.js";
 import { WORKFLOW_JSON_MAX_DEPTH, WORKFLOW_PAYLOAD_MAX_BYTES } from "../../dist/workflow/json.js";
 import { WORKFLOW_CARRY_MAX_BYTES } from "../../dist/workflow/carry.js";
+import { SCRIPT_NODE_MAX_TOOL_CALLS } from "../../dist/workflow/runner.js";
 import {
     WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR, WORKFLOW_TEST_MODE_SKILLS_DIR,
 } from "../../dist/workflow/guidance.js";
@@ -66,9 +67,14 @@ test("the workflow skills load from their own plugin directory, which no worker 
         `${WORKFLOW_ENDED_NOTICE_MAX_BYTES.toLocaleString("en-US")} bytes`,
         `| A \`send\` or \`request\` message (the state's input) | ${WORKFLOW_MAX_SEND_PAYLOAD_BYTES / 1024} KiB |`,
         `| A parallel join's output (all branches together) | ${WORKFLOW_PAYLOAD_MAX_BYTES / 1024} KiB |`,
-        `| \`carry\` | ${WORKFLOW_CARRY_MAX_BYTES / 1024} KiB |`, `| JSON nesting, anywhere | ${WORKFLOW_JSON_MAX_DEPTH} levels |`]) {
+        `| \`carry\` | ${WORKFLOW_CARRY_MAX_BYTES / 1024} KiB |`, `| JSON nesting, anywhere | ${WORKFLOW_JSON_MAX_DEPTH} levels |`,
+        `| Tool calls in one script visit (a live run) | ${SCRIPT_NODE_MAX_TOOL_CALLS} |`]) {
         assert.ok(limits.prompt.includes(phrase), `workflow-limits covers: ${phrase}`);
     }
+    // The script tool-call cap is stated once per mode: live in workflow-limits, a test run's in the hidden testing guide.
+    assert.match(core.prompt, /`callTool\(name, args\)`: one call at a time, capped \(`workflow-limits`\),/);
+    assert.ok(!/at most \d+ calls/.test(core.prompt), "the core skill states no call count of its own");
+    assert.ok(testModeSkills()[0].prompt.includes(`at most 100 tool calls (a live run allows ${SCRIPT_NODE_MAX_TOOL_CALLS}, \`workflow-limits\`)`));
     for (const name of ["workflow-reference", WORKFLOW_AUTHORING_SKILL]) {
         assert.match(skills().find(skill => skill.name === name).prompt, /keep only what you need (from each|per) child; size limits: `workflow-limits`\./, name);
     }

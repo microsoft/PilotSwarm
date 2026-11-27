@@ -106,7 +106,7 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
   Save checks syntax without running it; syntax errors prevent Start.
 - `setResult(outcome, output)`: a declared outcome, and plain JSON (at most
   256 KB) that matches the state's `outputSchema`; else `invalid_output`.
-- `callTool(name, args)`: one call at a time, at most 100 calls in one state,
+- `callTool(name, args)`: one call at a time, capped (`workflow-limits`),
   only the tools your session could use when the workflow was created (not
   scheduling, delegation, `ask_user` or workflow tools). Await calls in
   sequence (`for...of`), never with `Promise.all`; the runtime refuses overlap.

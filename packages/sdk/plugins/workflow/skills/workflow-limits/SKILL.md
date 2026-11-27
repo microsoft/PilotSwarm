@@ -30,7 +30,7 @@ fact and pass its key.
 | `child_workflows` `read` | 2,000-character preview; `full_output: true` gives the whole output | |
 | Variables (KV) | 1,000 keys of at most 128 characters; 256 KiB a value; 1 MiB in all | refused |
 | A script's tool call: its arguments / its result | 1 MiB each | the call fails |
-| Tool calls in one script visit | 500 | the call fails |
+| Tool calls in one script visit (a live run) | 500 | the call fails |
 | `read_workflow` value | whole up to 256 KiB, else a 4,000-character preview | |
 
 ## Fan-out: keep only what you need from each child
