@@ -1,0 +1,1059 @@
+/**
+ * Baseline Workflow resource-leak census suite (B1–B10 + Sweeper + non-vacuity control).
+ *
+ * Proves that plain Workflow runs (no re-runs) leak zero orchestrations, active runs,
+ * child workflows, agent sessions, bare claim shells, open work on terminal runs,
+ * pending inbox rows on terminal runs, or unswept sessions after owner end + Sweeper.
+ *
+ * Scenarios (3 iterations each):
+ *   B1  Parent fails while a spawned child has pending wait, receive, approval, and delivered request.
+ *   B2  Parent cancelled with the same live 4-resource child.
+ *   B3  Parent stopped (grace 0) with the same live 4-resource child.
+ *   B4  Parent session deleted while child runs (child is also deleted).
+ *   B5  Three levels: grandparent -> child -> grandchild (4-resource), grandparent fails.
+ *   B6  Real PilotSwarmWorker + scripted model: (a) continued agent session (`session: continue`)
+ *       live when parent ends; (b) plain agent step (`session: new`) cancelled mid-turn.
+ *   B7  Parallel step with two named lanes, each spawning a child; parent fails in one lane.
+ *   B8  Fault injection: parent-end cancel of child fails once; controller retries and child ends.
+ *   B9  Owner session ends while top-level Workflow and its child run (real owner-ended DB trigger).
+ *   B10 Messages sent to a run that then ends: consumed or expired before census.
+ *   Control (non-vacuity): deliberately leaked resources are caught and reported by census + assertNoLeaks.
+ */
+import { describe, it, expect } from "vitest";
+import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
+import pg from "pg";
+import { testTime, useSuiteEnv } from "../helpers/local-env.js";
+import { startScriptedModel } from "../helpers/scripted-model.mjs";
+import { registerScriptedProvider } from "../helpers/scripted-workers.js";
+import { PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js";
+import { PgSessionCatalog } from "../../src/cms.ts";
+import { registerWorkflow, sessionQueueTransport, workflowAgentSessionId } from "../../src/workflow/runtime.ts";
+import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
+import {
+    applyOperatorCommandToWorkflow,
+    controlWorkflowRun,
+    createWorkflow,
+    sendTypedWorkflowInput,
+} from "../../src/workflow/service.ts";
+import { updateWorkflowFromTool } from "../../src/workflow/tools.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
+import { createSweeperTools } from "../../src/sweeper-tools.ts";
+import { assertNoLeaks, census } from "../helpers/workflow-leak-census.js";
+
+const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
+const getEnv = useSuiteEnv(import.meta.url);
+const TIMEOUT = testTime.ms(240_000);
+const ITERATIONS = 3;
+const OWNER = { provider: "test", subject: "leak-census-owner", displayName: "Leak Census Owner" };
+const ENGINE = { kind: "system", name: "workflow-leak-census-test" };
+const OWNER_STAND_IN = "leak-census-owner-standin";
+const TERMINAL_ORCH = new Set(["Completed", "Failed", "Terminated", "NotFound"]);
+const TERMINAL_RUN = new Set(["completed", "failed", "cancelled", "stopped"]);
+
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function until(label, check, timeoutMs = 45_000) {
+    const deadline = Date.now() + testTime.ms(timeoutMs);
+    let last;
+    while (Date.now() < deadline) {
+        last = await check();
+        if (last) return last;
+        await pause(60);
+    }
+    throw new Error(`Timed out waiting for ${label}: ${JSON.stringify(last)}`);
+}
+
+// ─── Inline Workflow Definitions ────────────────────────────────────
+
+const BUSY_CHILD_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: busy-child, version: "1.0.0" }
+inputs:
+  schema:
+    type: object
+    required: [responder]
+    properties:
+      responder: { type: string }
+    additionalProperties: false
+schemas:
+  Ping: { type: object, additionalProperties: true }
+  AskQ: { type: object, required: [q], properties: { q: { type: string } }, additionalProperties: false }
+  AskA: { type: object, required: [ok], properties: { ok: { type: boolean } }, additionalProperties: false }
+contracts:
+  Ping@1:
+    schema: { $ref: "#/schemas/Ping" }
+  Ask@1:
+    schema: { $ref: "#/schemas/AskQ" }
+    response: { schema: { $ref: "#/schemas/AskA" } }
+initial: fan
+states:
+  fan:
+    type: parallel
+    concurrency: 4
+    branches:
+      b_wait:
+        initial: wait_step
+        states:
+          wait_step:
+            type: wait
+            seconds: 300
+            transition: { next: { elapsed: w_done } }
+          w_done: { type: terminal, outcome: succeeded }
+      b_recv:
+        initial: recv_step
+        states:
+          recv_step:
+            type: messaging
+            mode: receive
+            contract: Ping@1
+            wait: { seconds: 300 }
+            transition: { next: { received: r_done, elapsed: r_done, failure: r_done } }
+          r_done: { type: terminal, outcome: succeeded }
+      b_appr:
+        initial: appr_step
+        states:
+          appr_step:
+            type: approval
+            question: "Approve busy child?"
+            timeoutSeconds: 300
+            transition: { next: { approved: a_done, rejected: a_done, timed_out: a_done, failure: a_done } }
+          a_done: { type: terminal, outcome: succeeded }
+      b_req:
+        initial: req_step
+        states:
+          req_step:
+            type: messaging
+            mode: request
+            recipient: { sessionId: "\${inputs.responder}" }
+            contract: Ask@1
+            input: { q: "still alive?" }
+            timeoutSeconds: 300
+            transition: { next: { responded: q_done, declined: q_done, timed_out: q_done, failure: q_done } }
+          q_done: { type: terminal, outcome: succeeded }
+    transition: { next: { joined: done, blocked: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+const SLEEP_CHILD_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: sleep-child, version: "1.0.0" }
+inputs:
+  schema:
+    type: object
+    required: [id]
+    properties:
+      id: { type: integer }
+    additionalProperties: false
+initial: pause
+states:
+  pause:
+    type: wait
+    seconds: 300
+    transition: { next: { elapsed: done } }
+  done: { type: terminal, outcome: succeeded, output: { id: "\${inputs.id}" } }
+`;
+
+const PARENT_SPAWN_FAIL_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: parent-spawn-fail, version: "1.0.0" }
+inputs:
+  schema:
+    type: object
+    required: [responder]
+    properties:
+      responder: { type: string }
+    additionalProperties: false
+schemas:
+  Go: { type: object, additionalProperties: true }
+contracts:
+  Go@1: { schema: { $ref: "#/schemas/Go" } }
+initial: s_child
+states:
+  s_child:
+    type: spawn
+    definition: busy-child
+    inputs: { responder: "\${inputs.responder}" }
+    transition: { next: { started: wait_go, failure: boom } }
+  wait_go:
+    type: messaging
+    mode: receive
+    contract: Go@1
+    wait: { seconds: 300 }
+    transition: { next: { received: boom, elapsed: boom, failure: boom } }
+  boom: { type: terminal, outcome: failed, output: { reason: "parent-failed" } }
+`;
+
+const PARENT_SPAWN_HOLD_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: parent-spawn-hold, version: "1.0.0" }
+inputs:
+  schema:
+    type: object
+    required: [responder]
+    properties:
+      responder: { type: string }
+    additionalProperties: false
+initial: s_child
+states:
+  s_child:
+    type: spawn
+    definition: busy-child
+    inputs: { responder: "\${inputs.responder}" }
+    transition: { next: { started: hold, failure: failed } }
+  hold:
+    type: wait
+    seconds: 300
+    transition: { next: { elapsed: done } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+const GRANDPARENT_THREE_LEVEL_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: grandparent-fail, version: "1.0.0" }
+inputs:
+  schema:
+    type: object
+    required: [responder]
+    properties:
+      responder: { type: string }
+    additionalProperties: false
+schemas:
+  Go: { type: object, additionalProperties: true }
+contracts:
+  Go@1: { schema: { $ref: "#/schemas/Go" } }
+initial: s_mid
+states:
+  s_mid:
+    type: spawn
+    definition: parent-spawn-hold
+    inputs: { responder: "\${inputs.responder}" }
+    transition: { next: { started: wait_go, failure: boom } }
+  wait_go:
+    type: messaging
+    mode: receive
+    contract: Go@1
+    wait: { seconds: 300 }
+    transition: { next: { received: boom, elapsed: boom, failure: boom } }
+  boom: { type: terminal, outcome: failed, output: { reason: "grandparent-failed" } }
+`;
+
+const PARALLEL_TWO_LANES_FAIL_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: parallel-two-lanes-fail, version: "1.0.0" }
+schemas:
+  FailLane: { type: object, additionalProperties: true }
+contracts:
+  FailLane@1: { schema: { $ref: "#/schemas/FailLane" } }
+initial: fan
+states:
+  fan:
+    type: parallel
+    concurrency: 2
+    failFast: true
+    branches:
+      lane_a:
+        initial: a_spawn
+        states:
+          a_spawn:
+            type: spawn
+            definition: sleep-child
+            inputs: { id: 1 }
+            transition: { next: { started: a_wait_fail, failure: a_fail } }
+          a_wait_fail:
+            type: messaging
+            mode: receive
+            contract: FailLane@1
+            wait: { seconds: 300 }
+            transition: { next: { received: a_fail, elapsed: a_fail, failure: a_fail } }
+          a_fail: { type: terminal, outcome: failed, output: { lane: "a" } }
+      lane_b:
+        initial: b_spawn
+        states:
+          b_spawn:
+            type: spawn
+            definition: sleep-child
+            inputs: { id: 2 }
+            transition: { next: { started: b_hold, failure: b_fail } }
+          b_hold:
+            type: wait
+            seconds: 300
+            transition: { next: { elapsed: b_done } }
+          b_done: { type: terminal, outcome: succeeded }
+          b_fail: { type: terminal, outcome: failed }
+    transition: { next: { joined: done, blocked: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+const INBOX_CONSUME_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: inbox-consume, version: "1.0.0" }
+schemas:
+  Ping: { type: object, additionalProperties: true }
+contracts:
+  Ping@1: { schema: { $ref: "#/schemas/Ping" } }
+initial: recv
+states:
+  recv:
+    type: messaging
+    mode: receive
+    contract: Ping@1
+    wait: { seconds: 60 }
+    transition: { next: { received: done, elapsed: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  failed: { type: terminal, outcome: failed }
+`;
+
+const INBOX_UNCONSUMED_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: inbox-unconsumed, version: "1.0.0" }
+schemas:
+  Ping: { type: object, additionalProperties: true }
+  Go: { type: object, additionalProperties: true }
+contracts:
+  Ping@1: { schema: { $ref: "#/schemas/Ping" } }
+  Go@1: { schema: { $ref: "#/schemas/Go" } }
+initial: wait_go
+states:
+  wait_go:
+    type: messaging
+    mode: receive
+    contract: Go@1
+    wait: { seconds: 60 }
+    transition: { next: { received: done, elapsed: wait_ping, failure: failed } }
+  wait_ping:
+    type: messaging
+    mode: receive
+    contract: Ping@1
+    wait: { seconds: 60 }
+    transition: { next: { received: done, elapsed: failed, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+// ─── Lightweight Duroxide + PG Harness (B1–B5, B7–B10, Control) ─────
+
+async function startRuntimeHarness(env, { wrapStore = null, skipParentEndCleanup = false } = {}) {
+    const tag = randomUUID().slice(0, 8);
+    const duroxideSchema = `duroxide_lc_${tag}`;
+    const cmsSchema = `cms_lc_${tag}`;
+    const provider = await PostgresProvider.connectWithSchema(env.store, duroxideSchema);
+    const client = new Client(provider);
+    const catalog = await PgSessionCatalog.create(env.store, cmsSchema);
+    await catalog.initialize();
+    const rawStore = catalog.workflowStore();
+    let store = wrapStore ? wrapStore(rawStore) : rawStore;
+    if (skipParentEndCleanup) {
+        // Control hook: hide children from listChildWorkflows during parent-end cleanup so children leak.
+        store = new Proxy(store, {
+            get(target, prop) {
+                if (prop === "listChildWorkflows") return async () => [];
+                const value = target[prop];
+                return typeof value === "function" ? value.bind(target) : value;
+            },
+        });
+    }
+    const pool = new pg.Pool({ connectionString: env.store });
+    const runtime = new Runtime(provider, {
+        orchestrationConcurrency: 8,
+        workerConcurrency: 8,
+        dispatcherPollIntervalMs: 20,
+        workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
+        logLevel: "error",
+    });
+    const host = { catalog, store, duroxideClient: client, scripts: true };
+    registerWorkflow(runtime, {
+        store,
+        catalog,
+        enabled: () => true,
+        resolveToolBinding: async () => null,
+        openToolExecutor: async () => ({ call: async () => { throw new Error("no tools"); }, close: async () => {} }),
+        authorizeParentNotification: async () => true,
+        notifyParent: async () => ({ delivered: true }),
+        deleteSession: async (id) => { await catalog.softDeleteSession(id); },
+        wakeBackstopMs: 200,
+        sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
+        respondToolAvailable: async () => true,
+        spawnChildHost: () => host,
+    });
+    runtime.registerOrchestration(OWNER_STAND_IN, function* (ctx) {
+        yield ctx.waitForEvent("end");
+        return null;
+    });
+    await runtime.start();
+
+    const q = async (sql, params = []) => (await pool.query(sql.replaceAll("SCHEMA", `"${cmsSchema}"`), params)).rows;
+
+    const createLiveOwner = async () => {
+        const ownerId = randomUUID();
+        await catalog.createSession(ownerId, { owner: OWNER });
+        await client.startOrchestration(`session-${ownerId}`, OWNER_STAND_IN, {});
+        await until(`owner ${ownerId} running`, async () => (await client.getStatus(`session-${ownerId}`)).status === "Running");
+        return ownerId;
+    };
+
+    const saveDefs = async (ownerId, defs) => {
+        for (const [name, yaml] of defs) {
+            const saved = await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: ownerId, name, yaml, expected: null,
+                actor: { kind: "session", sessionId: ownerId }, operationId: `save-${name}`, by: "session",
+            });
+            expect(saved.receipt.valid, `${name}: ${JSON.stringify(saved.receipt.diagnostics)}`).toBe(true);
+        }
+    };
+
+    const waitRunStatus = (runId, statuses, timeoutMs = 45_000) =>
+        until(`run ${runId} in [${statuses.join(",")}]`, async () => {
+            const run = await rawStore.readRun(runId);
+            return run && statuses.includes(run.status) ? run : null;
+        }, timeoutMs);
+
+    const waitChildren = (wfId, count, timeoutMs = 30_000) =>
+        until(`${count} children under ${wfId}`, async () => {
+            const list = await rawStore.listChildWorkflows(wfId);
+            return list.length >= count && list.every(c => c.runId) ? list : null;
+        }, timeoutMs);
+
+    const waitBusyChildLive = (childRunId, timeoutMs = 30_000) =>
+        until(`busy-child ${childRunId} 4 resources live`, async () => {
+            const nodes = await q(
+                `SELECT node_id, state FROM SCHEMA.workflow_node_executions
+                  WHERE run_id = $1 AND node_id = ANY($2::text[])`,
+                [childRunId, ["wait_step", "recv_step", "appr_step", "req_step"]],
+            );
+            if (nodes.length < 4 || !nodes.every(n => n.state === "pending")) return null;
+            const appr = await q("SELECT node_execution_id FROM SCHEMA.workflow_approvals WHERE run_id = $1 AND decision IS NULL", [childRunId]);
+            if (appr.length < 1) return null;
+            const req = await q("SELECT exchange_id FROM SCHEMA.workflow_requests WHERE run_id = $1", [childRunId]);
+            if (req.length < 1) return null;
+            const outbox = await q("SELECT state FROM SCHEMA.workflow_outbox WHERE run_id = $1 AND mode = 'request'", [childRunId]);
+            if (outbox.length < 1 || outbox[0].state !== "delivered") return null;
+            return { nodes: nodes.length, approvals: appr.length, requests: req.length, outbox: outbox[0].state };
+        }, timeoutMs);
+
+    const waitTreeSettled = (ownerId, { liveOwner = true, timeoutMs = 30_000 } = {}) =>
+        until(`tree ${ownerId} orchestrations settled`, async () => {
+            const res = await census({
+                store: rawStore,
+                catalog,
+                duroxideClient: client,
+                rootSessionIds: [ownerId],
+                graceMs: 0,
+                liveOwnerSessionIds: liveOwner ? [ownerId] : [],
+            });
+            return res.categories.orchestrations_live.count === 0
+                && res.categories.runs_active.count === 0
+                && res.categories.child_workflows_active.count === 0
+                ? res : null;
+        }, timeoutMs);
+
+    const endOwnerAndSweep = async (ownerId) => {
+        try { await client.raiseEvent(`session-${ownerId}`, "end", {}); } catch {}
+        await until(`owner ${ownerId} terminal`, async () => TERMINAL_ORCH.has((await client.getStatus(`session-${ownerId}`)).status));
+        await q("UPDATE SCHEMA.sessions SET state = 'completed', updated_at = now() - interval '1 second' WHERE session_id = $1 AND deleted_at IS NULL", [ownerId]);
+        // Wait for any trigger-cancelled children to reach terminal before Sweeper runs.
+        await waitTreeSettled(ownerId, { liveOwner: false });
+        // Backdate updated_at by 1s only if clock skew keeps updated_at >= JS Date.now() on remote DBs (HorizonDB).
+        const tools = createSweeperTools({ catalog, duroxideClient: client, factStore: null });
+        const scan = tools.find(t => t.name === "scan_completed_sessions");
+        const cleanup = tools.find(t => t.name === "cleanup_session");
+        for (let pass = 0; pass < 3; pass += 1) {
+            await pause(50);
+            const scanned = await scan.handler({ graceMinutes: 0 });
+            const treeIds = new Set((await census({
+                store: rawStore, catalog, duroxideClient: client, rootSessionIds: [ownerId], graceMs: 0,
+            })).treeSessionIds);
+            const targets = (scanned.sessions ?? []).map(s => s.sessionId).filter(id => treeIds.has(id));
+            if (targets.length === 0) {
+                const remaining = await q(
+                    "SELECT session_id FROM SCHEMA.sessions WHERE session_id = ANY($1::text[]) AND deleted_at IS NULL",
+                    [[...treeIds]],
+                );
+                if (remaining.length === 0) break;
+                // On HorizonDB where DB server clock can lead client Date.now(), age updated_at slightly past cutoff.
+                await q(
+                    "UPDATE SCHEMA.sessions SET updated_at = LEAST(updated_at, $2::timestamptz) WHERE session_id = ANY($1::text[]) AND deleted_at IS NULL",
+                    [remaining.map(r => r.session_id), new Date(Date.now() - 5_000).toISOString()],
+                );
+                continue;
+            }
+            await cleanup.handler({ sessionIds: targets, graceMinutes: 0, reason: "leak-census sweep" });
+        }
+        const finalCensus = await census({
+            store: rawStore,
+            catalog,
+            duroxideClient: client,
+            rootSessionIds: [ownerId],
+            graceMs: 0,
+        });
+        assertNoLeaks(finalCensus, { allow: [] });
+        return finalCensus;
+    };
+
+    return {
+        client, catalog, store: rawStore, wrappedStore: store, pool, runtime, host, cmsSchema,
+        q, createLiveOwner, saveDefs, waitRunStatus, waitChildren, waitBusyChildLive, waitTreeSettled, endOwnerAndSweep,
+        stop: async () => {
+            await runtime.shutdown(100);
+            await catalog.close();
+            await pool.query(`DROP SCHEMA IF EXISTS "${duroxideSchema}" CASCADE`);
+            await pool.query(`DROP SCHEMA IF EXISTS "${cmsSchema}" CASCADE`);
+            await pool.end();
+        },
+    };
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+describe("Workflow resource-leak census baseline (B1–B10 + Sweeper + Control)", () => {
+    it("B1–B5: parent fail, cancel, stop(0), delete, and 3-level cascade leave zero leaks (3x each)", { timeout: TIMEOUT }, async () => {
+        const h = await startRuntimeHarness(getEnv());
+        try {
+            const ownerId = await h.createLiveOwner();
+            await h.saveDefs(ownerId, [
+                ["busy-child", BUSY_CHILD_YAML],
+                ["parent-spawn-fail", PARENT_SPAWN_FAIL_YAML],
+                ["parent-spawn-hold", PARENT_SPAWN_HOLD_YAML],
+                ["grandparent-fail", GRANDPARENT_THREE_LEVEL_YAML],
+            ]);
+
+            // B1: parent fails while child has pending wait, receive, approval, delivered request.
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const parent = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "parent-spawn-fail" }, inputs: { responder: ownerId },
+                    actor: ENGINE, operationId: `b1-${i}`, owner: OWNER,
+                });
+                const [child] = await h.waitChildren(parent.workflowId, 1);
+                await h.waitBusyChildLive(child.runId);
+                await sendTypedWorkflowInput(h.host, {
+                    workflowSessionId: parent.workflowId, senderSessionId: ownerId, contract: "Go@1", payload: { i }, operationId: `b1-go-${i}`,
+                });
+                expect((await h.waitRunStatus(parent.runId, ["failed"])).status).toBe("failed");
+                expect((await h.waitRunStatus(child.runId, ["cancelled"])).status).toBe("cancelled");
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            }
+
+            // B2: parent cancelled with the same live 4-resource child.
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const parent = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "parent-spawn-hold" }, inputs: { responder: ownerId },
+                    actor: ENGINE, operationId: `b2-${i}`, owner: OWNER,
+                });
+                const [child] = await h.waitChildren(parent.workflowId, 1);
+                await h.waitBusyChildLive(child.runId);
+                await applyOperatorCommandToWorkflow(h.host, {
+                    targetSessionId: parent.workflowId, command: { type: "cmd", cmd: "cancel", id: `b2-cancel-${i}`, reason: "b2 cancel" },
+                });
+                expect((await h.waitRunStatus(parent.runId, ["cancelled"])).status).toBe("cancelled");
+                expect((await h.waitRunStatus(child.runId, ["cancelled"])).status).toBe("cancelled");
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            }
+
+            // B3: parent stopped (grace 0) with the same live 4-resource child.
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const parent = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "parent-spawn-hold" }, inputs: { responder: ownerId },
+                    actor: ENGINE, operationId: `b3-${i}`, owner: OWNER,
+                });
+                const [child] = await h.waitChildren(parent.workflowId, 1);
+                await h.waitBusyChildLive(child.runId);
+                const stopAns = JSON.parse(await updateWorkflowFromTool({
+                    operation: "stop", workflow_id: parent.workflowId, operation_id: `b3-stop-${i}`, grace_seconds: 0, reason: "b3 stop",
+                }, { callerSessionId: ownerId, host: h.host }));
+                expect(stopAns.ok, JSON.stringify(stopAns)).toBe(true);
+                expect((await h.waitRunStatus(parent.runId, ["stopped"])).status).toBe("stopped");
+                expect((await h.waitRunStatus(child.runId, ["cancelled"])).status).toBe("cancelled");
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            }
+
+            // B4: parent session deleted while child runs (child must be deleted too).
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const parent = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "parent-spawn-hold" }, inputs: { responder: ownerId },
+                    actor: ENGINE, operationId: `b4-${i}`, owner: OWNER,
+                });
+                const [child] = await h.waitChildren(parent.workflowId, 1);
+                await h.waitBusyChildLive(child.runId);
+                await applyOperatorCommandToWorkflow(h.host, {
+                    targetSessionId: parent.workflowId, command: { type: "cmd", cmd: "delete", id: `b4-del-${i}`, reason: "b4 delete" },
+                });
+                expect((await h.waitRunStatus(parent.runId, ["cancelled"])).status).toBe("cancelled");
+                expect((await h.waitRunStatus(child.runId, ["cancelled"])).status).toBe("cancelled");
+                await until(`child ${child.workflowSessionId} deleted`, async () => (await h.store.readSessionLink(child.workflowSessionId))?.deleted === true);
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            }
+
+            // B5: three levels: grandparent -> middle -> grandchild (4-resource), grandparent fails.
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const gp = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "grandparent-fail" }, inputs: { responder: ownerId },
+                    actor: ENGINE, operationId: `b5-${i}`, owner: OWNER,
+                });
+                const [mid] = await h.waitChildren(gp.workflowId, 1);
+                const [grandchild] = await h.waitChildren(mid.workflowSessionId, 1);
+                await h.waitBusyChildLive(grandchild.runId);
+                await sendTypedWorkflowInput(h.host, {
+                    workflowSessionId: gp.workflowId, senderSessionId: ownerId, contract: "Go@1", payload: { i }, operationId: `b5-go-${i}`,
+                });
+                expect((await h.waitRunStatus(gp.runId, ["failed"])).status).toBe("failed");
+                expect((await h.waitRunStatus(mid.runId, ["cancelled"])).status).toBe("cancelled");
+                expect((await h.waitRunStatus(grandchild.runId, ["cancelled"])).status).toBe("cancelled");
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            }
+
+            // End owner session + Sweeper pass (grace 0) -> ALL 8 categories including sessions_not_swept must be 0.
+            await h.endOwnerAndSweep(ownerId);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("B6: real worker agent steps — continued session live on parent end and plain agent step cancelled mid-turn (3x each)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const midTurnState = { hold: false, inFlightResolvers: [], arrivedCount: 0, waitForArrival: null };
+        const visitOf = pos => /"nodeExecutionId":"(nx-[0-9a-f]+)"/.exec(pos.lastUserText)?.[1] ?? null;
+        const isStepRequest = body => (body.tools ?? []).some(t => t.function?.name === "complete_workflow_node");
+        const model = await startScriptedModel({
+            respond: async (body, position) => {
+                if (!isStepRequest(body)) return { content: "ok" };
+                const nx = visitOf(position);
+                if (midTurnState.hold) {
+                    midTurnState.arrivedCount += 1;
+                    midTurnState.waitForArrival?.();
+                    midTurnState.waitForArrival = null;
+                    await new Promise(resolve => {
+                        midTurnState.inFlightResolvers.push(resolve);
+                        setTimeout(resolve, 15_000);
+                    });
+                    return { content: "interrupted mid-turn" };
+                }
+                if (position.step === 0) {
+                    return {
+                        tools: [{
+                            name: "complete_workflow_node",
+                            args: { outcome: "again", output: { cycle: 1 }, operation_id: `op-${nx}`, node_execution_id: nx },
+                        }],
+                    };
+                }
+                return { content: "cycle 1 memo complete" };
+            },
+        });
+        const modelProvidersPath = await registerScriptedProvider(env, model.baseUrl);
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const store = catalog.workflowStore();
+        const client = new PilotSwarmClient({
+            store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, modelProvidersPath,
+        });
+        const worker = new PilotSwarmWorker({
+            store: env.store, githubToken: process.env.GITHUB_TOKEN, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
+            factsSchema: env.factsSchema, sessionStateDir: env.sessionStateDir, workerNodeId: `leak-b6-${randomUUID().slice(0, 6)}`,
+            disableManagementAgents: true, logLevel: "error", modelProvidersPath,
+        });
+        await client.start();
+        await worker.start();
+        const duroxide = client._getDuroxideClient();
+        const pool = new pg.Pool({ connectionString: env.store });
+        const q = async (sql, params = []) => (await pool.query(sql.replaceAll("SCHEMA", `"${env.cmsSchema}"`), params)).rows;
+        try {
+            const ownerId = randomUUID();
+            await catalog.createSession(ownerId, { owner: OWNER });
+
+            const continuedYaml = JSON.stringify({
+                apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "b6-continued", version: "1.0.0" }, initial: "talk",
+                states: {
+                    talk: {
+                        type: "agent", invoke: { prompt: "Report again so the workflow enters wait while you stay live." },
+                        session: "continue", timeoutSeconds: 300,
+                        transition: { next: { again: "hold", finish: "done", failure: "failed" } },
+                    },
+                    hold: { type: "wait", seconds: 300, transition: { next: { elapsed: "talk" } } },
+                    done: { type: "terminal", outcome: "succeeded" },
+                    failed: { type: "terminal", outcome: "failed" },
+                },
+            });
+            const plainMidTurnYaml = JSON.stringify({
+                apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "b6-plain", version: "1.0.0" }, initial: "work",
+                states: {
+                    work: {
+                        type: "agent", invoke: { prompt: "Hold mid-turn until cancelled." },
+                        session: "new", timeoutSeconds: 300,
+                        transition: { next: { ok: "done", failure: "failed" } },
+                    },
+                    done: { type: "terminal", outcome: "succeeded" },
+                    failed: { type: "terminal", outcome: "failed" },
+                },
+            });
+
+            // B6a: continued session live when parent workflow ends (3 iterations).
+            midTurnState.hold = false;
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const wfId = randomUUID();
+                const created = await createWorkflow({ catalog, store, duroxideClient: duroxide }, {
+                    workflowSessionId: wfId, parentSessionId: ownerId, yaml: continuedYaml, actor: ENGINE,
+                    operationId: `b6a-create-${i}`, publish: true, start: { inputs: {} }, notifyParent: false,
+                });
+                expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
+                const runId = created.receipt.run.runId;
+                const agentSessionId = workflowAgentSessionId(runId, "talk");
+                await until(`b6a-${i} enters hold with live continued agent`, async () => {
+                    const nodes = await store.listNodeExecutions(runId);
+                    const inHold = nodes.some(n => n.nodeId === "hold" && n.state === "pending");
+                    if (!inHold) return false;
+                    return (await duroxide.getStatus(`session-${agentSessionId}`)).status === "Running";
+                }, 60_000);
+                await controlWorkflowRun({ catalog, store, duroxideClient: duroxide }, wfId,
+                    { operation: "cancel", reason: "end while continued agent live" },
+                    { actor: { kind: "agent", sessionId: ownerId }, operationId: `b6a-cancel-${i}` });
+                const settled = await until(`b6a-${i} census settled`, async () => {
+                    const c = await census({ store, catalog, duroxideClient: duroxide, rootSessionIds: [ownerId], graceMs: 0 });
+                    return c.categories.orchestrations_live.count === 0
+                        && c.categories.runs_active.count === 0
+                        && c.categories.agent_sessions_live.count === 0 ? c : null;
+                }, 60_000);
+                assertNoLeaks(settled, { allow: ["sessions_not_swept"] });
+            }
+
+            // B6b: plain agent step cancelled mid-turn (3 iterations).
+            midTurnState.hold = true;
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const beforeCount = midTurnState.arrivedCount;
+                const arrived = new Promise(resolve => { midTurnState.waitForArrival = resolve; });
+                const wfId = randomUUID();
+                const created = await createWorkflow({ catalog, store, duroxideClient: duroxide }, {
+                    workflowSessionId: wfId, parentSessionId: ownerId, yaml: plainMidTurnYaml, actor: ENGINE,
+                    operationId: `b6b-create-${i}`, publish: true, start: { inputs: {} }, notifyParent: false,
+                });
+                expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
+                await until(`b6b-${i} agent mid-turn`, async () => {
+                    if (midTurnState.arrivedCount > beforeCount) return true;
+                    await Promise.race([arrived, pause(100)]);
+                    return midTurnState.arrivedCount > beforeCount;
+                }, 60_000);
+                await controlWorkflowRun({ catalog, store, duroxideClient: duroxide }, wfId,
+                    { operation: "cancel", reason: "cancel mid-turn" },
+                    { actor: { kind: "agent", sessionId: ownerId }, operationId: `b6b-cancel-${i}` });
+                // Release any HTTP promise still held by the scripted model after cancel was sent.
+                for (const resolve of midTurnState.inFlightResolvers.splice(0)) resolve();
+                const settled = await until(`b6b-${i} census settled`, async () => {
+                    const c = await census({ store, catalog, duroxideClient: duroxide, rootSessionIds: [ownerId], graceMs: 0 });
+                    return c.categories.orchestrations_live.count === 0
+                        && c.categories.runs_active.count === 0
+                        && c.categories.agent_sessions_live.count === 0 ? c : null;
+                }, 60_000);
+                assertNoLeaks(settled, { allow: ["sessions_not_swept"] });
+            }
+
+            // End owner and run Sweeper pass with grace 0 -> all 8 categories zero.
+            await q("UPDATE SCHEMA.sessions SET state = 'completed', updated_at = now() - interval '5 seconds' WHERE session_id = $1", [ownerId]);
+            const tools = createSweeperTools({ catalog, duroxideClient: duroxide, factStore: null });
+            const scan = tools.find(t => t.name === "scan_completed_sessions");
+            const cleanup = tools.find(t => t.name === "cleanup_session");
+            for (let pass = 0; pass < 3; pass += 1) {
+                const scanned = await scan.handler({ graceMinutes: 0 });
+                const treeIds = new Set((await census({ store, catalog, duroxideClient: duroxide, rootSessionIds: [ownerId], graceMs: 0 })).treeSessionIds);
+                const targets = (scanned.sessions ?? []).map(s => s.sessionId).filter(id => treeIds.has(id));
+                if (targets.length === 0) {
+                    const remaining = await q("SELECT session_id FROM SCHEMA.sessions WHERE session_id = ANY($1::text[]) AND deleted_at IS NULL", [[...treeIds]]);
+                    if (remaining.length === 0) break;
+                    await q("UPDATE SCHEMA.sessions SET updated_at = LEAST(updated_at, $2::timestamptz) WHERE session_id = ANY($1::text[]) AND deleted_at IS NULL",
+                        [remaining.map(r => r.session_id), new Date(Date.now() - 5_000).toISOString()]);
+                    continue;
+                }
+                await cleanup.handler({ sessionIds: targets, graceMinutes: 0, reason: "b6 sweep" });
+            }
+            const finalCensus = await census({ store, catalog, duroxideClient: duroxide, rootSessionIds: [ownerId], graceMs: 0 });
+            assertNoLeaks(finalCensus, { allow: [] });
+        } finally {
+            for (const resolve of midTurnState.inFlightResolvers.splice(0)) resolve();
+            await worker.stop();
+            await client.stop();
+            await catalog.close();
+            await pool.end();
+            await model.close();
+        }
+    });
+
+    it("B7: parallel two lanes each spawning a child; parent fails in one lane (3x)", { timeout: TIMEOUT }, async () => {
+        const h = await startRuntimeHarness(getEnv());
+        try {
+            const ownerId = await h.createLiveOwner();
+            await h.saveDefs(ownerId, [
+                ["sleep-child", SLEEP_CHILD_YAML],
+                ["parallel-two-lanes-fail", PARALLEL_TWO_LANES_FAIL_YAML],
+            ]);
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const parent = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "parallel-two-lanes-fail" }, inputs: {},
+                    actor: ENGINE, operationId: `b7-${i}`, owner: OWNER,
+                });
+                const children = await h.waitChildren(parent.workflowId, 2);
+                for (const c of children) await h.waitRunStatus(c.runId, ["running"]);
+                await sendTypedWorkflowInput(h.host, {
+                    workflowSessionId: parent.workflowId, senderSessionId: ownerId, contract: "FailLane@1", payload: { i }, operationId: `b7-fail-${i}`,
+                });
+                expect((await h.waitRunStatus(parent.runId, ["failed"])).status).toBe("failed");
+                for (const c of children) expect((await h.waitRunStatus(c.runId, ["cancelled"])).status).toBe("cancelled");
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            }
+            await h.endOwnerAndSweep(ownerId);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("B8: fault injection — parent-end cancel of child fails once, controller retries and child ends (3x)", { timeout: TIMEOUT }, async () => {
+        const injectedOps = new Set();
+        let cancelAttempts = 0;
+        let injectedFailures = 0;
+        const h = await startRuntimeHarness(getEnv(), {
+            wrapStore: (raw) => new Proxy(raw, {
+                get(target, prop) {
+                    if (prop === "recordSessionCommand") {
+                        return async (input) => {
+                            if (input?.command === "cancel" && String(input.operationId ?? "").startsWith("parent-end:")) {
+                                cancelAttempts += 1;
+                                const key = `${input.operationId}:${input.workflowSessionId}`;
+                                if (!injectedOps.has(key)) {
+                                    injectedOps.add(key);
+                                    injectedFailures += 1;
+                                    throw new Error("Simulated transient parent-end cancel failure");
+                                }
+                            }
+                            return target.recordSessionCommand(input);
+                        };
+                    }
+                    const value = target[prop];
+                    return typeof value === "function" ? value.bind(target) : value;
+                },
+            }),
+        });
+        try {
+            const ownerId = await h.createLiveOwner();
+            await h.saveDefs(ownerId, [
+                ["busy-child", BUSY_CHILD_YAML],
+                ["parent-spawn-fail", PARENT_SPAWN_FAIL_YAML],
+            ]);
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const parent = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "parent-spawn-fail" }, inputs: { responder: ownerId },
+                    actor: ENGINE, operationId: `b8-${i}`, owner: OWNER,
+                });
+                const [child] = await h.waitChildren(parent.workflowId, 1);
+                await h.waitBusyChildLive(child.runId);
+                await sendTypedWorkflowInput(h.host, {
+                    workflowSessionId: parent.workflowId, senderSessionId: ownerId, contract: "Go@1", payload: { i }, operationId: `b8-go-${i}`,
+                });
+                expect((await h.waitRunStatus(parent.runId, ["failed"])).status).toBe("failed");
+                expect((await h.waitRunStatus(child.runId, ["cancelled"])).status).toBe("cancelled");
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            }
+            expect(injectedFailures).toBe(ITERATIONS);
+            expect(cancelAttempts).toBeGreaterThanOrEqual(ITERATIONS * 2);
+            await h.endOwnerAndSweep(ownerId);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("B9: owner session ends while top-level Workflow and its child run — real owner-ended DB trigger (3x)", { timeout: TIMEOUT }, async () => {
+        const h = await startRuntimeHarness(getEnv());
+        try {
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                const ownerId = await h.createLiveOwner();
+                await h.saveDefs(ownerId, [
+                    ["busy-child", BUSY_CHILD_YAML],
+                    ["parent-spawn-hold", PARENT_SPAWN_HOLD_YAML],
+                ]);
+                const parent = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "parent-spawn-hold" }, inputs: { responder: ownerId },
+                    actor: ENGINE, operationId: `b9-${i}`, owner: OWNER,
+                });
+                const [child] = await h.waitChildren(parent.workflowId, 1);
+                await h.waitBusyChildLive(child.runId);
+                // Fire ONLY the real workflow_owner_session_ended DB trigger (no manual enqueue).
+                await h.q("UPDATE SCHEMA.sessions SET state = 'completed', updated_at = now() WHERE session_id = $1", [ownerId]);
+                await h.client.raiseEvent(`session-${ownerId}`, "end", {});
+                expect((await h.waitRunStatus(parent.runId, ["cancelled"])).status).toBe("cancelled");
+                expect((await h.waitRunStatus(child.runId, ["cancelled"])).status).toBe("cancelled");
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: false });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+                await h.endOwnerAndSweep(ownerId);
+            }
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("B10: messages sent to a run that then ends are consumed or expired (3x)", { timeout: TIMEOUT }, async () => {
+        const h = await startRuntimeHarness(getEnv());
+        try {
+            const ownerId = await h.createLiveOwner();
+            await h.saveDefs(ownerId, [
+                ["inbox-consume", INBOX_CONSUME_YAML],
+                ["inbox-unconsumed", INBOX_UNCONSUMED_YAML],
+            ]);
+            for (let i = 1; i <= ITERATIONS; i += 1) {
+                // Sub-case 1: message sent and consumed before run completes.
+                const wConsume = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "inbox-consume" }, inputs: {},
+                    actor: ENGINE, operationId: `b10-c-${i}`, owner: OWNER,
+                });
+                await h.waitRunStatus(wConsume.runId, ["running"]);
+                await sendTypedWorkflowInput(h.host, {
+                    workflowSessionId: wConsume.workflowId, senderSessionId: ownerId, contract: "Ping@1",
+                    payload: { seq: i }, operationId: `b10-c-msg-${i}`,
+                });
+                expect((await h.waitRunStatus(wConsume.runId, ["completed"])).status).toBe("completed");
+
+                // Sub-case 2: message sent (default TTL) and NOT consumed before the run ends.
+                const wUnconsumed = await startSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, definition: { name: "inbox-unconsumed" }, inputs: {},
+                    actor: ENGINE, operationId: `b10-u-${i}`, owner: OWNER,
+                });
+                await h.waitRunStatus(wUnconsumed.runId, ["running"]);
+                await sendTypedWorkflowInput(h.host, {
+                    workflowSessionId: wUnconsumed.workflowId, senderSessionId: ownerId, contract: "Ping@1",
+                    payload: { seq: i, unconsumed: true }, operationId: `b10-u-msg-${i}`,
+                });
+                await sendTypedWorkflowInput(h.host, {
+                    workflowSessionId: wUnconsumed.workflowId, senderSessionId: ownerId, contract: "Go@1",
+                    payload: { go: true }, operationId: `b10-u-go-${i}`,
+                });
+                expect((await h.waitRunStatus(wUnconsumed.runId, ["completed"])).status).toBe("completed");
+
+                const c = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                assertNoLeaks(c, { allow: ["sessions_not_swept"] });
+            }
+            await h.endOwnerAndSweep(ownerId);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("Control (non-vacuity): census catches and assertNoLeaks reports deliberate leaks across categories", { timeout: TIMEOUT }, async () => {
+        const h = await startRuntimeHarness(getEnv(), { skipParentEndCleanup: true });
+        try {
+            const ownerId = await h.createLiveOwner();
+            await h.saveDefs(ownerId, [
+                ["busy-child", BUSY_CHILD_YAML],
+                ["parent-spawn-fail", PARENT_SPAWN_FAIL_YAML],
+            ]);
+
+            // 1. Deliberately skip parent-end cleanup -> child workflow + its run + its orchestration stay live!
+            const parent = await startSessionWorkflowDefinition(h.host, {
+                ownerSessionId: ownerId, definition: { name: "parent-spawn-fail" }, inputs: { responder: ownerId },
+                actor: ENGINE, operationId: "ctrl-parent", owner: OWNER,
+            });
+            const [leakedChild] = await h.waitChildren(parent.workflowId, 1);
+            await h.waitBusyChildLive(leakedChild.runId);
+            await sendTypedWorkflowInput(h.host, {
+                workflowSessionId: parent.workflowId, senderSessionId: ownerId, contract: "Go@1", payload: {}, operationId: "ctrl-go",
+            });
+            expect((await h.waitRunStatus(parent.runId, ["failed"])).status).toBe("failed");
+            await until("parent controller terminal", async () => TERMINAL_ORCH.has((await h.client.getStatus(`session-${parent.workflowId}`)).status));
+
+            // 2. Deliberate bare claim shell (workflow session with no run row, deleted_at NULL).
+            const shellId = randomUUID();
+            await h.q(`SELECT SCHEMA.cms_create_workflow_session($1, $2, '{}'::jsonb)`, [shellId, ownerId]);
+
+            // 3. Deliberate open work + pending inbox on the terminal parent run (direct DB state).
+            const fakePendingNx = `nx-ctrl-${randomUUID().replaceAll("-", "")}`;
+            await h.q(
+                `INSERT INTO SCHEMA.workflow_node_executions
+                    (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state)
+                 VALUES ($1, $2, 'root', 'ctrl_appr', 99, 'approval', '{}', '0', 'pending')`,
+                [fakePendingNx, parent.runId],
+            );
+            await h.q(
+                `INSERT INTO SCHEMA.workflow_approvals
+                    (node_execution_id, workflow_session_id, run_id, owner_provider, owner_subject, snapshot, context_sha256)
+                 VALUES ($1, $2, $3, $4, $5, '{}', repeat('a', 64))`,
+                [fakePendingNx, parent.workflowId, parent.runId, OWNER.provider, OWNER.subject],
+            );
+            const fakeOutboxNx = `nx-out-${randomUUID().replaceAll("-", "")}`;
+            await h.q(
+                `INSERT INTO SCHEMA.workflow_node_executions
+                    (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state)
+                 VALUES ($1, $2, 'root', 'ctrl_send', 100, 'messaging', '{}', '0', 'pending')`,
+                [fakeOutboxNx, parent.runId],
+            );
+            await h.q(
+                `INSERT INTO SCHEMA.workflow_outbox
+                    (exchange_id, node_execution_id, workflow_session_id, run_id, mode, recipient_session_id, contract, payload, payload_sha256, state, created_at)
+                 VALUES ($1, $1, $2, $3, 'send', $4, 'Ping@1', '{}', '0', 'pending', now())`,
+                [fakeOutboxNx, parent.workflowId, parent.runId, ownerId],
+            );
+            const fakeInboxId = `msg-ctrl-${randomUUID()}`;
+            await h.q(
+                `INSERT INTO SCHEMA.workflow_inbox
+                    (message_id, workflow_session_id, run_id, sender_session_id, operation_id, request_sha256, contract, correlation, payload, accepted_at, expires_at)
+                 VALUES ($1, $2, $3, $4, 'ctrl-inbox', '0', 'Ping@1', '{}', '{}', now(), now() + interval '1 hour')`,
+                [fakeInboxId, parent.workflowId, parent.runId, ownerId],
+            );
+
+            const leaked = await census({
+                store: h.store,
+                catalog: h.catalog,
+                duroxideClient: h.client,
+                rootSessionIds: [ownerId],
+                graceMs: 0,
+                liveOwnerSessionIds: [ownerId],
+            });
+            expect(leaked.categories.orchestrations_live.ids.some(id => id.startsWith(`session-${leakedChild.workflowSessionId}:`))).toBe(true);
+            expect(leaked.categories.runs_active.ids).toContain(leakedChild.runId);
+            expect(leaked.categories.child_workflows_active.ids).toContain(leakedChild.workflowSessionId);
+            expect(leaked.categories.claim_shells.ids).toContain(shellId);
+            expect(leaked.categories.open_work_on_terminal_runs.ids).toContain(`approval:${fakePendingNx}`);
+            expect(leaked.categories.open_work_on_terminal_runs.ids).toContain(`outbox:${fakeOutboxNx}`);
+            expect(leaked.categories.inbox_pending_on_terminal_runs.ids).toContain(fakeInboxId);
+            expect(leaked.categories.sessions_not_swept.ids).toContain(ownerId);
+            expect(leaked.total).toBeGreaterThanOrEqual(8);
+
+            let err = null;
+            try {
+                assertNoLeaks(leaked);
+            } catch (caught) {
+                err = caught;
+            }
+            expect(err).toBeInstanceOf(Error);
+            expect(err.message).toContain("orchestrations_live");
+            expect(err.message).toContain("runs_active");
+            expect(err.message).toContain("child_workflows_active");
+            expect(err.message).toContain("claim_shells");
+            expect(err.message).toContain("open_work_on_terminal_runs");
+            expect(err.message).toContain("inbox_pending_on_terminal_runs");
+            expect(err.message).toContain("sessions_not_swept");
+            expect(err.message).toContain(leakedChild.runId);
+            expect(err.message).toContain(shellId);
+            expect(err.message).toContain(fakeInboxId);
+
+            // Clean up the leaked child so runtime shutdown is clean.
+            await applyOperatorCommandToWorkflow(h.host, {
+                targetSessionId: leakedChild.workflowSessionId,
+                command: { type: "cmd", cmd: "cancel", id: "ctrl-cleanup", reason: "cleanup" },
+            });
+            await h.waitRunStatus(leakedChild.runId, [...TERMINAL_RUN]);
+        } finally {
+            await h.stop();
+        }
+    });
+});
