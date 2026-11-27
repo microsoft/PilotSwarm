@@ -9,7 +9,19 @@ import {
     selectRoute,
     type WorkflowRunStatus,
 } from "./controller/runtime.js";
-import { canonicalJson, isJsonObject, type JsonValue } from "./json.js";
+import {
+    assertJsonValue,
+    canonicalJson,
+    isJsonObject,
+    isStorableText,
+    sha256Hex,
+    utf8ByteLength,
+    WORKFLOW_PAYLOAD_MAX_BYTES,
+    WorkflowJsonError,
+    type JsonValue,
+} from "./json.js";
+import { workflowResolvedSchema } from "./resolved-schema.js";
+import { WorkflowSchemaSet } from "./schema.js";
 import type { WorkflowRunRow } from "./store.js";
 import { nodeExecutionIdFor, WorkflowStoreError } from "./store-primitives.js";
 
@@ -19,7 +31,13 @@ import { nodeExecutionIdFor, WorkflowStoreError } from "./store-primitives.js";
  */
 export const WORKFLOW_RERUN_MAX_COPY_BYTES = 256 * 1024 * 1024;
 
-export type WorkflowRerunMode = "run_again" | "continue";
+/** Maximum Unicode character length of a `supply` mode note (matches migration 0104 `char_length <= 2000`). */
+export const WORKFLOW_RERUN_SUPPLY_NOTE_MAX_CHARS = 2_000;
+
+/** JSON envelope overhead `{"carry":,"result":}` added around `{ carry, result }` when the target state declares `carry`. */
+const WORKFLOW_CARRY_ENVELOPE_OVERHEAD_BYTES = 20;
+
+export type WorkflowRerunMode = "run_again" | "continue" | "supply";
 
 export interface WorkflowRerunKey {
     nodeExecutionId: string;
@@ -40,22 +58,29 @@ export interface WorkflowRerunKey {
     inputSha256: string;
     carrySha256: string | null;
     hasCarry: boolean;
+    carryByteLength?: number;
     byteLength: number;
     reusedFromExecutionId: string | null;
     reusedFromRunId: string | null;
     reusedFromWorkflowSessionId: string | null;
+    suppliedFromExecutionId?: string | null;
+    suppliedFromRunId?: string | null;
+    suppliedFromWorkflowSessionId?: string | null;
+    suppliedNote?: string | null;
     spawnChildWorkflowId: string | null;
+    spawnChildCancelledBySourceEnd?: boolean;
+    spawnChildHasNotice?: boolean;
 }
 
 export interface WorkflowRerunResume {
     v: 1;
     mode: WorkflowRerunMode;
-    /** In run_again: exact coordinates of the dropped chosen visit in the new run. In continue: null (target revision routes next step). */
+    /** In run_again: exact coordinates of dropped V. In supply: exact coordinates of V's successor routed by supplied.outcome. In continue: null. */
     stateId: string | null;
     ordinal: number | null;
     scopeId: "root";
     arrivalRoute: string | null;
-    /** Mapped new nodeExecutionId of the last reused top-level visit. */
+    /** Mapped new nodeExecutionId of the last pre-cut top-level visit (V's predecessor in run_again; V's copy in continue; V' in supply). */
     predecessorId: string | null;
     /** KV revision at the cut (before optional Start vars R+1). */
     cutKvRevision: number;
@@ -65,6 +90,14 @@ export interface WorkflowRerunResume {
     expectedCarrySha256: string | null;
     /** Always populated in run_again from the source's chosen visit so the Portal can flag & compare changed inputs. */
     recordedInputSha256: string | null;
+    /** Populated in supply mode so run.rerunOf and audit views stay self-contained even without loading node pages. */
+    supplied: {
+        executionId: string;
+        outcome: string;
+        outputSha256: string;
+        note: string;
+        at: string;
+    } | null;
     /** Human/agent-readable label of the chosen source visit, kept even if the source is later swept. */
     fromStateId: string;
     fromVisit: number;
@@ -78,6 +111,7 @@ export interface WorkflowRerunProblem {
         | "step_moved"
         | "route_changed"
         | "no_route"
+        | "undeclared_outcome"
         | "catch_all_changed"
         | "catch_all_twice"
         | "carry_changed"
@@ -99,13 +133,40 @@ export interface WorkflowRerunWarning {
         | "inputs_taken"
         | "reused_setup"
         | "reused_child_gone"
+        | "reused_child_cancelled"
         | "changed_reused_step"
         | "agent_memory"
         | "approval_reused"
-        | "decision_runs_again";
+        | "decision_runs_again"
+        | "result_supplied";
     stateId: string | null;
     message: string;
     details?: JsonValue;
+}
+
+export interface WorkflowRerunSupplyContract {
+    outcomes: string[];
+    outputSchemaName: string | null;
+    resolvedOutputSchema: JsonValue | null;
+    maxOutputBytes: number;
+    nextByOutcome: Record<string, { stateId: string; visit: number } | null>;
+}
+
+export interface WorkflowRerunSupplyPreview {
+    outcome: string;
+    valid: boolean;
+    next: { stateId: string; visit: number } | null;
+    problems: WorkflowRerunProblem[];
+}
+
+export interface ValidatedRerunSupply {
+    outcome: string;
+    output: JsonValue;
+    outputText: string;
+    outputBytes: number;
+    outputSha256: string;
+    note: string | null;
+    noteSha256: string | null;
 }
 
 export interface MappedRerunExecution {
@@ -137,6 +198,7 @@ export interface BuildRerunWarningsInput {
     dropped: readonly (WorkflowRerunKey & { outputPreview?: string | null })[];
     chosen: WorkflowRerunKey;
     mode: WorkflowRerunMode;
+    suppliedOutcome?: string | null;
     changedReusedSteps: ReadonlyArray<{ stateId: string; visits: number }>;
     deliveredOutboxExecIds: ReadonlySet<string>;
     droppedSpawnChildren: ReadonlyMap<string, { name: string | null; number: number | null; status: string | null }>;
@@ -154,6 +216,15 @@ export interface BuildRerunResumeInput {
     sourceRevision: number;
     sourceIrSha256: string;
     targetIrSha256: string;
+    supplied?: {
+        mappedSuppliedId: string;
+        outcome: string;
+        outputSha256: string;
+        note: string;
+        at: string;
+        nextStateId: string | null;
+        nextOrdinal: number | null;
+    } | null;
 }
 
 export interface BuildRerunPlanInput {
@@ -163,20 +234,25 @@ export interface BuildRerunPlanInput {
     mode: WorkflowRerunMode;
     modesAvailable: readonly WorkflowRerunMode[];
     revision: {
-        target: number;
+        target?: number | null;
         newestValid: number | null;
+        newestValidFits?: boolean | null;
+        newestValidProblem?: WorkflowRerunProblem | null;
         fits: boolean;
         problems: readonly WorkflowRerunProblem[];
         changedReusedSteps: ReadonlyArray<{ stateId: string; visits: number }>;
     };
-    sourceRevisionFits: boolean;
     reused: readonly WorkflowRerunKey[];
     reusedRequests: ReadonlyArray<{ executionId: string; stateId: string; visit: number }>;
     dropped: ReadonlyArray<WorkflowRerunKey & { outputPreview: string | null }>;
+    sourceIr?: WorkflowIR | null;
     targetIr: WorkflowIR;
+    supplyOutcome?: string | null;
+    carried?: { count: number; contracts: string[] } | null;
     warnings: readonly WorkflowRerunWarning[];
     allowed: boolean;
     blockedReason: string | null;
+    grantSource?: "session" | "inherited" | "none";
 }
 
 export interface WorkflowRerunPlan {
@@ -184,20 +260,25 @@ export interface WorkflowRerunPlan {
     from: { executionId: string; stateId: string; visit: number; picked: string };
     mode: WorkflowRerunMode;
     modesAvailable: WorkflowRerunMode[];
+    supplyContract: WorkflowRerunSupplyContract | null;
+    supply: WorkflowRerunSupplyPreview | null;
     revision: {
         target: number;
+        source: number;
         newestValid: number | null;
+        newestValidFits: boolean | null;
+        newestValidProblem: WorkflowRerunProblem | null;
         fits: boolean;
         problems: WorkflowRerunProblem[];
         changedReusedSteps: Array<{ stateId: string; visits: number }>;
     };
-    sourceRevisionFits: boolean;
     reused: {
         visits: number;
         bytes: number;
         steps: Array<{ stateId: string; visits: number }>;
         requests: Array<{ executionId: string; stateId: string; visit: number }>;
     };
+    carried: { count: number; contracts: string[] };
     runs: {
         first: { stateId: string; visit: number } | null;
     };
@@ -212,6 +293,7 @@ export interface WorkflowRerunPlan {
     warnings: WorkflowRerunWarning[];
     allowed: boolean;
     blockedReason: string | null;
+    grantSource: "session" | "inherited" | "none";
 }
 
 const RUN_END_CANCEL_WINNERS = new Set(["cancel", "delete", "stop", "deadline", "controller"]);
@@ -223,10 +305,30 @@ function isCancelledByRunEnd(visit: WorkflowRerunKey): boolean {
         && RUN_END_CANCEL_WINNERS.has(visit.winner ?? "");
 }
 
-function modesAvailableFor(visit: WorkflowRerunKey): WorkflowRerunMode[] {
+function isSupplyNeverOn(nodeId: string, sourceIr?: WorkflowIR | null, targetIr?: WorkflowIR | null): boolean {
+    const check = (ir: WorkflowIR | null | undefined): boolean => {
+        const node = ir?.nodes[nodeId];
+        return !!node && (node.type === "script" || node.type === "agent") && node.supply === "never";
+    };
+    return check(sourceIr) || check(targetIr);
+}
+
+function modesAvailableFor(
+    visit: WorkflowRerunKey,
+    sourceIr?: WorkflowIR | null,
+    targetIr?: WorkflowIR | null,
+): WorkflowRerunMode[] {
     const modes: WorkflowRerunMode[] = [];
     if (visit.predecessorId !== null) modes.push("run_again");
     if (visit.nodeType !== "terminal" && !isCancelledByRunEnd(visit)) modes.push("continue");
+    if (
+        visit.scopeId === ROOT_SCOPE
+        && (visit.nodeType === "script" || visit.nodeType === "agent")
+        && visit.outcome !== "exhausted"
+        && !isSupplyNeverOn(visit.nodeId, sourceIr, targetIr)
+    ) {
+        modes.push("supply");
+    }
     return modes;
 }
 
@@ -260,7 +362,12 @@ function orderedRootChain(keys: readonly WorkflowRerunKey[]): WorkflowRerunKey[]
     return ordered;
 }
 
-function validateVisitAndMode(chosen: WorkflowRerunKey, mode: WorkflowRerunMode): void {
+function validateVisitAndMode(
+    chosen: WorkflowRerunKey,
+    mode: WorkflowRerunMode,
+    sourceIr?: WorkflowIR | null,
+    targetIr?: WorkflowIR | null,
+): void {
     if (mode === "run_again" && chosen.predecessorId === null) {
         throw new WorkflowStoreError("RERUN_VISIT_NOT_ALLOWED", "Nothing would be reused. Use Run again.", {
             reason: "first_visit",
@@ -285,20 +392,65 @@ function validateVisitAndMode(chosen: WorkflowRerunKey, mode: WorkflowRerunMode)
             visit: chosen.ordinal,
         });
     }
+    if (mode === "supply") {
+        if (chosen.nodeType !== "script" && chosen.nodeType !== "agent") {
+            throw new WorkflowStoreError(
+                "RERUN_SUPPLY_NOT_ALLOWED",
+                `Results can only be supplied for a script or agent step (got ${chosen.nodeType}).`,
+                {
+                    reason: "step_type",
+                    nodeType: chosen.nodeType,
+                    executionId: chosen.nodeExecutionId,
+                    stateId: chosen.nodeId,
+                    visit: chosen.ordinal,
+                },
+            );
+        }
+        if (chosen.outcome === "exhausted") {
+            throw new WorkflowStoreError(
+                "RERUN_VISIT_NOT_ALLOWED",
+                `${chosen.nodeId} · visit ${chosen.ordinal} ended exhausted at entry without running; its result cannot be supplied.`,
+                {
+                    reason: "no_result",
+                    executionId: chosen.nodeExecutionId,
+                    stateId: chosen.nodeId,
+                    visit: chosen.ordinal,
+                },
+            );
+        }
+        if (isSupplyNeverOn(chosen.nodeId, sourceIr, targetIr)) {
+            throw new WorkflowStoreError(
+                "RERUN_SUPPLY_NOT_ALLOWED",
+                `Step ${chosen.nodeId} sets supply: never and cannot have its result supplied.`,
+                {
+                    reason: "supply_never",
+                    executionId: chosen.nodeExecutionId,
+                    stateId: chosen.nodeId,
+                    visit: chosen.ordinal,
+                },
+            );
+        }
+    }
 }
 
 export function pickRerunTarget(
     run: Pick<WorkflowRunRow, "status" | "terminalNodeId" | "terminalOutcome" | "terminalError">,
     keys: readonly WorkflowRerunKey[],
-    requested?: { executionId?: string | null; mode?: WorkflowRerunMode | null },
+    requested?: { executionId?: string | null; mode?: WorkflowRerunMode | null; sourceIr?: WorkflowIR | null; targetIr?: WorkflowIR | null },
 ): { chosen: WorkflowRerunKey; mode: WorkflowRerunMode; picked: string; modesAvailable: WorkflowRerunMode[] } {
     const byId = new Map<string, WorkflowRerunKey>(keys.map(k => [k.nodeExecutionId, k]));
     const rootChain = orderedRootChain(keys);
     const reqExecId = requested?.executionId ?? null;
     const reqMode = requested?.mode ?? null;
+    const sourceIr = requested?.sourceIr ?? null;
+    const targetIr = requested?.targetIr ?? null;
 
-    if (reqMode !== null && reqMode !== "run_again" && reqMode !== "continue") {
-        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", `Invalid re-run mode "${String(reqMode)}". Expected "run_again" or "continue".`);
+    if (reqMode !== null && reqMode !== "run_again" && reqMode !== "continue" && reqMode !== "supply") {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", `Invalid re-run mode "${String(reqMode)}". Expected "run_again", "continue", or "supply".`);
+    }
+
+    if (reqMode === "supply" && reqExecId === null) {
+        throw new WorkflowStoreError("RERUN_VISIT_REQUIRED", "mode 'supply' requires execution_id naming the script or agent visit.");
     }
 
     if (reqExecId !== null) {
@@ -312,21 +464,21 @@ export function pickRerunTarget(
             const parsed = parseBranchScope(found.scopeId);
             const parallel = parsed ? byId.get(parsed.parallelNodeExecutionId) ?? null : null;
             const targetLabel = parallel ? `${parallel.nodeId} · visit ${parallel.ordinal}` : "the parallel step";
-            throw new WorkflowStoreError(
-                "RERUN_VISIT_NOT_ALLOWED",
-                `To re-run this lane, choose ${targetLabel}.`,
-                {
-                    reason: "inside_lane",
-                    executionId: found.nodeExecutionId,
-                    parallelExecutionId: parallel?.nodeExecutionId ?? parsed?.parallelNodeExecutionId ?? null,
-                    parallelStateId: parallel?.nodeId ?? null,
-                    parallelVisit: parallel?.ordinal ?? null,
-                },
-            );
+            const code = reqMode === "supply" ? "RERUN_SUPPLY_NOT_ALLOWED" : "RERUN_VISIT_NOT_ALLOWED";
+            const msg = reqMode === "supply"
+                ? `Results cannot be supplied for a step inside a parallel lane. Choose ${targetLabel}.`
+                : `To re-run this lane, choose ${targetLabel}.`;
+            throw new WorkflowStoreError(code, msg, {
+                reason: "inside_lane",
+                executionId: found.nodeExecutionId,
+                parallelExecutionId: parallel?.nodeExecutionId ?? parsed?.parallelNodeExecutionId ?? null,
+                parallelStateId: parallel?.nodeId ?? null,
+                parallelVisit: parallel?.ordinal ?? null,
+            });
         }
         const mode: WorkflowRerunMode = reqMode ?? "run_again";
-        validateVisitAndMode(found, mode);
-        return { chosen: found, mode, picked: "requested", modesAvailable: modesAvailableFor(found) };
+        validateVisitAndMode(found, mode, sourceIr, targetIr);
+        return { chosen: found, mode, picked: "requested", modesAvailable: modesAvailableFor(found, sourceIr, targetIr) };
     }
 
     const errObj = isJsonObject(run.terminalError) ? run.terminalError : null;
@@ -435,9 +587,42 @@ export function pickRerunTarget(
         throw new WorkflowStoreError("RERUN_VISIT_REQUIRED", "No suitable visit could be picked automatically. Name the visit with execution_id.");
     }
 
+    // G-R1 (S1): when auto-picking with reqMode null or "run_again", inspect all candidate reused visits
+    // (top-level AND parallel lanes) for any spawn whose child was cancelled by source end or lacks an end notice;
+    // move the cut back to the earliest such spawn (or enclosing parallel step for a lane spawn).
+    if (reqMode === null || reqMode === "run_again") {
+        const candidateMode: WorkflowRerunMode = reqMode ?? defaultMode;
+        const candidatePart = partitionRerunVisits(keys, chosen.nodeExecutionId, candidateMode);
+        const topIndex = new Map<string, number>(candidatePart.reusedTop.map((k, idx) => [k.nodeExecutionId, idx]));
+        let earliestIdx = Number.POSITIVE_INFINITY;
+        let earliestCut: WorkflowRerunKey | null = null;
+        for (const k of candidatePart.reused) {
+            if (k.nodeType !== "spawn" || k.outcome !== "started" || k.spawnChildWorkflowId === null) continue;
+            if (k.spawnChildCancelledBySourceEnd !== true && k.spawnChildHasNotice !== false) continue;
+            let cutTarget: WorkflowRerunKey | null = null;
+            if (k.scopeId === ROOT_SCOPE) {
+                cutTarget = k;
+            } else {
+                const parsed = parseBranchScope(k.scopeId);
+                cutTarget = parsed ? (byId.get(parsed.parallelNodeExecutionId) ?? null) : null;
+            }
+            if (!cutTarget) continue;
+            const idx = topIndex.get(cutTarget.nodeExecutionId);
+            if (idx !== undefined && idx < earliestIdx) {
+                earliestIdx = idx;
+                earliestCut = cutTarget;
+            }
+        }
+        if (earliestCut !== null) {
+            chosen = earliestCut;
+            defaultMode = "run_again";
+            picked = "reused_spawn";
+        }
+    }
+
     const mode: WorkflowRerunMode = reqMode ?? defaultMode;
-    validateVisitAndMode(chosen, mode);
-    return { chosen, mode, picked, modesAvailable: modesAvailableFor(chosen) };
+    validateVisitAndMode(chosen, mode, sourceIr, targetIr);
+    return { chosen, mode, picked, modesAvailable: modesAvailableFor(chosen, sourceIr, targetIr) };
 }
 
 function orderLaneVisitsTopologically(lanes: readonly WorkflowRerunKey[], parallelIds: ReadonlySet<string>): WorkflowRerunKey[] {
@@ -489,9 +674,10 @@ export function partitionRerunVisits(
             executionId: chosenId,
         });
     }
-    const split = mode === "run_again" ? chosenIndex : chosenIndex + 1;
-    const reusedTop = rootChain.slice(0, split);
-    const droppedTop = rootChain.slice(split);
+    const reusedSplit = mode === "continue" ? chosenIndex + 1 : chosenIndex;
+    const droppedSplit = mode === "run_again" ? chosenIndex : chosenIndex + 1;
+    const reusedTop = rootChain.slice(0, reusedSplit);
+    const droppedTop = rootChain.slice(droppedSplit);
     const reusedTopIds = new Set(reusedTop.map(k => k.nodeExecutionId));
 
     const rawReusedLanes: WorkflowRerunKey[] = [];
@@ -648,10 +834,187 @@ function routeMatches(
 function stripCosmeticAndRouting(node: WorkflowIRNode): JsonValue {
     const copy: Record<string, JsonValue> = {};
     for (const [k, v] of Object.entries(node)) {
-        if (k === "next" || k === "notes" || k === "description" || k === "routeNotes") continue;
+        if (k === "next" || k === "notes" || k === "description" || k === "routeNotes" || k === "supply") continue;
         if (v !== undefined) copy[k] = v as JsonValue;
     }
     return copy;
+}
+
+export function validateRerunSupply(input: {
+    chosen: WorkflowRerunKey;
+    reused: readonly WorkflowRerunKey[];
+    sourceIr: WorkflowIR;
+    targetIr: WorkflowIR;
+    result?: unknown;
+    note?: unknown;
+    requireResultAndNote: boolean;
+}): {
+    contract: WorkflowRerunSupplyContract;
+    validated: ValidatedRerunSupply | null;
+} {
+    const { chosen, reused, sourceIr, targetIr, result, note, requireResultAndNote } = input;
+    if (chosen.scopeId !== ROOT_SCOPE) {
+        const parsed = parseBranchScope(chosen.scopeId);
+        throw new WorkflowStoreError(
+            "RERUN_SUPPLY_NOT_ALLOWED",
+            "Results cannot be supplied for a step inside a parallel lane.",
+            {
+                reason: "inside_lane",
+                executionId: chosen.nodeExecutionId,
+                parallelExecutionId: parsed?.parallelNodeExecutionId ?? null,
+            },
+        );
+    }
+    if (chosen.nodeType !== "script" && chosen.nodeType !== "agent") {
+        throw new WorkflowStoreError(
+            "RERUN_SUPPLY_NOT_ALLOWED",
+            `Results can only be supplied for a script or agent step (got ${chosen.nodeType}).`,
+            { reason: "step_type", nodeType: chosen.nodeType, executionId: chosen.nodeExecutionId, stateId: chosen.nodeId, visit: chosen.ordinal },
+        );
+    }
+    if (chosen.outcome === "exhausted") {
+        throw new WorkflowStoreError(
+            "RERUN_VISIT_NOT_ALLOWED",
+            `${chosen.nodeId} · visit ${chosen.ordinal} ended exhausted at entry without running; its result cannot be supplied.`,
+            { reason: "no_result", executionId: chosen.nodeExecutionId, stateId: chosen.nodeId, visit: chosen.ordinal },
+        );
+    }
+    // N6: refuse supply: never on EITHER S or T
+    if (isSupplyNeverOn(chosen.nodeId, sourceIr, targetIr)) {
+        throw new WorkflowStoreError(
+            "RERUN_SUPPLY_NOT_ALLOWED",
+            `Step ${chosen.nodeId} sets supply: never and cannot have its result supplied.`,
+            { reason: "supply_never", executionId: chosen.nodeExecutionId, stateId: chosen.nodeId, visit: chosen.ordinal },
+        );
+    }
+    const tNode = targetIr.nodes[chosen.nodeId];
+    if (!tNode || (tNode.type !== "script" && tNode.type !== "agent")) {
+        throw new WorkflowStoreError(
+            "RERUN_SUPPLY_NOT_ALLOWED",
+            `Step ${chosen.nodeId} in the target revision is not a script or agent step (got ${tNode?.type ?? "missing"}).`,
+            { reason: "step_type", nodeType: tNode?.type ?? "missing", executionId: chosen.nodeExecutionId, stateId: chosen.nodeId, visit: chosen.ordinal },
+        );
+    }
+
+    const reusedTop = reused.filter(k => k.scopeId === ROOT_SCOPE);
+    const preCutTop = [...reusedTop, chosen];
+    const catchAllUsedBeforeCut = targetIr.catchAll !== null
+        && reusedTop.some(k => k.arrivalRoute === CATCH_ALL_ROUTE || k.nodeId === targetIr.catchAll);
+    const nextByOutcome: Record<string, { stateId: string; visit: number } | null> = {};
+    for (const outcome of tNode.outcomes) {
+        const route = selectRoute(tNode.next, { outcome, resultKind: "business" });
+        if (route === null) {
+            nextByOutcome[outcome] = null;
+            continue;
+        }
+        const nextStateId = tNode.next[route] ?? null;
+        if (nextStateId === null || (targetIr.catchAll !== null && nextStateId === targetIr.catchAll && catchAllUsedBeforeCut)) {
+            nextByOutcome[outcome] = null;
+            continue;
+        }
+        const priorVisits = preCutTop.filter(k => k.nodeId === nextStateId).length;
+        nextByOutcome[outcome] = { stateId: nextStateId, visit: priorVisits + 1 };
+    }
+
+    const carryBytes = chosen.carryByteLength ?? 0;
+    const maxOutputBytes = Math.max(
+        0,
+        tNode.carry !== undefined
+            ? WORKFLOW_PAYLOAD_MAX_BYTES - WORKFLOW_CARRY_ENVELOPE_OVERHEAD_BYTES - carryBytes
+            : WORKFLOW_PAYLOAD_MAX_BYTES,
+    );
+    const contract: WorkflowRerunSupplyContract = {
+        outcomes: [...tNode.outcomes],
+        outputSchemaName: tNode.outputSchema,
+        resolvedOutputSchema: workflowResolvedSchema(targetIr, tNode.outputSchema),
+        maxOutputBytes,
+        nextByOutcome,
+    };
+
+    if (!requireResultAndNote) {
+        return { contract, validated: null };
+    }
+
+    // S11: Call shape checks -> 400 RERUN_ARGUMENT_REFUSED
+    if (!isJsonObject(result)) {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "mode 'supply' requires result: { outcome, output? }.");
+    }
+    for (const key of Object.keys(result)) {
+        if (key !== "outcome" && key !== "output") {
+            throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", `Unexpected key '${key}' in supplied result. Expected only outcome and optional output.`);
+        }
+    }
+    const rawOutcome = result.outcome;
+    if (typeof rawOutcome !== "string" || rawOutcome.trim().length === 0 || !isStorableText(rawOutcome)) {
+        throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "Supplied result.outcome must be a non-empty string.");
+    }
+    if (typeof note !== "string" || !isStorableText(note) || note.trim().length === 0 || [...note].length > WORKFLOW_RERUN_SUPPLY_NOTE_MAX_CHARS) {
+        throw new WorkflowStoreError(
+            "RERUN_ARGUMENT_REFUSED",
+            `mode 'supply' requires a non-blank note of at most ${WORKFLOW_RERUN_SUPPLY_NOTE_MAX_CHARS} characters explaining how the result was verified.`,
+        );
+    }
+
+    // S11: Contract & value checks -> 422 RERUN_SUPPLIED_RESULT_INVALID
+    if (!tNode.outcomes.includes(rawOutcome)) {
+        throw new WorkflowStoreError(
+            "RERUN_SUPPLIED_RESULT_INVALID",
+            `Outcome '${rawOutcome}' is not declared by ${chosen.nodeId}. Allowed outcomes: ${tNode.outcomes.join(", ")}.`,
+            { reason: "undeclared_outcome", outcome: rawOutcome, allowedOutcomes: [...tNode.outcomes] },
+        );
+    }
+
+    // N4: Omitted output defaults to null and serializes to 'null' JSON text (never SQL NULL)
+    const rawOutput: unknown = Object.hasOwn(result, "output") && result.output !== undefined ? result.output : null;
+    try {
+        assertJsonValue(rawOutput, "result.output");
+    } catch (error) {
+        const message = error instanceof WorkflowJsonError ? error.message : String(error);
+        const errPath = error instanceof WorkflowJsonError ? error.path : "result.output";
+        throw new WorkflowStoreError("RERUN_SUPPLIED_RESULT_INVALID", `Supplied result.output is not valid JSON: ${message}`, {
+            reason: "schema",
+            outputSchema: tNode.outputSchema,
+            problems: [{ path: errPath, message }],
+        });
+    }
+    const output = rawOutput as JsonValue;
+    const outputText = canonicalJson(output);
+    const outputBytes = utf8ByteLength(outputText);
+    if (outputBytes > maxOutputBytes) {
+        throw new WorkflowStoreError(
+            "RERUN_SUPPLIED_RESULT_INVALID",
+            `Supplied result.output is ${outputBytes} bytes; the limit for ${chosen.nodeId} is ${maxOutputBytes} bytes.`,
+            { reason: "too_large", bytes: outputBytes, maxBytes: maxOutputBytes },
+        );
+    }
+    if (tNode.outputSchema !== null) {
+        const schemaSet = new WorkflowSchemaSet(targetIr.schemaDefs);
+        const problems = schemaSet.validate(tNode.outputSchema, output, "/output");
+        if (problems.length > 0) {
+            throw new WorkflowStoreError(
+                "RERUN_SUPPLIED_RESULT_INVALID",
+                `Supplied result.output does not match ${chosen.nodeId}'s outputSchema: ${problems[0].message}`,
+                {
+                    reason: "schema",
+                    outputSchema: tNode.outputSchema,
+                    problems: problems.map(p => ({ path: p.path, message: p.message })),
+                },
+            );
+        }
+    }
+
+    return {
+        contract,
+        validated: {
+            outcome: rawOutcome,
+            output,
+            outputText,
+            outputBytes,
+            outputSha256: sha256Hex(outputText),
+            note,
+            noteSha256: sha256Hex(note),
+        },
+    };
 }
 
 export function checkRerunCompatibility(input: {
@@ -662,13 +1025,15 @@ export function checkRerunCompatibility(input: {
     chosen: WorkflowRerunKey;
     mode: WorkflowRerunMode;
     sourceControllerVersion: string | null;
+    suppliedOutcome?: string | null;
 }): {
     fits: boolean;
     problems: WorkflowRerunProblem[];
     changedReusedSteps: Array<{ stateId: string; visits: number }>;
 } {
-    const { sourceIr, targetIr, reused, reusedTop, chosen, mode, sourceControllerVersion } = input;
+    const { sourceIr, targetIr, reused, reusedTop, chosen, mode, sourceControllerVersion, suppliedOutcome } = input;
     const problems: WorkflowRerunProblem[] = [];
+    const preCutTop = mode === "supply" ? [...reusedTop, chosen] : [...reusedTop];
 
     // C9: controller version feature compatibility
     const latestFeatures = workflowControllerFeatures(WORKFLOW_CONTROLLER_VERSION);
@@ -695,12 +1060,15 @@ export function checkRerunCompatibility(input: {
         reusedStepCounts.set(k.nodeId, (reusedStepCounts.get(k.nodeId) ?? 0) + 1);
     }
     const reusedStepIds = [...reusedStepCounts.keys()];
+    const c1StepIds = mode === "supply" && !reusedStepCounts.has(chosen.nodeId)
+        ? [...reusedStepIds, chosen.nodeId]
+        : reusedStepIds;
     const sourcePlace = scopePlacementOf(sourceIr);
     const targetPlace = scopePlacementOf(targetIr);
 
-    // C1 & C2 & C7 over reused steps
+    // C1 & C2 & C7 over reused steps (plus chosen step in supply mode)
     const missingOrChangedType = new Set<string>();
-    for (const id of reusedStepIds) {
+    for (const id of c1StepIds) {
         const sNode = sourceIr.nodes[id];
         const tNode = targetIr.nodes[id];
         if (!tNode) {
@@ -738,8 +1106,8 @@ export function checkRerunCompatibility(input: {
                 message: `Step ${id} moved between scopes (${sourcePlace.get(id)} -> ${targetPlace.get(id)}).`,
             });
         }
-        // C7: parallel kind & named branch names
-        if (sNode.type === "parallel" && tNode.type === "parallel") {
+        // C7: parallel kind & named branch names (for reused steps)
+        if (reusedStepCounts.has(id) && sNode.type === "parallel" && tNode.type === "parallel") {
             const sHasBranches = sNode.branches !== undefined;
             const tHasBranches = tNode.branches !== undefined;
             const branchNamesMatch = sHasBranches === tHasBranches && (!sHasBranches || (
@@ -757,20 +1125,20 @@ export function checkRerunCompatibility(input: {
         }
     }
 
-    // C2: initial step must still match reusedTop[0]
-    if (reusedTop.length > 0 && targetIr.initial !== reusedTop[0].nodeId) {
+    // C2: initial step must still match preCutTop[0] (covers supply on visit 1 when reusedTop is empty)
+    if (preCutTop.length > 0 && targetIr.initial !== preCutTop[0].nodeId) {
         problems.push({
             code: "step_moved",
-            stateId: reusedTop[0].nodeId,
-            visit: reusedTop[0].ordinal,
-            message: `Initial step changed from ${reusedTop[0].nodeId} to ${targetIr.initial}.`,
+            stateId: preCutTop[0].nodeId,
+            visit: preCutTop[0].ordinal,
+            message: `Initial step changed from ${preCutTop[0].nodeId} to ${targetIr.initial}.`,
         });
     }
 
-    // C3: every adjacent pair (A, B) in reusedTop
-    for (let i = 0; i < reusedTop.length - 1; i += 1) {
-        const a = reusedTop[i];
-        const b = reusedTop[i + 1];
+    // C3: every adjacent pair (A, B) in preCutTop
+    for (let i = 0; i < preCutTop.length - 1; i += 1) {
+        const a = preCutTop[i];
+        const b = preCutTop[i + 1];
         if (missingOrChangedType.has(a.nodeId) || missingOrChangedType.has(b.nodeId)) continue;
         if (!routeMatches(targetIr, a, b.nodeId, b.arrivalRoute)) {
             problems.push({
@@ -782,8 +1150,8 @@ export function checkRerunCompatibility(input: {
         }
     }
 
-    // C5: catchAll consistency & at-most-once
-    const usedCatchAllInSource = reusedTop.some(
+    // C5: catchAll consistency & at-most-once across preCutTop
+    const usedCatchAllInSource = preCutTop.some(
         k => k.arrivalRoute === CATCH_ALL_ROUTE || (sourceIr.catchAll !== null && k.nodeId === sourceIr.catchAll),
     );
     if (usedCatchAllInSource && targetIr.catchAll !== sourceIr.catchAll) {
@@ -795,8 +1163,8 @@ export function checkRerunCompatibility(input: {
         });
     }
     if (targetIr.catchAll !== null) {
-        const catchAllVisitsInReused = reusedTop.filter(k => k.nodeId === targetIr.catchAll).length;
-        if (catchAllVisitsInReused > 1 || (mode === "run_again" && chosen.nodeId === targetIr.catchAll && catchAllVisitsInReused >= 1)) {
+        const catchAllVisitsInPreCut = preCutTop.filter(k => k.nodeId === targetIr.catchAll).length;
+        if (catchAllVisitsInPreCut > 1 || (mode === "run_again" && chosen.nodeId === targetIr.catchAll && catchAllVisitsInPreCut >= 1)) {
             problems.push({
                 code: "catch_all_twice",
                 stateId: targetIr.catchAll,
@@ -834,6 +1202,64 @@ export function checkRerunCompatibility(input: {
                     visit: last.ordinal,
                     message: `Step ${last.nodeId} · visit ${last.ordinal} (${last.outcome ?? "unknown"}) no longer routes to ${chosen.nodeId} via ${chosen.arrivalRoute ?? "initial"}.`,
                 });
+            }
+        }
+    } else if (mode === "supply") {
+        const tChosen = targetIr.nodes[chosen.nodeId];
+        if (tChosen && !missingOrChangedType.has(chosen.nodeId)) {
+            if (targetPlace.get(chosen.nodeId) !== ROOT_SCOPE) {
+                problems.push({
+                    code: "step_moved",
+                    stateId: chosen.nodeId,
+                    visit: chosen.ordinal,
+                    message: `Chosen step ${chosen.nodeId} is no longer a top-level step in the target revision.`,
+                });
+            } else if (tChosen.type === "script" || tChosen.type === "agent") {
+                const catchAllAlreadyUsed = targetIr.catchAll !== null
+                    && preCutTop.some(k => k.arrivalRoute === CATCH_ALL_ROUTE || k.nodeId === targetIr.catchAll);
+                if (suppliedOutcome !== undefined && suppliedOutcome !== null) {
+                    const direct = selectRoute(tChosen.next, { outcome: suppliedOutcome, resultKind: "business" });
+                    if (direct === null) {
+                        problems.push({
+                            code: "no_route",
+                            stateId: chosen.nodeId,
+                            visit: chosen.ordinal,
+                            message: `Target revision has no route from ${chosen.nodeId} · visit ${chosen.ordinal} for supplied outcome "${suppliedOutcome}".`,
+                        });
+                    } else if (targetIr.catchAll !== null && tChosen.next[direct] === targetIr.catchAll && catchAllAlreadyUsed) {
+                        problems.push({
+                            code: "catch_all_twice",
+                            stateId: targetIr.catchAll,
+                            visit: chosen.ordinal,
+                            message: `Step ${chosen.nodeId} · visit ${chosen.ordinal} routes supplied outcome "${suppliedOutcome}" to catch-all step ${targetIr.catchAll}, which already ran.`,
+                        });
+                    }
+                    // N10: explicit declared outcome route to an UNUSED targetIr.catchAll is valid!
+                } else {
+                    // Initial rerun_plan open without outcome: require at least one business outcome whose route does not re-enter an already-used catchAll.
+                    let anyValid = false;
+                    let anyHitUsedCatchAll = false;
+                    for (const outcome of tChosen.outcomes) {
+                        const direct = selectRoute(tChosen.next, { outcome, resultKind: "business" });
+                        if (direct === null) continue;
+                        if (targetIr.catchAll !== null && tChosen.next[direct] === targetIr.catchAll && catchAllAlreadyUsed) {
+                            anyHitUsedCatchAll = true;
+                            continue;
+                        }
+                        anyValid = true;
+                        break;
+                    }
+                    if (!anyValid) {
+                        problems.push({
+                            code: anyHitUsedCatchAll ? "catch_all_twice" : "no_route",
+                            stateId: anyHitUsedCatchAll ? targetIr.catchAll : chosen.nodeId,
+                            visit: chosen.ordinal,
+                            message: anyHitUsedCatchAll
+                                ? `Every business outcome of ${chosen.nodeId} routes to catch-all step ${targetIr.catchAll}, which already ran.`
+                                : `Target revision has no routable business outcome from ${chosen.nodeId} · visit ${chosen.ordinal}.`,
+                        });
+                    }
+                }
             }
         }
     } else {
@@ -874,8 +1300,8 @@ export function checkRerunCompatibility(input: {
         }
     }
 
-    // C6: carry declaration on the last reused top-level visit before the cut
-    const pred = reusedTop.at(-1);
+    // C6: carry declaration on the last pre-cut top-level visit (V's predecessor in run_again; V itself in continue and supply)
+    const pred = preCutTop.at(-1);
     if (pred && !missingOrChangedType.has(pred.nodeId)) {
         const tPred = targetIr.nodes[pred.nodeId];
         if (tPred) {
@@ -891,14 +1317,26 @@ export function checkRerunCompatibility(input: {
         }
     }
 
-    // C8: maxNodeExecutions
-    if (reused.length >= targetIr.limits.maxNodeExecutions) {
+    // C8: maxNodeExecutions (plus maxVisits for supplied visit V')
+    const neededPreCut = reused.length + (mode === "supply" ? 1 : 0);
+    if (neededPreCut >= targetIr.limits.maxNodeExecutions) {
         problems.push({
             code: "limit_too_low",
             stateId: null,
             visit: null,
-            message: `Target revision limit maxNodeExecutions (${targetIr.limits.maxNodeExecutions}) must exceed the ${reused.length} reused visits.`,
+            message: `Target revision limit maxNodeExecutions (${targetIr.limits.maxNodeExecutions}) must exceed the ${neededPreCut} pre-cut visits.`,
         });
+    }
+    if (mode === "supply") {
+        const tChosen = targetIr.nodes[chosen.nodeId];
+        if (tChosen && tChosen.type !== "terminal" && tChosen.maxVisits !== undefined && chosen.ordinal > tChosen.maxVisits) {
+            problems.push({
+                code: "limit_too_low",
+                stateId: chosen.nodeId,
+                visit: chosen.ordinal,
+                message: `Target revision maxVisits (${tChosen.maxVisits}) for ${chosen.nodeId} is below supplied visit ${chosen.ordinal}.`,
+            });
+        }
     }
 
     const fits = problems.length === 0;
@@ -962,6 +1400,7 @@ export function buildRerunWarnings(input: BuildRerunWarningsInput): WorkflowReru
         dropped,
         chosen,
         mode,
+        suppliedOutcome,
         changedReusedSteps,
         deliveredOutboxExecIds,
         droppedSpawnChildren,
@@ -973,8 +1412,16 @@ export function buildRerunWarnings(input: BuildRerunWarningsInput): WorkflowReru
     const warnings: WorkflowRerunWarning[] = [];
     const srcLabel = sourceNumber !== null ? `#${sourceNumber}` : "the source Workflow";
 
-    // 1. step_runs_again / 12. decision_runs_again
-    if (mode === "run_again") {
+    // 1. step_runs_again / 12. decision_runs_again / 13. result_supplied
+    if (mode === "supply") {
+        warnings.push({
+            code: "result_supplied",
+            stateId: chosen.nodeId,
+            message: suppliedOutcome
+                ? `${chosen.nodeId} · visit ${chosen.ordinal} does not run. Its result is supplied as '${suppliedOutcome}'.`
+                : `${chosen.nodeId} · visit ${chosen.ordinal} does not run. Its result is supplied.`,
+        });
+    } else if (mode === "run_again") {
         if (chosen.nodeType === "decision") {
             warnings.push({
                 code: "decision_runs_again",
@@ -1091,14 +1538,29 @@ export function buildRerunWarnings(input: BuildRerunWarningsInput): WorkflowReru
         });
     }
 
-    // 8. reused_child_gone
+    // 8. reused_child_gone & 14. reused_child_cancelled (G-R1 when cut was not moved back)
+    const reusedById = new Map<string, WorkflowRerunKey>(reused.map(k => [k.nodeExecutionId, k]));
     for (const k of reused) {
-        if (k.nodeType === "spawn" && k.spawnChildWorkflowId !== null && !reusedSpawnNoticeChildIds.has(k.spawnChildWorkflowId)) {
+        if (k.nodeType !== "spawn" || k.spawnChildWorkflowId === null) continue;
+        let cutTargetLabel = k.nodeId;
+        if (k.scopeId !== ROOT_SCOPE) {
+            const parsed = parseBranchScope(k.scopeId);
+            const enclosing = parsed ? reusedById.get(parsed.parallelNodeExecutionId) : null;
+            if (enclosing) cutTargetLabel = enclosing.nodeId;
+        }
+        if (k.spawnChildCancelledBySourceEnd === true) {
+            warnings.push({
+                code: "reused_child_cancelled",
+                stateId: k.nodeId,
+                message: `${k.nodeId} started ${k.spawnChildWorkflowId}, which was cancelled when ${srcLabel} ended. A step that waits for it gets cancelled. Choose ${cutTargetLabel} instead.`,
+                details: { executionId: k.nodeExecutionId, stateId: k.nodeId, visit: k.ordinal, childWorkflowId: k.spawnChildWorkflowId, cutTarget: cutTargetLabel },
+            });
+        } else if (k.spawnChildHasNotice === false || !reusedSpawnNoticeChildIds.has(k.spawnChildWorkflowId)) {
             warnings.push({
                 code: "reused_child_gone",
                 stateId: k.nodeId,
-                message: `${k.nodeId} started a child Workflow (${k.spawnChildWorkflowId}) that has no end notice. A step that waits for it will time out. Choose ${k.nodeId} instead.`,
-                details: { executionId: k.nodeExecutionId, stateId: k.nodeId, visit: k.ordinal, childWorkflowId: k.spawnChildWorkflowId },
+                message: `${k.nodeId} started a child Workflow (${k.spawnChildWorkflowId}) that has no end notice. A step that waits for it will time out. Choose ${cutTargetLabel} instead.`,
+                details: { executionId: k.nodeExecutionId, stateId: k.nodeId, visit: k.ordinal, childWorkflowId: k.spawnChildWorkflowId, cutTarget: cutTargetLabel },
             });
         }
     }
@@ -1113,19 +1575,35 @@ export function buildRerunWarnings(input: BuildRerunWarningsInput): WorkflowReru
         });
     }
 
-    // 10. agent_memory
-    const startAtCut = mode === "run_again"
-        ? [chosen.nodeId]
-        : (() => {
-            const nxt = nextTargetStateForContinue(targetIr, chosen, reused);
-            return nxt ? [nxt] : [];
-        })();
+    // 10. agent_memory (includes supplied continued agent step when reachable after cut)
+    const startAtCut: string[] = (() => {
+        if (mode === "run_again") return [chosen.nodeId];
+        if (mode === "supply") {
+            const tChosen = targetIr.nodes[chosen.nodeId];
+            if (!tChosen || (tChosen.type !== "script" && tChosen.type !== "agent")) return [];
+            if (suppliedOutcome) {
+                const r = selectRoute(tChosen.next, { outcome: suppliedOutcome, resultKind: "business" });
+                return r && tChosen.next[r] ? [tChosen.next[r]] : [];
+            }
+            const targets: string[] = [];
+            for (const o of tChosen.outcomes) {
+                const r = selectRoute(tChosen.next, { outcome: o, resultKind: "business" });
+                if (r && tChosen.next[r] && !targets.includes(tChosen.next[r])) targets.push(tChosen.next[r]);
+            }
+            return targets;
+        }
+        const nxt = nextTargetStateForContinue(targetIr, chosen, reused);
+        return nxt ? [nxt] : [];
+    })();
     const reachable = reachableStateIds(targetIr, startAtCut);
     const reusedAgentCounts = new Map<string, number>();
     for (const k of reused) {
         if (k.nodeType === "agent") {
             reusedAgentCounts.set(k.nodeId, (reusedAgentCounts.get(k.nodeId) ?? 0) + 1);
         }
+    }
+    if (mode === "supply" && chosen.nodeType === "agent") {
+        reusedAgentCounts.set(chosen.nodeId, (reusedAgentCounts.get(chosen.nodeId) ?? 0) + 1);
     }
     for (const [stateId, visits] of reusedAgentCounts) {
         const node = targetIr.nodes[stateId];
@@ -1154,7 +1632,7 @@ export function buildRerunWarnings(input: BuildRerunWarningsInput): WorkflowReru
 }
 
 export function buildRerunResume(input: BuildRerunResumeInput): WorkflowRerunResume {
-    const { mode, chosen, mappedPredecessorId, cutKvRevision, sourceRevision, sourceIrSha256, targetIrSha256 } = input;
+    const { mode, chosen, mappedPredecessorId, cutKvRevision, sourceRevision, sourceIrSha256, targetIrSha256, supplied } = input;
     const sameIr = sourceIrSha256 === targetIrSha256;
     if (mode === "run_again") {
         return {
@@ -1170,6 +1648,36 @@ export function buildRerunResume(input: BuildRerunResumeInput): WorkflowRerunRes
             expectedInputSha256: sameIr ? chosen.inputSha256 : null,
             expectedCarrySha256: sameIr ? chosen.carrySha256 : null,
             recordedInputSha256: chosen.inputSha256,
+            supplied: null,
+            fromStateId: chosen.nodeId,
+            fromVisit: chosen.ordinal,
+            sourceRevision,
+        };
+    }
+    if (mode === "supply") {
+        if (!supplied) {
+            throw new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", "buildRerunResume requires supplied metadata when mode is 'supply'.");
+        }
+        return {
+            v: 1,
+            mode: "supply",
+            stateId: supplied.nextStateId,
+            ordinal: supplied.nextOrdinal,
+            scopeId: "root",
+            arrivalRoute: supplied.outcome,
+            predecessorId: supplied.mappedSuppliedId,
+            cutKvRevision,
+            sameIr,
+            expectedInputSha256: null,
+            expectedCarrySha256: null,
+            recordedInputSha256: null,
+            supplied: {
+                executionId: chosen.nodeExecutionId,
+                outcome: supplied.outcome,
+                outputSha256: supplied.outputSha256,
+                note: supplied.note,
+                at: supplied.at,
+            },
             fromStateId: chosen.nodeId,
             fromVisit: chosen.ordinal,
             sourceRevision,
@@ -1188,6 +1696,7 @@ export function buildRerunResume(input: BuildRerunResumeInput): WorkflowRerunRes
         expectedInputSha256: null,
         expectedCarrySha256: null,
         recordedInputSha256: null,
+        supplied: null,
         fromStateId: chosen.nodeId,
         fromVisit: chosen.ordinal,
         sourceRevision,
@@ -1202,14 +1711,17 @@ export function buildRerunPlan(input: BuildRerunPlanInput): WorkflowRerunPlan {
         mode,
         modesAvailable,
         revision,
-        sourceRevisionFits,
         reused,
         reusedRequests,
         dropped,
+        sourceIr,
         targetIr,
+        supplyOutcome,
+        carried,
         warnings,
         allowed,
         blockedReason,
+        grantSource,
     } = input;
 
     const stepCounts = new Map<string, number>();
@@ -1220,9 +1732,72 @@ export function buildRerunPlan(input: BuildRerunPlanInput): WorkflowRerunPlan {
     }
     const steps = [...stepCounts.entries()].map(([stateId, visits]) => ({ stateId, visits }));
 
+    // Supply contract & outcome-only preview (M6, S11: never throws 422 on preview)
+    let supplyContract: WorkflowRerunSupplyContract | null = null;
+    let supplyPreview: WorkflowRerunSupplyPreview | null = null;
+    const effectiveSourceIr = sourceIr ?? targetIr;
+    if (mode === "supply" || modesAvailable.includes("supply")) {
+        try {
+            supplyContract = validateRerunSupply({
+                chosen,
+                reused,
+                sourceIr: effectiveSourceIr,
+                targetIr,
+                requireResultAndNote: false,
+            }).contract;
+        } catch {
+            supplyContract = null;
+        }
+    }
+    if (mode === "supply" && supplyOutcome !== undefined && supplyOutcome !== null && supplyOutcome !== "") {
+        const previewProblems: WorkflowRerunProblem[] = [];
+        let previewNext: { stateId: string; visit: number } | null = null;
+        if (!supplyContract) {
+            previewProblems.push({
+                code: "step_missing",
+                stateId: chosen.nodeId,
+                visit: chosen.ordinal,
+                message: `Step ${chosen.nodeId} cannot be supplied on target revision.`,
+            });
+        } else if (!supplyContract.outcomes.includes(supplyOutcome)) {
+            previewProblems.push({
+                code: "undeclared_outcome",
+                stateId: chosen.nodeId,
+                visit: chosen.ordinal,
+                message: `Outcome '${supplyOutcome}' is not declared by ${chosen.nodeId}. Allowed outcomes: ${supplyContract.outcomes.join(", ")}.`,
+            });
+        } else {
+            previewNext = supplyContract.nextByOutcome[supplyOutcome] ?? null;
+            if (previewNext === null) {
+                const tNode = targetIr.nodes[chosen.nodeId];
+                const direct = tNode && tNode.type !== "terminal"
+                    ? selectRoute(tNode.next, { outcome: supplyOutcome, resultKind: "business" })
+                    : null;
+                const hitUsedCatchAll = direct !== null && tNode && tNode.type !== "terminal"
+                    && targetIr.catchAll !== null && tNode.next[direct] === targetIr.catchAll;
+                previewProblems.push({
+                    code: hitUsedCatchAll ? "catch_all_twice" : "no_route",
+                    stateId: hitUsedCatchAll ? targetIr.catchAll : chosen.nodeId,
+                    visit: chosen.ordinal,
+                    message: hitUsedCatchAll
+                        ? `Outcome '${supplyOutcome}' routes to catch-all step ${targetIr.catchAll}, which already ran.`
+                        : `No route from ${chosen.nodeId} for outcome '${supplyOutcome}'.`,
+                });
+            }
+        }
+        supplyPreview = {
+            outcome: supplyOutcome,
+            valid: previewProblems.length === 0,
+            next: previewNext,
+            problems: previewProblems,
+        };
+    }
+
     let firstRun: { stateId: string; visit: number } | null = null;
     if (mode === "run_again") {
         firstRun = { stateId: chosen.nodeId, visit: chosen.ordinal };
+    } else if (mode === "supply") {
+        firstRun = supplyPreview?.valid ? supplyPreview.next : null;
     } else {
         const nextId = nextTargetStateForContinue(targetIr, chosen, reused);
         if (nextId !== null) {
@@ -1247,20 +1822,25 @@ export function buildRerunPlan(input: BuildRerunPlanInput): WorkflowRerunPlan {
         },
         mode,
         modesAvailable: [...modesAvailable],
+        supplyContract,
+        supply: supplyPreview,
         revision: {
-            target: revision.target,
+            target: revision.target ?? source.revision,
+            source: source.revision,
             newestValid: revision.newestValid,
+            newestValidFits: revision.newestValidFits ?? null,
+            newestValidProblem: revision.newestValidProblem ?? null,
             fits: revision.fits,
             problems: [...revision.problems],
             changedReusedSteps: revision.changedReusedSteps.map(s => ({ ...s })),
         },
-        sourceRevisionFits,
         reused: {
             visits: reused.length,
             bytes: totalBytes,
             steps,
             requests: reusedRequests.map(r => ({ ...r })),
         },
+        carried: carried ? { count: carried.count, contracts: [...carried.contracts] } : { count: 0, contracts: [] },
         runs: {
             first: firstRun,
         },
@@ -1275,5 +1855,6 @@ export function buildRerunPlan(input: BuildRerunPlanInput): WorkflowRerunPlan {
         warnings: [...warnings],
         allowed,
         blockedReason,
+        grantSource: grantSource ?? "none",
     };
 }

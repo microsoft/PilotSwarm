@@ -8,15 +8,18 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compileWorkflow } from "../../dist/workflow/compiler.js";
+import { compileWorkflow, parseWorkflowIr, WORKFLOW_IR_VERSION } from "../../dist/workflow/compiler.js";
 import { CATCH_ALL_ROUTE, branchScopeId } from "../../dist/workflow/controller/runtime.js";
+import { workflowResolvedSchema } from "../../dist/workflow/resolved-schema.js";
 import { nodeExecutionIdFor, WorkflowStoreError } from "../../dist/workflow/store.js";
 import {
     WORKFLOW_RERUN_MAX_COPY_BYTES,
+    WORKFLOW_RERUN_SUPPLY_NOTE_MAX_CHARS,
     flattenRerunOrigin,
     pickRerunTarget,
     partitionRerunVisits,
     mapRerunExecutions,
+    validateRerunSupply,
     checkRerunCompatibility,
     buildRerunWarnings,
     buildRerunResume,
@@ -272,7 +275,7 @@ test("pickRerunTarget: covers all 6 auto-pick rows and all refusal reasons", () 
     assert.equal(p5b.chosen.nodeExecutionId, keys5b[1].nodeExecutionId);
     assert.equal(p5b.mode, "run_again");
     assert.equal(p5b.picked, "last_visit");
-    assert.deepEqual(p5b.modesAvailable, ["run_again"]);
+    assert.deepEqual(p5b.modesAvailable, ["run_again", "supply"]);
 
     // 6. Ended at terminal succeeded / blocked / cancelled -> RERUN_VISIT_REQUIRED
     for (const outcome of ["succeeded", "blocked", "cancelled"]) {
@@ -319,7 +322,7 @@ test("pickRerunTarget: covers all 6 auto-pick rows and all refusal reasons", () 
     );
     assert.equal(pExplicit.mode, "run_again");
     assert.equal(pExplicit.picked, "requested");
-    assert.deepEqual(pExplicit.modesAvailable, ["run_again", "continue"]);
+    assert.deepEqual(pExplicit.modesAvailable, ["run_again", "continue", "supply"]);
 });
 
 test("checkRerunCompatibility: verifies all 11 rows of Spec §8.2 plus rules C5, C6, C7, C9", () => {
@@ -910,7 +913,7 @@ states:
         v: 1, mode: "run_again", stateId: "decide_step", ordinal: 1, scopeId: "root",
         arrivalRoute: "ok", predecessorId: "nx-new-coder", cutKvRevision: 3,
         sameIr: true, expectedInputSha256: "in-decide_step-1", expectedCarrySha256: "carry-h",
-        recordedInputSha256: "in-decide_step-1", fromStateId: "decide_step", fromVisit: 1, sourceRevision: 2,
+        recordedInputSha256: "in-decide_step-1", supplied: null, fromStateId: "decide_step", fromVisit: 1, sourceRevision: 2,
     });
     const resumeChanged = buildRerunResume({
         mode: "run_again", chosen: v[4], mappedPredecessorId: "nx-new-coder",
@@ -920,6 +923,7 @@ states:
     assert.equal(resumeChanged.expectedInputSha256, null);
     assert.equal(resumeChanged.expectedCarrySha256, null);
     assert.equal(resumeChanged.recordedInputSha256, "in-decide_step-1");
+    assert.equal(resumeChanged.supplied, null);
 
     const resumeCont = buildRerunResume({
         mode: "continue", chosen: v[4], mappedPredecessorId: "nx-new-decide",
@@ -929,16 +933,17 @@ states:
     assert.equal(resumeCont.ordinal, null);
     assert.equal(resumeCont.predecessorId, "nx-new-decide");
     assert.equal(resumeCont.recordedInputSha256, null);
+    assert.equal(resumeCont.supplied, null);
 
-    // buildRerunPlan shape check
+    // buildRerunPlan shape check (N2: omits sourceRevisionFits; source-rev default + newestValidFits)
     const plan = buildRerunPlan({
         source: { workflowId: "wf-2", runId: "run-2", revision: 3, status: "failed", number: 2 },
         chosen: v[4], picked: "failed_visit", mode: "run_again", modesAvailable: ["run_again", "continue"],
-        revision: { target: 4, newestValid: 4, fits: true, problems: [], changedReusedSteps: [] },
-        sourceRevisionFits: true,
+        revision: { target: 4, newestValid: 4, newestValidFits: true, newestValidProblem: null, fits: true, problems: [], changedReusedSteps: [] },
         reused: partDecide.reused,
         reusedRequests: [],
         dropped: partDecide.dropped.map(k => ({ ...k, outputPreview: null })),
+        sourceIr: compiled.ir,
         targetIr: compiled.ir,
         warnings: warningsDecide,
         allowed: true,
@@ -946,7 +951,492 @@ states:
     });
     assert.equal(plan.of.workflowId, "wf-2");
     assert.equal(plan.from.stateId, "decide_step");
+    assert.equal(plan.revision.source, 3);
+    assert.equal(plan.revision.target, 4);
+    assert.equal(plan.revision.newestValidFits, true);
+    assert.equal("sourceRevisionFits" in plan, false);
     assert.equal(plan.reused.visits, 4);
     assert.equal(plan.runs.first?.stateId, "decide_step");
     assert.equal(plan.allowed, true);
+});
+
+test("compiler.ts: supply: never on script/agent preserves WORKFLOW_IR_VERSION=1 & irSha256 and rejects invalid values/step types", () => {
+    const baseYaml = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: sup-comp, version: "1.0.0" }
+initial: s1
+states:
+  s1:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: a1 } }
+  a1:
+    type: agent
+    invoke: { prompt: "Check." }
+    outcomes: [ok]
+    timeoutSeconds: 60
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded }
+`;
+    const baseRes = mustCompile(baseYaml);
+    assert.equal(WORKFLOW_IR_VERSION, 1);
+    assert.equal("supply" in baseRes.ir.nodes.s1, false);
+    assert.equal("supply" in baseRes.ir.nodes.a1, false);
+
+    // Adding supply: never on script and agent compiles and round-trips through parseWorkflowIr
+    const neverYaml = baseYaml
+        .replace('    source: \'await setResult("ok", {});\'', '    supply: never\n    source: \'await setResult("ok", {});\'')
+        .replace('    invoke: { prompt: "Check." }', '    supply: never\n    invoke: { prompt: "Check." }');
+    const neverRes = mustCompile(neverYaml);
+    assert.equal(neverRes.ir.nodes.s1.supply, "never");
+    assert.equal(neverRes.ir.nodes.a1.supply, "never");
+    const parsed = parseWorkflowIr(JSON.parse(JSON.stringify(neverRes.ir)));
+    assert.equal(parsed.nodes.s1.supply, "never");
+    assert.equal(parsed.nodes.a1.supply, "never");
+
+    // Re-compiling baseYaml gives exact same irSha256 (unset supply omitted from IR)
+    const baseRes2 = mustCompile(baseYaml);
+    assert.equal(baseRes2.irSha256, baseRes.irSha256);
+
+    // Invalid supply value on script -> WORKFLOW_FIELD_INVALID
+    const badVal = compileWorkflow(baseYaml.replace('    source:', '    supply: always\n    source:'));
+    assert.equal(badVal.valid, false);
+    assert.ok(badVal.diagnostics.some(d => d.code === "WORKFLOW_FIELD_INVALID" && d.path === "states.s1.supply"));
+
+    // N11: supply on non-script/non-agent step types emits checkKeys's standard unknown-field diagnostic
+    const badWait = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: sup-wait, version: "1.0.0" }
+initial: w
+states:
+  w: { type: wait, supply: never, seconds: 5, transition: { next: { elapsed: done } } }
+  done: { type: terminal, outcome: succeeded }
+`);
+    assert.equal(badWait.valid, false);
+    assert.ok(badWait.diagnostics.some(d => d.path === "states.w.supply" && d.code !== "WORKFLOW_FIELD_INVALID"));
+
+    const badApproval = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: sup-app, version: "1.0.0" }
+initial: ap
+states:
+  ap: { type: approval, supply: never, question: "Ok?", timeoutSeconds: 60, transition: { next: { approved: done, rejected: done, timed_out: done } } }
+  done: { type: terminal, outcome: succeeded }
+`);
+    assert.equal(badApproval.valid, false);
+    assert.ok(badApproval.diagnostics.some(d => d.path === "states.ap.supply"));
+});
+
+test("resolved-schema.ts: workflowResolvedSchema resolves named outputSchema refs and respects 32 KiB cap", () => {
+    const compiled = mustCompile(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: res-schema, version: "1.0.0" }
+schemas:
+  ServerRef:
+    type: object
+    required: [fqdn]
+    properties:
+      fqdn: { type: string }
+  ProvisionOut:
+    type: object
+    required: [server]
+    properties:
+      server: { $ref: "#/schemas/ServerRef" }
+initial: prov
+states:
+  prov:
+    type: script
+    outputSchema: { $ref: "#/schemas/ProvisionOut" }
+    source: 'await setResult("ok", { server: { fqdn: "x" } });'
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded }
+`);
+    const resolved = workflowResolvedSchema(compiled.ir, compiled.ir.nodes.prov.outputSchema);
+    assert.deepEqual(resolved, {
+        type: "object",
+        required: ["server"],
+        properties: {
+            server: {
+                type: "object",
+                required: ["fqdn"],
+                properties: { fqdn: { type: "string" } },
+            },
+        },
+    });
+    assert.equal(workflowResolvedSchema(compiled.ir, null), null);
+    assert.equal(workflowResolvedSchema(compiled.ir, "MissingSchema"), null);
+});
+
+test("G-R1 spawn cut-back: auto-pick backs up to cancelled/noticeless top-level and lane spawns; explicit/continue emits warnings", () => {
+    const compiled = mustCompile(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: gr1, version: "1.0.0" }
+initial: init
+states:
+  init: { type: script, source: 'await setResult("ok", {});', transition: { next: { ok: par } } }
+  par:
+    type: parallel
+    forEach: [1]
+    body:
+      initial: lane_sp
+      states:
+        lane_sp: { type: spawn, definition: child-wf, transition: { next: { started: ldone } } }
+        ldone: { type: terminal, outcome: succeeded }
+    transition: { next: { joined: top_sp, blocked: fail } }
+  top_sp: { type: spawn, definition: child-wf, transition: { next: { started: finish } } }
+  finish: { type: script, source: 'await setResult("ok", {});', transition: { next: { ok: done, failure: fail } } }
+  done: { type: terminal, outcome: succeeded }
+  fail: { type: terminal, outcome: failed }
+`);
+    // 1. Top-level spawn cancelled by source end -> auto-pick cuts back from finish to top_sp
+    const vTop = chainKeys([
+        { nodeId: "init", ordinal: 1, nodeType: "script", outcome: "ok" },
+        { nodeId: "top_sp", ordinal: 1, nodeType: "spawn", arrivalRoute: "ok", outcome: "started", spawnChildWorkflowId: "child-top", spawnChildCancelledBySourceEnd: true, spawnChildHasNotice: false },
+        { nodeId: "finish", ordinal: 1, nodeType: "script", arrivalRoute: "started", outcome: "execution_failed", resultKind: "runtime_error" },
+    ]);
+    const pTop = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "execution_failed", details: { nodeExecutionId: vTop[2].nodeExecutionId } } },
+        vTop,
+    );
+    assert.equal(pTop.chosen.nodeExecutionId, vTop[1].nodeExecutionId);
+    assert.equal(pTop.mode, "run_again");
+    assert.equal(pTop.picked, "reused_spawn");
+
+    // 2. Lane spawn inside parallel cancelled by source end (earlier than top_sp) -> auto-pick lifts to enclosing parallel!
+    const initK = makeKey({ nodeId: "init", ordinal: 1, nodeType: "script", outcome: "ok" });
+    const parK = makeKey({ nodeId: "par", ordinal: 1, nodeType: "parallel", predecessorId: initK.nodeExecutionId, arrivalRoute: "ok", outcome: "joined" });
+    const laneSpK = makeKey({
+        scopeId: branchScopeId(parK.nodeExecutionId, 0),
+        nodeId: "lane_sp",
+        ordinal: 1,
+        nodeType: "spawn",
+        predecessorId: parK.nodeExecutionId,
+        arrivalRoute: "@branch",
+        outcome: "started",
+        spawnChildWorkflowId: "child-lane",
+        spawnChildCancelledBySourceEnd: true,
+        spawnChildHasNotice: false,
+    });
+    const topSpK = makeKey({
+        nodeId: "top_sp",
+        ordinal: 1,
+        nodeType: "spawn",
+        predecessorId: parK.nodeExecutionId,
+        arrivalRoute: "joined",
+        outcome: "started",
+        spawnChildWorkflowId: "child-top-2",
+        spawnChildCancelledBySourceEnd: true,
+        spawnChildHasNotice: false,
+    });
+    const finK = makeKey({ nodeId: "finish", ordinal: 1, nodeType: "script", predecessorId: topSpK.nodeExecutionId, arrivalRoute: "started", outcome: "execution_failed", resultKind: "runtime_error" });
+    const allKeys = [initK, parK, laneSpK, topSpK, finK];
+
+    const pLane = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "execution_failed", details: { nodeExecutionId: finK.nodeExecutionId } } },
+        allKeys,
+    );
+    assert.equal(pLane.chosen.nodeExecutionId, parK.nodeExecutionId);
+    assert.equal(pLane.mode, "run_again");
+    assert.equal(pLane.picked, "reused_spawn");
+
+    // 3. Explicit later executionId keeps both spawns in reused -> buildRerunWarnings emits reused_child_cancelled
+    const pExplicit = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: null },
+        allKeys,
+        { executionId: finK.nodeExecutionId, mode: "run_again" },
+    );
+    assert.equal(pExplicit.chosen.nodeExecutionId, finK.nodeExecutionId);
+    const partExp = partitionRerunVisits(allKeys, finK.nodeExecutionId, "run_again");
+    const warnsExp = buildRerunWarnings({
+        sourceNumber: 2,
+        targetIr: compiled.ir,
+        reused: partExp.reused,
+        dropped: partExp.dropped,
+        chosen: finK,
+        mode: "run_again",
+        changedReusedSteps: [],
+        deliveredOutboxExecIds: new Set(),
+        droppedSpawnChildren: new Map(),
+        reusedSpawnNoticeChildIds: new Set(),
+        droppedConsumedUncarriedExecIds: new Set(),
+        reusedApprovals: [],
+        droppedApprovals: [],
+    });
+    const cancelWarns = warnsExp.filter(w => w.code === "reused_child_cancelled");
+    assert.equal(cancelWarns.length, 2);
+    assert.ok(cancelWarns.some(w => w.message.includes("child-lane") && w.message.includes("Choose par instead")));
+    assert.ok(cancelWarns.some(w => w.message.includes("child-top-2") && w.message.includes("Choose top_sp instead")));
+
+    // 4. Noticeless (not cancelled) spawn -> auto-pick cuts back; explicit keeps and emits reused_child_gone
+    const vGone = chainKeys([
+        { nodeId: "init", ordinal: 1, nodeType: "script", outcome: "ok" },
+        { nodeId: "top_sp", ordinal: 1, nodeType: "spawn", arrivalRoute: "ok", outcome: "started", spawnChildWorkflowId: "child-gone", spawnChildCancelledBySourceEnd: false, spawnChildHasNotice: false },
+        { nodeId: "finish", ordinal: 1, nodeType: "script", arrivalRoute: "started", outcome: "execution_failed", resultKind: "runtime_error" },
+    ]);
+    const pGone = pickRerunTarget(
+        { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "execution_failed", details: { nodeExecutionId: vGone[2].nodeExecutionId } } },
+        vGone,
+    );
+    assert.equal(pGone.chosen.nodeExecutionId, vGone[1].nodeExecutionId);
+    assert.equal(pGone.picked, "reused_spawn");
+
+    // 5. G-R1 cut target is visit 1 (predecessorId === null) -> refuses first_visit
+    const vFirstSpawn = chainKeys([
+        { nodeId: "top_sp", ordinal: 1, nodeType: "spawn", outcome: "started", spawnChildWorkflowId: "child-1", spawnChildCancelledBySourceEnd: true, spawnChildHasNotice: false },
+        { nodeId: "finish", ordinal: 1, nodeType: "script", arrivalRoute: "started", outcome: "execution_failed", resultKind: "runtime_error" },
+    ]);
+    assert.throws(
+        () => pickRerunTarget(
+            { status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: { code: "execution_failed", details: { nodeExecutionId: vFirstSpawn[1].nodeExecutionId } } },
+            vFirstSpawn,
+        ),
+        (err) => err.code === "RERUN_VISIT_NOT_ALLOWED" && err.details?.reason === "first_visit",
+    );
+});
+
+test("supply mode: validation (step types, supply: never on S or T, 400 vs 422, outputSchema, size, C4 incl. catchAll, visit 1, resume, preview)", () => {
+    assert.equal(WORKFLOW_RERUN_SUPPLY_NOTE_MAX_CHARS, 2_000);
+    const yaml = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: sup-flow, version: "1.0.0" }
+limits: { maxNodeExecutions: 10 }
+schemas:
+  ProvisionOut:
+    type: object
+    additionalProperties: false
+    required: [fqdn]
+    properties:
+      fqdn: { type: string, minLength: 1 }
+initial: prov
+catchAll: rescue
+states:
+  prov:
+    type: script
+    maxVisits: 2
+    carry: { attempt: 1 }
+    outputSchema: { $ref: "#/schemas/ProvisionOut" }
+    outcomes: [ready, fallback]
+    source: 'await setResult("ready", { fqdn: "a.db" });'
+    transition: { next: { ready: review, fallback: rescue, exhausted: failed, failure: failed } }
+  review:
+    type: agent
+    session: continue
+    invoke: { prompt: "Review." }
+    outcomes: [ok, retry]
+    timeoutSeconds: 60
+    transition: { next: { ok: approve, retry: review } }
+  approve:
+    type: approval
+    question: "Ship?"
+    timeoutSeconds: 60
+    transition: { next: { approved: done, rejected: failed, timed_out: failed } }
+  rescue:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+    const src = mustCompile(yaml);
+    const v = chainKeys([
+        { nodeId: "prov", ordinal: 1, nodeType: "script", outcome: "timed_out", resultKind: "runtime_error", hasCarry: true, carryByteLength: 64 },
+        { nodeId: "review", ordinal: 1, nodeType: "agent", arrivalRoute: "ready", outcome: "ok", resultKind: "business" },
+        { nodeId: "approve", ordinal: 1, nodeType: "approval", arrivalRoute: "ok", outcome: "approved", resultKind: "business" },
+    ]);
+
+    // 1. mode: "supply" without executionId -> 400 RERUN_VISIT_REQUIRED
+    assert.throws(
+        () => pickRerunTarget({ status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: null }, v, { mode: "supply" }),
+        (err) => err.code === "RERUN_VISIT_REQUIRED",
+    );
+
+    // 2. supply on approval step -> 422 RERUN_SUPPLY_NOT_ALLOWED (step_type)
+    assert.throws(
+        () => pickRerunTarget({ status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: null }, v, { executionId: v[2].nodeExecutionId, mode: "supply", sourceIr: src.ir, targetIr: src.ir }),
+        (err) => err.code === "RERUN_SUPPLY_NOT_ALLOWED" && err.details?.reason === "step_type",
+    );
+
+    // 3. supply inside a parallel lane -> 422 RERUN_SUPPLY_NOT_ALLOWED (inside_lane)
+    const laneK = makeKey({ scopeId: branchScopeId("nx-par", 0), nodeId: "prov", ordinal: 1, nodeType: "script" });
+    assert.throws(
+        () => pickRerunTarget({ status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: null }, [...v, laneK], { executionId: laneK.nodeExecutionId, mode: "supply" }),
+        (err) => err.code === "RERUN_SUPPLY_NOT_ALLOWED" && err.details?.reason === "inside_lane",
+    );
+
+    // 4. supply on exhausted visit -> 422 RERUN_VISIT_NOT_ALLOWED (no_result)
+    const exhK = makeKey({ ...v[0], outcome: "exhausted", resultKind: "runtime_error", winner: "controller" });
+    assert.throws(
+        () => pickRerunTarget({ status: "failed", terminalNodeId: null, terminalOutcome: null, terminalError: null }, [exhK], { executionId: exhK.nodeExecutionId, mode: "supply" }),
+        (err) => err.code === "RERUN_VISIT_NOT_ALLOWED" && err.details?.reason === "no_result",
+    );
+
+    // 5. N6: supply: never on EITHER S or T -> 422 RERUN_SUPPLY_NOT_ALLOWED (supply_never)
+    const neverIr = mustCompile(yaml.replace("    maxVisits: 2", "    supply: never\n    maxVisits: 2")).ir;
+    assert.throws(
+        () => validateRerunSupply({ chosen: v[0], reused: [], sourceIr: neverIr, targetIr: src.ir, requireResultAndNote: false }),
+        (err) => err.code === "RERUN_SUPPLY_NOT_ALLOWED" && err.details?.reason === "supply_never",
+    );
+    assert.throws(
+        () => validateRerunSupply({ chosen: v[0], reused: [], sourceIr: src.ir, targetIr: neverIr, requireResultAndNote: false }),
+        (err) => err.code === "RERUN_SUPPLY_NOT_ALLOWED" && err.details?.reason === "supply_never",
+    );
+
+    // 6. S11: 400 shape vs 422 value boundary
+    for (const [label, result, note] of [
+        ["non-object result", "ready", "verified"],
+        ["extra key in result", { outcome: "ready", output: { fqdn: "a.db" }, extra: 1 }, "verified"],
+        ["blank outcome", { outcome: "   " }, "verified"],
+        ["missing note", { outcome: "ready", output: { fqdn: "a.db" } }, undefined],
+        ["Unicode-space-only note", { outcome: "ready", output: { fqdn: "a.db" } }, "\u2003\u00A0"],
+        ["too-long note (2001 chars)", { outcome: "ready", output: { fqdn: "a.db" } }, "n".repeat(2001)],
+        ["NUL char in note", { outcome: "ready", output: { fqdn: "a.db" } }, "ok\u0000bad"],
+    ]) {
+        assert.throws(
+            () => validateRerunSupply({ chosen: v[0], reused: [], sourceIr: src.ir, targetIr: src.ir, result, note, requireResultAndNote: true }),
+            (err) => err.code === "RERUN_ARGUMENT_REFUSED",
+            `expected 400 RERUN_ARGUMENT_REFUSED for ${label}`,
+        );
+    }
+
+    // 422 value checks: undeclared outcome, schema mismatch, nesting > 64, carry+output > 256 KiB
+    assert.throws(
+        () => validateRerunSupply({ chosen: v[0], reused: [], sourceIr: src.ir, targetIr: src.ir, result: { outcome: "bogus", output: { fqdn: "a.db" } }, note: "verified", requireResultAndNote: true }),
+        (err) => err.code === "RERUN_SUPPLIED_RESULT_INVALID" && err.details?.reason === "undeclared_outcome",
+    );
+    assert.throws(
+        () => validateRerunSupply({ chosen: v[0], reused: [], sourceIr: src.ir, targetIr: src.ir, result: { outcome: "ready", output: { wrong: 1 } }, note: "verified", requireResultAndNote: true }),
+        (err) => err.code === "RERUN_SUPPLIED_RESULT_INVALID" && err.details?.reason === "schema",
+    );
+    let deep = {};
+    for (let i = 0; i < 66; i += 1) deep = { a: deep };
+    assert.throws(
+        () => validateRerunSupply({ chosen: v[1], reused: [v[0]], sourceIr: src.ir, targetIr: src.ir, result: { outcome: "ok", output: deep }, note: "verified", requireResultAndNote: true }),
+        (err) => err.code === "RERUN_SUPPLIED_RESULT_INVALID" && err.details?.reason === "schema",
+    );
+    // carryByteLength=64 + 20 overhead -> maxOutputBytes = 262144 - 84 = 262060
+    const bigFqdn = "a".repeat(262_060); // {"fqdn":"aaa..."} exceeds 262060 bytes
+    assert.throws(
+        () => validateRerunSupply({ chosen: v[0], reused: [], sourceIr: src.ir, targetIr: src.ir, result: { outcome: "ready", output: { fqdn: bigFqdn } }, note: "verified", requireResultAndNote: true }),
+        (err) => err.code === "RERUN_SUPPLIED_RESULT_INVALID" && err.details?.reason === "too_large",
+    );
+
+    // 7. N4: omitted output -> output: null, outputText: "null"
+    const resNull = validateRerunSupply({
+        chosen: v[1], reused: [v[0]], sourceIr: src.ir, targetIr: src.ir,
+        result: { outcome: "ok" }, note: "verified in portal", requireResultAndNote: true,
+    });
+    assert.equal(resNull.validated.output, null);
+    assert.equal(resNull.validated.outputText, "null");
+    assert.equal(resNull.contract.maxOutputBytes, 262_144);
+
+    // 8. supply on visit 1 (0 reused visits): partition + C2 + C4 (incl. N10 explicit route to unused catchAll)
+    const partFirst = partitionRerunVisits(v, v[0].nodeExecutionId, "supply");
+    assert.equal(partFirst.reused.length, 0);
+    assert.equal(partFirst.reusedTop.length, 0);
+    assert.equal(partFirst.firstDroppedTop?.nodeExecutionId, v[1].nodeExecutionId);
+
+    const compatReady = checkRerunCompatibility({
+        sourceIr: src.ir, targetIr: src.ir,
+        reused: partFirst.reused, reusedTop: partFirst.reusedTop,
+        chosen: v[0], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "ready",
+    });
+    assert.equal(compatReady.fits, true);
+
+    // N10: explicit route to unused catchAll ("fallback" -> rescue) is ALLOWED
+    const compatFallback = checkRerunCompatibility({
+        sourceIr: src.ir, targetIr: src.ir,
+        reused: partFirst.reused, reusedTop: partFirst.reusedTop,
+        chosen: v[0], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "fallback",
+    });
+    assert.equal(compatFallback.fits, true);
+
+    // Explicit route to ALREADY-USED catchAll -> catch_all_twice
+    const vWithRescue = chainKeys([
+        { nodeId: "prov", ordinal: 1, nodeType: "script", outcome: "fallback", resultKind: "business", hasCarry: true },
+        { nodeId: "rescue", ordinal: 1, nodeType: "script", arrivalRoute: "fallback", outcome: "ok", resultKind: "business" },
+        { nodeId: "prov", ordinal: 2, nodeType: "script", arrivalRoute: "ok", outcome: "timed_out", resultKind: "runtime_error", hasCarry: true },
+    ]);
+    const rescueLoopIr = mustCompile(yaml.replace('transition: { next: { ok: done } }', 'transition: { next: { ok: prov } }')).ir;
+    const partRescue = partitionRerunVisits(vWithRescue, vWithRescue[2].nodeExecutionId, "supply");
+    const compatTwice = checkRerunCompatibility({
+        sourceIr: rescueLoopIr, targetIr: rescueLoopIr,
+        reused: partRescue.reused, reusedTop: partRescue.reusedTop,
+        chosen: vWithRescue[2], mode: "supply", sourceControllerVersion: "1.3.0", suppliedOutcome: "fallback",
+    });
+    assert.equal(compatTwice.fits, false);
+    assert.ok(compatTwice.problems.some(p => p.code === "catch_all_twice"));
+
+    // 9. buildRerunResume in supply mode & buildRerunPlan outcome-only preview (M6, S11) & source-rev default
+    const supResume = buildRerunResume({
+        mode: "supply", chosen: v[0], mappedPredecessorId: null,
+        cutKvRevision: 1, sourceRevision: 2, sourceIrSha256: src.irSha256, targetIrSha256: src.irSha256,
+        supplied: {
+            mappedSuppliedId: "nx-new-prov-1",
+            outcome: "ready",
+            outputSha256: "out-sha",
+            note: "server ready",
+            at: "2026-11-27T19:00:00Z",
+            nextStateId: "review",
+            nextOrdinal: 1,
+        },
+    });
+    assert.equal(supResume.mode, "supply");
+    assert.equal(supResume.stateId, "review");
+    assert.equal(supResume.ordinal, 1);
+    assert.equal(supResume.arrivalRoute, "ready");
+    assert.equal(supResume.predecessorId, "nx-new-prov-1");
+    assert.equal(supResume.supplied?.outcome, "ready");
+
+    const supPlanValid = buildRerunPlan({
+        source: { workflowId: "wf-2", runId: "run-2", revision: 2, status: "failed", number: 2 },
+        chosen: v[0], picked: "requested", mode: "supply", modesAvailable: ["supply"],
+        revision: { newestValid: 3, newestValidFits: true, newestValidProblem: null, fits: true, problems: [], changedReusedSteps: [] },
+        reused: partFirst.reused,
+        reusedRequests: [],
+        dropped: partFirst.dropped.map(k => ({ ...k, outputPreview: null })),
+        sourceIr: src.ir,
+        targetIr: src.ir,
+        supplyOutcome: "ready",
+        carried: { count: 2, contracts: ["WorkflowEnded@1", "HumanNote@1"] },
+        warnings: buildRerunWarnings({
+            sourceNumber: 2, targetIr: src.ir, reused: partFirst.reused, dropped: partFirst.dropped,
+            chosen: v[0], mode: "supply", suppliedOutcome: "ready", changedReusedSteps: [],
+            deliveredOutboxExecIds: new Set(), droppedSpawnChildren: new Map(), reusedSpawnNoticeChildIds: new Set(),
+            droppedConsumedUncarriedExecIds: new Set(), reusedApprovals: [], droppedApprovals: [],
+        }),
+        allowed: true,
+        blockedReason: null,
+    });
+    assert.equal(supPlanValid.revision.target, 2, "defaults target revision to source revision when omitted");
+    assert.equal(supPlanValid.revision.source, 2);
+    assert.equal(supPlanValid.supplyContract?.maxOutputBytes, 262_144 - 20 - 64);
+    assert.deepEqual(supPlanValid.carried, { count: 2, contracts: ["WorkflowEnded@1", "HumanNote@1"] });
+    assert.deepEqual(supPlanValid.supply, { outcome: "ready", valid: true, next: { stateId: "review", visit: 1 }, problems: [] });
+    assert.deepEqual(supPlanValid.runs.first, { stateId: "review", visit: 1 });
+    assert.ok(supPlanValid.warnings.some(w => w.code === "result_supplied"));
+
+    // Invalid supplyOutcome in preview returns valid: false (never throws 422!)
+    const supPlanBad = buildRerunPlan({
+        source: { workflowId: "wf-2", runId: "run-2", revision: 2, status: "failed", number: 2 },
+        chosen: v[0], picked: "requested", mode: "supply", modesAvailable: ["supply"],
+        revision: { newestValid: 3, newestValidFits: true, newestValidProblem: null, fits: true, problems: [], changedReusedSteps: [] },
+        reused: partFirst.reused,
+        reusedRequests: [],
+        dropped: partFirst.dropped.map(k => ({ ...k, outputPreview: null })),
+        sourceIr: src.ir,
+        targetIr: src.ir,
+        supplyOutcome: "undeclared_x",
+        warnings: [],
+        allowed: true,
+        blockedReason: null,
+    });
+    assert.equal(supPlanBad.supply?.valid, false);
+    assert.equal(supPlanBad.supply?.next, null);
+    assert.ok(supPlanBad.supply?.problems.some(p => p.code === "undeclared_outcome"));
 });

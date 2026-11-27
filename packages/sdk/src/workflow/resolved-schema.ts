@@ -9,16 +9,15 @@ import { canonicalJson, isJsonObject, utf8ByteLength, type JsonValue } from "./j
 const INPUTS_SCHEMA_VIEW_MAX_BYTES = 32 * 1024;
 
 /**
- * The workflow's input schema (inputs.schema) as its run checks it, with every reference to a schema of `schemas`
- * replaced by that schema (batch 7, f-05), so a reader (the portal's sample inputs) needs no reference resolution of its
- * own: compiled, from the revision's IR. Keywords beside a reference are kept. A reference back into a schema it is
- * still resolving (a recursive schema), or into part of one, becomes {} (anything). Null without an input schema, or when
- * the result is larger than INPUTS_SCHEMA_VIEW_MAX_BYTES.
+ * Any named workflow schema (inputs, outputs, or a state's outputSchema for supply mode), with every local `$ref`
+ * replaced by its target schema from `schemaDefs`. Keywords beside a reference are kept. A reference back into a schema
+ * it is still resolving (a recursive schema), or into part of one, becomes {} (anything). Null without a matching
+ * schema, or when the result is larger than INPUTS_SCHEMA_VIEW_MAX_BYTES (32 KiB).
  */
-export function workflowResolvedInputsSchema(ir: { inputsSchema: string | null; schemaDefs?: Record<string, JsonValue> },
+export function workflowResolvedSchema(ir: { schemaDefs?: Record<string, JsonValue> }, schemaName: string | null,
     stats: { values: number; bytes: number } = { values: 0, bytes: 0 }): JsonValue | null {
     const defs = ir.schemaDefs ?? {};
-    if (!ir.inputsSchema || !Object.hasOwn(defs, ir.inputsSchema)) return null;
+    if (!schemaName || !Object.hasOwn(defs, schemaName)) return null;
     // SF-4 and its verification: two budgets while resolving, so a small definition whose references branch cannot make
     // an exponential copy (values made) or an exponential text (the bytes its copy would have as JSON, counted as each
     // string, key and scalar is reached, before anything is serialized). Past either, no schema is shown. `stats`
@@ -48,12 +47,22 @@ export function workflowResolvedInputsSchema(ir: { inputsSchema: string | null; 
     };
     let resolved: JsonValue;
     try {
-        resolved = resolve(defs[ir.inputsSchema], [ir.inputsSchema], 0);
+        resolved = resolve(defs[schemaName], [schemaName], 0);
     } catch (error) {
         if (error === INPUTS_SCHEMA_OVER_BUDGET) return null;
         throw error;
     }
     return utf8ByteLength(canonicalJson(resolved)) > INPUTS_SCHEMA_VIEW_MAX_BYTES ? null : resolved;
+}
+
+/**
+ * The workflow's input schema (inputs.schema) as its run checks it, with every reference to a schema of `schemas`
+ * replaced by that schema (batch 7, f-05), so a reader (the portal's sample inputs) needs no reference resolution of its
+ * own: compiled, from the revision's IR.
+ */
+export function workflowResolvedInputsSchema(ir: { inputsSchema: string | null; schemaDefs?: Record<string, JsonValue> },
+    stats: { values: number; bytes: number } = { values: 0, bytes: 0 }): JsonValue | null {
+    return workflowResolvedSchema(ir, ir.inputsSchema, stats);
 }
 
 /** The most values one resolution may make (SF-4); a schema of 32 KiB has far fewer. */
