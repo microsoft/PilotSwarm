@@ -995,6 +995,12 @@ names the child's `runId` and carries outputs up to 195,584 bytes (was
 with `OPERATION_CONFLICT`: the notice that a new worker stored differs from the
 one the old worker builds. The parent still has the message.
 
+Before the upgrade, check fan-out parents: child outputs from about 16 KiB to
+195,584 bytes now arrive whole instead of as metadata only, and can pass a
+later limit that the same definition met before: a parallel join (256 KiB), a
+`send` (16 KiB) or the run's output (256 KiB). See "Keep only what you need
+from each child" in [the Workflows guide](../../user-guide/workflows.md).
+
 Rollback: drain child end notices first. Let running child Workflows finish,
 and keep the new workers up until every ended child has told its parent (no
 child end notice is pending or retrying). Then stop every worker, deploy the

@@ -891,9 +891,10 @@ message, so saving it gives the warning `WORKFLOW_ENDED_CORRELATE`. (An empty
 The child keeps the output in the message when it fits a worst-case budget:
 195,584 bytes (about 190 KiB) and the JSON nesting limit, measured as a list
 `receive` inside a `carry` would pass it on. Within that budget the message
-holds the whole output, and passing it on never makes the next step's input
-too large; the next step still checks its input as usual (its schema, its own
-`input:` mapping). A run's output is at most 256 KiB, so only outputs near that
+holds the whole output, so the received value, passed on as is with a carry of
+up to 64 KiB, fits the next step's 256 KiB input. The next step's own input
+mapping and later limits (a join, a `send`, the run's output) are still
+checked as usual. A run's output is at most 256 KiB, so only outputs near that
 size, or nested too deep to wrap, are left out. Then a script step reads it
 whole with
 `callTool("child_workflows", { operation: "read", workflow_id, full_output: true })`.
@@ -902,6 +903,28 @@ With `full_output`, the answer holds only the child's result:
 where `run.output` is the whole output as JSON text (`"null"` for a JSON null,
 `null` when the run has none). This also works after the child Workflow was
 cleaned up; the answer then has `deleted: true`.
+
+**Keep only what you need from each child.** Child outputs from about 16 KiB to
+195,584 bytes used to arrive as metadata only (`outputTruncated: true`); they
+now arrive whole. So a parent that passes them on unchanged can hit a later
+limit:
+
+| Where the whole output goes | Limit | What fails |
+|---|---|---|
+| A parallel branch's output, joined with the other branches | 256 KiB for the joined output | the parallel state, `invalid_output` |
+| A script that collects several children's results | 256 KiB for its output | the script, `invalid_output` |
+| A `send` or `request` message | 16 KiB | the state, `invalid_input` |
+| The run's output | 256 KiB | the run |
+
+For example, a `forEach` over two children whose outputs are 150 KiB each,
+with each branch ending in `output: "${input}"`, fails at the join. Map each
+result down in the branch, for example
+`output: { outcome: "${input.outcome}", workflowId: "${input.workflowId}" }`,
+and read a whole result with `child_workflows` `read` `full_output: true` when
+you need it. Saving a definition warns `WORKFLOW_ENDED_WHOLE_OUTPUT` when a
+child's whole output reaches a message, a joined branch output, or (two or
+more of them) the run's output with no mapping in between. The
+`workflow-limits` skill lists every size limit a run meets.
 
 ### What a script may call
 
