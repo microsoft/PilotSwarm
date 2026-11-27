@@ -791,13 +791,16 @@ reply does not finish the step. An output that does not fit is refused
 work inside an agent step: complete with `needs_input` instead. Call
 `complete_workflow_node` alone in its message. Once the step's result is
 recorded, no later message in that turn can start a tool, the shell and file
-tools included: write a short final reply and stop. Usually the turn then
+tools included, and a shell or sub-agent the turn started in the background is
+stopped: write a short final reply and stop. Usually the turn then
 ends by itself and its session is saved, so a `session: continue` step
 remembers it in its next visit. A turn that is not saved is not remembered:
 a reply still running 5 minutes after the result is stopped (the stop itself
 takes a little longer), and the run's end, a lost connection to the
 model, or a worker crash can also end a turn before it is saved. The result
-itself is kept in every case.
+itself is kept in every case. While the run goes on, such a visit says so:
+`read_workflow` shows `agent.memoryLost` on it, and the next visit's prompt
+says that visit's conversation is not available.
 
 An agent state may declare `requiredTools: [lookup, notes-read_note]` (1 to
 16 distinct offered tool names). Before completing with an outcome, its own

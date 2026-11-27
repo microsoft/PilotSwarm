@@ -27,7 +27,7 @@ import {
     workflowAgentPrompt,
 } from "../../dist/workflow/runtime.js";
 import { workflowAgentReminderText } from "../../dist/workflow/agent-reminder.js";
-import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/agent-node-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowAgentCycleMemoryLostPrompt } from "../../dist/workflow/agent-node-service.js";
 import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
 
 const errors = result => result.diagnostics.filter(item => item.severity === "error");
@@ -225,6 +225,31 @@ test("the prompts: a continued session's first asks for node_execution_id; the c
     assert.deepEqual(JSON.parse(restartJson).changedVariables, ["topic"]);
     assert.deepEqual(JSON.parse(restartJson).previousResult, CYCLE.previous);
     assert.equal(JSON.parse(restartJson).cycle, 2);
+});
+
+test("a later cycle whose earlier cycles were lost after their report is told so instead of being told they are above (I1 D-2)", () => {
+    const above = "in this same agent session: what you did in earlier cycles is above.";
+    const cycle4 = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 4 });
+    assert.ok(cycle4.includes(above));
+    // Nothing lost, only later cycles named, or a prompt without the words: unchanged.
+    assert.equal(workflowAgentCycleMemoryLostPrompt(cycle4, 4, []), cycle4);
+    assert.equal(workflowAgentCycleMemoryLostPrompt(cycle4, 4, [4, 5]), cycle4);
+    const first = workflowAgentPrompt({ ...INVOCATION, continues: true });
+    assert.equal(workflowAgentCycleMemoryLostPrompt(first, 2, [1]), first);
+
+    const one = workflowAgentCycleMemoryLostPrompt(cycle4, 4, [3]);
+    assert.ok(!one.includes(above));
+    assert.ok(one.includes("in this same agent session. The conversation of cycle 3 is not available: it was lost after that cycle "
+        + "reported its result, before it was saved, so it is not above."));
+    assert.ok(one.includes("What you did in the other earlier cycles is above."));
+    const two = workflowAgentCycleMemoryLostPrompt(cycle4, 4, [3, 1, 3]);
+    assert.ok(two.includes("The conversation of cycles 1 and 3 is not available: it was lost after those cycles reported their result"));
+    assert.ok(two.includes("What you did in the other earlier cycles is above."));
+    const all = workflowAgentCycleMemoryLostPrompt(cycle4, 4, [1, 2, 3]);
+    assert.ok(all.includes("The conversation of cycles 1, 2 and 3 is not available"));
+    assert.ok(!all.includes("other earlier cycles"));
+    // Only the system line changes: the JSON and the task stay as sent.
+    assert.deepEqual(one.split("\n").slice(1), cycle4.split("\n").slice(1));
 });
 
 test("the graph shows the mode only when the session continues; the reminder names the cycle; the tool takes node_execution_id", () => {

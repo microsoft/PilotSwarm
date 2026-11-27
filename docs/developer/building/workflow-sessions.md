@@ -190,8 +190,11 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   Workflow tools and wrapped user tools refuse as before, and the CLI's own
   tools (shell, file edits, sub-agents) are refused by a pre-tool hook
   (`withWorkflowVisitDeny`); the model can only finish its reply. A call
-  already admitted (in the same model message as the report, or a
-  sub-agent already running) may still finish. A completion whose write
+  already admitted in the same model message as the report may still
+  finish. The background tasks the turn started before the report (a shell
+  or a sub-agent still running, which keep the turn open) are cancelled when
+  the visit is decided, as a Stop cancels them, so the reply can finish and
+  its snapshot be committed; tasks of earlier turns are kept. A completion whose write
   failed with anything but a store refusal may have committed: the worker
   reads the turn's visit under a row lock that waits for a decision still in
   flight (its COMMIT, up to 10 seconds), and a visit that reads decided, or
@@ -214,7 +217,21 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   and a decided visit ends the turn. Neither is committed. A turn retried
   after its visit was decided (a lost runtime, a worker restart, a failed
   read) is not run either: the turn-start fence below, which for a
-  `session: new` step reads the step's own visit. The session ends when the run ends, and a
+  `session: new` step reads the step's own visit. When a continued visit's
+  conversation is lost after its report all the same (the reply limit, a
+  stop that had to settle the turn by force, a lost Copilot session or
+  worker, a snapshot not committed) while the run is active (a stopping run
+  included: a later visit it started still runs), the turn
+  records it before it ends: the event `workflow.agent_cycle_memory_lost` on
+  the Workflow session, with the visit, its cycle and a reason
+  (`reply_limit`, `forced_stop`, `session_lost`, `stopped`,
+  `not_committed`). `read_workflow` shows it as the visit's
+  `agent.memoryLost` (`cycle`, `reason`, `at`), and the next cycle's prompt
+  says that cycle's conversation is not available instead of "what you did
+  in earlier cycles is above". The worker rewrites that sentence when the
+  next cycle's turn starts, the first point where the loss is known (the
+  prompt is sent while the earlier reply may still run); the session's
+  stored prompt keeps the original words. The session ends when the run ends, and a
   graceful stop ends an idle one at once; before it sends the session's end,
   the run's end stops whichever turn still runs (request id
   `workflow-session-stop:<session>`, which names no visit). If the session ended on its own, the next open visit
@@ -247,7 +264,18 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   `complete_workflow_node` alone in its message. The session remembers a
   visit once that visit's turn has committed its snapshot: a reply that is
   stopped (the run's end, the reply limit), lost with its Copilot session, or
-  cut by a worker crash before the commit is not remembered.
+  cut by a worker crash before the commit is not remembered (while the run
+  is active the visit records it, above). A turn whose activity fails for
+  good after the report (its retries spent, for example a store that cannot
+  be reached) records nothing, and the next cycle's prompt then still says
+  the earlier cycles are above. Accepted by the owner (26 Nov): a visit its
+  agent completes before its spawn is recorded (a very fast finish) gets no
+  Stop from the spawn's re-check either, and its turn ends by itself as any
+  completed visit's does; the run's end stops whichever turn still runs, so
+  it can cut the last visit's reply (after the run ended no later cycle
+  needs it, so nothing is recorded; during a graceful stop it is recorded);
+  and the reply limit is a fixed 5 minutes
+  (`WORKFLOW_AGENT_REPLY_SETTLE`), not configurable.
   An update from a sub-agent or a timer that arrives between visits is
   recorded in the agent session but is not given to the model; the next
   visit's prompt carries the current state.

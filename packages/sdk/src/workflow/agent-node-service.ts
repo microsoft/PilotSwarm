@@ -98,6 +98,26 @@ export function workflowCompletionFailure(error: unknown): string {
  */
 export const WORKFLOW_AGENT_REPLY_SETTLE = { ms: 5 * 60_000 };
 
+/** A later cycle's prompt says the earlier cycles' conversation is in the session (issue I1: it is, once committed). */
+export const WORKFLOW_AGENT_CYCLE_MEMORY_WORDS = "in this same agent session: what you did in earlier cycles is above.";
+
+/**
+ * Issue I1, review D-2: a later cycle's prompt when the conversation of earlier cycles `lost` of its session was not saved
+ * after they reported their result (a reply stopped at its limit or by force, a lost Copilot session or worker, a snapshot
+ * not committed). It says plainly that their conversation is not available instead of saying it is above. The worker applies
+ * it as the cycle's turn starts, the first point where a loss is known (the prompt is sent while the earlier reply may still run).
+ */
+export function workflowAgentCycleMemoryLostPrompt(prompt: string, cycle: number, lost: readonly number[]): string {
+    const cycles = [...new Set(lost)].filter(n => Number.isSafeInteger(n) && n >= 1 && n < cycle).sort((a, b) => a - b);
+    if (cycles.length === 0 || !prompt.includes(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS)) return prompt;
+    const one = cycles.length === 1;
+    const named = one ? `cycle ${cycles[0]}` : `cycles ${cycles.slice(0, -1).join(", ")} and ${cycles[cycles.length - 1]}`;
+    const others = cycle - 1 > cycles.length ? " What you did in the other earlier cycles is above." : "";
+    return prompt.replace(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, `in this same agent session. The conversation of ${named} is not available: it `
+        + `was lost after ${one ? "that cycle" : "those cycles"} reported ${one ? "its" : "their"} result, before it was saved, so it is not `
+        + `above. previousResult and the variables in the JSON say where the earlier cycles ended.${others}`);
+}
+
 export async function completeWorkflowNodeFromTool(args: Record<string, unknown>, context: {
     callerSessionId: string;
     store: Pick<WorkflowStore, "completeAgentNode">;

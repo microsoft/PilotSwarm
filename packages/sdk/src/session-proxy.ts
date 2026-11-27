@@ -33,6 +33,7 @@ import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, INTAKE_ENDED_BEFORE_SEND_MESSAGE, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type TurnOptions, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord, type TurnControl } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
+import type { ManagedSession } from "./managed-session.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
@@ -70,7 +71,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
-import { workflowVisitOfStopRequestId, type WorkflowLineage, type WorkflowStore, type WorkflowTurnVisit } from "./workflow/store.js";
+import { workflowVisitOfStopRequestId, type WorkflowAgentMemoryLossReason, type WorkflowLineage, type WorkflowStore, type WorkflowTurnVisit } from "./workflow/store.js";
 import { CapabilityGrantError } from "./tool-grant.js";
 import type { WorkflowAgentToolContext } from "./workflow/tool-policy.js";
 import { WORKFLOW_AGENT_TURN_FAILURE_ACTIVITY } from "./workflow/agent-turn-failure.js";
@@ -86,7 +87,8 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { childWorkflowsFromTool, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/tools.js";
 import { WORKFLOW_UPDATE_DATA_LINE, isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/request-service.js";
-import { completeWorkflowNodeFromTool, WORKFLOW_AGENT_REPLY_SETTLE, workflowCompletionFailure } from "./workflow/agent-node-service.js";
+import { completeWorkflowNodeFromTool, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, WORKFLOW_AGENT_REPLY_SETTLE, workflowAgentCycleMemoryLostPrompt,
+    workflowCompletionFailure } from "./workflow/agent-node-service.js";
 import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef, workflowBaseInstructionsText } from "./workflow/base-instructions.js";
 import { publishedScheduleActive } from "./workflow/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/agent-resolver.js";
@@ -2147,11 +2149,30 @@ export function registerActivities(
         // turn, so the next visit's prompt never waits behind it for long; that reply is not committed.
         let visitDecidedThisTurn = false;
         let replySettleTimer: ReturnType<typeof setTimeout> | null = null;
-        const noteVisitDecided = (): void => {
+        // Review D-2: why this turn, whose visit is decided, may end without its snapshot committed (recorded on the visit).
+        let replyLimitHit = false;
+        let runForcedSettled = false;
+        let notRunAgainRan = false;
+        let notRunAtAdmission = false;
+        // Review D-2: the earlier cycles this later cycle's prompt says were lost (recovery runs rebuild the prompt with them).
+        let lostCycles: { cycle: number; lost: number[] } | null = null;
+        // The store and the turn's visit, for the record at the commit (set once the turn's Workflow fence exists).
+        let memoryLossFence: { store: WorkflowStore; visit: () => WorkflowTurnVisit | null } | null = null;
+        const withLostCycles = (text: string): string => lostCycles ? workflowAgentCycleMemoryLostPrompt(text, lostCycles.cycle, lostCycles.lost) : text;
+        const noteVisitDecided = (managed: Pick<ManagedSession, "getActiveTurn" | "cancelBackgroundTasks">): void => {
             visitDecidedThisTurn = true;
             if (replySettleTimer) return;
+            // Review D-1: the background work this turn started before the report (a shell the turn waits for) ends now, as a
+            // Stop ends it, so the reply can finish and its snapshot be committed. Tasks of earlier turns are kept.
+            const active = managed.getActiveTurn();
+            if (active) {
+                void managed.cancelBackgroundTasks({ rounds: 3, pauseMs: 100, startedWithin: { since: active.startedAt, until: Date.now() } })
+                    .then((cancelled) => { if (cancelled > 0) activityCtx.traceInfo(`[runTurn] session=${input.sessionId}: the report ended ${cancelled} background task(s) of its turn`); })
+                    .catch((err: any) => traceWarn(`[runTurn] session=${input.sessionId}: the report could not end its turn's background tasks: ${err?.message ?? err}`));
+            }
             const reason = "The workflow step's result is recorded, and its turn did not finish its reply in time.";
             replySettleTimer = setTimeout(() => {
+                replyLimitHit = true;
                 sessionManager.abortWarmSessionTurn(input.sessionId, {
                     reason, cancelTurnTasks: true, ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
                 }).then((outcome) => traceWarn(`[runTurn] session=${input.sessionId}: ${reason} (${outcome.outcome})`))
@@ -2746,6 +2767,7 @@ export function registerActivities(
         // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
         // and its reminder and completion name only that visit. Null for every other session (session: new included).
         const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
+        if (workflowFenceStore) memoryLossFence = { store: workflowFenceStore, visit: () => workflowTurnVisit };
         // Issue I1 (reviews R1-3, R2-1, R2-3, R3-1): whether the store has this turn's Workflow visit decided. The visit is the
         // one the turn is bound to: a continued session's turn visit (none when the turn has no visit), or a session: new
         // step's own visit (oneShotVisit). Null when the turn has no such visit. The read waits for a decision still in flight
@@ -3430,7 +3452,7 @@ export function registerActivities(
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
                     await Promise.all(pendingWorkflowToolCalls);
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
-                        onDecided: () => { session.decideWorkflowVisit(); noteVisitDecided(); },
+                        onDecided: () => { session.decideWorkflowVisit(); noteVisitDecided(session); },
                         visitDecided: storedTurnVisitDecided,
                         // A continued session's turn completes only the visit whose prompt it received (RT-3); a turn with none
                         // (null) completes none (D1).
@@ -4890,6 +4912,7 @@ export function registerActivities(
                     tc.startCursor = start;
                     tc.carriedTaken = tc.carried.length > 0;
                     await Promise.allSettled(pendingEventWrites.splice(0));
+                    notRunAtAdmission = Boolean(decided);
                     activityCtx.traceInfo(decided && !started.stopped && !openStop
                         ? `[turn-control] session=${input.sessionId} turn=${tc.turn} not run: its workflow visit ${decided} is decided`
                         : `[turn-control] session=${input.sessionId} turn=${tc.turn} stopped at turn start`);
@@ -4935,8 +4958,22 @@ export function registerActivities(
                 if (decided) {
                     session.closeWorkflowTools();
                     await Promise.allSettled(pendingEventWrites.splice(0));
+                    notRunAtAdmission = true;
                     activityCtx.traceInfo(`[runTurn] session=${input.sessionId} not run: its workflow visit ${decided} is decided`);
                     return { type: "stopped", reason: `The workflow already ended cycle ${decided}; this turn was not run.` } as TurnResult;
+                }
+            }
+            // Issue I1, review D-2: a later cycle whose earlier cycles' conversation was lost after their report (recorded when
+            // their turn ended, before this one started) is told so instead of being told those cycles are above.
+            if (workflowFenceStore && workflowTurnVisit?.nodeExecutionId && !workflowTurnVisit.inherited
+                && effectivePrompt.includes(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS)) {
+                const visit = workflowTurnVisit.nodeExecutionId;
+                const lost = await cmsRetryCritical(`runTurn.cyclesLost session=${input.sessionId}`,
+                    () => workflowFenceStore.readAgentCyclesLostBefore(input.sessionId, visit), (msg) => activityCtx.traceInfo(msg));
+                if (lost && lost.lost.length > 0) {
+                    lostCycles = lost;
+                    effectivePrompt = withLostCycles(effectivePrompt);
+                    activityCtx.traceInfo(`[runTurn] session=${input.sessionId}: cycle ${lost.cycle} is told cycles ${lost.lost.join(",")} were lost`);
                 }
             }
 
@@ -5240,6 +5277,7 @@ export function registerActivities(
                 // (destroyed, so the CLI stops and flushes) before the snapshot is committed and the session lock is released.
                 const unsettled = (targetSession as { takeUnsettledRun?: () => boolean }).takeUnsettledRun;
                 if (typeof unsettled === "function" && unsettled.call(targetSession)) {
+                    runForcedSettled = true;
                     traceWarn(`[runTurn] session=${input.sessionId}: the model run did not settle after its abort; dropping its warm session`);
                     try {
                         // Review R3-3: bounded, so the session lock is released even when the CLI does not answer the disconnect.
@@ -5265,6 +5303,7 @@ export function registerActivities(
             // store that cannot be read fails the turn (it is retried, and the turn-start fence reads the visit again).
             const visitDecidedNow = async (): Promise<boolean> => visitDecidedThisTurn || await storedTurnVisitDecided() === true;
             const notRunAgain = async (why: string): Promise<TurnResult> => {
+                notRunAgainRan = true;
                 traceWarn(`[runTurn] session=${input.sessionId}: the turn's workflow visit is decided; it is not run again after: ${why}`);
                 await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true, destroyDeadlineMs: DROPPED_TURN_DESTROY_DEADLINE_MS }).catch((err: any) =>
                     traceWarn(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`));
@@ -5320,7 +5359,7 @@ export function registerActivities(
 
                 // Turn control: the re-run starts from the folded turn prompt,
                 // so the carried and turn-start steers reach the model again.
-                const recoveryBase = tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt;
+                const recoveryBase = withLostCycles(tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt);
                 const recoveredPrompt = mergePromptSections([SESSION_RECOVERY_NOTICE, recoveryBase]) || recoveryBase;
                 // Turn control: the lost conversation took any steers applied
                 // to it; count from the start again so turn end carries them.
@@ -5415,7 +5454,7 @@ export function registerActivities(
                     return { type: "error", message: fatalMessage } as TurnResult;
                 }
 
-                const recoveryBase = tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt;
+                const recoveryBase = withLostCycles(tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt);
                 const recoveredPrompt = mergePromptSections([CORRUPTED_TRANSCRIPT_REPLAY_NOTICE, recoveryBase]) || recoveryBase;
                 // Turn control: the lost conversation took any steers applied
                 // to it; count from the start again so turn end carries them.
@@ -5727,6 +5766,22 @@ export function registerActivities(
                     }], workerNodeId),
                     (msg) => activityCtx.traceInfo(msg),
                 );
+            }
+            // Issue I1, review D-2: the turn of a continued visit its agent decided ended without its snapshot (its reply stopped
+            // at the limit or by force, its Copilot session or its worker lost, its snapshot not saved). The visit records that
+            // its conversation is lost before this turn ends, so before the next cycle's turn starts and reads it. A turn not run
+            // at admission counts only for the visit whose own prompt it carries: an earlier attempt of it reported and was lost.
+            const lossFence = memoryLossFence as { store: WorkflowStore; visit: () => WorkflowTurnVisit | null } | null;
+            const lossVisit = lossFence?.visit() ?? null;
+            if (!committed.published && !committed.alreadyCommitted && lossFence && lossVisit?.nodeExecutionId
+                && (visitDecidedThisTurn || notRunAgainRan || (notRunAtAdmission && !lossVisit.inherited))) {
+                const reason: WorkflowAgentMemoryLossReason = replyLimitHit ? (runForcedSettled ? "forced_stop" : "reply_limit")
+                    : notRunAgainRan || notRunAtAdmission || committed.unpublishedReason === "transport_loss" ? "session_lost"
+                        : committed.unpublishedReason === "stopped" ? "stopped" : "not_committed";
+                const visit = lossVisit.nodeExecutionId;
+                await cmsRetryBestEffort(`runTurn.memoryLost session=${input.sessionId}`,
+                    () => lossFence.store.recordAgentCycleMemoryLost({ nodeExecutionId: visit, childSessionId: input.sessionId, reason }),
+                    (msg) => activityCtx.traceInfo(msg));
             }
             if (catalog && committed.sizeBytes != null) {
                 await cmsRetryBestEffort(

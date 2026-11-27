@@ -46,13 +46,24 @@ active, its turn is no longer stopped: it finishes its reply and is saved, and
 the next visit's prompt starts a new turn after it ("what you did in earlier
 cycles is above" is now true). A time limit, a cancel and the run's end still
 stop the turn. Once the result is recorded, every tool call of that turn is
-refused, the shell, file edits and sub-agents included. A reply still running
+refused, the shell, file edits and sub-agents included, and the background
+tasks the turn started before the result (a shell or a sub-agent still running)
+are cancelled, so the reply can finish and be saved. A reply still running
 5 minutes after the result is stopped (also with `turnTimeoutMs: 0`), and the
 run's end stops a reply that still runs before it ends the session. A turn whose
 result is recorded is never run again: not after a lost Copilot session or a
 corrupted transcript, and not when a worker retries it (also for
 `session: new` steps). A turn that is stopped or lost before it is saved is not
-remembered; its result is kept.
+remembered; its result is kept. While the run is active, such a visit records
+it (event `workflow.agent_cycle_memory_lost`, shown by `read_workflow` as the
+visit's `agent.memoryLost` with a reason), and the next visit's prompt says that
+visit's conversation is not available instead of saying it is above.
+
+Known limits, accepted: a visit that finishes before its spawn is recorded gets
+no Stop either (its turn ends by itself, as any finished visit's does); the
+run's end can cut the last visit's reply; and the reply limit is a fixed
+5 minutes. A turn whose activity fails for good after the result records no
+lost memory.
 
 ## 0.8.19 — 2026-11-25
 

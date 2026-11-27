@@ -17,6 +17,11 @@
  * (R2-1), and a result written whose acknowledgement was lost closes the tools and bounds the reply as well (R2-3).
  * Review R3: also when the read-back comes while that write's COMMIT is still in flight (R3-1), and a session: new step's
  * turn retried after its result does not run the model again (R3-2).
+ *
+ * Design review D-1 and D-2 (owner decision a-fixes = fix-both): the background work the agent started before its report
+ * (a shell still running) ends at the report, so the reply can finish and be committed; and when a continued visit's
+ * conversation is lost after its report all the same (its reply stopped at the limit, its Copilot session lost), the visit
+ * records it, read_workflow shows it, and the next cycle's prompt says that conversation is not available.
  */
 import { describe, it, expect } from "vitest";
 import pg from "pg";
@@ -33,6 +38,7 @@ import { workflowAgentSessionId } from "../../src/workflow/runtime.ts";
 import { WorkflowStore, nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { parseApprovalCommand } from "../../src/workflow/approval.ts";
 import { WORKFLOW_AGENT_REPLY_SETTLE } from "../../src/workflow/agent-node-service.ts";
+import { readWorkflowView } from "../../src/workflow/tools.ts";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 
 const TIMEOUT = 300_000;
@@ -42,6 +48,9 @@ const ACTOR = { kind: "system", name: "workflow-agent-memory-worker-test" };
 const ENDED = ["completed", "failed", "cancelled", "stopped"];
 const MEMO = "MEMO-1: the secret word is zebra-42.";
 const PROBE = "memory_probe";
+/** The later cycle's prompt says the earlier cycles are in the session; with one lost, it says that one is not available. */
+const ABOVE = "what you did in earlier cycles is above";
+const LOST_CYCLE_1 = "The conversation of cycle 1 is not available";
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
@@ -172,12 +181,19 @@ function continuedScript(state) {
         if (position.step === 0) {
             state.visit2 = nx;
             state.visit2Turn = position.turn;
+            state.visit2Prompt = position.lastUserText;
             state.visit2SawMemo = body.messages.some(message => message.role === "assistant" && textOf(message).includes(MEMO));
             state.visit2SawFirstPrompt = body.messages.some(message => message.role === "user" && textOf(message).includes(state.visit1 ?? "?"));
             return { tools: [complete(nx, "finish", "op-2", { recalled: state.visit2SawMemo ? "zebra-42" : "nothing" })] };
         }
         return { content: "Cycle 2 done." };
     };
+}
+
+/** What read_workflow says of the agent visits' memory (review D-2): node execution id -> memoryLost, for each visit that has one. */
+async function memoryLostOf(ctx, workflowSessionId) {
+    const view = await readWorkflowView(ctx.store, workflowSessionId);
+    return Object.fromEntries(view.run.nodeExecutions.filter(node => node.agent?.memoryLost).map(node => [node.nodeExecutionId, node.agent.memoryLost]));
 }
 
 async function agentSessionEvidence(ctx, agentSession, types) {
@@ -322,6 +338,10 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                 await expectFirstTurnCommitted(ctx, agentSession, state.visit1);
                 const ended = (await ctx.catalog.getSessionEvents(workflowSessionId, 0, 500, ["workflow.agent_cycle_ended"])).map(event => event.data);
                 expect(ended.map(data => [data.nodeExecutionId, data.end, data.turnStopped])).toEqual([[state.visit1, "done", false], [state.visit2, "done", false]]);
+                // Nothing was lost (review D-2): no visit says so, and the second cycle's prompt says the first is above.
+                expect(await memoryLostOf(ctx, workflowSessionId)).toEqual({});
+                expect(state.visit2Prompt).toContain(ABOVE);
+                expect(state.visit2Prompt).not.toContain(LOST_CYCLE_1);
             } finally {
                 await worker.stop();
             }
@@ -414,6 +434,8 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                 expect(await runEnded(ctx, runId, evidence)).toMatchObject({ status: "cancelled" });
                 // The second visit, decided by the cancel, never ran a model turn.
                 expect(state.laterRequests ?? 0).toBe(0);
+                // The cut reply is not recorded as a lost memory: the run had ended, so no later cycle needs it (review D-2).
+                expect(await memoryLostOf(ctx, workflowSessionId)).toEqual({});
             } finally {
                 release();
                 await worker.stop();
@@ -434,6 +456,7 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                 return { tools: [{ name: "bash", args: { command: "true", description: "keep going" } }] };
             }
             state.visit2At ??= Date.now();
+            if (position.step === 0) state.visit2Prompt = position.lastUserText;
             return position.step === 0 ? { tools: [complete(nx, "finish", "op-2", { recalled: "nothing" })] } : { content: "done" };
         };
         const before = WORKFLOW_AGENT_REPLY_SETTLE.ms;
@@ -442,7 +465,7 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
             await withFixture(respond, async ctx => {
                 const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", [], { turnTimeoutMs: 0 });
                 try {
-                    const { runId } = await startStep(ctx, stepYaml("continue"));
+                    const { runId, workflowSessionId } = await startStep(ctx, stepYaml("continue"));
                     const agentSession = workflowAgentSessionId(runId, "talk");
                     const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId),
                         agent: await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished", "session.turn_started"]) });
@@ -452,6 +475,13 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
                     expect(state.visit2At - state.reportedAt).toBeLessThan(60_000);
                     const lost = await agentSessionEvidence(ctx, agentSession, ["session.snapshot_unpublished"]);
                     expect(lost.length, JSON.stringify(lost)).toBeGreaterThan(0);
+                    // Review D-2: the first visit records that its conversation was lost, and the second cycle is told so
+                    // instead of being told that the first cycle is above.
+                    const [visit1] = await talkVisits(ctx.store, runId);
+                    expect(await memoryLostOf(ctx, workflowSessionId)).toEqual({
+                        [visit1.node.nodeExecutionId]: expect.objectContaining({ reason: "reply_limit", cycle: 1 }) });
+                    expect(state.visit2Prompt).toContain(LOST_CYCLE_1);
+                    expect(state.visit2Prompt).not.toContain(ABOVE);
                 } finally {
                     await worker.stop();
                 }
@@ -459,6 +489,107 @@ describe("a Workflow agent step's turn after its report (issue I1, real worker)"
         } finally {
             WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
         }
+    });
+
+    it("a background shell the agent started before its report ends at the report: the reply finishes and the next cycle recalls it", { timeout: TIMEOUT }, async () => {
+        const heartbeat = path.join(getEnv().baseDir, `heartbeat-${randomUUID()}.txt`);
+        const state = {};
+        const respond = async (body, position) => {
+            const nx = visitOf(position);
+            if (cycleOf(position) === 1) {
+                // A shell in the background (the CLI keeps the turn open while it runs), then the result, then the reply.
+                if (position.step === 0) {
+                    return { tools: [{ name: "bash", args: {
+                        command: `while true; do date +%s%N >> ${heartbeat}; sleep 0.2; done`, description: "heartbeat", mode: "async" } }] };
+                }
+                if (position.step === 1) {
+                    state.shellResults = position.toolResults;
+                    state.reportedAt = Date.now();
+                    return { tools: [complete(nx, "again", "op-1", { said: "zebra-42" })] };
+                }
+                if (position.step === 2) {
+                    state.reported = JSON.parse(position.toolResults[0] ?? "null");
+                    state.memoServedAt = Date.now();
+                    return { content: MEMO };
+                }
+                return { content: "ok" };
+            }
+            if (position.step === 0) {
+                state.visit2At = Date.now();
+                state.visit2SawMemo = body.messages.some(message => message.role === "assistant" && textOf(message).includes(MEMO));
+                return { tools: [complete(nx, "finish", "op-2", { recalled: state.visit2SawMemo ? "zebra-42" : "nothing" })] };
+            }
+            return { content: "Cycle 2 done." };
+        };
+        const before = WORKFLOW_AGENT_REPLY_SETTLE.ms;
+        WORKFLOW_AGENT_REPLY_SETTLE.ms = 30_000;
+        try {
+            await withFixture(respond, async ctx => {
+                const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", [], { turnTimeoutMs: 0 });
+                try {
+                    const { runId, workflowSessionId } = await startStep(ctx, stepYaml("continue"));
+                    const agentSession = workflowAgentSessionId(runId, "talk");
+                    const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId), heartbeat: fs.existsSync(heartbeat),
+                        agent: await agentSessionEvidence(ctx, agentSession, ["user.stop", "session.snapshot_unpublished", "session.turn_started"]) });
+                    const run = await runEnded(ctx, runId, evidence);
+                    // The shell ran (it was started before the result, so it was not refused) ...
+                    expect(state.reported, JSON.stringify(await evidence())).toMatchObject({ ok: true, outcome: "again" });
+                    expect(fs.existsSync(heartbeat), JSON.stringify(await evidence())).toBe(true);
+                    // ... and ended at the report: it writes no more.
+                    const size = fs.statSync(heartbeat).size;
+                    await pause(1_500);
+                    expect(fs.statSync(heartbeat).size, "the background shell still runs").toBe(size);
+                    // The reply finished well before the reply limit, its turn was committed, and the second cycle recalled it.
+                    expect(run, JSON.stringify(await evidence())).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { recalled: "zebra-42" } });
+                    expect(state.visit2At - state.reportedAt).toBeLessThan(WORKFLOW_AGENT_REPLY_SETTLE.ms);
+                    const [visit1] = await talkVisits(ctx.store, runId);
+                    await expectFirstTurnCommitted(ctx, agentSession, visit1.node.nodeExecutionId);
+                    expect(await memoryLostOf(ctx, workflowSessionId)).toEqual({});
+                } finally {
+                    await worker.stop();
+                }
+            });
+        } finally {
+            WORKFLOW_AGENT_REPLY_SETTLE.ms = before;
+        }
+    });
+
+    it("a continued visit's reply lost with its Copilot session after the report: the visit records it, and the next cycle is told", { timeout: TIMEOUT }, async () => {
+        const state = { failed: 0, afterFault: 0 };
+        const respond = (_body, position) => {
+            const nx = visitOf(position);
+            if (cycleOf(position) === 1) {
+                if (state.failed === 0) {
+                    if (position.step === 0) return { tools: [complete(nx, "again", "op-1", { said: "zebra-42" })] };
+                    // After the result, the provider refuses the conversation as a corrupted transcript.
+                    state.failed += 1;
+                    return { httpStatus: 400, message: CORRUPTED };
+                }
+                state.afterFault += 1;
+                return { content: "ok" };
+            }
+            if (position.step === 0) {
+                state.visit2Prompt = position.lastUserText;
+                return { tools: [complete(nx, "finish", "op-2", { recalled: "nothing" })] };
+            }
+            return { content: "Cycle 2 done." };
+        };
+        await withFixture(respond, async ctx => {
+            const worker = await startWorker(ctx.env, ctx.modelProvidersPath, "memory-a", []);
+            try {
+                const { runId, workflowSessionId } = await startStep(ctx, stepYaml("continue"));
+                const evidence = async () => ({ state, visits: await talkVisits(ctx.store, runId) });
+                expect(await runEnded(ctx, runId, evidence)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                expect(state).toMatchObject({ failed: 1, afterFault: 0 });
+                const [visit1] = await talkVisits(ctx.store, runId);
+                expect(await memoryLostOf(ctx, workflowSessionId)).toEqual({
+                    [visit1.node.nodeExecutionId]: expect.objectContaining({ reason: "session_lost", cycle: 1 }) });
+                expect(state.visit2Prompt).toContain(LOST_CYCLE_1);
+                expect(state.visit2Prompt).not.toContain(ABOVE);
+            } finally {
+                await worker.stop();
+            }
+        });
     });
 
     it("a reply lost with its Copilot session after the report is not run again with the step's tools open", { timeout: TIMEOUT }, async () => {

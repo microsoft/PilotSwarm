@@ -117,7 +117,7 @@ import {
 } from "./parent-messages.js";
 
 export { promptSafeJson };
-import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS } from "./agent-node-service.js";
 import {
     matchTestFixture, storedTestFixtures, testResultFor, toolCallResultOf, WORKFLOW_TEST_POLL_MS, workflowTestAnsweredProjection,
     workflowTestNoticePrompt, type WorkflowTestFixture,
@@ -4688,7 +4688,7 @@ export function workflowAgentCyclePrompt(invocation: Parameters<typeof workflowA
     const task = invocation.task.source === "prompt" ? invocation.task.prompt
         : `Apply your role (agent ${invocation.task.name}${invocation.task.package ? ` from package ${invocation.task.package}` : ""}) to the input above.`;
     return `[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE ${invocation.cycle}. This is cycle ${invocation.cycle} of the same workflow state in this run, `
-        + "in this same agent session: what you did in earlier cycles is above. Work on this cycle's input and the variables as they are now; "
+        + WORKFLOW_AGENT_CYCLE_MEMORY_WORDS + " Work on this cycle's input and the variables as they are now; "
         + "changedVariables names the variables that changed since your last cycle. Do not repeat earlier work unless the task asks for it. "
         + "Finish this cycle only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool, as before: give outcome and output, or error with code "
         + "needs_input or execution_failed, a new operation_id, and node_execution_id " + invocation.nodeExecutionId + " (this cycle's). "

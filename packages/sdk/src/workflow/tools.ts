@@ -14,6 +14,7 @@ import {
     type WorkflowReadCursor, type WorkflowReadSection,
 } from "./read-pages.js";
 import { describeWorkflowStates, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
+import { workflowAgentSessionContinues } from "./agent-ids.js";
 import {
     authorizeWorkflowAccess, decideWorkflowAccess, mayReadRetainedWorkflow, WORKFLOW_ACCESS_REFUSALS,
     type WorkflowAccess, type WorkflowAccessDecision, type WorkflowRelation,
@@ -52,6 +53,7 @@ import {
     type WorkflowRunControl,
     type WorkflowStore,
     type WorkflowAgentInvocation,
+    type WorkflowAgentMemoryLoss,
     type WorkflowDecisionInferenceSummary,
     type WorkflowInboxMessage,
     type WorkflowNodeExecutionRow,
@@ -1380,11 +1382,20 @@ function openNotPaged<T>(open: readonly T[], paged: readonly T[], id: (row: T) =
     return open.filter(row => !shown.has(id(row)));
 }
 
+/** An agent visit as a read shows it: its invocation and, issue I1 review D-2, whether its conversation was lost after its report. */
+type AgentVisitRead = WorkflowAgentInvocation & { memoryLost?: WorkflowAgentMemoryLoss };
+
 /** An agent state's child session and its lifecycle, by node execution id: read only for the agent states shown. */
-async function agentInvocationsOf(store: WorkflowStore, runId: string, nodes: readonly WorkflowNodeExecutionRow[]): Promise<Map<string, WorkflowAgentInvocation>> {
+async function agentInvocationsOf(store: WorkflowStore, runId: string, nodes: readonly WorkflowNodeExecutionRow[]): Promise<Map<string, AgentVisitRead>> {
     const ids = nodes.filter(node => node.nodeType === "agent").map(node => node.nodeExecutionId);
-    return ids.length > 0 ? new Map((await store.listAgentInvocationsFor(runId, ids)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
-        : new Map();
+    if (ids.length === 0) return new Map();
+    const invocations = await store.listAgentInvocationsFor(runId, ids);
+    const continued = invocations.find(invocation => workflowAgentSessionContinues(invocation));
+    const lost = continued ? await store.readAgentCycleMemoryLost(continued.workflowSessionId) : new Map<string, WorkflowAgentMemoryLoss>();
+    return new Map(invocations.map(invocation => {
+        const memoryLost = lost.get(invocation.nodeExecutionId);
+        return [invocation.nodeExecutionId, memoryLost ? { ...invocation, memoryLost } : invocation] as const;
+    }));
 }
 
 async function decisionInferenceOf(store: WorkflowStore, runId: string, nodes: readonly WorkflowNodeExecutionRow[])
@@ -1594,7 +1605,7 @@ function decisionInferenceReadView(node: WorkflowNodeExecutionRow, rows: readonl
     }));
 }
 
-function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, WorkflowAgentInvocation>,
+function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, AgentVisitRead>,
     approvals: ReadonlyMap<string, JsonValue>, decisionInference: ReadonlyMap<string, WorkflowDecisionInferenceSummary[]>,
     spawnChildren?: ReadonlyMap<string, JsonValue>)
     : { [key: string]: JsonValue } {
@@ -1848,8 +1859,11 @@ function branchViewOf(scopeId: string): { [key: string]: JsonValue } {
     return scope === null ? {} : { branch: { parallelNodeExecutionId: scope.parallelNodeExecutionId, index: scope.index } };
 }
 
-/** An agent state's child, as read_workflow shows it: the session to open for its session, and where its lifecycle is. */
-function agentViewOf(invocation: WorkflowAgentInvocation): { [key: string]: JsonValue } {
+/**
+ * An agent state's child, as read_workflow shows it: the session to open for its session, and where its lifecycle is; and,
+ * issue I1 review D-2, `memoryLost` ({ cycle, reason, at }) when a continued visit's conversation was lost after its report.
+ */
+function agentViewOf(invocation: AgentVisitRead): { [key: string]: JsonValue } {
     return {
         childSessionId: invocation.childSessionId,
         task: invocation.task.source === "prompt" ? { source: "prompt" }
@@ -1862,6 +1876,7 @@ function agentViewOf(invocation: WorkflowAgentInvocation): { [key: string]: Json
         end: invocation.endRequested,
         endSent: invocation.endSentAt !== null,
         ...(invocation.endChildStatus !== null ? { endChildStatus: invocation.endChildStatus } : {}),
+        ...(invocation.memoryLost ? { memoryLost: { cycle: invocation.memoryLost.cycle, reason: invocation.memoryLost.reason, at: invocation.memoryLost.at } } : {}),
     };
 }
 

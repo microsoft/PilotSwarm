@@ -772,6 +772,16 @@ export interface WorkflowAgentInvocation {
     endChildStatus: string | null;
 }
 
+/** Issue I1, review D-2: the event on the Workflow session that says a continued visit's conversation was lost after its report. */
+export const WORKFLOW_AGENT_MEMORY_LOST_EVENT = "workflow.agent_cycle_memory_lost";
+/**
+ * Why: reply_limit (the reply was stopped at its limit), forced_stop (that stop had to settle the turn by force), session_lost
+ * (the Copilot session or its worker was lost), stopped (another Stop ended the turn), not_committed (its snapshot was not).
+ */
+export type WorkflowAgentMemoryLossReason = "reply_limit" | "forced_stop" | "session_lost" | "stopped" | "not_committed";
+/** A visit whose conversation was lost after its report: its cycle, why, its session and when it was recorded. */
+export interface WorkflowAgentMemoryLoss { cycle: number; reason: string; childSessionId: string; at: string }
+
 /** The receipt of the complete_workflow_node operation that decided an agent state. */
 export interface WorkflowAgentCompletionReceipt {
     nodeExecutionId: string;
@@ -6929,6 +6939,62 @@ export class WorkflowStore {
                         JOIN ${this.t.nodes} bn ON bn.node_execution_id = b.node_execution_id WHERE b.node_execution_id = $3))
               ORDER BY n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
         return rows[0] ? { count: int(rows[0], "visits"), previous: agentInvocationFrom(rows[0]) } : { count: 0, previous: null };
+    }
+
+    /**
+     * Issue I1, review D-2: a continued session's visit whose conversation was not saved after its agent reported its result
+     * (`reason`: its reply stopped at the reply limit or by force, its Copilot session lost, or its snapshot not committed).
+     * Recorded once, on the Workflow session (workflow.agent_cycle_memory_lost), for a visit its agent decided, while the run
+     * is active (a stopping run included: a later visit it started still runs); a run that ended has no later cycle to tell.
+     * The next cycle's prompt and read_workflow read it.
+     */
+    async recordAgentCycleMemoryLost(input: { nodeExecutionId: string; childSessionId: string; reason: WorkflowAgentMemoryLossReason })
+        : Promise<{ recorded: boolean }> {
+        const invocation = await this.readAgentInvocation(input.nodeExecutionId);
+        if (!invocation || invocation.childSessionId !== input.childSessionId || !workflowAgentSessionContinues(invocation)) return { recorded: false };
+        const node = await this.readNodeExecution(input.nodeExecutionId);
+        if (!node || node.state !== "completed" || node.winner !== "agent") return { recorded: false };
+        const run = await this.readRun(invocation.runId);
+        if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return { recorded: false };
+        if ((await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).has(input.nodeExecutionId)) return { recorded: false };
+        const { count } = await this.readAgentVisitsBefore(invocation.runId, node.nodeId, input.nodeExecutionId);
+        await this.recordSessionEvents(invocation.workflowSessionId, [{ eventType: WORKFLOW_AGENT_MEMORY_LOST_EVENT, data: {
+            runId: invocation.runId, nodeExecutionId: input.nodeExecutionId, stateId: node.nodeId, childSessionId: input.childSessionId,
+            cycle: count + 1, reason: input.reason,
+        } }]);
+        return { recorded: true };
+    }
+
+    /** Review D-2: the visits of Workflow `workflowSessionId` whose conversation was lost after their report, by node execution id. */
+    async readAgentCycleMemoryLost(workflowSessionId: string): Promise<Map<string, WorkflowAgentMemoryLoss>> {
+        const lost = new Map<string, WorkflowAgentMemoryLoss>();
+        if (!storableId(workflowSessionId)) return lost;
+        const { rows } = await this.pool.query(`SELECT data, created_at FROM ${this.t.sessionEvents}
+            WHERE session_id = $1 AND event_type = '${WORKFLOW_AGENT_MEMORY_LOST_EVENT}' ORDER BY seq`, [workflowSessionId]);
+        for (const row of rows) {
+            const data = row.data && typeof row.data === "object" ? row.data as Record<string, unknown> : {};
+            if (typeof data.nodeExecutionId !== "string" || lost.has(data.nodeExecutionId)) continue;
+            lost.set(data.nodeExecutionId, {
+                cycle: typeof data.cycle === "number" ? data.cycle : 0, reason: typeof data.reason === "string" ? data.reason : "not_committed",
+                childSessionId: typeof data.childSessionId === "string" ? data.childSessionId : "", at: date(row, "created_at").toISOString(),
+            });
+        }
+        return lost;
+    }
+
+    /**
+     * Review D-2: for the turn of visit `nodeExecutionId` of continued session `childSessionId`, its cycle and the earlier cycles
+     * of that session whose conversation was lost after their report. Null when the visit is not that session's.
+     */
+    async readAgentCyclesLostBefore(childSessionId: string, nodeExecutionId: string): Promise<{ cycle: number; lost: number[] } | null> {
+        const invocation = await this.readAgentInvocation(nodeExecutionId);
+        if (!invocation || invocation.childSessionId !== childSessionId) return null;
+        const lost = [...(await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).entries()]
+            .filter(([id, item]) => id !== nodeExecutionId && item.childSessionId === childSessionId).map(([, item]) => item.cycle);
+        if (lost.length === 0) return { cycle: 0, lost };
+        const node = await this.readNodeExecution(nodeExecutionId);
+        if (!node) return null;
+        return { cycle: (await this.readAgentVisitsBefore(invocation.runId, node.nodeId, nodeExecutionId)).count + 1, lost };
     }
 
     /**
