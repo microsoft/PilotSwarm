@@ -7,7 +7,9 @@ workers.** No CMS migration, and no session orchestration or Workflow
 controller version change. A child Workflow's end message now has a new form.
 An older worker that retries a message a newer worker already stored is
 refused (`OPERATION_CONFLICT`); the parent still has the message. Before you
-roll back, let running child Workflows finish.
+roll back, let running child Workflows finish and keep the new workers up
+until every ended child has told its parent (no child end notice pending or
+retrying).
 
 ### Workflows: every session above a Workflow reads and controls it
 
