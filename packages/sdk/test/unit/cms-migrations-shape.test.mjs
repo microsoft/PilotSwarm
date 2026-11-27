@@ -55,8 +55,22 @@ test("the Decision-era and Workflow rerun migrations 0096-0104 quote-escape the 
     assert.ok(m104, "migration 0104 must be registered");
     assert.equal(m104.name, "workflow_rerun");
     assert.ok(Array.isArray(m104.steps) && m104.steps.length === 7, "0104 must use 7 separate steps: NOT VALID, VALIDATE x2, drop-invalid + CONCURRENTLY x2");
-    assert.match(m104.steps[0], /ADD CONSTRAINT workflow_runs_rerun_check CHECK \([\s\S]*?\) NOT VALID;/);
-    assert.match(m104.steps[0], /ADD CONSTRAINT workflow_node_executions_reused_check CHECK \([\s\S]*?\) NOT VALID;/);
+    assert.match(m104.steps[0], /pg_get_constraintdef\(c\.oid\) NOT LIKE '%supply%'/);
+    assert.match(m104.steps[0], /pg_get_constraintdef\(c\.oid\) NOT LIKE '%supplied_from_execution_id%'/);
+    assert.match(m104.steps[0], /ADD CONSTRAINT workflow_runs_rerun_check CHECK \([\s\S]*?'supply'[\s\S]*?\) NOT VALID;/);
+    assert.match(m104.steps[0], /ADD CONSTRAINT workflow_node_executions_reused_check CHECK \([\s\S]*?supplied_from_execution_id[\s\S]*?winner = 'supplied'[\s\S]*?result_kind = 'business'[\s\S]*?effect_attempts = 0[\s\S]*?\) NOT VALID;/);
+    for (const col of [
+        "supplied_from_execution_id",
+        "supplied_from_run_id",
+        "supplied_from_workflow_session_id",
+        "supplied_actor",
+        "supplied_note",
+        "supplied_at",
+    ]) {
+        assert.ok(m104.steps[0].includes(col), `0104 step 0 must add ${col}`);
+    }
+    assert.match(m104.steps[0], /length\(btrim\(supplied_note\)\) >= 1/);
+    assert.match(m104.steps[0], /char_length\(supplied_note\) <= 2000/);
     assert.doesNotMatch(m104.steps[0], /VALIDATE CONSTRAINT/, "step 0 must release ACCESS EXCLUSIVE before VALIDATE");
     assert.match(m104.steps[1], /ALTER TABLE "shape_check"\.workflow_runs VALIDATE CONSTRAINT workflow_runs_rerun_check;/);
     assert.match(m104.steps[2], /ALTER TABLE "shape_check"\.workflow_node_executions VALIDATE CONSTRAINT workflow_node_executions_reused_check;/);

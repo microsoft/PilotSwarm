@@ -16,10 +16,14 @@ const SEED = 0x63_6d_73;
 const ACTOR = { kind: "system", name: "workflow-rerun-migration-test" };
 
 function pgPoolConfig(connectionString) {
+    const parsed = new URL(connectionString);
+    const sslMode = (parsed.searchParams.get("sslmode") ?? "").toLowerCase();
+    const needsSsl = ["require", "prefer", "verify-ca", "verify-full"].includes(sslMode);
+    parsed.searchParams.delete("sslmode");
     return {
-        connectionString,
+        connectionString: parsed.toString(),
         max: 2,
-        ...(connectionString.includes("sslmode=") ? { ssl: { rejectUnauthorized: false } } : {}),
+        ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
     };
 }
 
@@ -145,12 +149,13 @@ describe("migration 0104: workflow_rerun", () => {
         const pool = new pg.Pool(pgPoolConfig(getEnv().store));
         const tag = randomUUID().replace(/-/g, "").slice(0, 10);
         const upgraded = `wf0104_${tag}_u`;
+        const selfUpgraded = `wf0104_${tag}_s`;
         const fresh = `wf0104_${tag}_f`;
         const quotedSchema = `pilot"swarm_${tag}`;
         const qIdent = (name) => `"${name.replace(/"/g, '""')}"`;
         const query = (sql, params) => pool.query(sql, params);
         try {
-            // 1. Upgrade from <= 0103 to <= 0104, verify idempotent re-apply (all 5 steps), and match fresh install.
+            // 1. Upgrade from <= 0103 to <= 0104, verify idempotent re-apply (all 7 steps), and match fresh install.
             await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded).filter(m => m.version < "0104"), SEED);
             await runMigrations(pool, upgraded, CMS_MIGRATIONS(upgraded).filter(m => m.version <= "0104"), SEED);
             const afterUpgrade = await schemaSnapshot(query, upgraded);
@@ -163,12 +168,88 @@ describe("migration 0104: workflow_rerun", () => {
             const catalog = ({ data, ...rest }) => rest;
             expect(snapshotDifferences(catalog(afterUpgrade), catalog(await schemaSnapshot(query, fresh)))).toEqual({});
 
+            // 1b. Self-upgrade over a schema created by the pre-supply cf0e203cb 2-mode 0104 (S5).
+            await runMigrations(pool, selfUpgraded, CMS_MIGRATIONS(selfUpgraded).filter(m => m.version < "0104"), SEED);
+            const su = qIdent(selfUpgraded);
+            await query(`
+                ALTER TABLE ${su}.workflow_runs
+                    ADD COLUMN IF NOT EXISTS rerun_of_workflow_session_id TEXT,
+                    ADD COLUMN IF NOT EXISTS rerun_of_run_id TEXT,
+                    ADD COLUMN IF NOT EXISTS rerun_from_execution_id TEXT,
+                    ADD COLUMN IF NOT EXISTS rerun_mode TEXT,
+                    ADD COLUMN IF NOT EXISTS rerun_resume TEXT,
+                    ADD COLUMN IF NOT EXISTS rerun_resumed_at TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS rerun_reused INTEGER,
+                    ADD COLUMN IF NOT EXISTS rerun_unwalked INTEGER,
+                    ADD COLUMN IF NOT EXISTS rerun_actor TEXT;
+                ALTER TABLE ${su}.workflow_runs ADD CONSTRAINT workflow_runs_rerun_check CHECK (
+                    (rerun_of_workflow_session_id IS NULL AND rerun_of_run_id IS NULL AND rerun_from_execution_id IS NULL
+                     AND rerun_mode IS NULL AND rerun_resume IS NULL AND rerun_resumed_at IS NULL
+                     AND rerun_reused IS NULL AND rerun_unwalked IS NULL AND rerun_actor IS NULL)
+                    OR
+                    (rerun_of_workflow_session_id IS NOT NULL AND rerun_of_run_id IS NOT NULL AND rerun_from_execution_id IS NOT NULL
+                     AND rerun_mode IN ('run_again', 'continue') AND rerun_resume IS NOT NULL
+                     AND rerun_reused IS NOT NULL AND rerun_reused >= 1
+                     AND rerun_unwalked IS NOT NULL AND rerun_unwalked >= 0 AND rerun_unwalked < rerun_reused
+                     AND rerun_actor IS NOT NULL)
+                );
+                ALTER TABLE ${su}.workflow_node_executions
+                    ADD COLUMN IF NOT EXISTS reused_from_execution_id TEXT,
+                    ADD COLUMN IF NOT EXISTS reused_from_run_id TEXT,
+                    ADD COLUMN IF NOT EXISTS reused_from_workflow_session_id TEXT,
+                    ADD COLUMN IF NOT EXISTS reused_at TIMESTAMPTZ;
+                ALTER TABLE ${su}.workflow_node_executions ADD CONSTRAINT workflow_node_executions_reused_check CHECK (
+                    (reused_from_execution_id IS NULL AND reused_from_run_id IS NULL
+                     AND reused_from_workflow_session_id IS NULL AND reused_at IS NULL)
+                    OR
+                    (reused_from_execution_id IS NOT NULL AND reused_from_run_id IS NOT NULL
+                     AND reused_from_workflow_session_id IS NOT NULL AND reused_at IS NOT NULL
+                     AND state = 'completed' AND deadline_at IS NULL)
+                );
+            `);
+            for (const stepSql of workflowRerunMigration(selfUpgraded)) {
+                await query(stepSql);
+            }
+            for (const targetSchema of [fresh, upgraded, selfUpgraded]) {
+                const defs = await query(
+                    `SELECT c.conname, pg_get_constraintdef(c.oid) AS def
+                       FROM pg_constraint c
+                       JOIN pg_class t ON t.oid = c.conrelid
+                       JOIN pg_namespace n ON n.oid = t.relnamespace
+                      WHERE n.nspname = $1
+                        AND c.conname IN ('workflow_runs_rerun_check', 'workflow_node_executions_reused_check')`,
+                    [targetSchema],
+                );
+                const byName = Object.fromEntries(defs.rows.map(r => [r.conname, r.def]));
+                expect(byName.workflow_runs_rerun_check, `${targetSchema} runs check`).toContain("supply");
+                expect(byName.workflow_node_executions_reused_check, `${targetSchema} nodes check`).toContain("supplied_from_execution_id");
+
+                const cols = await query(
+                    `SELECT column_name
+                       FROM information_schema.columns
+                      WHERE table_schema = $1 AND table_name = 'workflow_node_executions'
+                        AND column_name LIKE 'supplied_%'
+                      ORDER BY column_name`,
+                    [targetSchema],
+                );
+                expect(cols.rows.map(r => r.column_name), `${targetSchema} supplied columns`).toEqual([
+                    "supplied_actor",
+                    "supplied_at",
+                    "supplied_from_execution_id",
+                    "supplied_from_run_id",
+                    "supplied_from_workflow_session_id",
+                    "supplied_note",
+                ]);
+            }
+            // Self-upgraded schema matches fresh schema catalog (tables, columns, constraints, indexes).
+            expect(snapshotDifferences(catalog(await schemaSnapshot(query, selfUpgraded)), catalog(await schemaSnapshot(query, fresh)))).toEqual({});
+
             // 2. Apply 0104 steps on schemas whose names contain a double quote and a single quote.
             const singleQuotedSchema = `pilot'swarm_${tag}`;
             for (const special of [quotedSchema, singleQuotedSchema]) {
                 await query(`CREATE SCHEMA ${qIdent(special)}`);
                 await query(`CREATE TABLE ${qIdent(special)}.workflow_runs (run_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
-                await query(`CREATE TABLE ${qIdent(special)}.workflow_node_executions (node_execution_id TEXT PRIMARY KEY, state TEXT NOT NULL, deadline_at TIMESTAMPTZ)`);
+                await query(`CREATE TABLE ${qIdent(special)}.workflow_node_executions (node_execution_id TEXT PRIMARY KEY, state TEXT NOT NULL, deadline_at TIMESTAMPTZ, winner TEXT, result_kind TEXT, effect_attempts INTEGER NOT NULL DEFAULT 0)`);
                 for (const stepSql of workflowRerunMigration(special)) await query(stepSql);
                 for (const stepSql of workflowRerunMigration(special)) await query(stepSql);
             }
@@ -177,11 +258,13 @@ describe("migration 0104: workflow_rerun", () => {
             const s = qIdent(upgraded);
             const wf2 = `wf2-${tag}`;
             const wf3 = `wf3-${tag}`;
+            const wf3s0 = `wf3s0-${tag}`;
+            const wf3s2 = `wf3s2-${tag}`;
             const run2 = `run2-${tag}`;
             const run3 = `run3-${tag}`;
             const nx2 = `nx-2-${tag}`;
             const nx3 = `nx-3-${tag}`;
-            for (const wf of [wf2, wf3]) {
+            for (const wf of [wf2, wf3, wf3s0, wf3s2]) {
                 await query(`INSERT INTO ${s}.workflow_definitions (workflow_session_id, api_version, state, current_revision, published_revision, published_yaml_sha256, published_ir_sha256) VALUES ($1, 'pilotswarm.dev/v1', 'published', 1, 1, 'yh', 'ih')`, [wf]);
                 await query(`INSERT INTO ${s}.workflow_revisions (workflow_session_id, revision, yaml, yaml_sha256, valid, diagnostics, ir, ir_sha256, actor) VALUES ($1, 1, 'y', 'yh', true, '[]', '{}', 'ih', '{}')`, [wf]);
             }
@@ -219,13 +302,39 @@ describe("migration 0104: workflow_rerun", () => {
                 [`${run3}-badmode`, wf3, `session-${wf3}-badmode`, wf2, run2, nx2],
             ), "23514");
 
-            // rerun_reused = 0 rejected (23514)
+            // rerun_reused = 0 rejected for run_again and continue (23514)
+            for (const m of ["run_again", "continue"]) {
+                await expectSqlState(query(
+                    `INSERT INTO ${s}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id,
+                        rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
+                     VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', $4, $5, $6, $7, $8, '{}', 0, 0, '{}')`,
+                    [`${run3}-zero-${m}`, wf3, `session-${wf3}-zero-${m}`, `op3-zero-${m}`, wf2, run2, nx2, m],
+                ), "23514");
+            }
+
+            // rerun_mode = 'supply' with rerun_reused = 0 AND rerun_unwalked > 0 rejected (23514)
             await expectSqlState(query(
                 `INSERT INTO ${s}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id,
                     rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
-                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-zero', $4, $5, $6, 'run_again', '{}', 0, 0, '{}')`,
-                [`${run3}-zero`, wf3, `session-${wf3}-zero`, wf2, run2, nx2],
+                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-sup-bad-unwalked', $4, $5, $6, 'supply', '{}', 0, 1, '{}')`,
+                [`${run3}-sup-bad-unwalked`, wf3, `session-${wf3}-sup-bad-unwalked`, wf2, run2, nx2],
             ), "23514");
+
+            // rerun_mode = 'supply' with rerun_reused = 0, rerun_unwalked = 0 (visit 1) succeeds
+            await query(
+                `INSERT INTO ${s}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id,
+                    rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
+                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-sup-zero', $4, $5, $6, 'supply', '{}', 0, 0, '{}')`,
+                [`${run3}-sup-zero`, wf3s0, `session-${wf3s0}`, wf2, run2, nx2],
+            );
+
+            // rerun_mode = 'supply' with rerun_reused = 2, rerun_unwalked = 1 succeeds
+            await query(
+                `INSERT INTO ${s}.workflow_runs (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, start_operation_id,
+                    rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode, rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
+                 VALUES ($1, $2, 'live', 1, 'yh', 'ih', '{}', $3, 'admitted', 'op3-sup-two', $4, $5, $6, 'supply', '{}', 2, 1, '{}')`,
+                [`${run3}-sup-two`, wf3s2, `session-${wf3s2}`, wf2, run2, nx2],
+            );
 
             // Valid #3 re-run row succeeds
             await query(
@@ -256,6 +365,102 @@ describe("migration 0104: workflow_rerun", () => {
                 [`${nx3}-deadline`, run3, nx2, run2, wf2],
             ), "23514");
 
+            // Partial supplied_* rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at, supplied_from_execution_id)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', 'null', 'supplied', 0, now(), $3)`,
+                [`${nx3}-sup-partial`, run3, nx2],
+            ), "23514");
+
+            // winner = 'supplied' without supplied_* rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', 'null', 'supplied', 0, now())`,
+                [`${nx3}-sup-no-cols`, run3],
+            ), "23514");
+
+            // supplied_* with winner <> 'supplied' rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', 'null', 'effect', 0, now(), $3, $4, $5, '{}', 'verified', now())`,
+                [`${nx3}-sup-bad-winner`, run3, nx2, run2, wf2],
+            ), "23514");
+
+            // supplied_* with result_kind = 'runtime_error' rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, error, winner, effect_attempts, completed_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'execution_failed', 'runtime_error', '{}', 'supplied', 0, now(), $3, $4, $5, '{}', 'verified', now())`,
+                [`${nx3}-sup-bad-kind`, run3, nx2, run2, wf2],
+            ), "23514");
+
+            // supplied_* with effect_attempts > 0 rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', 'null', 'supplied', 1, now(), $3, $4, $5, '{}', 'verified', now())`,
+                [`${nx3}-sup-attempts`, run3, nx2, run2, wf2],
+            ), "23514");
+
+            // supplied_* with blank / ASCII-space-only supplied_note rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', 'null', 'supplied', 0, now(), $3, $4, $5, '{}', '   ', now())`,
+                [`${nx3}-sup-blank-note`, run3, nx2, run2, wf2],
+            ), "23514");
+
+            // supplied_* with 2,001-char supplied_note rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', 'null', 'supplied', 0, now(), $3, $4, $5, '{}', $6, now())`,
+                [`${nx3}-sup-long-note`, run3, nx2, run2, wf2, "a".repeat(2001)],
+            ), "23514");
+
+            // supplied_* with non-null deadline_at rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at, deadline_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', 'null', 'supplied', 0, now(), now(), $3, $4, $5, '{}', 'verified', now())`,
+                [`${nx3}-sup-deadline`, run3, nx2, run2, wf2],
+            ), "23514");
+
+            // supplied_* with state = 'pending' rejected (23514)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, winner, effect_attempts,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'pending', 'supplied', 0, $3, $4, $5, '{}', 'verified', now())`,
+                [`${nx3}-sup-pending`, run3, nx2, run2, wf2],
+            ), "23514");
+
+            // supplied_* with SQL NULL output rejected (23514 by workflow_node_executions_result; N4 requires 'null' JSON text)
+            await expectSqlState(query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at, deadline_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', NULL, 'supplied', 0, now(), NULL, $3, $4, $5, '{}', 'verified', now())`,
+                [`${nx3}-sup-sql-null-out`, run3, nx2, run2, wf2],
+            ), "23514");
+
+            // Valid supplied row with output = 'null' JSON text (N4) and 2,000-char note succeeds
+            await query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at, deadline_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 2, 'script', '{}', 'h', 'completed', 'ok', 'business', 'null', 'supplied', 0, now(), NULL, $3, $4, $5, '{}', $6, now())`,
+                [`${nx3}-sup-ok`, `${run3}-sup-zero`, nx2, run2, wf2, "x".repeat(2000)],
+            );
+
+            // Valid multi-generation #3 -> #4 row with BOTH reused_from_* AND supplied_* succeeds
+            await query(
+                `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, effect_attempts, completed_at, deadline_at,
+                    reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at,
+                    supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at)
+                 VALUES ($1, $2, 'root', 'step', 3, 'script', '{}', 'h', 'completed', 'ok', 'business', '{"ok":true}', 'supplied', 0, now(), NULL,
+                    $3, $4, $5, now(), $6, $7, $8, '{}', 'verified via az cli', now())`,
+                [`${nx3}-gen4-both`, `${run3}-sup-two`, `${nx3}-sup-ok`, `${run3}-sup-zero`, wf3s0, nx2, run2, wf2],
+            );
+
             // Valid reused row succeeds
             await query(
                 `INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, outcome, result_kind, output, winner, completed_at, deadline_at, reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at)
@@ -275,6 +480,7 @@ describe("migration 0104: workflow_rerun", () => {
             expect(keptNode.rows).toEqual([{ reused_from_execution_id: nx2, reused_from_run_id: run2, reused_from_workflow_session_id: wf2 }]);
         } finally {
             await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(upgraded)} CASCADE`);
+            await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(selfUpgraded)} CASCADE`);
             await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(fresh)} CASCADE`);
             await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(quotedSchema)} CASCADE`);
             await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(`pilot'swarm_${tag}`)} CASCADE`);
