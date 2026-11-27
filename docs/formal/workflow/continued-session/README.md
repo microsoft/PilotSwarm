@@ -244,6 +244,15 @@ visit in one step, ordered with the decisions, so it could not show that interle
 model: admission reads the turn's visit under a row lock that waits for a decision in flight.
 `CORRESPONDENCE-i1-r4-88681dd1.md` gives the mapping. The model does not change.
 
+### Full run on the final model
+
+All 128 cases on the final model (sha256 `f517c705cc65...`; TLC 2.19, OpenJDK 21, two workers, 3,600 s per case),
+2026-11-27: every case ended as expected (72 PASS, 48 safety violations and 8 liveness violations where the case
+expects one, including every finding, fault and witness). The cases from before i1 keep their results with the new
+constants `FALSE` (for example `cc.safety` 3,142 distinct states, `fix.all` 78,282, `impl.cc-final-live` 659,197), and
+the i1 cases keep their batch results (`i1.fix-safety` 445,565, `i1.fix-live` 23,899, `i1.fix-r2-safety` 6,521,296,
+`i1.fix-r2-live` 188,101).
+
 ## How to run
 
 As in `../../session-orchestration/README.md`: `TLA_TOOLS=<dir with tla2tools.jar> ./check-packet.sh` then
