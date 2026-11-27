@@ -1071,6 +1071,33 @@ export function workflowBoundaryEventAt(box, index) {
     return [box.x + box.width - WORKFLOW_BOUNDARY_EVENT_INSET * (index + 1), box.y + box.height];
 }
 
+/** The join bar's thickness (owner, 2026-11-26 20:03 PST: a solid bar about 6 px thick). */
+export const WORKFLOW_GRAPH_JOIN_BAR_HEIGHT = 6;
+/** How far the join bar reaches past its outermost incoming line. */
+const JOIN_BAR_REACH = 12;
+
+/**
+ * Owner, 2026-11-26 20:03 PST: where a join box (`join`, from `layout.joins`) draws its bar, from the box's top left:
+ * `{ left, width, height }`. The bar is where its incoming lines end (the box's top), centred, as wide as their span
+ * plus JOIN_BAR_REACH on each side and at least a step's width, never wider than the box. Null without a layout. Pure.
+ */
+export function workflowJoinBarSpan(layout, join) {
+    if (!layout || !join || !Number.isFinite(join.width)) return null;
+    const middle = join.width / 2;
+    let half = WORKFLOW_GRAPH_NODE_WIDTH / 2;
+    for (const edge of Array.isArray(layout.edges) ? layout.edges : []) {
+        const end = edge?.to === join.id && Array.isArray(edge.points) ? edge.points.at(-1) : null;
+        if (Array.isArray(end) && Number.isFinite(end[0])) half = Math.max(half, Math.abs(end[0] - join.x - middle) + JOIN_BAR_REACH);
+    }
+    half = Math.min(half, middle);
+    return { left: middle - half, width: 2 * half, height: WORKFLOW_GRAPH_JOIN_BAR_HEIGHT };
+}
+
+/** The join bar's own box where its join box (`box`, as drawn now) stands: the box the error arrows leave from. Pure. */
+export function workflowJoinBarBox(box, span) {
+    return span ? { x: box.x + span.left, y: box.y, width: span.width, height: span.height } : box;
+}
+
 function finish(definition, layout) {
     return Array.isArray(definition?.states) ? annotateWorkflowEdges(definition, layout) : layout;
 }

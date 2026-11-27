@@ -5,7 +5,7 @@ import {
 import "@xyflow/react/dist/base.css";
 import { createPortal } from "react-dom";
 import { WorkflowEdgeShape, WorkflowGroupBox, WorkflowHandlerArrows, WorkflowJoinBar, WorkflowStepCard, workflowGroupProps } from "./workflow-graph.js";
-import { workflowGraphPlaces, workflowHandlerArrows, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
+import { workflowGraphPlaces, workflowHandlerArrows, workflowJoinBarBox, workflowJoinBarSpan, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
 import { WORKFLOW_FIT_MIN_ZOOM, workflowFirstViewport, workflowMainPathBounds, workflowRevealViewport } from "../../core/src/workflow-graph-fit.js";
 import { workflowEdgeShown, workflowJoinShown, workflowStepMarks } from "../../core/src/workflow-transitions.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -426,7 +426,8 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
             return [keep({ id: join.id, type: "workflowJoin", position: { x: place.at.x, y: place.at.y }, width: join.width, height: join.height,
                 ...(place.parent ? { parentId: place.parent } : {}),
                 data: { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selectedId, onSelect,
-                    marks: workflowStepMarks(layout, join.parallel, lit, hoverEnd), ...workflowJoinShown(layout, join.parallel, lit) },
+                    marks: workflowStepMarks(layout, join.parallel, lit, hoverEnd), bar: workflowJoinBarSpan(layout, join),
+                    ...workflowJoinShown(layout, join.parallel, lit) },
                 ...fixed, draggable: false, className: "nopan", style: NODE_STYLE, handles: handles(join.width, join.height) })];
         });
         made.current = next;
@@ -492,8 +493,15 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
     // R1: the error handlers' dashed arrows, between the boxes where they are drawn now (a moved box takes its arrows). UX
     // round 1 (G4): for `handlerStep` when given (a step shown only by default has none), else the step selected.
     const arrowsFor = handlerStep === undefined ? selectedId : handlerStep;
-    const arrows = React.useMemo(() => workflowHandlerArrows(layout, shown, { selectedId: arrowsFor, all: allHandlers, hoverEnd, lit }),
-        [layout, shown, arrowsFor, allHandlers, hoverEnd, lit]);
+    // Owner, 2026-11-26 20:03 PST: a join's arrows leave its bar's right end, where its mark is drawn.
+    const arrows = React.useMemo(() => {
+        const boxes = new Map(shown);
+        for (const join of layout.joins?.values() ?? []) {
+            const box = shown.get(join.id);
+            if (box) boxes.set(join.id, workflowJoinBarBox(box, workflowJoinBarSpan(layout, join)));
+        }
+        return workflowHandlerArrows(layout, boxes, { selectedId: arrowsFor, all: allHandlers, hoverEnd, lit });
+    }, [layout, shown, arrowsFor, allHandlers, hoverEnd, lit]);
     return h(ReactFlow, {
         ref: hostRef,
         nodes: flowNodes, edges: flowEdges, nodeTypes: NODE_TYPES, edgeTypes: EDGE_TYPES,

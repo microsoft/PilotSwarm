@@ -1,7 +1,8 @@
 import React from "react";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import {
-    layoutWorkflowGraphTB, workflowGraphNodeHeight, workflowHandlerArrows, WORKFLOW_BOUNDARY_EVENT_INSET, WORKFLOW_GRAPH_LABEL_HEIGHT,
+    layoutWorkflowGraphTB, workflowGraphNodeHeight, workflowHandlerArrows, workflowJoinBarBox, workflowJoinBarSpan, WORKFLOW_BOUNDARY_EVENT_INSET,
+    WORKFLOW_GRAPH_LABEL_HEIGHT,
 } from "../../core/src/workflow-graph-layout.js";
 import { workflowEdgeShown, workflowJoinShown, workflowLanePill, workflowStepMarks } from "../../core/src/workflow-transitions.js";
 import { workflowJoinShort } from "../../core/src/workflow-view.js";
@@ -269,26 +270,32 @@ export function WorkflowGroupBox({ group, node = null, selected = false, onSelec
  * decision join-k-of-n) its own time limit. It is not a step of its own: a click, Enter or Space selects the parallel
  * step. `node` is the parallel step's view.
  */
-export function WorkflowJoinBar({ join, node = null, selected = false, onSelect, marks = null, litCount = 0, litAge = null, current = false }) {
+export function WorkflowJoinBar({ join, node = null, selected = false, onSelect, marks = null, litCount = 0, litAge = null, current = false, bar = null }) {
     const events = marks?.marks ?? [];
     const chips = marks?.chips ?? [];
     // The bar alone is the bar's own element (no wrapper), as before.
-    const bar = WorkflowJoinBarFace({ join, node, selected, onSelect, litCount, litAge, current });
-    if (!events.length && !chips.length) return bar;
+    const face = WorkflowJoinBarFace({ join, node, selected, onSelect, litCount, litAge, current, bar });
+    if (!events.length && !chips.length) return face;
     // R1, R2: the parallel step's routes leave its join bar, so its boundary events and end chips sit on and beside the bar.
-    return h("div", { className: `ps-workflow-step is-join${selected ? " is-selected" : ""}` }, bar,
+    // Owner, 2026-11-26 20:03 PST: at the bar's right end (`--ps-join-bar-inset`: from the box's right edge to it).
+    const inset = bar && Number.isFinite(join?.width) ? join.width - bar.left - bar.width : null;
+    return h("div", { className: `ps-workflow-step is-join${selected ? " is-selected" : ""}`,
+        ...(inset !== null ? { style: { "--ps-join-bar-inset": `${inset}px` } } : {}) }, face,
         events.map(mark => h(WorkflowHandlerMark, { key: mark.key, mark })),
         chips.length ? h(WorkflowChips, { chips }) : null);
 }
 
-function WorkflowJoinBarFace({ join, node = null, selected = false, onSelect, litCount = 0, litAge = null, current = false }) {
+function WorkflowJoinBarFace({ join, node = null, selected = false, onSelect, litCount = 0, litAge = null, current = false, bar = null }) {
     const view = node?.joinBar ?? null;
     const rule = `${view?.label ?? "Joins when all succeed"}${view?.stateText ? ` · ${view.stateText}` : ""}`;
     // Owner decision join-k-of-n: its own time limit, which the engine enforces; B5: said short on the bar ("⋈ all ended · 24 h").
     const limit = view?.limit ?? null;
     const short = workflowJoinShort(node, view);
+    // In a run, a join the run did not reach is faded, as a step is.
+    const notReached = node?.hasRun && node.phase === "not-reached";
     return h("div", {
-        className: `ps-workflow-join is-${view?.state ?? "idle"}${selected ? " is-selected" : ""}`, "data-join": join.parallel, role: "button", tabIndex: 0,
+        className: `ps-workflow-join is-${view?.state ?? "idle"}${notReached ? " is-not-reached" : ""}${selected ? " is-selected" : ""}`,
+        "data-join": join.parallel, role: "button", tabIndex: 0,
         // Replay: lit while a transition that left the parallel step is among the last four (workflowJoinShown).
         ...litAttributes(litCount, litAge), ...(current ? { "data-current": "true" } : {}),
         "aria-label": `${join.parallel}: ${rule}${limit ? ` · ${limit.text}` : ""}. Inspect ${join.parallel}`, "aria-pressed": selected,
@@ -298,7 +305,10 @@ function WorkflowJoinBarFace({ join, node = null, selected = false, onSelect, li
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(join.parallel); }
         },
     },
-    h("span", { className: "ps-workflow-join-bar", "aria-hidden": true }),
+    // Owner, 2026-11-26 20:03 PST: the bar where the incoming lines end (`bar`: its place in the box), a stem from its middle
+    // down to where the line after it leaves, and the words under the bar, right of the stem, where no line crosses them.
+    h("span", { className: "ps-workflow-join-bar", "aria-hidden": true, ...(bar ? { style: { left: bar.left, width: bar.width } } : {}) }),
+    h("span", { className: "ps-workflow-join-stem", "aria-hidden": true }),
     h("span", { className: "ps-workflow-join-rule" }, short));
 }
 
@@ -333,7 +343,9 @@ export function workflowGroupProps(layout, group, byId, { selected = null, lit =
 function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hoverEnd = null, allHandlers = false, handlerStep }) {
     const markerId = `wf-arrow-${React.useId().replace(/:/g, "")}`;
     const byId = new Map(nodes.map(node => [node.id, node]));
-    const boxes = new Map([...layout.positions, ...[...(layout.joins?.values() ?? [])].map(join => [join.id, join]),
+    // Owner, 2026-11-26 20:03 PST: a join's error arrows leave its bar's right end, where its mark is drawn.
+    const bars = new Map([...(layout.joins?.values() ?? [])].map(join => [join.id, workflowJoinBarSpan(layout, join)]));
+    const boxes = new Map([...layout.positions, ...[...(layout.joins?.values() ?? [])].map(join => [join.id, workflowJoinBarBox(join, bars.get(join.id))]),
         ...[...(layout.groups?.values() ?? [])].map(group => [group.id, group])]);
     const arrows = workflowHandlerArrows(layout, boxes, { selectedId: handlerStep === undefined ? selected?.id ?? null : handlerStep,
         all: allHandlers, hoverEnd, lit });
@@ -358,7 +370,8 @@ function WorkflowGraphStatic({ layout, nodes, selected, select, lit = null, hove
             }),
             [...(layout.joins?.values() ?? [])].map(join => slot(join, "ps-workflow-join-slot",
                 h(WorkflowJoinBar, { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selected?.id, onSelect: select,
-                    marks: workflowStepMarks(layout, join.parallel, lit, hoverEnd), ...workflowJoinShown(layout, join.parallel, lit) }), join.id)),
+                    marks: workflowStepMarks(layout, join.parallel, lit, hoverEnd), bar: bars.get(join.id),
+                    ...workflowJoinShown(layout, join.parallel, lit) }), join.id)),
             h(WorkflowHandlerArrows, { arrows })));
 }
 

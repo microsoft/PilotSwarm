@@ -15,6 +15,10 @@ import {
 import { WorkflowNodeContent } from "../../react/src/workflow-panels.js";
 import { WorkflowGroupBox, WorkflowJoinBar } from "../../react/src/workflow-graph.js";
 import { readModel, row, done } from "./workflow-fixtures.mjs";
+import { workflowDefinition } from "../src/workflow-view.js";
+import {
+    layoutWorkflowGraphTB, workflowHandlerArrows, workflowJoinBarBox, workflowJoinBarSpan, WORKFLOW_GRAPH_JOIN_BAR_HEIGHT, WORKFLOW_GRAPH_NODE_WIDTH,
+} from "../src/workflow-graph-layout.js";
 
 // Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
 // result depends on the zone of the machine that runs it.
@@ -228,4 +232,36 @@ test("a branch choice is kept for its workflow, run, parallel visit and step onl
     assert.notEqual(key, workflowBranchPickKey("wf", "run-1", { ...review, branches: { ...review.branches, parallelExecutionId: "nx-fan-2" } }),
         "another visit of the parallel step");
     assert.notEqual(key, workflowBranchPickKey("wf", "run-1", byId(running(), "prepare")), "another step");
+});
+
+// Owner, 2026-11-26 20:03 PST: the join is a solid horizontal bar (BPMN/UML join bar) where its lines end; the line after it
+// starts at the bar's middle; its words beside it, under the bar right of that line; its error mark at the bar's right end.
+test("the join bar: as wide as its incoming lines (at least a step), at the box's top; its mark and chips at its right end", () => {
+    const layout = layoutWorkflowGraphTB(workflowDefinition(graph));
+    const join = layout.joins.get("fan");
+    const span = workflowJoinBarSpan(layout, join);
+    // One line in (For each): a step's width, centred; the box's own size and place are unchanged.
+    assert.deepEqual(span, { left: (join.width - WORKFLOW_GRAPH_NODE_WIDTH) / 2, width: WORKFLOW_GRAPH_NODE_WIDTH, height: WORKFLOW_GRAPH_JOIN_BAR_HEIGHT });
+    // Lines that arrive far apart (named branches): the bar reaches past each by 12 px, centred, never past the box.
+    const at = xs => ({ ...layout, edges: xs.map((x, index) => ({ from: `s${index}`, to: join.id, points: [[x, 0], [join.x + x, join.y]] })) });
+    assert.deepEqual(workflowJoinBarSpan(at([30, join.width - 40]), join), { left: 18, width: join.width - 36, height: 6 });
+    assert.deepEqual(workflowJoinBarSpan(at([-50, join.width + 50]), join), { left: 0, width: join.width, height: 6 });
+    assert.equal(workflowJoinBarSpan(null, join), null);
+    // The bar as the error arrows see it: its own box, so an arrow starts at the mark drawn at its right end.
+    assert.deepEqual(workflowJoinBarBox(join, span), { x: join.x + span.left, y: join.y, width: span.width, height: 6 });
+    const [arrow] = workflowHandlerArrows({ ...layout, handlers: new Map([["fan", [{ key: "handler:fan:x", from: join.id, end: "x", outcome: "failed", words: "on error", index: 0 }]]]) },
+        new Map([[join.id, workflowJoinBarBox(join, span)]]), { selectedId: "fan" });
+    assert.ok(arrow.path.startsWith(`M${join.x + span.left + span.width - 22},${join.y + 6} C`), arrow.path);
+    // Drawn: the bar where the lines end, a stem from its middle to the line after it, then its words; the bar's place and
+    // its right end's inset (for the mark and the chips) ride on the element.
+    const html = renderToStaticMarkup(React.createElement(WorkflowJoinBar, { join, node: null, onSelect() {}, bar: span,
+        marks: { marks: [{ key: "handler:fan:x", end: "x", index: 0, title: "Error handler" }], chips: [] } }));
+    const inset = join.width - span.left - span.width;
+    assert.ok(html.startsWith(`<div class="ps-workflow-step is-join" style="--ps-join-bar-inset:${inset}px"><div class="ps-workflow-join is-idle" data-join="fan"`), html);
+    assert.ok(html.includes(`<span class="ps-workflow-join-bar" aria-hidden="true" style="left:${span.left}px;width:${span.width}px"></span>`
+        + '<span class="ps-workflow-join-stem" aria-hidden="true"></span><span class="ps-workflow-join-rule">⋈ all ended</span></div><span class="ps-workflow-mark"'), html);
+    assert.match(html, /<span class="ps-workflow-mark"[^>]*style="right:13px"/);
+    // Not reached in a run: faded like a step.
+    const notReached = renderToStaticMarkup(React.createElement(WorkflowJoinBar, { join, node: { hasRun: true, phase: "not-reached" }, onSelect() {} }));
+    assert.match(notReached, /class="ps-workflow-join is-idle is-not-reached"/);
 });

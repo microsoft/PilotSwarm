@@ -14701,3 +14701,40 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-phone .ps-wf-replay > .ps-wf-replay-handled { grid-row: 3; grid-column: 1 / -1; justify-self: end; font-size: 11px; }
 /* R3: a handled error's link to the step that took it; a long step id ends in an ellipsis (its title says it whole). */
 .ps-wf-replay-handled { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Owner, 2026-11-26 20:03 PST: the join is a solid horizontal bar (a BPMN/UML join bar) at the top of its box, where its
+   incoming lines end (its place and width are set inline: the span of those lines, at least a step's width). A stem
+   from its middle carries the line after it, which leaves from the box's bottom; its words sit under the bar, right of
+   the stem, where no line crosses them; its error marks sit on the bar's right end and its end chips beside them. Both
+   renderers, every width. In a run the bar takes the state colours above, is faded when not reached, and is lit. */
+.ps-workflow-join { position: relative; display: block; padding: 0; }
+.ps-workflow-join-bar {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  margin: 0;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ps-foreground) 62%, transparent);
+}
+.ps-workflow-join-stem {
+  position: absolute;
+  top: 6px;
+  bottom: 0;
+  left: calc(50% - 0.75px);
+  width: 1.5px;
+  background: var(--ps-wf-edge, var(--ps-muted));
+}
+.ps-workflow-join-rule { position: absolute; top: 9px; left: calc(50% + 8px); max-width: calc(50% - 8px); text-align: left; }
+.ps-workflow-join.is-not-reached { opacity: 0.45; }
+.ps-workflow-join[data-lit], .ps-workflow-join[data-current="true"] { outline: none; background: none; }
+.ps-workflow-join[data-lit] .ps-workflow-join-bar { outline: 1.5px solid var(--ps-wf-lit, var(--ps-warning)); outline-offset: 2px; }
+.ps-workflow-join[data-lit="2"] .ps-workflow-join-bar { outline-width: 3px; }
+.ps-workflow-join[data-lit-age="1"] .ps-workflow-join-bar { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 75%, transparent); }
+.ps-workflow-join[data-lit-age="2"] .ps-workflow-join-bar { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 50%, transparent); }
+.ps-workflow-join[data-lit-age="3"] .ps-workflow-join-bar { outline-color: color-mix(in srgb, var(--ps-wf-lit, var(--ps-warning)) 35%, transparent); }
+.ps-workflow-join[data-current="true"] .ps-workflow-join-bar { background: var(--ps-wf-lit, var(--ps-warning)); }
+.ps-workflow-step.is-join > .ps-workflow-mark { top: -3px; bottom: auto; margin-right: var(--ps-join-bar-inset, 0px); }
+.ps-workflow-step.is-join > .ps-workflow-chips { top: -6px; margin-left: calc(-1 * var(--ps-join-bar-inset, 0px)); }
