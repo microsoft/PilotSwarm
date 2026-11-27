@@ -39,6 +39,7 @@ import {
 import { updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
+import { buildPgPoolConfig } from "../../src/pg-pool-factory.ts";
 import { assertNoLeaks, census } from "../helpers/workflow-leak-census.js";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -364,7 +365,7 @@ async function startRuntimeHarness(env, { wrapStore = null, skipParentEndCleanup
             },
         });
     }
-    const pool = new pg.Pool({ connectionString: env.store });
+    const pool = new pg.Pool(buildPgPoolConfig({ connectionString: env.store }));
     const runtime = new Runtime(provider, {
         orchestrationConcurrency: 8,
         workerConcurrency: 8,
@@ -669,7 +670,7 @@ describe("Workflow resource-leak census baseline (B1–B10 + Sweeper + Control)"
         await client.start();
         await worker.start();
         const duroxide = client._getDuroxideClient();
-        const pool = new pg.Pool({ connectionString: env.store });
+        const pool = new pg.Pool(buildPgPoolConfig({ connectionString: env.store }));
         const q = async (sql, params = []) => (await pool.query(sql.replaceAll("SCHEMA", `"${env.cmsSchema}"`), params)).rows;
         try {
             const ownerId = randomUUID();
