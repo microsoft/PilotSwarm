@@ -236,6 +236,14 @@ Batch r3a (TLC 2.19, two workers, 3,600 s per case; model sha256 `f517c705cc65..
 | `i1.fix-r2-stalled-reply` (the read-back ordered after the write) | PASS | PASS, 13,908 distinct states |
 | `i1.wit-ack-reconciled` | reached | reached |
 
+### Review R4 of i1 (bound to 88681dd1)
+
+Review R4 found the same ordering gap at turn admission: a retry on another worker could read the visit open (a plain
+read) while the first worker's completion was still committing, and run it again. The model's `TurnStart` reads the
+visit in one step, ordered with the decisions, so it could not show that interleaving. The fix makes the code match the
+model: admission reads the turn's visit under a row lock that waits for a decision in flight.
+`CORRESPONDENCE-i1-r4-88681dd1.md` gives the mapping. The model does not change.
+
 ## How to run
 
 As in `../../session-orchestration/README.md`: `TLA_TOOLS=<dir with tla2tools.jar> ./check-packet.sh` then
