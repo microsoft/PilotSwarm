@@ -20,6 +20,8 @@ import {
     SESSION_MAX_NESTING_LEVEL, spawnNesting, spawnNestingRefusal, spawnNestingRefusalReason, workflowInputCapabilities,
     WORKFLOW_ASK_USER_REFUSAL, WORKFLOW_HUMAN_INPUT_DENIED,
 } from "../../dist/workflow/input-policy.js";
+import { registerActivities } from "../../dist/session-proxy.js";
+import { handleSubAgentAction } from "../../dist/orchestration/agents.js";
 
 const ROOT = { childSessionId: "C", nodeExecutionId: "nx-1", workflowSessionId: "W", controllingSessionId: "P", distance: 0 };
 const LINEAGES = {
@@ -289,4 +291,110 @@ test("effectiveLevelDetail matches the owner level-table oracle across every leg
         deepTruncated.push({ sessionId: `d${i}`, parentSessionId: `d${i + 1}`, isWorkflow: false, isSystem: false });
     }
     assert.equal(effectiveLevelDetail(deepTruncated), null);
+});
+
+test("I9 Check 4: captureSpawnToolsV1 enforces stored-chain effectiveLevel before warm/cold capture and feeds handleSubAgentAction without orchestration edits", async () => {
+    async function runFallbackSpawn({ lineage, runtimeNestingLevel = 1 }) {
+        const handlers = new Map();
+        let captureCalls = 0;
+        let spawnCalls = 0;
+        const fakeManager = {
+            captureSpawnTools: async () => { captureCalls += 1; return { toolCeiling: [] }; },
+            getSessionStateDir: () => "/tmp",
+            getWorkspaceProvider: () => null,
+        };
+        const fakeCatalog = {
+            workflowStore: () => ({ readWorkflowLineage: async () => lineage }),
+        };
+        registerActivities(
+            { registerActivity: (name, handler) => handlers.set(name, handler) },
+            fakeManager, null, undefined, fakeCatalog, undefined, "in-memory://check4",
+            undefined, undefined, [], null, [], [],
+        );
+        const captureHandler = handlers.get("captureSpawnToolsV1");
+        assert.equal(typeof captureHandler, "function");
+
+        const spawnedLevels = [];
+        const runtime = {
+            ctx: {
+                traceInfo() {},
+                utcNow: () => ({ __eff: "utcNow" }),
+            },
+            input: { sessionId: "parent-s1" },
+            options: { nestingLevel: runtimeNestingLevel },
+            state: {
+                subAgents: [],
+                config: { model: "fixture:m" },
+                transcriptEpoch: 0,
+                workspaceRevision: 0,
+                iteration: 1,
+                pendingPrompt: null,
+                pendingCustomStatus: null,
+            },
+            session: {
+                captureSpawnTools: (childConfig, grant, tools, agent, legacyToolNames, parentContext) => ({
+                    __eff: "captureSpawnToolsV1",
+                    input: { parentSessionId: "parent-s1", childConfig, grant, tools, agent, legacyToolNames, parentContext },
+                }),
+            },
+            manager: {
+                resolveAgentDefinition: () => ({ __eff: "resolveAgentDefinition" }),
+                spawnChildSession: (_parent, _cfg, _task, childNestingLevel) => ({ __eff: "spawnChildSession", childNestingLevel }),
+                recordSessionEvent: () => ({ __eff: "recordSessionEvent" }),
+            },
+        };
+        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", task: "review code" });
+        let step = gen.next();
+        while (!step.done) {
+            const eff = step.value;
+            if (eff?.__eff === "captureSpawnToolsV1") {
+                try {
+                    const res = await captureHandler({ traceInfo() {} }, eff.input);
+                    step = gen.next(res);
+                } catch (err) {
+                    step = gen.throw(err);
+                }
+            } else if (eff?.__eff === "spawnChildSession") {
+                spawnCalls += 1;
+                spawnedLevels.push(eff.childNestingLevel);
+                step = gen.next("child-created-1");
+            } else if (eff?.__eff === "utcNow") {
+                step = gen.next(Date.now());
+            } else if (eff?.__eff === "recordSessionEvent") {
+                step = gen.next(undefined);
+            } else {
+                step = gen.next(null);
+            }
+        }
+        return { captureCalls, spawnCalls, spawnedLevels, pendingPrompt: runtime.state.pendingPrompt };
+    }
+
+    // (a) Chain #7: level-1 child-Workflow agent step succeeds at childNestingLevel = 2.
+    const ok = await runFallbackSpawn({
+        lineage: { sessionId: "parent-s1", level: 1, hasWorkflow: true, agentRoot: ROOT, deleted: false },
+        runtimeNestingLevel: 1,
+    });
+    assert.equal(ok.captureCalls, 1);
+    assert.equal(ok.spawnCalls, 1);
+    assert.deepEqual(ok.spawnedLevels, [2]);
+
+    // (b) Chain #8: level-2 Workflow/step is refused BEFORE captureSpawnTools (even if warm or runtimeNestingLevel was stale 1)
+    // and handleSubAgentAction queues the refusal prompt without calling spawnChildSession.
+    const refused = await runFallbackSpawn({
+        lineage: { sessionId: "parent-s1", level: 2, hasWorkflow: true, agentRoot: ROOT, deleted: false },
+        runtimeNestingLevel: 1,
+    });
+    assert.equal(refused.captureCalls, 0, "must refuse at top of captureSpawnToolsV1 before warm capture");
+    assert.equal(refused.spawnCalls, 0, "spawnChildSession must not be called");
+    assert.match(String(refused.pendingPrompt), /^spawn_agent failed: this session is at level 2, and nothing goes past level 2 /);
+    assert.match(String(refused.pendingPrompt), /A sub-agent here would be at level 3\. Do this work yourself\.$/);
+
+    // (c) Missing (null) or broken (level: null) stored lineage fails closed with unverified-chain text.
+    for (const badLineage of [null, { sessionId: "parent-s1", level: null, hasWorkflow: false, agentRoot: null, deleted: false }]) {
+        const failClosed = await runFallbackSpawn({ lineage: badLineage, runtimeNestingLevel: 0 });
+        assert.equal(failClosed.captureCalls, 0);
+        assert.equal(failClosed.spawnCalls, 0);
+        assert.equal(failClosed.pendingPrompt,
+            "spawn_agent failed: this session's delegation chain cannot be verified, and nothing goes past level 2. Do this work yourself.");
+    }
 });

@@ -260,8 +260,8 @@ export function workflowInputCapabilities(lineage: WorkflowLineage | null): Work
 export function spawnNesting(sessionNestingLevel: number, ordinaryMax: number, lineage: WorkflowLineage | null): { childNestingLevel: number; maxNestingLevel: number } {
     if (lineage !== null) {
         const max = SESSION_MAX_NESTING_LEVEL;
-        if (lineage.level === null) return { childNestingLevel: max + 1, maxNestingLevel: max };
-        return { childNestingLevel: lineage.level + 1, maxNestingLevel: max };
+        if (!Number.isSafeInteger(lineage.level)) return { childNestingLevel: max + 1, maxNestingLevel: max };
+        return { childNestingLevel: (lineage.level as number) + 1, maxNestingLevel: max };
     }
     return { childNestingLevel: sessionNestingLevel + 1, maxNestingLevel: ordinaryMax };
 }

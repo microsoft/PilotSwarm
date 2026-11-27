@@ -392,7 +392,7 @@ describe("1.0.84 composition after rebuilding a session", () => {
             expect(capture).toEqual({ toolCeiling: [] });
             expect(manager.sessionConfigs.get("parent").workflowToolLimit).toEqual([]);
             expect(server.requests).toEqual([]);
-        }, { lineage: { agentRoot: { distance: 1, nodeExecutionId: "visit", workflowSessionId: "workflow" } }, limit: [] });
+        }, { lineage: { level: 1, hasWorkflow: true, agentRoot: { distance: 1, nodeExecutionId: "visit", workflowSessionId: "workflow" } }, limit: [] });
     });
 
     it("opens one parent for concurrent captures without losing the ceiling", { timeout: 120_000 }, async () => {
