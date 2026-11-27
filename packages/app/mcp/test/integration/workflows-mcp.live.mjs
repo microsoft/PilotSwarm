@@ -310,6 +310,69 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
         }));
         assert.equal(cancelHold.status, "cancelled");
 
+        // Spawn-ref delete refusal over MCP: deleting a definition named by an active parent Workflow's spawn state -> 409 DEFINITION_IN_USE
+        const spawnLeafYaml = [
+            "apiVersion: pilotswarm.dev/v1",
+            "kind: Workflow",
+            'metadata: { name: spawn-leaf, version: "1.0.0" }',
+            "initial: pause",
+            "states:",
+            "  pause: { type: wait, seconds: 5, transition: { next: { elapsed: done } } }",
+            "  done: { type: terminal, outcome: succeeded }",
+        ].join("\n");
+        const spawnParentYaml = [
+            "apiVersion: pilotswarm.dev/v1",
+            "kind: Workflow",
+            'metadata: { name: spawn-parent, version: "1.0.0" }',
+            "initial: wait_first",
+            "states:",
+            "  wait_first: { type: wait, seconds: 600, transition: { next: { elapsed: launch_leaf } } }",
+            "  launch_leaf: { type: spawn, definition: spawn-leaf, transition: { next: { started: done, failure: fail } } }",
+            "  done: { type: terminal, outcome: succeeded }",
+            "  fail: { type: terminal, outcome: failed }",
+        ].join("\n");
+        await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "save", owner_session_id: owner.session_id, name: "spawn-leaf", yaml: spawnLeafYaml, operation_id: "save-spawn-leaf-1" },
+        });
+        await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "save", owner_session_id: owner.session_id, name: "spawn-parent", yaml: spawnParentYaml, operation_id: "save-spawn-parent-1" },
+        });
+        const startedSpawnParent = parse(await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "start", owner_session_id: owner.session_id, name: "spawn-parent", workspace: "none", operation_id: "start-spawn-parent-1" },
+        }));
+        assert.ok(startedSpawnParent.workflowId);
+        sessionsToClean.push(startedSpawnParent.workflowId);
+
+        const delSpawnRef = await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "delete", owner_session_id: owner.session_id, name: "spawn-leaf", operation_id: "del-spawn-leaf-busy" },
+        });
+        assert.equal(delSpawnRef.isError, true, `${modeLabel}: MCP delete must refuse active spawn reference`);
+        const delSpawnRefBody = parse(delSpawnRef);
+        assert.equal(delSpawnRefBody.code, "DEFINITION_IN_USE");
+        assert.equal(delSpawnRefBody.status, 409);
+        assert.match(String(delSpawnRefBody.error ?? ""), /spawn-parent #1/);
+        assert.match(String(delSpawnRefBody.error ?? ""), /launch_leaf/);
+        assert.deepEqual(delSpawnRefBody.details?.referencedBy, [
+            { workflowSessionId: startedSpawnParent.workflowId, name: "spawn-parent", number: 1, spawnStates: ["launch_leaf"] },
+        ]);
+
+        const cancelSpawnParent = parse(await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: startedSpawnParent.workflowId, command: { operation: "cancel", operation_id: "cancel-spawn-parent-1" } },
+        }));
+        assert.equal(cancelSpawnParent.status, "cancelled");
+
+        const delSpawnLeafAfter = parse(await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "delete", owner_session_id: owner.session_id, name: "spawn-leaf", operation_id: "del-spawn-leaf-ok" },
+        }));
+        assert.equal(delSpawnLeafAfter.operation, "delete");
+        assert.equal(delSpawnLeafAfter.name, "spawn-leaf");
+
         // 7. Save & start sum-pair (script state) -> WORKFLOW_PERSON_START_NO_TOOL_BINDING -> poll read_workflow -> sum: 12
         const savedSum = parse(await client.callTool({
             name: "workflow_definition",
