@@ -11245,14 +11245,16 @@ export class PilotSwarmUiController {
         const name = String(filename || "").trim();
         if (!resolvedSessionId || !name) return false;
 
-        // Capture the list's current selection and phone pane BEFORE we move
-        // anything, so backing out of a chat-opened preview leaves the artifact
-        // list untouched and returns to whichever phone surface was active.
+        // Capture the list's current selection, phone pane, and inspector tab
+        // BEFORE we move anything, so backing out of a chat-opened preview
+        // leaves the artifact list and Diagnostics tab untouched.
+        const priorState = this.getState();
         this.dispatch({
             type: "files/previewOrigin",
             origin,
-            restoreArtifactId: origin === "chat" ? (this.getState().files.selectedArtifactId || null) : null,
+            restoreArtifactId: origin === "chat" ? (priorState.files.selectedArtifactId || null) : null,
             restoreMobilePane: origin === "chat" && this.mobileView ? (this.mobileView.get?.() || "workspace") : null,
+            restoreInspectorTab: origin === "chat" && !pane ? (priorState.ui.inspectorTab || null) : null,
         });
 
         if (!preserveSession && this.getState().sessions.activeSessionId !== resolvedSessionId) {
@@ -11368,6 +11370,7 @@ export class PilotSwarmUiController {
 
         const restoreId = state.files.restoreArtifactId;
         const restoreMobilePane = state.files.restoreMobilePane || "workspace";
+        const restoreInspectorTab = state.files.restoreInspectorTab;
         if (restoreId) {
             const slash = String(restoreId).indexOf("/");
             if (slash > 0) {
@@ -11379,6 +11382,9 @@ export class PilotSwarmUiController {
             }
         } else {
             this.dispatch({ type: "files/select", sessionId: null, filename: null });
+        }
+        if (restoreInspectorTab && restoreInspectorTab !== state.ui.inspectorTab) {
+            this.dispatch({ type: "ui/inspectorTab", inspectorTab: restoreInspectorTab });
         }
         this.dispatch({ type: "files/previewOrigin", origin: null });
         if (this.mobileView && this.mobileView.get?.() !== restoreMobilePane) {
@@ -13866,12 +13872,6 @@ export class PilotSwarmUiController {
             return nextOffset;
         }
 
-        if (pane === "chat" && !options.fromViewport) {
-            const activeSessionId = state.sessions?.activeSessionId;
-            if (activeSessionId && state.ui.chatScrollAnchorBySession?.[activeSessionId] != null) {
-                this.dispatch({ type: "ui/chatScrollAnchor", sessionId: activeSessionId, anchor: null });
-            }
-        }
         this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
         return nextOffset;
     }

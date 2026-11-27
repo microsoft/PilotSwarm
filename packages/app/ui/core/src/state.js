@@ -689,6 +689,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // (e.g. chat workspace, or canvas/diagnostics if show_artifact
             // fired while viewing another phone surface).
             restoreMobilePane: null,
+            // Inspector tab to restore when leaving a chat-origin fullscreen
+            // overlay (which switches inspectorTab to "files" while open).
+            restoreInspectorTab: null,
             // The portal's artifact takeover pane: a full-height reader that
             // replaces the inspector AND activity panes in the right column.
             // Opened by chat artifact cards and artifact deep links; the Files

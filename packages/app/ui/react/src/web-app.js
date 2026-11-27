@@ -1384,6 +1384,7 @@ function scrollAnchorDirectKey(child) {
     if (!child || child.nodeType !== 1) return "";
     if (child.dataset?.scrollKey) return `sk:${child.dataset.scrollKey}`;
     if (child.dataset?.clientMessageId) return `msg:${child.dataset.clientMessageId}`;
+    if (child.dataset?.taskGroup) return `sk:native:${child.dataset.taskGroup}`;
     return "";
 }
 
@@ -1413,10 +1414,58 @@ function firstVisibleIndexByRect(elements, thresholdY) {
     return found;
 }
 
+function hasClass(el, name) {
+    if (!el) return false;
+    if (el.classList?.contains) return el.classList.contains(name);
+    return typeof el.className === "string" && el.className.split(/\s+/).includes(name);
+}
+
+function isCollapsibleOrNestedScroller(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = String(el.tagName || "").toUpperCase();
+    // Finalized answers render in a non-collapsible <details class="... is-final">
+    // whose viewport is unclipped flow; every other <details> (activity runs,
+    // native tasks, tool calls, saved Agent updates) resets closed on remount.
+    if (tag === "DETAILS" && !hasClass(el, "is-final")) return true;
+    if (
+        hasClass(el, "ps-activity-run-viewport")
+        || hasClass(el, "ps-native-task-calls")
+        || hasClass(el, "ps-system-notice-body")
+    ) {
+        return true;
+    }
+    if (hasClass(el, "ps-assistant-preview-viewport") && !hasClass(el.parentElement, "is-final")) {
+        return true;
+    }
+    return false;
+}
+
 function scrollAnchorLeaves(blockEl) {
     if (!blockEl || typeof blockEl.querySelectorAll !== "function") return [];
+    // Collapsible top-level blocks (activity runs, non-final previews, native
+    // task groups) reset their disclosure state and inner scroll position on
+    // remount; keep the anchor on the outer block itself.
+    if (isCollapsibleOrNestedScroller(blockEl)) return [];
     const list = blockEl.querySelectorAll(SCROLL_ANCHOR_LEAF_SELECTOR);
-    return list && list.length > 0 ? Array.from(list) : [];
+    if (!list || list.length === 0) return [];
+    const safe = [];
+    for (const leaf of list) {
+        let unsafe = false;
+        for (let cur = leaf; cur && cur !== blockEl; cur = cur.parentElement) {
+            if (isCollapsibleOrNestedScroller(cur)) {
+                unsafe = true;
+                break;
+            }
+        }
+        if (!unsafe) safe.push(leaf);
+    }
+    return safe;
+}
+
+function isRenderedAnchorTarget(el, rect) {
+    if (!el || !rect || rect.height <= 0) return false;
+    if (typeof el.getClientRects === "function" && el.getClientRects().length === 0) return false;
+    return true;
 }
 
 export function captureScrollAnchor(node) {
@@ -1434,7 +1483,7 @@ export function captureScrollAnchor(node) {
         for (let i = startIdx; i < children.length; i += 1) {
             const child = children[i];
             const rect = child.getBoundingClientRect();
-            if (rect.height <= 0 || rect.bottom <= thresholdY) continue;
+            if (!isRenderedAnchorTarget(child, rect) || rect.bottom <= thresholdY) continue;
             const key = scrollAnchorChildKey(child);
             if (!key) continue;
             anchorEl = child;
@@ -1444,17 +1493,35 @@ export function captureScrollAnchor(node) {
         }
     }
     if (!anchorEl) {
-        return { key: "", occurrence: 0, leafIndex: -1, offsetPx: 0, ratio: 0, scrollTop: Math.round(node.scrollTop) };
+        return {
+            key: "",
+            occurrence: 0,
+            leafIndex: -1,
+            offsetPx: 0,
+            ratio: 0,
+            blockOffsetPx: 0,
+            blockRatio: 0,
+            scrollTop: Math.round(node.scrollTop),
+        };
     }
-    // Stable model keys (sk:*, msg:*) are unique per block; only count prior
-    // occurrences for text-fallback keys, and avoid scanning past anchorIdx.
     let occurrence = 0;
-    if (!scrollAnchorDirectKey(anchorEl)) {
+    const directKey = scrollAnchorDirectKey(anchorEl);
+    if (directKey) {
+        for (let i = 0; i < anchorIdx; i += 1) {
+            if (scrollAnchorDirectKey(children[i]) === directKey) occurrence += 1;
+        }
+    } else {
         for (let i = 0; i < anchorIdx; i += 1) {
             if (scrollAnchorChildKey(children[i]) === anchorKey) occurrence += 1;
         }
     }
+    const blockRect = anchorEl.getBoundingClientRect();
+    const blockOffsetPx = Math.round(blockRect.top - nodeTop);
+    const blockRatio = blockOffsetPx < 0 && blockRect.height > 0
+        ? Math.max(0, Math.min(1, Math.round(((-blockOffsetPx) / blockRect.height) * 1000) / 1000))
+        : 0;
     let targetEl = anchorEl;
+    let targetRect = blockRect;
     let leafIndex = -1;
     const leaves = scrollAnchorLeaves(anchorEl);
     if (leaves.length > 1) {
@@ -1462,25 +1529,29 @@ export function captureScrollAnchor(node) {
         if (leafStart >= 0) {
             for (let i = leafStart; i < leaves.length; i += 1) {
                 const rect = leaves[i].getBoundingClientRect();
-                if (rect.height > 0 && rect.bottom > thresholdY) {
+                if (isRenderedAnchorTarget(leaves[i], rect) && rect.bottom > thresholdY) {
                     targetEl = leaves[i];
+                    targetRect = rect;
                     leafIndex = i;
                     break;
                 }
             }
         }
     }
-    const targetRect = targetEl.getBoundingClientRect();
-    const offsetPx = Math.round(targetRect.top - nodeTop);
-    const ratio = offsetPx < 0 && targetRect.height > 0
-        ? Math.max(0, Math.min(1, Math.round(((-offsetPx) / targetRect.height) * 1000) / 1000))
-        : 0;
+    const offsetPx = targetEl === anchorEl ? blockOffsetPx : Math.round(targetRect.top - nodeTop);
+    const ratio = targetEl === anchorEl
+        ? blockRatio
+        : (offsetPx < 0 && targetRect.height > 0
+            ? Math.max(0, Math.min(1, Math.round(((-offsetPx) / targetRect.height) * 1000) / 1000))
+            : 0);
     return {
         key: anchorKey,
         occurrence,
         leafIndex,
         offsetPx,
         ratio,
+        blockOffsetPx,
+        blockRatio,
         scrollTop: Math.round(node.scrollTop),
     };
 }
@@ -1495,40 +1566,56 @@ export function resolveAnchoredScrollTop(node, anchor, scrollOffset, scrollMode)
     if (anchor && typeof anchor === "object") {
         if (anchor.key) {
             const children = Array.from(node.children || []);
+            const isDirect = anchor.key.startsWith("sk:") || anchor.key.startsWith("msg:");
+            const targetOccurrence = anchor.occurrence || 0;
             let matchedEl = null;
-            if (anchor.key.startsWith("sk:") || anchor.key.startsWith("msg:")) {
-                for (const child of children) {
-                    if (scrollAnchorDirectKey(child) === anchor.key) {
-                        matchedEl = child;
-                        break;
-                    }
+            let seen = 0;
+            for (const child of children) {
+                const key = isDirect ? scrollAnchorDirectKey(child) : scrollAnchorChildKey(child);
+                if (key !== anchor.key) continue;
+                if (seen === targetOccurrence) {
+                    matchedEl = child;
+                    break;
                 }
-            } else {
-                let seen = 0;
-                for (const child of children) {
-                    if (scrollAnchorChildKey(child) !== anchor.key) continue;
-                    if (seen === (anchor.occurrence || 0)) {
-                        matchedEl = child;
-                        break;
-                    }
-                    seen += 1;
-                }
+                seen += 1;
             }
             if (matchedEl) {
-                let targetEl = matchedEl;
+                const nodeTop = node.getBoundingClientRect().top;
+                let targetEl = null;
+                let targetRect = null;
+                let offsetPx = 0;
+                let ratio = 0;
                 if (Number.isInteger(anchor.leafIndex) && anchor.leafIndex >= 0) {
                     const leaves = scrollAnchorLeaves(matchedEl);
-                    if (leaves[anchor.leafIndex]) targetEl = leaves[anchor.leafIndex];
+                    const candidate = leaves[anchor.leafIndex];
+                    const candidateRect = candidate?.getBoundingClientRect();
+                    if (isRenderedAnchorTarget(candidate, candidateRect)) {
+                        targetEl = candidate;
+                        targetRect = candidateRect;
+                        offsetPx = Number(anchor.offsetPx) || 0;
+                        ratio = Number(anchor.ratio) || 0;
+                    }
                 }
-                const nodeTop = node.getBoundingClientRect().top;
-                const targetRect = targetEl.getBoundingClientRect();
-                const offsetPx = Number(anchor.offsetPx) || 0;
-                const ratio = Number(anchor.ratio) || 0;
-                const desiredTopOffset = offsetPx < 0 && ratio > 0 && targetRect.height > 0
-                    ? -Math.round(ratio * targetRect.height)
-                    : offsetPx;
-                const delta = (targetRect.top - nodeTop) - desiredTopOffset;
-                return Math.max(0, Math.min(maxScroll, node.scrollTop + delta));
+                if (!targetEl) {
+                    const blockRect = matchedEl.getBoundingClientRect();
+                    if (isRenderedAnchorTarget(matchedEl, blockRect)) {
+                        targetEl = matchedEl;
+                        targetRect = blockRect;
+                        offsetPx = Number.isFinite(Number(anchor.blockOffsetPx))
+                            ? Number(anchor.blockOffsetPx)
+                            : (Number(anchor.offsetPx) || 0);
+                        ratio = Number.isFinite(Number(anchor.blockRatio))
+                            ? Number(anchor.blockRatio)
+                            : 0;
+                    }
+                }
+                if (targetEl && targetRect) {
+                    const desiredTopOffset = offsetPx < 0 && ratio > 0 && targetRect.height > 0
+                        ? -Math.round(ratio * targetRect.height)
+                        : offsetPx;
+                    const delta = (targetRect.top - nodeTop) - desiredTopOffset;
+                    return Math.max(0, Math.min(maxScroll, node.scrollTop + delta));
+                }
             }
         }
         if (Number.isFinite(Number(anchor.scrollTop))) {
@@ -2181,8 +2268,10 @@ function ChatActivityRun({ calls }) {
         if (open && viewport && followRef.current) viewport.scrollTop = viewport.scrollHeight;
     }, [open, calls.length, updateKey]);
 
+    const runKey = calls[0]?.callKey || latest.callKey || "";
     return React.createElement("details", {
         className: `ps-native-tasks ps-activity-run${latestFailed ? " is-failed" : active ? " is-working" : " is-done"}`,
+        "data-scroll-key": runKey ? `calls:${runKey}` : undefined,
         open,
         onToggle: (event) => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); },
     },
@@ -4732,6 +4821,7 @@ const TurnControlItem = React.memo(function TurnControlItem({ control, theme }) 
         return React.createElement("div", {
             className: "ps-control-item is-stop",
             "data-testid": "control-stop",
+            "data-scroll-key": seq ? `control:stop:${seq}` : undefined,
             "data-control-seq": seq,
             "data-outcome": outcome,
             "data-actor-kind": control.actorKind,
@@ -4743,6 +4833,7 @@ const TurnControlItem = React.memo(function TurnControlItem({ control, theme }) 
     return React.createElement("div", {
         className: "ps-control-item is-steer",
         "data-testid": "control-steer",
+        "data-scroll-key": seq ? `control:steer:${seq}` : undefined,
         "data-control-seq": seq,
         "data-outcome": outcome,
         "data-actor-kind": control.actorKind,

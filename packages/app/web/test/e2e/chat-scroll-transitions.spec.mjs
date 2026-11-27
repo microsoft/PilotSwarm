@@ -45,6 +45,32 @@ function buildTranscript(sessionId, count = 48) {
         } else {
             content = `**Assessment ${i}**\n\n${PARA}\n\n- Detail ${i}.1\n- Detail ${i}.2`;
         }
+        if (!isUser && i === 19) {
+            events.push({
+                seq: seq++,
+                eventType: "tool.execution_start",
+                timestamp: 1785000000000 + (seq * 1000),
+                data: { toolCallId: "tc-scroll-1", toolName: "bash", arguments: { command: "echo check-1" } },
+            });
+            events.push({
+                seq: seq++,
+                eventType: "tool.execution_complete",
+                timestamp: 1785000000000 + (seq * 1000),
+                data: { toolCallId: "tc-scroll-1", toolName: "bash", result: { content: "check-1 ok" } },
+            });
+            events.push({
+                seq: seq++,
+                eventType: "tool.execution_start",
+                timestamp: 1785000000000 + (seq * 1000),
+                data: { toolCallId: "tc-scroll-2", toolName: "grep", arguments: { pattern: "scrollTop" } },
+            });
+            events.push({
+                seq: seq++,
+                eventType: "tool.execution_complete",
+                timestamp: 1785000000000 + (seq * 1000),
+                data: { toolCallId: "tc-scroll-2", toolName: "grep", result: { content: "matched 3 lines" } },
+            });
+        }
         events.push({
             seq: seq++,
             eventType: isUser ? "user.message" : "assistant.message",
@@ -517,6 +543,41 @@ test.describe("phone (390px) chat scroll preservation across transitions", () =>
         await expectScrollRestored(page, scroller, before, "phone paused + live message + preview close");
     });
 
+    test("expanded activity run at viewport top survives remount transition without jumping to top", async ({ page }) => {
+        const scroller = await setupSession(page, PHONE);
+        const run = scroller.locator("details.ps-activity-run").first();
+        await expect(run).toBeVisible({ timeout: 15_000 });
+        await run.locator("summary.ps-activity-run-summary").click();
+        await expect(run).toHaveAttribute("open", "");
+        // Scroll so the expanded activity run straddles the top of the viewport.
+        await scroller.evaluate((el) => {
+            const target = el.querySelector("details.ps-activity-run");
+            const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+            el.scrollTop = Math.max(200, Math.round(top + 24));
+            el.dispatchEvent(new Event("scroll", { bubbles: true }));
+        });
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+        const beforeTop = await scroller.evaluate((el) => Math.round(el.scrollTop));
+        expect(beforeTop).toBeGreaterThan(500);
+
+        // Open and close Budget (unmounts & remounts ChatPane; activity run resets closed).
+        await page.getByRole("button", { name: "Budget — providers, limits and usage", exact: true }).click();
+        await expect(page.getByRole("button", { name: "Close budget", exact: true })).toBeVisible();
+        await page.getByRole("button", { name: "Close budget", exact: true }).click();
+
+        await expect(scroller).toBeVisible({ timeout: 15_000 });
+        await expect.poll(() => scroller.evaluate((el) => Math.round(el.scrollTop))).toBeGreaterThan(beforeTop - 120);
+        const after = await scroller.evaluate((el) => {
+            const target = el.querySelector("details.ps-activity-run");
+            return {
+                scrollTop: Math.round(el.scrollTop),
+                runTop: target ? Math.round(target.getBoundingClientRect().top - el.getBoundingClientRect().top) : null,
+            };
+        });
+        expect(Math.abs(after.scrollTop - beforeTop), `expected scrollTop near ${beforeTop}, got ${after.scrollTop}`).toBeLessThanOrEqual(60);
+        expect(Math.abs(after.runTop), `expected activity run near viewport top, got runTop=${after.runTop}`).toBeLessThanOrEqual(60);
+    });
+
     test("list-opened preview on phone still returns to Files list, not chat", async ({ page }) => {
         await setupSession(page, PHONE);
         const diagBtn = page.locator('.ps-toolbar.is-mobile button[aria-label^="Diagnostics"]').first();
@@ -624,22 +685,31 @@ test.describe("desktop (1440px) chat scroll preservation across transitions", ()
 
     test("keyboard scroll after paused wheel scroll does not snap back to stale anchor on width resize", async ({ page }) => {
         const scroller = await setupSession(page, DESKTOP);
-        await scrollToMiddleArtifact(page, scroller);
+        const initial = await scrollToMiddleArtifact(page, scroller);
 
-        // Focus chat pane and jump to top via keyboard (Home), which must clear the stale middle anchor.
+        // Focus chat pane and scroll upward via controller keyboard shortcut (PageUp)
+        // to a distinct non-zero middle position — must clear the stale anchor and
+        // recapture the new position so narrowing does not snap back to initial.
         await scroller.click({ position: { x: 20, y: 20 } });
-        await page.keyboard.press("Home");
-        await expect.poll(() => scroller.evaluate((el) => Math.round(el.scrollTop))).toBeLessThanOrEqual(24);
+        await page.keyboard.press("PageUp");
+        await page.keyboard.press("PageUp");
+        await expect.poll(() => scroller.evaluate((el) => Math.round(el.scrollTop))).toBeLessThan(initial.scrollTop - 250);
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+        const afterKey = await measureScroll(scroller);
+        expect(afterKey.scrollTop).toBeGreaterThan(200);
+        expect(initial.scrollTop - afterKey.scrollTop).toBeGreaterThan(250);
 
-        // Open and close Canvas (triggers width resize): must stay at top, NOT snap back to middle.
+        // Open Canvas (triggers width resize): must stay near afterKey, NOT snap back to initial.
         await page.getByRole("button", { name: "Show canvas", exact: true }).click();
         await expect(page.getByRole("button", { name: "Hide the canvas", exact: true })).toBeVisible();
         await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-        expect(await scroller.evaluate((el) => Math.round(el.scrollTop))).toBeLessThanOrEqual(24);
+        const whileNarrow = await measureScroll(scroller);
+        expect(whileNarrow.scrollTop).toBeGreaterThan(200);
+        expect(Math.abs(whileNarrow.scrollTop - initial.scrollTop)).toBeGreaterThan(150);
 
+        // Close Canvas: returns to afterKey (within ±28px), NOT initial.
         await page.getByRole("button", { name: "Hide the canvas", exact: true }).click();
-        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-        expect(await scroller.evaluate((el) => Math.round(el.scrollTop))).toBeLessThanOrEqual(24);
+        await expectScrollRestored(page, scroller, afterKey, "desktop keyboard-paused after canvas close", 28);
     });
 
     test("two paused sessions keep independent scroll positions across switches", async ({ page }) => {

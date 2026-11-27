@@ -96,6 +96,7 @@ test("phone show_artifact opens fullscreen overlay without modifying desktop pan
     controller.ensureFilePreview = async () => null;
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "s1", title: "One", status: "idle" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    store.dispatch({ type: "ui/inspectorTab", inspectorTab: "sequence" });
     controller.collapseRightColumn();
     const collapsedAdjust = store.getState().ui.layout.paneAdjust;
 
@@ -114,10 +115,12 @@ test("phone show_artifact opens fullscreen overlay without modifying desktop pan
     assert.equal(store.getState().files.paneOpen, false);
     assert.equal(store.getState().ui.layout.paneAdjust, collapsedAdjust, "phone show_artifact must not mutate desktop paneAdjust");
     assert.equal(store.getState().files.restoreMobilePane, "canvas");
+    assert.equal(store.getState().files.restoreInspectorTab, "sequence");
 
     mobilePane = "inspector";
     await controller.closeArtifactPreview();
     assert.equal(mobilePane, "canvas", "closing show_artifact restores the phone pane that was active");
+    assert.equal(store.getState().ui.inspectorTab, "sequence", "closing phone show_artifact restores the Diagnostics tab");
 });
 
 test("list-origin preview close keeps mobile inspector pane untouched", async () => {

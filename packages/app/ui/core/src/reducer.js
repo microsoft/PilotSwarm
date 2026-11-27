@@ -2111,6 +2111,7 @@ function baseReducer(state, action) {
             if (!sessionId) return state;
             const current = state.ui.chatScrollAnchorBySession?.[sessionId] ?? null;
             const rawRatio = Number(action.anchor?.ratio);
+            const rawBlockRatio = Number(action.anchor?.blockRatio);
             const next = action.anchor && typeof action.anchor === "object"
                 ? {
                     key: String(action.anchor.key || ""),
@@ -2118,6 +2119,10 @@ function baseReducer(state, action) {
                     leafIndex: Number.isInteger(Number(action.anchor.leafIndex)) ? Number(action.anchor.leafIndex) : -1,
                     offsetPx: Number.isFinite(Number(action.anchor.offsetPx)) ? Math.round(Number(action.anchor.offsetPx)) : 0,
                     ratio: Number.isFinite(rawRatio) ? Math.max(0, Math.min(1, Math.round(rawRatio * 1000) / 1000)) : 0,
+                    blockOffsetPx: Number.isFinite(Number(action.anchor.blockOffsetPx))
+                        ? Math.round(Number(action.anchor.blockOffsetPx))
+                        : (Number.isFinite(Number(action.anchor.offsetPx)) ? Math.round(Number(action.anchor.offsetPx)) : 0),
+                    blockRatio: Number.isFinite(rawBlockRatio) ? Math.max(0, Math.min(1, Math.round(rawBlockRatio * 1000) / 1000)) : 0,
                     scrollTop: Number.isFinite(Number(action.anchor.scrollTop)) ? Math.max(0, Math.round(Number(action.anchor.scrollTop))) : 0,
                 }
                 : null;
@@ -2129,6 +2134,8 @@ function baseReducer(state, action) {
                     && current.leafIndex === next.leafIndex
                     && current.offsetPx === next.offsetPx
                     && current.ratio === next.ratio
+                    && current.blockOffsetPx === next.blockOffsetPx
+                    && current.blockRatio === next.blockRatio
                     && current.scrollTop === next.scrollTop)
             ) {
                 return state;
@@ -4323,6 +4330,9 @@ function baseReducer(state, action) {
                         : null,
                     restoreMobilePane: action.origin === "chat"
                         ? (action.restoreMobilePane ?? state.files.restoreMobilePane ?? null)
+                        : null,
+                    restoreInspectorTab: action.origin === "chat"
+                        ? (action.restoreInspectorTab ?? state.files.restoreInspectorTab ?? null)
                         : null,
                 },
             };
