@@ -752,6 +752,27 @@ describe("the Sweeper's final check and delete under concurrency", () => {
         }
     });
 
+    it("issue 412 (prune): a held system session that the prune leaves under its target refuses it at once (Busy); nothing is deleted", { timeout: TIMEOUT }, async () => {
+        const root = randomUUID();
+        const system = randomUUID();
+        await catalog.createSession(root);
+        await catalog.createSession(system, { parentSessionId: root, isSystem: true });
+        const other = await db.connect();
+        try {
+            // A Workflow's claim under the system session holds its row (lockLiveParent: FOR NO KEY UPDATE under the child budget).
+            await other.query("BEGIN");
+            await other.query(`SELECT 1 FROM ${schema}.sessions WHERE session_id = $1 FOR NO KEY UPDATE`, [system]);
+            const store = catalog.workflowStore();
+            const version = await store.sweeperRowVersion(root);
+            const result = await store.sweeperSoftDelete({ sessionId: root, version: version.version, cascade: false, orchestrationNotFound: true });
+            expect(result, JSON.stringify(result)).toMatchObject({ refused: { status: "Busy" } });
+            for (const id of [root, system]) expect(await rowState(db, schema, id), id.slice(0, 8)).toBe("kept");
+        } finally {
+            await other.query("ROLLBACK").catch(() => {});
+            other.release();
+        }
+    });
+
     // Issue 412 (review round 3): a prune leaves its target's ordinary children in place, so a Workflow started later under
     // one of them would be kept but never shown. A Start refuses while a session above its owner is deleted.
     it("issue 412 (prune): a Start of a saved definition under a session whose ancestor was pruned is refused; no Workflow is created", { timeout: TIMEOUT }, async () => {
