@@ -500,23 +500,7 @@ export class SessionDefinitionStore {
         if (count >= max) {
             throw new WorkflowStoreError("CHILD_LIMIT", `${childBudgetWords(count, max)} Nothing was started.`, { running: count, max });
         }
-        // Issue 412 (review round 3): lists and the portal reach a session through its parent, so a Workflow under a session
-        // whose ancestor was deleted (a Sweeper prune leaves its target's children in place) would be kept but never shown.
-        // Read after the lock above: a prune locks every session it leaves under its target (NOWAIT) before it deletes, so it
-        // refused, or it committed before this read.
-        const { rows: deleted } = await client.query(
-            `WITH RECURSIVE up AS (
-                 SELECT parent_session_id AS session_id FROM ${this.t.sessions} WHERE session_id = $1
-                 UNION
-                 SELECT p.parent_session_id FROM ${this.t.sessions} AS p JOIN up ON p.session_id = up.session_id
-             )
-             SELECT s.session_id FROM ${this.t.sessions} AS s
-              WHERE s.session_id IN (SELECT session_id FROM up WHERE session_id IS NOT NULL) AND s.deleted_at IS NOT NULL
-              LIMIT 1`, [ownerSessionId]);
-        if (deleted[0]) {
-            throw new WorkflowStoreError("SESSION_NOT_FOUND", `Session ${String(deleted[0].session_id)} above this session was deleted, so a Workflow `
-                + "started here would not be shown. Nothing was started.");
-        }
+        await requireNoDeletedAncestor(client, this.schema, ownerSessionId);
     }
 
     /**
@@ -866,6 +850,31 @@ export async function requireSessionStartLocked(client: PoolClient, schema: stri
         throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${pin.revision} of ${row.name} is not valid, so it cannot start. Save a fixed revision first.`);
     }
     if (revision.rows[0].yaml_sha256 !== yamlSha256) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Revision ${pin.revision} of ${row.name} is not this YAML.`);
+    // PR 415 review round 4: also a claim made before the Start's claim checked this (it resumes here without that check).
+    await requireNoDeletedAncestor(client, schema, pin.ownerSessionId);
+}
+
+/**
+ * Issue 412 (PR 415 review rounds 3 and 4): refuse when a session above `sessionId` is deleted. Lists and the portal reach a
+ * session through its parent, so a Workflow under such a session would be kept but never shown (a Sweeper prune leaves its
+ * target's children in place). Read after the caller's lock on `sessionId`: a prune locks every session it leaves under its
+ * target (NOWAIT) before it deletes, so it refused, or it committed before this read.
+ */
+export async function requireNoDeletedAncestor(client: PoolClient, schema: string, sessionId: string): Promise<void> {
+    const s = `"${schema}"`;
+    const { rows } = await client.query(
+        `WITH RECURSIVE up AS (
+             SELECT parent_session_id AS session_id FROM ${s}.sessions WHERE session_id = $1
+             UNION
+             SELECT p.parent_session_id FROM ${s}.sessions AS p JOIN up ON p.session_id = up.session_id
+         )
+         SELECT a.session_id FROM ${s}.sessions AS a
+          WHERE a.session_id IN (SELECT session_id FROM up WHERE session_id IS NOT NULL) AND a.deleted_at IS NOT NULL
+          LIMIT 1`, [sessionId]);
+    if (rows[0]) {
+        throw new WorkflowStoreError("SESSION_NOT_FOUND", `Session ${String(rows[0].session_id)} above this session was deleted, so a Workflow `
+            + "started here would not be shown. Nothing was started.");
+    }
 }
 
 /** S2RT-F6: the definition's active hidden tests end, in the runtime's lock order (session, run, node). */

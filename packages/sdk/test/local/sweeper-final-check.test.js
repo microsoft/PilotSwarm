@@ -779,6 +779,42 @@ describe("the Sweeper's final check and delete under concurrency", () => {
         }
     });
 
+    // PR 415 review round 4: a claim made before the claim's own check existed (or before the ancestor's delete) resumes
+    // without that check; its admission refuses, so no run starts under a deleted ancestor.
+    it("issue 412 (prune): a Start claimed before its owner's ancestor was deleted, and resumed after, admits no run", { timeout: TIMEOUT }, async () => {
+        const h = await openOwnerCascadeRuntime(env);
+        try {
+            const root = randomUUID();
+            const owner = randomUUID();
+            await catalog.createSession(root, { owner: CASCADE_OWNER });
+            await catalog.createSession(owner, { parentSessionId: root, owner: CASCADE_OWNER });
+            await setState(db, schema, owner, "idle");
+            const saved = await saveCascadeDefinition(h.host, owner, "resumed-claim");
+            const request = { ownerSessionId: owner, definition: { definitionId: saved.definitionId }, inputs: {}, actor: CASCADE_ACTOR,
+                operationId: `start-${randomUUID()}`, notifyParent: false };
+            // The first attempt stops after its claim committed, before its admission (its worker was lost in between).
+            h.control.hook = async ({ sql, params, query }) => {
+                if (sql.includes("session_workflow_definitions WHERE definition_id = $1 FOR SHARE")) throw new Error("stopped before the admission");
+                return query(sql, params);
+            };
+            const first = await startSessionWorkflowDefinition(h.host, request).then(() => null, error => error);
+            h.control.hook = null;
+            expect(String(first?.message ?? first)).toContain("stopped before the admission");
+            const { rows: claimed } = await db.query(
+                `SELECT session_id FROM ${schema}.sessions WHERE parent_session_id = $1 AND session_kind = 'workflow' AND deleted_at IS NULL`, [owner]);
+            expect(claimed, "the claim committed").toHaveLength(1);
+            // The root alone is deleted (as an earlier release's prune did); the owner and the claim stay in place.
+            await catalog.softDeleteSession(root);
+            expect(await rowState(db, schema, owner)).toBe("kept");
+            await expect(startSessionWorkflowDefinition(h.host, request)).rejects.toMatchObject({ code: "SESSION_NOT_FOUND", message: expect.stringContaining(root) });
+            const { rows: runs } = await db.query(`SELECT run_id FROM ${schema}.workflow_runs WHERE workflow_session_id = $1`, [claimed[0].session_id]);
+            expect(runs, "no run is admitted").toEqual([]);
+        } finally {
+            h.control.hook = null;
+            await h.stop();
+        }
+    });
+
     // Issue 412 (review R1-2): the Resource Manager's event maintenance keeps a finished Workflow's Log.
     it("issue 412: purge_old_events keeps the old events of a finished Workflow and of the sessions under it, and purges every other old event as before", { timeout: TIMEOUT }, async () => {
         const owner = randomUUID();
