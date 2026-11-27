@@ -209,6 +209,7 @@
     "test/local/workflow-owner-session-end-lock-order.test.js",
     "test/local/workflow-session-notes-turn.test.js",
     "test/local/workflow-session-spawn-repeat.test.js",
+    "test/local/workflow-definition-delete-real-model.test.js",
     "test/local/workflow-definition-test-real-model.test.js",
     "test/local/workflow-definition-test.test.js",
     "test/local/workflow-clock-wait.test.js",

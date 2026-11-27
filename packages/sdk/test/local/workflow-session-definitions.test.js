@@ -734,4 +734,166 @@ states:
             await h.stop();
         }
     });
+
+    it("workflow_definition delete: own definitions, DEFINITION_IN_USE naming active Workflows, package refusal, cross-session refusal, operation_id replay, DEFINITION_DELETED, list omits deleted, inside-Workflow refusal", { timeout: TIMEOUT }, async () => {
+        const { h, host, session } = await harness();
+        const otherSession = randomUUID();
+        await h.catalog.createSession(otherSession, { owner: OWNER });
+        try {
+            const callTool = (caller, args, toolCallId = `call-${randomUUID()}`) =>
+                workflowDefinitionFromTool(args, { callerSessionId: caller, host, toolCallId, owner: OWNER, binding: async () => null })
+                    .then(text => JSON.parse(text));
+
+            // 1. Delete own definition by definition_id; actor is the calling session; list no longer shows it.
+            const first = (await save(host, session, YAML(10, "throwaway-a"), null, { name: "throwaway-a" })).receipt;
+            const deletedA = await callTool(session, { operation: "delete", definition_id: first.definitionId, operation_id: "del-a-1" }, null);
+            expect(deletedA).toMatchObject({
+                ok: true,
+                operation: "delete",
+                definitionId: first.definitionId,
+                name: "throwaway-a",
+                replayed: false,
+            });
+            expect(typeof deletedA.deletedAt).toBe("string");
+            const [storedRowA] = await h.q(`SELECT deleted_at, deleted_by FROM SCHEMA.session_workflow_definitions WHERE definition_id = $1`, [first.definitionId]);
+            expect(storedRowA.deleted_at).not.toBeNull();
+            expect(JSON.parse(storedRowA.deleted_by)).toEqual({ kind: "session", sessionId: session });
+            const listedAfterA = await callTool(session, { operation: "list" });
+            expect(listedAfterA.definitions.some(d => d.definitionId === first.definitionId)).toBe(false);
+
+            // 2. Replay by operation_id returns the same receipt with replayed: true.
+            const replayA = await callTool(session, { operation: "delete", definition_id: first.definitionId, operation_id: "del-a-1" });
+            expect(replayA).toMatchObject({
+                ok: true,
+                operation: "delete",
+                definitionId: first.definitionId,
+                name: "throwaway-a",
+                deletedAt: deletedA.deletedAt,
+                replayed: true,
+            });
+            // Reusing operation_id for a different definition refuses with OPERATION_CONFLICT.
+            const otherOwn = (await save(host, session, YAML(10, "keep-me"), null, { name: "keep-me" })).receipt;
+            const conflict = await callTool(session, { operation: "delete", definition_id: otherOwn.definitionId, operation_id: "del-a-1" });
+            expect(conflict).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
+
+            // 3. Second delete with a new operation_id gets DEFINITION_DELETED (both by definition_id and by name).
+            const secondA = await callTool(session, { operation: "delete", definition_id: first.definitionId, operation_id: "del-a-2" });
+            expect(secondA).toMatchObject({ ok: false, error: { code: "DEFINITION_DELETED" } });
+            const secondAByName = await callTool(session, { operation: "delete", name: "throwaway-a", operation_id: "del-a-3" });
+            expect(secondAByName).toMatchObject({ ok: false, error: { code: "DEFINITION_DELETED" } });
+
+            // 4. Delete by name, replay by name even after recreating the same name, and omit operation_id (falls back to toolCallId).
+            const byName = (await save(host, session, YAML(15, "throwaway-b"), null, { name: "throwaway-b" })).receipt;
+            const delByName = await callTool(session, { operation: "delete", name: "throwaway-b" }, "call-del-b");
+            expect(delByName).toMatchObject({ ok: true, operation: "delete", definitionId: byName.definitionId, name: "throwaway-b", replayed: false });
+            const recreated = (await save(host, session, YAML(20, "throwaway-b"), null, { name: "throwaway-b" })).receipt;
+            expect(recreated.definitionId).not.toBe(byName.definitionId);
+            const replayByName = await callTool(session, { operation: "delete", name: "throwaway-b" }, "call-del-b");
+            expect(replayByName).toMatchObject({ ok: true, operation: "delete", definitionId: byName.definitionId, name: "throwaway-b", deletedAt: delByName.deletedAt, replayed: true });
+            // Recreated definition must remain live.
+            expect((await h.store.sessionDefinitions.readDefinition(recreated.definitionId)).deletedAt).toBeNull();
+            // Clean up recreated with a fresh call id.
+            expect((await callTool(session, { operation: "delete", name: "throwaway-b" }, "call-del-b2")).ok).toBe(true);
+
+            // 5. DEFINITION_IN_USE while a Workflow is active: refusal text names the active Workflow(s) and says to stop or cancel first.
+            const liveDef = (await save(host, session, YAML(60, "active-watch"), null, { name: "active-watch" })).receipt;
+            const wf1 = await start(host, session, liveDef.definitionId);
+            const inUse = await callTool(session, { operation: "delete", definition_id: liveDef.definitionId, operation_id: "del-inuse-1" });
+            expect(inUse).toMatchObject({ ok: false, error: { code: "DEFINITION_IN_USE" } });
+            expect(inUse.error.details.workflowSessionIds).toEqual([wf1.workflowId]);
+            expect(inUse.error.message).toContain(wf1.workflowId);
+            expect(inUse.error.message).toMatch(/stop or cancel/i);
+            // Cancel the Workflow, then delete succeeds and finished Workflow keeps its revision copy.
+            await controlWorkflowRun(host, wf1.workflowId, { operation: "cancel", runId: null, reason: "test" }, { actor: ENGINE, operationId: `cancel-${randomUUID()}` });
+            const deletedAfterCancel = await callTool(session, { operation: "delete", name: "active-watch", operation_id: "del-inuse-2" });
+            expect(deletedAfterCancel).toMatchObject({ ok: true, operation: "delete", definitionId: liveDef.definitionId, name: "active-watch", replayed: false });
+            expect((await h.store.readRevision(wf1.workflowId, 1)).yaml).toBe(YAML(60, "active-watch"));
+
+            // 6. Package definitions (<package>/<name>, locked) are refused with DEFINITION_LOCKED (both unattached by name, and attached by name or definition_id).
+            const unattachedPkg = await callTool(session, { operation: "delete", name: "release-tools/release-watch", operation_id: "del-pkg-1" });
+            expect(unattachedPkg).toMatchObject({ ok: false, error: { code: "DEFINITION_LOCKED" } });
+            expect(unattachedPkg.error.message).toMatch(/package/i);
+            const pkgYaml = YAML(30, "release-watch");
+            const attachedPkg = (await h.store.sessionDefinitions.attachPackage({
+                ownerSessionId: session,
+                name: "release-tools/release-watch",
+                yaml: pkgYaml,
+                compiled: compileWorkflow(pkgYaml),
+                package: { packageId: "pkg-1", packageName: "release-tools", semver: "1.0.0", sha256: "a".repeat(64), cardDigest: "b".repeat(64) },
+                card: null,
+                actor: { kind: "session", sessionId: session },
+                operationId: `attach-${randomUUID()}`,
+                requestSha256: sha256Hex("attach-pkg-test"),
+                seenBySession: true,
+            })).receipt;
+            const lockedByName = await callTool(session, { operation: "delete", name: "release-tools/release-watch", operation_id: "del-pkg-2" });
+            expect(lockedByName).toMatchObject({ ok: false, error: { code: "DEFINITION_LOCKED" } });
+            expect(lockedByName.error.message).toContain("release-tools");
+            const lockedById = await callTool(session, { operation: "delete", definition_id: attachedPkg.definitionId, operation_id: "del-pkg-3" });
+            expect(lockedById).toMatchObject({ ok: false, error: { code: "DEFINITION_LOCKED" } });
+            expect(lockedById.error.message).toContain("release-tools");
+            expect((await h.store.sessionDefinitions.readDefinition(attachedPkg.definitionId)).deletedAt).toBeNull();
+            // A person can still delete an attached package definition via deleteSessionWorkflowDefinition.
+            expect((await deleteSessionWorkflowDefinition(host, { ownerSessionId: session, definitionId: attachedPkg.definitionId, actor: PERSON, operationId: "person-del-pkg" })).receipt.definitionId)
+                .toBe(attachedPkg.definitionId);
+
+            // 7. Another session's definition is refused with DEFINITION_NOT_FOUND (unlocked and locked alike, no cross-session leak).
+            const foreign = (await save(host, otherSession, YAML(10, "foreign-wf"), null, { name: "foreign-wf" })).receipt;
+            const foreignRefused = await callTool(session, { operation: "delete", definition_id: foreign.definitionId, operation_id: "del-foreign-1" });
+            expect(foreignRefused).toMatchObject({ ok: false, error: { code: "DEFINITION_NOT_FOUND" } });
+            expect((await h.store.sessionDefinitions.readDefinition(foreign.definitionId)).deletedAt).toBeNull();
+            const foreignPkg = (await h.store.sessionDefinitions.attachPackage({
+                ownerSessionId: otherSession,
+                name: "other-pkg/watch",
+                yaml: pkgYaml,
+                compiled: compileWorkflow(pkgYaml),
+                package: { packageId: "pkg-2", packageName: "other-pkg", semver: "1.0.0", sha256: "c".repeat(64), cardDigest: "d".repeat(64) },
+                card: null,
+                actor: { kind: "session", sessionId: otherSession },
+                operationId: `attach-${randomUUID()}`,
+                requestSha256: sha256Hex("attach-foreign-pkg-test"),
+                seenBySession: true,
+            })).receipt;
+            const foreignPkgRefused = await callTool(session, { operation: "delete", definition_id: foreignPkg.definitionId, operation_id: "del-foreign-2" });
+            expect(foreignPkgRefused).toMatchObject({ ok: false, error: { code: "DEFINITION_NOT_FOUND" } });
+
+            // 8. A Workflow session cannot own definitions; calling delete as a Workflow session is refused.
+            const wfCallerRefused = await callTool(wf1.workflowId, { operation: "delete", definition_id: otherOwn.definitionId, operation_id: "del-wf-caller-1" });
+            expect(wfCallerRefused.ok).toBe(false);
+            expect(["SESSION_NOT_FOUND", "DEFINITION_NOT_FOUND"]).toContain(wfCallerRefused.error.code);
+            expect((await h.store.sessionDefinitions.readDefinition(otherOwn.definitionId)).deletedAt).toBeNull();
+
+            // 9. Inside-a-Workflow session (agent step child) is refused with WORKFLOW_HUMAN_INPUT_DENIED (same guard as save/start).
+            const agentWfYaml = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: agent-parent, version: "1.0.0" }
+initial: step
+states:
+  step:
+    type: agent
+    invoke: { prompt: "Work." }
+    timeoutSeconds: 600
+    transition: { next: { done: end, failure: fail } }
+  end: { type: terminal, outcome: succeeded }
+  fail: { type: terminal, outcome: failed }
+`;
+            const agentDef = (await save(host, session, agentWfYaml, null, { name: "agent-parent" })).receipt;
+            const agentWf = await start(host, session, agentDef.definitionId);
+            const stepChild = randomUUID();
+            await h.store.enterNode({
+                runId: agentWf.runId, nodeExecutionId: `nx-${randomUUID()}`, scopeId: "root", nodeId: "step", ordinal: 1, nodeType: "agent",
+                predecessorId: null, arrivalRoute: null, inputText: "null", kvRevision: 1, waitSeconds: null, immediate: null,
+                agent: { childSessionId: stepChild, controllingSessionId: session, task: { source: "prompt", prompt: "Work." }, outcomes: ["done"],
+                    outputSchema: null, timeoutSeconds: 600 },
+            });
+            await h.catalog.createSession(stepChild, { parentSessionId: agentWf.workflowId, owner: OWNER });
+            const insideRefused = await callTool(stepChild, { operation: "delete", definition_id: otherOwn.definitionId, operation_id: "del-inside-1" });
+            expect(insideRefused).toMatchObject({ ok: false, error: { code: "WORKFLOW_HUMAN_INPUT_DENIED" } });
+            const insidePkgRefused = await callTool(stepChild, { operation: "delete", name: "release-tools/release-watch", operation_id: "del-inside-2" });
+            expect(insidePkgRefused).toMatchObject({ ok: false, error: { code: "WORKFLOW_HUMAN_INPUT_DENIED" } });
+        } finally {
+            await h.stop();
+        }
+    });
 });

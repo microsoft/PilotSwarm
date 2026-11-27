@@ -23,11 +23,12 @@ const untouched = () => ({ store: new Proxy({}, { get: (_target, name) => { thro
 const call = (args, extra = {}) => workflowDefinitionFromTool(args, { callerSessionId: "chat", host: untouched(), toolCallId: "call-1", owner: null,
     binding: async () => null, ...extra }).then(text => JSON.parse(text));
 
-test("the tool: one name, list, read, save, start and (stage 2.2) test, the guard's arguments; its words say a change is a revision", () => {
+test("the tool: one name, list, read, save, start, test, card and delete, the guard's arguments; its words say a change is a revision", () => {
     assert.equal(WORKFLOW_DEFINITION_TOOL, "workflow_definition");
     // Stage 2.3: card (a package definition's interface card) and update (start a package's newer version).
-    assert.deepEqual(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties.operation.enum, ["list", "read", "save", "start", "test", "card"]);
-    for (const key of ["name", "definition_id", "expected_revision", "yaml", "revision", "inputs", "vars", "workspace", "notify_on_completion", "fixtures", "test_id", "update"]) {
+    // Owner 2026-11-26 (Q8 reversed): delete removes one of the session's own definitions.
+    assert.deepEqual(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties.operation.enum, ["list", "read", "save", "start", "test", "card", "delete"]);
+    for (const key of ["name", "definition_id", "operation_id", "expected_revision", "yaml", "revision", "inputs", "vars", "workspace", "notify_on_completion", "fixtures", "test_id", "update"]) {
         assert.ok(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties[key], key);
     }
     // Owner 2026-11-08T16:55Z: the declaration carries its contract; the workflow-tools skill has the details.
@@ -35,6 +36,7 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
     assert.ok(text.length <= 900, `${text.length}`);
     for (const phrase of ["This session's Workflow Definitions, each named, with revisions 1, 2, 3.", "a stale save is refused",
         "a revision with errors is saved but cannot start", "start again to run it again",
+        "delete: remove one of your own definitions",
         "test: only when the user asks, or before you publish it in a package.",
         // Stage 2.3 (P3, P4, D7, E2-7).
         "under canStart the package definitions (<package>/<name>, locked) you may start", "read it before you start one",
@@ -52,10 +54,10 @@ test("the tool: one name, list, read, save, start and (stage 2.2) test, the guar
     for (const phrase of ["every save is a new revision, and a Workflow runs the revision it started with", "A save based on an older revision is refused",
         "Read again and redo your change on the newest revision.",
         "A package's definition is named `<package>/<name>`", "you start it, you never save it", "`list` shows the ones you may start under `canStart`.",
-        "Read its `card` first", "ask the person for any input you lack"]) {
+        "Read its `card` first", "ask the person for any input you lack",
+        "| `delete` |", "DEFINITION_IN_USE"]) {
         assert.ok(tools.includes(phrase), `workflow-tools: ${phrase}`);
     }
-    assert.ok(!/delete/i.test(WORKFLOW_DEFINITION_TOOL_SPEC.parameters.properties.operation.enum.join(" ")), "a person deletes (Q8)");
 });
 
 test("an invalid call is refused before anything is read, with its code", async () => {
@@ -70,6 +72,14 @@ test("an invalid call is refused before anything is read, with its code", async 
         [{ operation: "start" }, {}, "WORKFLOW_COMMAND_INVALID"],
         [{ operation: "start", name: "n", inputs: [1] }, {}, "WORKFLOW_COMMAND_INVALID"],
         [{ operation: "read", name: "n", revision: "2" }, {}, "WORKFLOW_COMMAND_INVALID"],
+        [{ operation: "delete" }, {}, "WORKFLOW_COMMAND_INVALID"],
+        [{ operation: "delete", name: "n" }, { toolCallId: null }, "WORKFLOW_COMMAND_INVALID"],
+        [{ operation: "delete", name: "n", operation_id: "" }, {}, "WORKFLOW_COMMAND_INVALID"],
+        [{ operation: "delete", name: "n", operation_id: "   " }, {}, "WORKFLOW_COMMAND_INVALID"],
+        [{ operation: "delete", name: "n", operation_id: 123 }, {}, "WORKFLOW_COMMAND_INVALID"],
+        [{ operation: "delete", name: "n", operation_id: "bad\u0000id" }, {}, "WORKFLOW_COMMAND_INVALID"],
+        [{ operation: "delete", definition_id: "   " }, {}, "WORKFLOW_COMMAND_INVALID"],
+        [{ operation: "delete", name: "   " }, {}, "WORKFLOW_COMMAND_INVALID"],
     ]) {
         const answer = await call(args, extra);
         assert.equal(answer.ok, false, JSON.stringify(args));
