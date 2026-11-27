@@ -4648,7 +4648,7 @@ export class WorkflowStore {
         return { rows: rows.slice(0, limit).map(inboxFrom), more: rows.length > limit };
     }
 
-    /** A live run's typed input that no receive state has taken and that has not expired (its current input), oldest first. */
+    /** An active run's typed input that no receive state has taken and that has not expired (its current input), oldest first. */
     async listOpenInbox(runId: string, limit: number): Promise<{ rows: WorkflowInboxMessage[]; more: boolean }> {
         const { rows } = await this.pool.query(
             `SELECT ${INBOX_COLUMNS} FROM ${this.t.inbox}

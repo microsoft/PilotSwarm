@@ -1154,7 +1154,7 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
                     actor: ENGINE, operationId: `b10a-e-${i}`, owner: OWNER,
                 });
                 await h.waitRunStatus(wExpired.runId, ["running"]);
-                await sendTypedWorkflowInput(h.host, {
+                const shortMsg = await sendTypedWorkflowInput(h.host, {
                     workflowSessionId: wExpired.workflowId, senderSessionId: ownerId, contract: "Ping@1",
                     payload: { seq: i, shortTtl: true }, ttlSeconds: 1, operationId: `b10a-e-msg-${i}`,
                 });
@@ -1164,6 +1164,11 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
                 });
                 expect((await h.waitRunStatus(wExpired.runId, ["completed"])).status).toBe("completed");
                 await until(`b10a-${i} short-TTL inbox expired`, async () => {
+                    const [row] = await h.q(
+                        "SELECT expires_at <= now() AS expired FROM SCHEMA.workflow_inbox WHERE message_id = $1",
+                        [shortMsg.receipt.messageId],
+                    );
+                    if (!row?.expired) return null;
                     const c = await census({
                         store: h.store, catalog: h.catalog, duroxideClient: h.client,
                         rootSessionIds: [ownerId], graceMs: 0, liveOwnerSessionIds: [ownerId],
@@ -1210,8 +1215,11 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             const view = await readWorkflowView(h.store, wUnconsumed.workflowId);
             expect(view.run.openInbox).toEqual([]);
             expect(view.run.inbox.map(m => m.messageId)).toContain(unconsumedMessageId);
-            const [row] = await h.q("SELECT isfinite(expires_at) AS finite FROM SCHEMA.workflow_inbox WHERE message_id = $1", [unconsumedMessageId]);
-            expect(row?.finite).toBe(true);
+            const [row] = await h.q(
+                "SELECT isfinite(expires_at) AS finite, consumed_by IS NULL AND expires_at > now() AS open FROM SCHEMA.workflow_inbox WHERE message_id = $1",
+                [unconsumedMessageId],
+            );
+            expect(row).toEqual({ finite: true, open: true });
             await h.endOwnerAndSweep(ownerId);
         } finally {
             await h.stop();
@@ -1255,8 +1263,11 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             const view = await readWorkflowView(h.store, parent.workflowId);
             expect(view.run.openInbox).toEqual([]);
             expect(view.run.inbox.map(m => m.messageId)).toContain(endedNotice.message_id);
-            const [row] = await h.q("SELECT isfinite(expires_at) AS finite FROM SCHEMA.workflow_inbox WHERE message_id = $1", [endedNotice.message_id]);
-            expect(row?.finite).toBe(true);
+            const [row] = await h.q(
+                "SELECT isfinite(expires_at) AS finite, consumed_by IS NULL AND expires_at > now() AS open FROM SCHEMA.workflow_inbox WHERE message_id = $1",
+                [endedNotice.message_id],
+            );
+            expect(row).toEqual({ finite: true, open: true });
             await h.endOwnerAndSweep(ownerId);
         } finally {
             await h.stop();
@@ -1449,9 +1460,15 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
                  VALUES ($1, $2, $3, $4, 'ctrl-inbox', '0', 'Ping@1', '{}', '{}', now(), 'infinity'::timestamptz)`,
                 [fakeInboxId, parent.workflowId, parent.runId, ownerId],
             );
+            const fakeOpenInboxId = `msg-open-ctrl-${randomUUID()}`;
+            const leakingInboxStore = Object.assign(Object.create(h.store), {
+                listOpenInbox: async (runId, limit) => runId === parent.runId
+                    ? { rows: [{ messageId: fakeOpenInboxId }], more: false }
+                    : h.store.listOpenInbox(runId, limit),
+            });
 
             const leaked = await census({
-                store: h.store,
+                store: leakingInboxStore,
                 catalog: h.catalog,
                 duroxideClient: h.client,
                 rootSessionIds: [ownerId],
@@ -1469,8 +1486,9 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             expect(leaked.categories.open_work_on_terminal_runs.ids).toContain(`node:${fakePlainPendingNx}`);
             expect(leaked.categories.open_work_on_terminal_runs.ids).toContain(`interception:${fakeInterceptionId}`);
             expect(leaked.categories.inbox_pending_on_terminal_runs.ids).toContain(fakeInboxId);
+            expect(leaked.categories.inbox_pending_on_terminal_runs.ids).toContain(fakeOpenInboxId);
             expect(leaked.categories.sessions_not_swept.ids).toContain(ownerId);
-            expect(leaked.total).toBeGreaterThanOrEqual(12);
+            expect(leaked.total).toBeGreaterThanOrEqual(13);
 
             let err = null;
             try {
@@ -1493,6 +1511,7 @@ describe("Workflow resource-leak census baseline (B1–B11 + Sweeper/Prune + Con
             expect(err.message).toContain(fakePlainPendingNx);
             expect(err.message).toContain(fakeInterceptionId);
             expect(err.message).toContain(fakeInboxId);
+            expect(err.message).toContain(fakeOpenInboxId);
 
             // Clean up the leaked child so runtime shutdown is clean.
             await applyOperatorCommandToWorkflow(h.host, {
