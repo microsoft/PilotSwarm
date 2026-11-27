@@ -239,3 +239,43 @@ states:
 test("Task 1: workflowCommandStatus maps WORKFLOW_SKILL_NOT_FOUND to 404", () => {
     assert.equal(workflowCommandStatus("WORKFLOW_SKILL_NOT_FOUND"), 404);
 });
+
+test("validateWorkflowYaml warns on context.vars and stays clean on context.kv", async () => {
+    const makeYaml = (expr) => `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata:
+  name: check-kv
+  version: "1.0.0"
+initial: run
+states:
+  run:
+    type: script
+    outcomes: [ok]
+    source: |
+      await setResult("ok", { flag: ${expr} });
+    transition:
+      next:
+        ok: done
+        failure: failed
+  done:
+    type: terminal
+    outcome: succeeded
+    output: "\${input}"
+  failed:
+    type: terminal
+    outcome: failed
+    output: "\${runtime.error}"
+`;
+    const bad = await validateWorkflowYaml(makeYaml("context.vars.flag"));
+    assert.equal(bad.valid, true);
+    assert.deepEqual(bad.errors, []);
+    const warning = bad.warnings.find(w => w.code === "WORKFLOW_SCRIPT_CONTEXT_VARS");
+    assert.ok(warning, "expected WORKFLOW_SCRIPT_CONTEXT_VARS warning");
+    assert.equal(warning.path, "states.run.source");
+    assert.match(warning.message, /context\.kv/);
+
+    const good = await validateWorkflowYaml(makeYaml("context.kv.flag"));
+    assert.equal(good.valid, true);
+    assert.deepEqual(good.errors, []);
+    assert.equal(good.warnings.some(w => w.code === "WORKFLOW_SCRIPT_CONTEXT_VARS"), false);
+});
