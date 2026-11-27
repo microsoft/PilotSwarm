@@ -1,5 +1,5 @@
 import { formatHumanDurationSeconds, formatTimestamp, shortModelName, shortSessionId, stripTerminalMarkupTags, summarizeJson } from "./formatting.js";
-import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
+import { CANVAS_ACTION_PREFIX, isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { matchesSessionError } from "./session-warning.js";
@@ -645,6 +645,149 @@ function workflowUpdateCardOf(event, parsed, sender, id) {
     };
 }
 
+const SPLIT_ITEM_MARKER = ":item:";
+const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})/;
+
+function splitEventBaseId(id) {
+    if (typeof id !== "string" || !id) return null;
+    const markerIndex = id.lastIndexOf(SPLIT_ITEM_MARKER);
+    return markerIndex >= 0 ? id.slice(0, markerIndex) : id;
+}
+
+function sameSplitSourceEvent(left, right) {
+    if (!left?.id || !right?.id || left.id === right.id) return false;
+    const leftBase = splitEventBaseId(left.id);
+    return Boolean(leftBase && leftBase === splitEventBaseId(right.id));
+}
+
+function splitMergedCanvasActionSegments(visibleText, leadingFrom = null) {
+    if (typeof visibleText !== "string" || !visibleText.includes(CANVAS_ACTION_PREFIX)) return null;
+    const lines = visibleText.split("\n");
+
+    // First pass: mark lines that parse as canonical canvas actions outside
+    // fenced code blocks, then keep only those standing on paragraph boundaries
+    // (as queue prompt merging produces) so quoted or mid-paragraph examples in
+    // typed prose are never split into cards.
+    const parsedByLine = new Array(lines.length).fill(null);
+    let activeFenceChar = null;
+    let activeFenceLen = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        const fenceMatch = FENCE_LINE_RE.exec(line);
+        if (fenceMatch) {
+            const fence = fenceMatch[1];
+            const fenceChar = fence[0];
+            if (!activeFenceChar) {
+                activeFenceChar = fenceChar;
+                activeFenceLen = fence.length;
+            } else if (fenceChar === activeFenceChar && fence.length >= activeFenceLen && line.slice(fenceMatch[0].length).trim() === "") {
+                activeFenceChar = null;
+                activeFenceLen = 0;
+            }
+            continue;
+        }
+        if (activeFenceChar) continue;
+        parsedByLine[index] = parseCanvasActionContent(line);
+    }
+
+    const isActionLine = new Array(lines.length).fill(false);
+    let hasAction = false;
+    for (let index = 0; index < lines.length;) {
+        if (!parsedByLine[index]) {
+            index += 1;
+            continue;
+        }
+        const runStart = index;
+        let runEnd = index;
+        while (runEnd + 1 < lines.length && parsedByLine[runEnd + 1]) {
+            runEnd += 1;
+        }
+        const prev = runStart > 0 ? lines[runStart - 1] : null;
+        const next = runEnd + 1 < lines.length ? lines[runEnd + 1] : null;
+        const prevIsLeadingFrom = Boolean(leadingFrom && prev === leadingFrom
+            && (runStart - 1 === 0 || lines[runStart - 2].trim() === "" || isActionLine[runStart - 2]));
+        const startsParagraph = runStart === 0
+            || prev.trim() === ""
+            || prevIsLeadingFrom;
+        const endsParagraph = runEnd + 1 === lines.length
+            || next.trim() === ""
+            || Boolean(leadingFrom && next === leadingFrom);
+        if (startsParagraph && endsParagraph) {
+            for (let cursor = runStart; cursor <= runEnd; cursor += 1) {
+                isActionLine[cursor] = true;
+            }
+            hasAction = true;
+        }
+        index = runEnd + 1;
+    }
+    if (!hasAction) return null;
+
+    const segments = [];
+    let textLines = [];
+    const flushText = () => {
+        const joined = textLines.join("\n").trim();
+        textLines = [];
+        if (hasVisibleMessageText(joined)) {
+            segments.push({ kind: "text", text: joined });
+        }
+    };
+
+    for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        // For stamped same-sender multi-writer turns, queue batching prepends
+        // the identical runtime `[FROM: ...]` header to every merged segment
+        // while user-typed `[FROM:` is neutralized with a ZWSP.
+        if (leadingFrom && line === leadingFrom
+            && (textLines.length === 0 || textLines[textLines.length - 1].trim() === "")) {
+            continue;
+        }
+        if (isActionLine[index]) {
+            const parsed = parsedByLine[index];
+            flushText();
+            segments.push({
+                kind: "canvas-action",
+                action: parsed.action,
+                data: parsed.data,
+                text: line,
+            });
+        } else {
+            textLines.push(line);
+        }
+    }
+    flushText();
+    return segments.length > 0 ? segments : null;
+}
+
+function assignSplitClientMessageIds(segments, rawIds) {
+    if (!Array.isArray(rawIds) || rawIds.length === 0) return segments.map(() => []);
+    if (segments.length === 1) return [[...rawIds]];
+    const textIndices = [];
+    for (let index = 0; index < segments.length; index += 1) {
+        if (segments[index].kind === "text") textIndices.push(index);
+    }
+    if (textIndices.length === 0) {
+        // Cards-only turn: map 1:1 only when the caller supplied one id per card.
+        return rawIds.length === segments.length
+            ? rawIds.map((id) => [id])
+            : segments.map(() => []);
+    }
+    // Canvas presses carry no clientMessageIds in the portal, so never assign
+    // typed-message ids to card items when text segments exist. Map 1:1 across
+    // text items when counts match; otherwise attach all ids to every text item
+    // so optimistic reconciliation and stopped-turn flags stay complete.
+    const assigned = segments.map(() => []);
+    if (rawIds.length === textIndices.length) {
+        for (let index = 0; index < textIndices.length; index += 1) {
+            assigned[textIndices[index]] = [rawIds[index]];
+        }
+        return assigned;
+    }
+    for (const textIndex of textIndices) {
+        assigned[textIndex] = [...rawIds];
+    }
+    return assigned;
+}
+
 /**
  * A user.message's session items (review SF-1). A card comes only from a server-stamped sender (buildWorkflowUpdateSessionCard),
  * never from text. A turn the session's queue merged from messages of different senders is recorded with no sender and
@@ -660,6 +803,81 @@ function buildUserMessageItems(event) {
     if (!data.sender && Number.isSafeInteger(merged) && merged >= 2) {
         const neutral = buildChatMessage(event, "user", { neutral: true });
         return neutral ? [{ ...neutral, mergedMessages: merged }] : [];
+    }
+    const stampedUserSender = Boolean(data.sender && typeof data.sender === "object" && data.sender.kind === "user");
+    const canSplitCanvasActions = stampedUserSender;
+    if (canSplitCanvasActions) {
+        const rawText = messageTextFromEvent(event);
+        const textTrusted = !stampedByPersonOrAgent(event);
+        const sessionMessageCard = textTrusted ? buildSessionMessageChatCard(event, rawText) : null;
+        if (sessionMessageCard) return [sessionMessageCard];
+        const workflowUpdateCard = buildWorkflowUpdateSessionCard(event, rawText);
+        if (workflowUpdateCard) return [workflowUpdateCard];
+
+        const extracted = extractVisibleChatText(rawText, "user");
+        const leadingFromMatch = /^(\[FROM:[^\]\n]*\])\n?/.exec(extracted);
+        const leadingFrom = stampedUserSender && leadingFromMatch ? leadingFromMatch[1] : null;
+        const visibleText = stripLeadingSenderMarker(extracted);
+
+        // Single-action turns stay on the exact existing builder path.
+        if (!(isCanvasActionContent(visibleText) && parseCanvasActionContent(visibleText))) {
+            const segments = splitMergedCanvasActionSegments(visibleText, leadingFrom);
+            const attachments = Array.isArray(data.attachments)
+                ? data.attachments.filter((a) => a && typeof a.filename === "string" && a.filename)
+                : [];
+            // Never drop image attachments if a split would yield only cards.
+            const hasTextSegment = Boolean(segments && segments.some((segment) => segment.kind === "text"));
+            if (segments && (attachments.length === 0 || hasTextSegment)) {
+                const clientMessageIds = Array.isArray(data.clientMessageIds)
+                    ? data.clientMessageIds.filter((id) => typeof id === "string" && id)
+                    : [];
+                const assignedIds = assignSplitClientMessageIds(segments, clientMessageIds);
+                const sender = stampedUserSender ? data.sender : null;
+                const messageId = typeof data.messageId === "string" && data.messageId ? data.messageId : null;
+                const time = formatTimestamp(event.createdAt);
+                const createdAt = event.createdAt instanceof Date
+                    ? event.createdAt.getTime()
+                    : new Date(event.createdAt).getTime();
+                // Queue batching pools image attachments at turn level without
+                // per-segment offsets, so attach them once on the first text item.
+                let attachmentsUsed = false;
+
+                return segments.map((segment, index) => {
+                    const id = index === 0
+                        ? `${event.sessionId}:${event.seq}`
+                        : `${event.sessionId}:${event.seq}${SPLIT_ITEM_MARKER}${index}`;
+                    const ids = assignedIds[index] || [];
+                    if (segment.kind === "canvas-action") {
+                        return {
+                            id,
+                            kind: "canvas-action",
+                            role: "user",
+                            action: segment.action,
+                            data: segment.data,
+                            text: segment.text,
+                            time,
+                            createdAt,
+                            ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
+                        };
+                    }
+                    const itemAttachments = !attachmentsUsed && attachments.length > 0 ? attachments : [];
+                    if (itemAttachments.length > 0) attachmentsUsed = true;
+                    return {
+                        id,
+                        // Split text segments are always user prose, never trusted
+                        // to escalate to `role: "system"` from their text (SF-D1).
+                        role: deriveChatRole(event, "user", segment.text, { textTrusted: false }),
+                        text: segment.text,
+                        time,
+                        createdAt,
+                        ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
+                        ...(sender ? { sender } : {}),
+                        ...(itemAttachments.length > 0 ? { attachments: itemAttachments } : {}),
+                        ...(messageId ? { messageId } : {}),
+                    };
+                });
+            }
+        }
     }
     const message = buildChatMessage(event, "user");
     return message ? [message] : [];
@@ -782,6 +1000,15 @@ function areMessagesEquivalent(left, right) {
         || left.kind === "turn-stop-legacy" || right.kind === "turn-stop-legacy") {
         return left.kind === right.kind && left.id === right.id;
     }
+    if ((left.kind === "canvas-action") !== (right.kind === "canvas-action")) {
+        return false;
+    }
+    // Distinct items split from the same durable event (e.g. two identical
+    // canvas button presses merged into one turn) are never redeliveries of
+    // each other.
+    if (sameSplitSourceEvent(left, right)) {
+        return false;
+    }
 
     const leftText = comparableMessageText(left);
     const rightText = comparableMessageText(right);
@@ -801,48 +1028,157 @@ function areMessagesEquivalent(left, right) {
     return Math.abs(leftTime - rightTime) <= 10_000;
 }
 
-export function dedupeChatMessages(chat = []) {
-    const deduped = [];
-
+function groupSplitChatMessages(chat = []) {
+    const groups = [];
     for (const message of chat) {
         if (!message) continue;
-        const previous = deduped[deduped.length - 1];
-        if (!areMessagesEquivalent(previous, message)) {
-            deduped.push(message);
-            continue;
+        const current = groups[groups.length - 1];
+        if (current && sameSplitSourceEvent(current[0], message)) {
+            current.push(message);
+        } else {
+            groups.push([message]);
         }
+    }
+    return groups;
+}
 
-        if (previous?.optimistic && !message?.optimistic) {
-            deduped[deduped.length - 1] = message;
-            continue;
+function collectGroupClientMessageIds(group) {
+    const ids = new Set();
+    for (const item of group) {
+        if (!Array.isArray(item?.clientMessageIds)) continue;
+        for (const id of item.clientMessageIds) {
+            if (typeof id === "string" && id) ids.add(id);
         }
-        if (!previous?.optimistic && message?.optimistic) {
-            continue;
-        }
+    }
+    return Array.from(ids);
+}
 
-        const previousTime = Number(previous?.createdAt || 0);
-        const currentTime = Number(message?.createdAt || 0);
-        const winner = currentTime >= previousTime ? message : previous;
-        // Two durable copies of the same user message = the runtime
-        // re-delivered it to the model after a mid-turn worker retry.
-        // Collapse to one bubble stamped with the LATEST delivery time and
-        // mark it so the transcript can show a redelivery glyph.
-        if (winner.role === "user" && !previous?.optimistic && !message?.optimistic) {
-            const firstDeliveredAt = Math.min(
-                Number(previous?.firstDeliveredAt || previousTime || Infinity),
-                Number(message?.firstDeliveredAt || currentTime || Infinity),
-            );
-            deduped[deduped.length - 1] = {
-                ...winner,
-                redelivered: true,
-                ...(Number.isFinite(firstDeliveredAt) ? { firstDeliveredAt } : {}),
-            };
-            continue;
+function areSplitGroupsEquivalent(leftGroup, rightGroup) {
+    if (leftGroup.length !== rightGroup.length || leftGroup.length < 2) return false;
+    for (let index = 0; index < leftGroup.length; index += 1) {
+        const left = leftGroup[index];
+        const right = rightGroup[index];
+        if (!left || !right) return false;
+        if (left.role !== right.role || left.kind !== right.kind) return false;
+        if (left.sender?.kind === "agent" || right.sender?.kind === "agent") {
+            if (left.sender?.kind !== right.sender?.kind
+                || left.sender?.sessionId !== right.sender?.sessionId) {
+                return false;
+            }
         }
-        deduped[deduped.length - 1] = winner;
+        const leftText = comparableMessageText(left);
+        const rightText = comparableMessageText(right);
+        if (!leftText || !rightText || leftText !== rightText) return false;
     }
 
-    return deduped;
+    const leftIds = collectGroupClientMessageIds(leftGroup);
+    const rightIds = collectGroupClientMessageIds(rightGroup);
+    if (leftIds.length > 0 && rightIds.length > 0) {
+        return leftIds.some((id) => rightIds.includes(id));
+    }
+
+    const leftTime = Number(leftGroup[0]?.createdAt || 0);
+    const rightTime = Number(rightGroup[0]?.createdAt || 0);
+    if (!leftTime || !rightTime) return false;
+    return Math.abs(leftTime - rightTime) <= 10_000;
+}
+
+export function dedupeChatMessages(chat = []) {
+    const groups = groupSplitChatMessages(chat);
+    const dedupedGroups = [];
+
+    for (const group of groups) {
+        const previousGroup = dedupedGroups[dedupedGroups.length - 1];
+        if (!previousGroup) {
+            dedupedGroups.push(group);
+            continue;
+        }
+
+        // Single-item groups follow the exact pre-existing message dedupe rules.
+        if (previousGroup.length === 1 && group.length === 1) {
+            const previous = previousGroup[0];
+            const message = group[0];
+            if (!areMessagesEquivalent(previous, message)) {
+                dedupedGroups.push(group);
+                continue;
+            }
+            if (previous?.optimistic && !message?.optimistic) {
+                dedupedGroups[dedupedGroups.length - 1] = [message];
+                continue;
+            }
+            if (!previous?.optimistic && message?.optimistic) {
+                continue;
+            }
+
+            const previousTime = Number(previous?.createdAt || 0);
+            const currentTime = Number(message?.createdAt || 0);
+            const winner = currentTime >= previousTime ? message : previous;
+            // Two durable copies of the same user message = the runtime
+            // re-delivered it to the model after a mid-turn worker retry.
+            // Collapse to one bubble stamped with the LATEST delivery time and
+            // mark it so the transcript can show a redelivery glyph.
+            if (winner.role === "user" && !previous?.optimistic && !message?.optimistic) {
+                const firstDeliveredAt = Math.min(
+                    Number(previous?.firstDeliveredAt || previousTime || Infinity),
+                    Number(message?.firstDeliveredAt || currentTime || Infinity),
+                );
+                dedupedGroups[dedupedGroups.length - 1] = [{
+                    ...winner,
+                    redelivered: true,
+                    ...(Number.isFinite(firstDeliveredAt) ? { firstDeliveredAt } : {}),
+                }];
+                continue;
+            }
+            dedupedGroups[dedupedGroups.length - 1] = [winner];
+            continue;
+        }
+
+        // An optimistic single bubble adjacent to a split group reconciles
+        // against any matching item in that group without collapsing non-matching
+        // single events (e.g. a single press followed by a merged turn).
+        if (previousGroup.length === 1 && previousGroup[0]?.optimistic && group.length > 1) {
+            if (group.some((item) => areMessagesEquivalent(previousGroup[0], item))) {
+                dedupedGroups[dedupedGroups.length - 1] = group;
+                continue;
+            }
+            dedupedGroups.push(group);
+            continue;
+        }
+        if (previousGroup.length > 1 && group.length === 1 && group[0]?.optimistic) {
+            if (previousGroup.some((item) => areMessagesEquivalent(item, group[0]))) {
+                continue;
+            }
+            dedupedGroups.push(group);
+            continue;
+        }
+
+        // Multi-item split groups collapse only when the entire split group
+        // matches the immediately preceding split group (activity retry of a
+        // merged turn).
+        if (areSplitGroupsEquivalent(previousGroup, group)) {
+            const previousTime = Number(previousGroup[0]?.createdAt || 0);
+            const currentTime = Number(group[0]?.createdAt || 0);
+            const winnerGroup = currentTime >= previousTime ? group : previousGroup;
+            const firstDeliveredAt = Math.min(
+                Number(previousGroup[0]?.firstDeliveredAt || previousTime || Infinity),
+                Number(group[0]?.firstDeliveredAt || currentTime || Infinity),
+            );
+            dedupedGroups[dedupedGroups.length - 1] = winnerGroup.map((item) => (
+                item.role === "user" && !item.optimistic
+                    ? {
+                        ...item,
+                        redelivered: true,
+                        ...(Number.isFinite(firstDeliveredAt) ? { firstDeliveredAt } : {}),
+                    }
+                    : item
+            ));
+            continue;
+        }
+
+        dedupedGroups.push(group);
+    }
+
+    return dedupedGroups.flat();
 }
 
 // In a multi-writer session the runtime prepends a `[FROM: name (relation)]`
@@ -1104,17 +1440,21 @@ function reconcileOptimisticMessage(chat, incomingMessage) {
         return [...(chat || [])];
     }
 
+    const incomingIds = Array.isArray(incomingMessage.clientMessageIds) ? incomingMessage.clientMessageIds : [];
     const normalizedIncoming = normalizeMessageText(incomingMessage.text);
     const parsedExchange = parseAskedAndAnsweredExchange(incomingMessage.text);
     const normalizedAnsweredText = parsedExchange ? normalizeMessageText(parsedExchange.answer) : "";
-    let removed = false;
+    let removedByText = false;
 
     return chat.filter((message) => {
-        if (removed) return true;
         if (!message?.optimistic || message.role !== incomingMessage.role) return true;
+        if (incomingIds.length > 0 && sharesClientMessageId(message, incomingMessage) === true) {
+            return false;
+        }
+        if (removedByText) return true;
         const normalizedMessageText = normalizeMessageText(message.text);
         if (normalizedMessageText !== normalizedIncoming && normalizedMessageText !== normalizedAnsweredText) return true;
-        removed = true;
+        removedByText = true;
         return false;
     });
 }
@@ -1629,12 +1969,12 @@ function buildCanvasChatItem(event) {
 }
 
 /** The diagnostic feed line for a validated canvas response. */
-function buildCanvasActionActivity(event, item) {
+function buildCanvasActionActivity(event, item, index = 0) {
     const time = formatTimestamp(event.createdAt);
     const detail = `action ${item.action}${Object.keys(item.data || {}).length ? " " + summarizeJson(item.data) : ""}`;
     const runs = buildLabeledActivityRuns(time, "[canvas]", "cyan", detail, "white");
     return {
-        id: `${event.sessionId}:${event.seq}:canvas-action`,
+        id: index > 0 ? `${event.sessionId}:${event.seq}:canvas-action:${index}` : `${event.sessionId}:${event.seq}:canvas-action`,
         eventType: event.eventType,
         time,
         seq: Number.isFinite(Number(event?.seq)) ? Number(event.seq) : 0,
@@ -1670,10 +2010,12 @@ export function buildHistoryModel(events = [], options = {}) {
             activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
             const items = buildUserMessageItems(event);
             chat.push(...items);
-            const message = items.find(item => item.role === "user") ?? null;
-            if (message?.kind === "canvas-action") {
-                const actionActivity = buildCanvasActionActivity(event, message);
-                if (actionActivity) activity.push(actionActivity);
+            let actionIndex = 0;
+            for (const item of items) {
+                if (item?.kind === "canvas-action") {
+                    const actionActivity = buildCanvasActionActivity(event, item, actionIndex++);
+                    if (actionActivity) activity.push(actionActivity);
+                }
             }
             continue;
         }
@@ -1835,20 +2177,26 @@ export function appendEventToHistory(history, event) {
     if (event.eventType === "user.message") {
         next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
         const items = buildUserMessageItems(event);
-        const message = items.find(item => item.role === "user") ?? null;
-        if (message?.kind === "canvas-action") {
-            const actionActivity = buildCanvasActionActivity(event, message);
-            if (actionActivity) next.activity.push(actionActivity);
+        let actionIndex = 0;
+        for (const item of items) {
+            if (item?.kind === "canvas-action") {
+                const actionActivity = buildCanvasActionActivity(event, item, actionIndex++);
+                if (actionActivity) next.activity.push(actionActivity);
+            }
         }
         next.activity = clampHistoryItems(next.activity, loadedEventLimit);
         if (!items.length) return next;
-        // Prospective flag: covers a bulk load where the stop event arrived
-        // before this message in the reduce order.
-        if (message && Array.isArray(message.clientMessageIds)
-            && message.clientMessageIds.some((id) => next.stoppedMessageIds.includes(id))) {
-            message.stopped = true;
+        for (const item of items) {
+            // Prospective flag: covers a bulk load where the stop event arrived
+            // before this message in the reduce order.
+            if (Array.isArray(item.clientMessageIds)
+                && item.clientMessageIds.some((id) => next.stoppedMessageIds.includes(id))) {
+                item.stopped = true;
+            }
+            if (item.role === "user" && item.kind !== "canvas-action") {
+                next.chat = reconcileOptimisticMessage(next.chat, item);
+            }
         }
-        if (message) next.chat = reconcileOptimisticMessage(next.chat, message);
         next.chat.push(...items);
         next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
         return next;
