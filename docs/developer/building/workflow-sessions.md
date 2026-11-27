@@ -193,20 +193,26 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   already admitted (in the same model message as the report, or a
   sub-agent already running) may still finish. A completion whose write
   failed with anything but a store refusal may have committed: the worker
-  reads the turn's visit, and a visit that reads decided, or that cannot be
-  read, closes the turn's tools and arms its reply limit as an acknowledged
-  result does. The next visit's prompt waits behind that
+  reads the turn's visit under a row lock that waits for a decision still in
+  flight (its COMMIT, up to 10 seconds), and a visit that reads decided, or
+  that cannot be read, closes the turn's tools and arms its reply limit as an
+  acknowledged result does; a visit that reads pending lets the agent complete
+  it again. The next visit's prompt waits behind that
   turn (a session takes a Workflow prompt only between turns) and starts a
   new turn bound to the new visit. The reply is bounded: 5 minutes after the
   report (`WORKFLOW_AGENT_REPLY_SETTLE`, also when `turnTimeoutMs` is 0) a
   reply still running is stopped as a Stop stops it (the abort, then up to
   about 12 seconds for its task cancel and grace before the turn is settled
-  by force); the abort
-  acts only on that turn's own run, never on the next turn that may have
+  by force, and then at most 5 seconds for the dropped session's disconnect,
+  so the session lock is released even when the CLI no longer answers); the
+  abort acts only on that turn's own run, never on the next turn that may have
   started on the same warm session. A reply lost with its Copilot session (a
   lost live session, a corrupted transcript) is not run again: each recovery
   reads the visit before it resets anything and again before its model run,
-  and a decided visit ends the turn. Neither is committed. The session ends when the run ends, and a
+  and a decided visit ends the turn. Neither is committed. A turn retried
+  after its visit was decided (a lost runtime, a worker restart, a failed
+  read) is not run either: the turn-start fence below, which for a
+  `session: new` step reads the step's own visit. The session ends when the run ends, and a
   graceful stop ends an idle one at once; before it sends the session's end,
   the run's end stops whichever turn still runs (request id
   `workflow-session-stop:<session>`, which names no visit). If the session ended on its own, the next open visit
@@ -215,7 +221,8 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   Each turn of a continued agent session works for one visit, its turn visit:
   the open visit its prompt names, or, for a turn a timer or a sub-agent's
   update starts, the visit of the session's newest visit prompt. A turn whose
-  visit is already decided does not run (no model call). A decided visit's
+  visit is already decided does not run (no model call), and neither does a
+  turn of a `session: new` step whose own visit is decided (issue I1). A decided visit's
   Stop (request id `workflow-cycle-stop:<visit>`) is applied only to a turn of
   that visit; a person's Stop applies as always. The step reminder and the
   completion name only the turn's own visit. When the run ends before the
