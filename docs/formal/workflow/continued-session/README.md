@@ -24,6 +24,7 @@ proof.
 | `Prop_AllEnded`, `Prop_OthersEnded` | After the run ends, every agent session is ended (G3). |
 | `Prop_OwedSent` | An owed end is eventually sent. |
 | `Prop_VisitsDecided` | Every visit is decided (guaranteed by the time limit). |
+| `Inv_DoneTurnCommits`, `Inv_StopOwnVisit`, `Inv_TurnsInOrder` | i1: a completed visit's turn is not stopped while the run is active; a Stop ends only a turn of its own visit; a session's turns run in visit order. |
 
 Constants switch on a person's end or delete, a stop or cancel, failing Stops and a failing end, and each proposed
 fix (`SpawnRecheck`, `StopBeforeSpawn`, `PerAgentSessionEnd`, `StopAtRunEnd`, and `EndMark` for the G1 residual).
@@ -138,6 +139,48 @@ passes (the visit is decided by the report, the agent's result or its time limit
 decided visit with the next visit's prompt; at most one of them is pending, and the report decides every pending visit
 it names (the model's turns carry one prompt; `fault.cc-report-binds-newest` checks that a report never decides a visit
 it did not carry).
+
+## i1 (2026-11-27): a completed visit's turn is not stopped (issue I1, bound to 4753e1cd)
+
+The agent reports its result with `complete_workflow_node` in the middle of its turn, and the turn goes on to write its
+reply. The code before the fix (`b79be29d`) sent that turn the visit's cycle Stop at the visit's end; a stopped turn
+commits no snapshot, so the next visit did not remember the earlier one. The fix: a visit its agent completed while
+the run is active sends no Stop; the turn ends by itself and commits. The Stop stays for a time limit, a cancel, and a
+run that is stopping or ended. The next visit's prompt waits behind the turn and starts a new turn on its own visit.
+
+New constants `SplitTurn` (the result and the turn's end are two steps: `TurnReport`, then `TurnFinish`, which commits)
+and `NoStopOnDone` (the fix), and the fault `"stop-unfenced"` (a Stop ends whatever turn runs). Both constants are
+`FALSE` in every earlier case, whose behavior does not change. New properties:
+
+| Property | Meaning |
+|---|---|
+| `Inv_DoneTurnCommits` | The turn of a visit its agent completed is not stopped while the run is active (it commits its memory). |
+| `Inv_StopOwnVisit` | A Stop never ends a turn of another visit (the turn-to-visit fence). |
+| `Inv_TurnsInOrder` | A session's turns run one at a time, in visit order: the next visit's turn runs after the previous one ended. |
+
+Witnesses: `W_NoDoneCommitted` (a completed visit's turn commits), `W_NoRanAfterDone` (the next visit's prompt waits
+behind that turn, then runs its own turn: Admit, Spawn while the turn runs, TurnFinish, TurnStart), `W_NoStopFenced`
+(the next visit's Stop finds the completed visit's turn and the fence keeps it), `W_NoDoneStoppedAtEnd` (the run's end
+still stops a completed visit's turn) and `W_NoCycleStop` (a time limit or a cancel still stops its own turn).
+`CORRESPONDENCE-i1-4753e1cd.md` maps the model to the code. The cases are written by
+
+    G1B_HEAD=7024ef6f DRR1_HEAD=69d07073 DRR2_HEAD=5451a22e DRR1B_HEAD=7bd79a46 \
+      DRR1C_HEAD=9b2ca643 DR2FIX_HEAD=781441bf python3 gen-cases.py 9a8d0f66
+
+Batch i1 (TLC 2.19, two workers, 1,800 s per case):
+
+| Case | Expected | Result |
+|---|---|---|
+| `i1.cc-done-turn-stopped` (the code before the fix) | `Inv_DoneTurnCommits` violated | violated (140 distinct states) |
+| `i1.fix-safety` (three visits, a person's end or delete, failing Stops; every earlier invariant and the three new) | PASS | PASS, 246,471 distinct states |
+| `i1.fix-live` (two visits; `LIVE` properties) | PASS | PASS, 16,276 distinct states |
+| `i1.fix-turn-fails` (with tf1's failing turns; every safety property) | PASS | PASS, 93,448 distinct states |
+| `i1.fix-turn-fails-live` | PASS | PASS, 4,070 distinct states |
+| `i1.fault-stop-unfenced` | `Inv_StopOwnVisit` violated | violated |
+| `i1.wit-*` (five witnesses) | reached | all reached |
+
+Thirteen earlier cases run on the changed model (`cc.safety`, `cc.live`, `cc.late-reply-binding`, the G2 and G5
+findings and fixes, `impl.cc-live`, `tf.cc-turn-fails-safety`, two faults and two witnesses): 13 of 13 as before.
 
 ## How to run
 

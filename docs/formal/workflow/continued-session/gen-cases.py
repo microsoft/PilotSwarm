@@ -12,14 +12,16 @@ def cc(v=3, person="none", stop=True, cancel=True, stopfail=False, failagentsess
        recheck=False, stopspawn=False, peragentsession=False, stopend=False, fault="none", seesending=True, endmark=False,
        split=False, checkall=False, fence="none", backstop=False, crash=False, marksplit=False, markfail="none",
        withdraw=False, outbox=False, carry=False, carrydelete="none",
-       turnguard=False, markcreating=False, carrynotfound=False, turnfail=False, failreport="none", tofair=True, tfrecover=False):
+       turnguard=False, markcreating=False, carrynotfound=False, turnfail=False, failreport="none", tofair=True, tfrecover=False,
+       splitturn=False, nostopondone=False):
     return dict(V=v, Person=q(person), AllowStop=b(stop), AllowCancel=b(cancel), AllowStopFail=b(stopfail), FailAgentSession=failagentsession,
                 RecoverFair=b(recover), SpawnRecheck=b(recheck), RecheckSeesEnding=b(seesending), EndMark=b(endmark), StopBeforeSpawn=b(stopspawn), PerAgentSessionEnd=b(peragentsession),
                 StopAtRunEnd=b(stopend), Fault=q(fault), SplitSpawn=b(split), CheckAll=b(checkall), Fence=q(fence),
                 Backstop=b(backstop), AllowSpawnCrash=b(crash), MarkSplit=b(marksplit), MarkFail=q(markfail),
                 Withdraw=b(withdraw), Outbox=b(outbox), Carry=b(carry), CarryDelete=q(carrydelete),
                 TurnGuard=b(turnguard), MarkCreating=b(markcreating), CarryNotFound=b(carrynotfound),
-                AllowTurnFail=b(turnfail), FailReport=q(failreport), TimeoutFair=b(tofair), AllowRecover=b(tfrecover))
+                AllowTurnFail=b(turnfail), FailReport=q(failreport), TimeoutFair=b(tofair), AllowRecover=b(tfrecover),
+                SplitTurn=b(splitturn), NoStopOnDone=b(nostopondone))
 M = "WfContinuedSession"
 CORE = ["TypeOK", "Inv_OneLive", "Inv_ResultOwnVisit", "Inv_ReplaceOnlyEnded", "Inv_NoTurnForDecided", "Inv_EndOnce"]
 ALL = CORE + ["Inv_PromptNotDropped", "Inv_NoLoudFail", "Inv_NoPromptBehindStaleTurn", "Inv_StopAtRunEnd"]
@@ -53,6 +55,8 @@ FIXC = dict(FIXD1, carry=True)   # the coordinator's choice for DRR-2: the Workf
 SAFE = ALL + ["Inv_NoRevive"]
 NOONE = [i for i in SAFE if i != "Inv_OneLive"]
 DR2 = ["TypeOK", "Inv_OneLive", "Inv_NoAbandonedLive", "Inv_NoFailOnLive"]
+I1B = os.environ.get("I1_BASE", "b79be29d")   # i1: the code before the fix (main when the issue was built)
+I1INV = ["Inv_DoneTurnCommits", "Inv_StopOwnVisit", "Inv_TurnsInOrder"]
 CASES = [
  # the code as written, where no gap is triggered
  ("cc.safety", "reviewed", "confirmed", "Spec", cc(stopend=True), ALL, [], "PASS", True,
@@ -258,6 +262,32 @@ CASES = [
   "After a dropped report, the visit's time limit decides it."),
  ("wit.cc-reuse-after-fail", "proposal", "witness", "Spec", cc(v=2, turnfail=True, failreport="fix", **IMPL2), ["W_NoReuseAfterFail"], [], "safety", True,
   "tf1 fix: the next visit reuses the agent session whose turn failed (coordinator decision: no replacement)."),
+ # i1 (2026-11-27, issue I1): the agent's result (complete_workflow_node) and its turn's end are two steps (SplitTurn): the
+ # turn goes on to write its reply. The code before the fix sends that turn a Stop at the visit's end, and a stopped turn
+ # commits nothing; the fix sends no Stop for a visit its agent completed while the run is active (NoStopOnDone). The next
+ # visit's prompt waits behind the turn. Base: the G1-G5 fixes and the end mark (IMPL2), the spawn as one step, as tf1.
+ ("i1.cc-done-turn-stopped", "reviewed", "finding", "Spec", cc(v=2, splitturn=True, **IMPL2), ["TypeOK", "Inv_DoneTurnCommits"], [], "safety", False,
+  f"i1 finding at {I1B}: the visit's end stops the turn that reported its result while it writes its reply; the stopped turn commits nothing, so the next visit does not remember it."),
+ ("i1.fix-safety", "proposal", "proposed-fix", "Spec", cc(person="any", stopfail=True, splitturn=True, nostopondone=True, **IMPL2), ALL + I1INV, [], "PASS", True,
+  "i1 fix: a completed visit's turn is never stopped while the run is active; a Stop ends only a turn of its own visit; a session's turns run one at a time in visit order; every earlier property holds (three visits, a person's end or delete, failing Stops)."),
+ ("i1.fix-live", "proposal", "proposed-fix", "LiveSpec", cc(v=2, person="any", stopfail=True, splitturn=True, nostopondone=True, **IMPL2), CORE + I1INV, LIVE, "PASS", True,
+  "i1 fix: every visit decided, every agent session ended, owed ends sent, with a completed visit's turn left to finish its reply."),
+ ("i1.fix-turn-fails", "proposal", "proposed-fix", "Spec", cc(stopfail=True, turnfail=True, failreport="fix", splitturn=True, nostopondone=True, **IMPL2), ALL + I1INV, [], "PASS", True,
+  "i1 fix with tf1: turns that fail terminally, before or after their report; every safety property."),
+ ("i1.fix-turn-fails-live", "proposal", "proposed-fix", "LiveSpec", cc(v=2, turnfail=True, failreport="fix", splitturn=True, nostopondone=True, **IMPL2), CORE + I1INV, LIVE + ["Prop_FailedVisitDecided"], "PASS", True,
+  "i1 fix with tf1: every visit decided (a failed turn's visit by its report), every agent session ended."),
+ ("i1.fault-stop-unfenced", "deliberate", "deliberate", "Spec", cc(v=2, splitturn=True, nostopondone=True, fault="stop-unfenced", **IMPL2), ["Inv_StopOwnVisit"], [], "safety", False,
+  "Without the turn-to-visit fence, the Stop of the next visit (its time limit) ends the completed visit's turn, which is still writing its reply."),
+ ("i1.wit-done-committed", "proposal", "witness", "Spec", cc(v=2, splitturn=True, nostopondone=True, **IMPL2), ["W_NoDoneCommitted"], [], "safety", True,
+  "i1 fix: a completed visit's turn ends by itself and commits its memory."),
+ ("i1.wit-ran-after-done", "proposal", "witness", "Spec", cc(v=2, splitturn=True, nostopondone=True, **IMPL2), ["W_NoRanAfterDone"], [], "safety", True,
+  "i1 fix: the next visit's prompt is sent while the completed visit's turn still runs, waits, and then runs its own turn."),
+ ("i1.wit-stop-fenced", "proposal", "witness", "Spec", cc(v=2, splitturn=True, nostopondone=True, **IMPL2), ["W_NoStopFenced"], [], "safety", True,
+  "i1 fix: the next visit's time limit sends its Stop while the completed visit's turn runs; the fence keeps that turn."),
+ ("i1.wit-run-end-stops-done", "proposal", "witness", "Spec", cc(v=2, splitturn=True, nostopondone=True, **IMPL2), ["W_NoDoneStoppedAtEnd"], [], "safety", True,
+  "i1 fix: a visit completed while the run is stopping or ended still stops its turn (the run's end)."),
+ ("i1.wit-cancel-stops", "proposal", "witness", "Spec", cc(v=2, splitturn=True, nostopondone=True, **IMPL2), ["W_NoCycleStop"], [], "safety", True,
+  "i1 fix: a visit ended by its time limit or a cancel still stops its own running turn."),
  # faults
  ("fault.bind-newest", "deliberate", "deliberate", "Spec", cc(stopfail=True, fault="bind-newest"), ["Inv_ResultOwnVisit"], [], "safety", False,
   "A result bound to the newest pending visit instead of its own: an old turn decides the next visit."),

@@ -9,7 +9,9 @@
 (* turn takes the prompts in order, skips a visit that is already decided, *)
 (* and its result binds only to its own visit (agentInvocationOfCompletion *)
 (* by node execution id). When a visit ends, its turn gets a cycle Stop    *)
-(* and the session stays open (AgentSessionContinues). When the run ends (stop, *)
+(* (i1: not when its agent completed it while the run is active; its turn  *)
+(* then ends by itself and its memory is committed, SplitTurn and          *)
+(* NoStopOnDone) and the session stays open (AgentSessionContinues). When the run ends (stop, *)
 (* cancel, done) every agent session is ended under its end lock; one not  *)
 (* visible yet is marked owed and a detached retry (wfc) ends it later.    *)
 (* A person can end or delete an agent session.                            *)
@@ -70,13 +72,20 @@ CONSTANTS
                     \* one store step decides the turn's own visit execution_failed while it is pending), "binds-newest"
                     \* (fault: the report decides the session's newest pending visit)
     TimeoutFair,    \* a visit's time limit is forced to arrive (FALSE: liveness must not rest on it)
-    AllowRecover    \* a later turn of the session succeeds (a reminder of the failed visit) while its report is owed:
+    AllowRecover,   \* a later turn of the session succeeds (a reminder of the failed visit) while its report is owed:
                     \* the report is dropped (no report after a success); the agent may complete the visit in that turn
+    \* i1 (issue I1, 2026-11-27): the agent's result and its turn's end are two steps, and a done visit sends no Stop.
+    SplitTurn,      \* the turn reports its result (complete_workflow_node decides its visit) and then goes on to write its
+                    \* reply (TurnReport, then TurnFinish, which commits the turn's snapshot: its memory); a Stop ends a
+                    \* turn without a commit. FALSE: the result and the turn's end are one step (TurnEnd), as before i1
+    NoStopOnDone    \* fix I1: a visit its agent completed while the run is active sends its turn no Stop (the Stop stays
+                    \* for a time limit, a cancel, and a run that is stopping or ended)
 
 ASSUME V \in 1..3 /\ Person \in {"none", "end", "delete", "any"}
 ASSUME {AllowStop, AllowCancel, AllowStopFail, RecoverFair, SpawnRecheck, RecheckSeesEnding, EndMark, StopBeforeSpawn, PerAgentSessionEnd, StopAtRunEnd} \subseteq BOOLEAN
 ASSUME FailAgentSession \in 0..V
-ASSUME Fault \in {"none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided"}
+ASSUME Fault \in {"none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided", "stop-unfenced"}
+ASSUME {SplitTurn, NoStopOnDone} \subseteq BOOLEAN
 ASSUME {SplitSpawn, CheckAll, Backstop, AllowSpawnCrash, MarkSplit, Withdraw, Outbox, Carry} \subseteq BOOLEAN
 ASSUME CarryDelete \in {"none", "visible", "owed", "queued", "queued-skew", "queued-race"}
 ASSUME {TurnGuard, MarkCreating, CarryNotFound} \subseteq BOOLEAN
@@ -105,9 +114,12 @@ VARIABLES
     gh
 vars == <<marked, run, nv, vis, ses, readers, afterDone, acted, pend, reports, failedV, gh>>
 
+(* i1: `mem`, the visit's turn ended by itself and its snapshot was committed; `qb`, the visit's prompt was sent while a *)
+(* turn of a visit its agent completed still ran. A session's `rep`: its running turn has reported; `last`: the last  *)
+(* visit whose turn ran (SplitTurn only).                                                                         *)
 NoVisit == [node |-> "none", how |-> "none", s |-> 0, sent |-> FALSE, endReq |-> FALSE, stopOk |-> FALSE, gaveUp |-> FALSE,
-            ph |-> "idle", cr |-> FALSE]
-NoSes == [st |-> "none", turn |-> 0, q |-> {}, endState |-> "open", ends |-> 0]
+            ph |-> "idle", cr |-> FALSE, mem |-> FALSE, qb |-> FALSE]
+NoSes == [st |-> "none", turn |-> 0, q |-> {}, endState |-> "open", ends |-> 0, rep |-> FALSE, last |-> 0]
 
 Init == /\ marked = {} /\ run = "active" /\ nv = 0 /\ vis = [v \in Vis |-> NoVisit] /\ ses = [s \in Ses |-> NoSes]
         /\ readers = {} /\ afterDone = FALSE /\ acted = FALSE /\ pend = [ph |-> "none", s |-> 0] /\ gh = {}
@@ -154,6 +166,9 @@ Admit ==
     /\ nv' = nv + 1
     /\ UNCHANGED <<pend, marked, run, readers, afterDone, acted, reports, failedV>>
 
+(* i1: a prompt sent now waits behind a turn of a visit its agent completed (the turn writes its reply). *)
+QueuedBehindDone(s) == SplitTurn /\ ses[s].turn # 0 /\ vis[ses[s].turn].how = "result"
+
 (* spawnAgent: send the visit's prompt to its frozen agent session. A      *)
 (* completed or cancelled session refuses it: the spawn retries, then the  *)
 (* visit fails unavailable. A deleted one is brought back as a row that    *)
@@ -172,7 +187,7 @@ Spawn(v) ==
           THEN /\ vis' = [vis EXCEPT ![v].sent = TRUE]
                /\ ses' = [ses EXCEPT ![s].st = IF st = "ending" THEN "ending" ELSE "zombie"]
                /\ gh' = gh \cup {"dropped"}
-          ELSE /\ vis' = [vis EXCEPT ![v].sent = TRUE]
+          ELSE /\ vis' = [vis EXCEPT ![v].sent = TRUE, ![v].qb = QueuedBehindDone(s)]
                /\ ses' = [ses EXCEPT ![s].st = IF st = "none" THEN "creating" ELSE st, ![s].q = @ \cup {v}]
                /\ UNCHANGED gh
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
@@ -241,7 +256,8 @@ SpawnSend(v) ==
                \* queued behind the end; not a loss when the crashed attempt's copy is the running turn
                /\ gh' = gh \cup (IF ses[s].turn = v THEN {} ELSE {"dropped"})
           ELSE \E crash \in (IF AllowSpawnCrash /\ ~vis[v].cr THEN BOOLEAN ELSE {FALSE}) :
-               /\ vis' = IF crash THEN [vis EXCEPT ![v].ph = "idle", ![v].cr = TRUE] ELSE [vis EXCEPT ![v].sent = TRUE]
+               /\ vis' = IF crash THEN [vis EXCEPT ![v].ph = "idle", ![v].cr = TRUE]
+                         ELSE [vis EXCEPT ![v].sent = TRUE, ![v].qb = QueuedBehindDone(s)]
                /\ ses' = [ses EXCEPT ![s].st = IF st \in {"none", "row"} THEN "creating" ELSE st, ![s].q = @ \cup {v}]
                /\ UNCHANGED gh
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
@@ -270,19 +286,26 @@ Visible(s) ==
     /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
 
 (* A turn takes the oldest queued prompt; a decided visit's turn is not    *)
-(* run (session-proxy turn start).                                         *)
+(* run (session-proxy turn start). A prompt waits while a turn runs: the  *)
+(* session takes a Workflow prompt only between turns. i1: the turns of a *)
+(* session's visits run in visit order ("outOfOrder"), and a prompt that  *)
+(* waited behind a completed visit's turn starts a new turn of its own    *)
+(* ("ranAfterDone").                                                       *)
 TurnStart(s) ==
     /\ ses[s].st = "live" /\ ses[s].turn = 0 /\ ses[s].q # {}
     /\ LET u == CHOOSE x \in ses[s].q : \A y \in ses[s].q : x <= y
            skip == vis[u].node = "decided" /\ Fault # "run-decided"
-       IN /\ ses' = [ses EXCEPT ![s].q = @ \ {u}, ![s].turn = IF skip THEN 0 ELSE u]
+       IN /\ ses' = [ses EXCEPT ![s].q = @ \ {u}, ![s].turn = IF skip THEN 0 ELSE u,
+                                 ![s].last = IF SplitTurn /\ ~skip THEN u ELSE @]
           /\ gh' = gh \cup (IF skip THEN {"skipped"} ELSE {}) \cup (IF ~skip /\ vis[u].node = "decided" THEN {"ranDecided"} ELSE {})
+                      \cup (IF SplitTurn /\ ~skip /\ u < ses[s].last THEN {"outOfOrder"} ELSE {})
+                      \cup (IF SplitTurn /\ ~skip /\ vis[u].qb THEN {"ranAfterDone"} ELSE {})
     /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 
 (* The turn ends with the agent's result: it decides only its own pending  *)
 (* visit (bound by node execution id); a late result is refused.           *)
 TurnEnd(s) ==
-    /\ ses[s].turn # 0
+    /\ ~SplitTurn /\ ses[s].turn # 0
     /\ LET u == ses[s].turn
            pendVis == {w \in Vis : vis[w].s = s /\ vis[w].node = "pending"}
            t == IF Fault = "bind-newest" /\ pendVis # {} THEN CHOOSE w \in pendVis : \A x \in pendVis : x <= w ELSE u
@@ -290,6 +313,36 @@ TurnEnd(s) ==
           /\ gh' = gh \cup (IF vis[t].node = "pending" /\ t # u THEN {"wrongResult"} ELSE {})
     /\ ses' = [ses EXCEPT ![s].turn = 0]
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
+
+(* i1 (SplitTurn): the agent's result, in the middle of its turn           *)
+(* (complete_workflow_node): it decides only its own pending visit, as     *)
+(* TurnEnd does, and the turn goes on to write its reply; its tools refuse *)
+(* from now on (decideWorkflowVisit and the pre-tool hook).                *)
+TurnReport(s) ==
+    /\ SplitTurn /\ ses[s].turn # 0 /\ ~ses[s].rep
+    /\ LET u == ses[s].turn
+           pendVis == {w \in Vis : vis[w].s = s /\ vis[w].node = "pending"}
+           t == IF Fault = "bind-newest" /\ pendVis # {} THEN CHOOSE w \in pendVis : \A x \in pendVis : x <= w ELSE u
+       IN /\ vis' = IF vis[t].node = "pending" THEN Decide(t, "result") ELSE vis
+          /\ gh' = gh \cup (IF vis[t].node = "pending" /\ t # u THEN {"wrongResult"} ELSE {})
+    /\ ses' = [ses EXCEPT ![s].rep = TRUE]
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
+
+(* i1 (SplitTurn): the turn ends by itself after its reply and its        *)
+(* snapshot is committed (runTurnCommit): the session remembers the turn. *)
+TurnFinish(s) ==
+    /\ SplitTurn /\ ses[s].turn # 0 /\ ses[s].rep
+    /\ LET u == ses[s].turn
+       IN /\ vis' = [vis EXCEPT ![u].mem = TRUE]
+          /\ gh' = gh \cup (IF vis[u].how = "result" THEN {"doneCommitted"} ELSE {})
+    /\ ses' = [ses EXCEPT ![s].turn = 0, ![s].rep = FALSE]
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
+
+(* i1: what a Stop that ends visit u's running turn costs: a stopped turn  *)
+(* commits nothing, so the session forgets it. "doneStoppedActive": the   *)
+(* turn of a visit its agent completed, stopped while the run is active.  *)
+StopLoss(u) == IF SplitTurn /\ vis[u].how = "result"
+               THEN {"doneTurnStopped"} \cup (IF run = "active" THEN {"doneStoppedActive"} ELSE {}) ELSE {}
 
 (* tf1: the running turn fails terminally: it ends without a result, the  *)
 (* session goes idle with an error and takes the next prompt (the next     *)
@@ -300,7 +353,7 @@ TurnEnd(s) ==
 TurnFails(s) ==
     /\ AllowTurnFail /\ ses[s].turn # 0
     /\ LET u == ses[s].turn
-       IN /\ ses' = [ses EXCEPT ![s].turn = 0]
+       IN /\ ses' = [ses EXCEPT ![s].turn = 0, ![s].rep = FALSE]
           /\ failedV' = failedV \cup {u}
           /\ reports' = IF FailReport # "none" THEN reports \cup {u} ELSE reports
     /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh>>
@@ -341,17 +394,27 @@ Timeout(v) ==
 (* endContinuedVisit: while the run is active (or stopping) the visit's    *)
 (* turn gets a cycle Stop; a Stop may fail past its retries (G2) and then  *)
 (* nothing sends it again during the run. After the run ended no Stop is   *)
-(* sent (G5) unless StopAtRunEnd.                                          *)
+(* sent (G5) unless StopAtRunEnd. NoStopOnDone (fix I1): a visit its agent *)
+(* completed while the run is active gets no Stop (`turnEnds` in the code). *)
+(* The session's worker applies a Stop only to a turn of the visit it      *)
+(* names (the turn-to-visit fence; Fault "stop-unfenced" applies it to any *)
+(* running turn).                                                          *)
 EndVisit(v) ==
     /\ vis[v].node = "decided" /\ ~vis[v].endReq
     /\ LET s == vis[v].s
            active == run # "ended"
-           stopping == active \/ StopAtRunEnd
-       IN \E ok \in (IF active /\ AllowStopFail THEN BOOLEAN ELSE {TRUE}) :
+           sends == active \/ StopAtRunEnd
+           stopping == sends /\ (~NoStopOnDone \/ vis[v].how # "result" \/ run # "active")
+           t == ses[s].turn
+           hits == stopping /\ t # 0 /\ (t = v \/ Fault = "stop-unfenced")
+       IN \E ok \in (IF active /\ AllowStopFail /\ stopping THEN BOOLEAN ELSE {TRUE}) :
             /\ vis' = [vis EXCEPT ![v].endReq = TRUE, ![v].stopOk = stopping /\ ok, ![v].gaveUp = stopping /\ ~ok]
-            /\ ses' = IF stopping /\ ok /\ ses[s].turn = v THEN [ses EXCEPT ![s].turn = 0] ELSE ses
-            /\ gh' = gh \cup (IF stopping /\ ok /\ ses[s].turn = v THEN {"cycleStop"} ELSE {})
-                        \cup (IF ~stopping /\ ses[s].turn = v THEN {"noStopAtEnd"} ELSE {})
+            /\ ses' = IF ok /\ hits THEN [ses EXCEPT ![s].turn = 0, ![s].rep = FALSE] ELSE ses
+            /\ gh' = gh \cup (IF ok /\ hits /\ t = v THEN {"cycleStop"} ELSE {})
+                        \cup (IF ~sends /\ t = v THEN {"noStopAtEnd"} ELSE {})
+                        \cup (IF ok /\ hits THEN StopLoss(t) ELSE {})
+                        \cup (IF ok /\ hits /\ t # v THEN {"stopOther"} ELSE {})
+                        \cup (IF SplitTurn /\ ok /\ stopping /\ t # 0 /\ t # v /\ ~hits THEN {"stopFenced"} ELSE {})
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 
 (* Fix G2: the next visit's spawn sends the Stop again until it lands; with *)
@@ -361,8 +424,9 @@ RetryStop(u) ==
     /\ \/ StopBeforeSpawn /\ \E v \in Vis : v > u /\ vis[v].s = vis[u].s /\ vis[v].node = "pending" /\ ~vis[v].sent
        \/ StopAtRunEnd /\ run = "ended"
     /\ vis' = [vis EXCEPT ![u].gaveUp = FALSE, ![u].stopOk = TRUE]
-    /\ ses' = IF ses[vis[u].s].turn = u THEN [ses EXCEPT ![vis[u].s].turn = 0] ELSE ses
-    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, gh, reports, failedV>>
+    /\ ses' = IF ses[vis[u].s].turn = u THEN [ses EXCEPT ![vis[u].s].turn = 0, ![vis[u].s].rep = FALSE] ELSE ses
+    /\ gh' = gh \cup (IF ses[vis[u].s].turn = u THEN StopLoss(u) ELSE {})
+    /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 
 (* The end of one agent session under its end lock (endContinuedSessionLocked). *)
 Due(s) == Used(s) /\ ses[s].endState = "open" /\ vis[Newest(s)].node = "decided"
@@ -473,7 +537,7 @@ Next ==
                       \/ ReportDecide(v) \/ RecoveredTurn(v)
     \/ \E s \in Ses : Visible(s) \/ TurnStart(s) \/ TurnEnd(s) \/ LookLocked(s) \/ LookRead(s) \/ LookSend(s)
                       \/ Finish(s) \/ PersonEnd(s) \/ PersonMark(s) \/ PersonDelete(s) \/ RaceResolve(s) \/ OrphanTurn(s)
-                      \/ TurnFails(s)
+                      \/ TurnFails(s) \/ TurnReport(s) \/ TurnFinish(s)
 
 Spec == Init /\ [][Next]_vars
 Fairness ==
@@ -481,6 +545,8 @@ Fairness ==
     /\ WF_vars(PersonEnqueue) /\ WF_vars(WithdrawMark)
     /\ \A v \in Vis : WF_vars(Spawn(v)) /\ WF_vars(SpawnCheck(v)) /\ WF_vars(SpawnCreate(v)) /\ WF_vars(SpawnSend(v)) /\ WF_vars(TimeoutFair /\ Timeout(v)) /\ WF_vars(EndVisit(v)) /\ WF_vars(RetryStop(v))
                       /\ WF_vars(ReportDecide(v))
+    \* i1: a turn reports and then ends by itself (the turn's own time limit, 20 minutes by default, ends a turn that hangs)
+    /\ \A s \in Ses : WF_vars(TurnReport(s)) /\ WF_vars(TurnFinish(s))
     /\ \A s \in Ses : WF_vars(Visible(s)) /\ WF_vars(TurnStart(s)) /\ WF_vars(TurnEnd(s)) /\ WF_vars(LookLocked(s))
                       /\ WF_vars(LookSend(s)) /\ WF_vars(Finish(s)) /\ WF_vars(RaceResolve(s))
                       /\ WF_vars(TurnGuard /\ OrphanTurn(s))
@@ -492,6 +558,7 @@ TypeOK == /\ run \in {"active", "stopping", "ended"} /\ nv \in 0..V
           /\ \A v \in Vis : vis[v].node \in {"none", "pending", "decided"} /\ vis[v].s \in 0..V
           /\ \A s \in Ses : ses[s].st \in {"none", "row", "creating", "live", "ending", "ended", "deleted", "zombie", "revived", "tomb0", "orphan", "orphanq"}
                             /\ ses[s].turn \in 0..V /\ ses[s].q \subseteq Vis /\ ses[s].endState \in {"open", "owed", "ended"}
+                            /\ ses[s].rep \in BOOLEAN /\ ses[s].last \in 0..V
 (* One agent session per agent state goes on at a time.                    *)
 (* An agent session whose end command is on its way does not count.       *)
 Inv_OneLive == Cardinality({s \in Ses : ses[s].st \in Alive /\ ~EndComing(s)}) <= 1
@@ -515,6 +582,14 @@ Inv_NoPromptBehindStaleTurn ==
                    => ~\E v \in ses[s].q : vis[v].node = "pending"
 (* G5: a visit ended by the run's end stops its running turn.              *)
 Inv_StopAtRunEnd == "noStopAtEnd" \notin gh
+(* i1: the turn of a visit its agent completed is not stopped while the    *)
+(* run is active: it ends by itself and its memory is committed.           *)
+Inv_DoneTurnCommits == "doneStoppedActive" \notin gh
+(* i1: a Stop never ends a turn of another visit (the turn-to-visit fence). *)
+Inv_StopOwnVisit == "stopOther" \notin gh
+(* i1: a session's turns run one at a time, in visit order: the next      *)
+(* visit's turn runs after the previous one ended.                         *)
+Inv_TurnsInOrder == SplitTurn => ("outOfOrder" \notin gh /\ \A s \in Ses : ses[s].turn # 0 => ses[s].turn = ses[s].last)
 
 Prop_VisitsDecided == \A v \in Vis : (vis[v].node = "pending") ~> (vis[v].node = "decided")
 Prop_AllEnded == <>[](run = "ended" => \A s \in Ses : ses[s].st \notin {"live", "ending", "creating"} \/ ~Used(s))
@@ -549,4 +624,12 @@ W_NoFailDecided == ~\E v \in Vis : vis[v].how = "execution_failed"
 W_NoDroppedThenResult == "droppedThenResult" \notin gh
 W_NoDroppedThenTimeout == ~("dropped" \in gh /\ \E v \in failedV : vis[v].how = "timeout")
 W_NoReuseAfterFail == ~\E v \in 1..(V - 1) : vis[v].how = "execution_failed" /\ vis[v + 1].node # "none" /\ vis[v + 1].s = vis[v].s
+(* i1 witnesses: a completed visit's turn commits its memory; the next     *)
+(* visit's prompt waited behind that turn and then ran its own turn; a     *)
+(* Stop that names a later visit finds the completed visit's turn and the *)
+(* fence keeps it; the run's end still stops a completed visit's turn.     *)
+W_NoDoneCommitted == "doneCommitted" \notin gh
+W_NoRanAfterDone == "ranAfterDone" \notin gh
+W_NoStopFenced == "stopFenced" \notin gh
+W_NoDoneStoppedAtEnd == "doneTurnStopped" \notin gh
 =============================================================================
