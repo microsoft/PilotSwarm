@@ -251,7 +251,6 @@ async function runAnthropicLoop(modelCfg, client, mcpInstructions, tools, prompt
         const body = {
             model: modelCfg.model,
             max_tokens: 4096,
-            temperature: 0,
             ...(mcpInstructions ? { system: mcpInstructions } : {}),
             tools: anthropicTools,
             messages,
