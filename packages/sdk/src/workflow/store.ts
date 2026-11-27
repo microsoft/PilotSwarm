@@ -3872,13 +3872,13 @@ export class WorkflowStore {
                 let leftRows: Row[] = [];
                 if (ids.length + left.length > 0) {
                     try {
-                        // A system session is never deleted here, but one the delete leaves in place is held too (PR 415 review
-                        // round 4): a Workflow can be started under it.
+                        // A system session is never deleted here, but it is held too (PR 415 review round 4): it stays in
+                        // place, and a Workflow can be started under it.
                         const { rows: held } = await client.query(
-                            `SELECT session_id, session_kind, service_kind FROM ${this.t.sessions}
-                              WHERE session_id = ANY($1::text[]) AND deleted_at IS NULL AND (is_system = FALSE OR NOT (session_id = ANY($2::text[])))
-                              ORDER BY session_id FOR NO KEY UPDATE NOWAIT`, [[...ids, ...left], ids]);
-                        const toDelete = held.filter(item => deleteSet.has(str(item, "session_id")));
+                            `SELECT session_id, session_kind, service_kind, is_system FROM ${this.t.sessions}
+                              WHERE session_id = ANY($1::text[]) AND deleted_at IS NULL
+                              ORDER BY session_id FOR NO KEY UPDATE NOWAIT`, [[...ids, ...left]]);
+                        const toDelete = held.filter(item => deleteSet.has(str(item, "session_id")) && item.is_system !== true);
                         locked = toDelete.map(item => str(item, "session_id"));
                         lockedWorkflow = toDelete.some(sweeperLiveWorkflowRow);
                         leftRows = held.filter(item => !deleteSet.has(str(item, "session_id")));
