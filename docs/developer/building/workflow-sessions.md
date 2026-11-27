@@ -191,13 +191,22 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   tools (shell, file edits, sub-agents) are refused by a pre-tool hook
   (`withWorkflowVisitDeny`); the model can only finish its reply. A call
   already admitted (in the same model message as the report, or a
-  sub-agent already running) may still finish. The next visit's prompt waits behind that
+  sub-agent already running) may still finish. A completion whose write
+  failed with anything but a store refusal may have committed: the worker
+  reads the turn's visit, and a visit that reads decided, or that cannot be
+  read, closes the turn's tools and arms its reply limit as an acknowledged
+  result does. The next visit's prompt waits behind that
   turn (a session takes a Workflow prompt only between turns) and starts a
-  new turn bound to the new visit. The reply is bounded: a reply still
-  running 5 minutes after the report (`WORKFLOW_AGENT_REPLY_SETTLE`, also when
-  `turnTimeoutMs` is 0) is stopped as a Stop stops it, and a reply lost with
-  its Copilot session (a lost live session, a corrupted transcript) is not
-  run again; neither is committed. The session ends when the run ends, and a
+  new turn bound to the new visit. The reply is bounded: 5 minutes after the
+  report (`WORKFLOW_AGENT_REPLY_SETTLE`, also when `turnTimeoutMs` is 0) a
+  reply still running is stopped as a Stop stops it (the abort, then up to
+  about 12 seconds for its task cancel and grace before the turn is settled
+  by force); the abort
+  acts only on that turn's own run, never on the next turn that may have
+  started on the same warm session. A reply lost with its Copilot session (a
+  lost live session, a corrupted transcript) is not run again: each recovery
+  reads the visit before it resets anything and again before its model run,
+  and a decided visit ends the turn. Neither is committed. The session ends when the run ends, and a
   graceful stop ends an idle one at once; before it sends the session's end,
   the run's end stops whichever turn still runs (request id
   `workflow-session-stop:<session>`, which names no visit). If the session ended on its own, the next open visit
@@ -215,8 +224,9 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   cleanup, recovery) ends it.
   **Known limits:** the next visit's prompt can wait behind the earlier
   visit's turn: until the abort of a timed-out turn lands, or until a
-  completed visit's turn finishes its reply (usually seconds, at most the
-  5-minute reply limit). The next visit's time limit runs during that wait;
+  completed visit's turn finishes its reply (usually seconds; the 5-minute
+  reply limit then starts the stop, which can take about 12 seconds more).
+  The next visit's time limit runs during that wait;
   that visit's Stop names the next visit and does not end the earlier turn.
   Results stay correct: each binds to its own visit. A tool call made in the
   same model message as the report is not refused (the CLI runs a message's
