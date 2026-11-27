@@ -8,7 +8,9 @@
  * - a sibling session, another user's session, a session above a deleted session and a session of another owner above the
  *   Workflow are refused, each with a message that names the rule;
  * - an ancestor reads a cleaned-up Workflow through the outcome kept with its parent;
- * - send_workflow_input keeps its rule (the parent, or any session of the same user): an ancestor of the same user may send.
+ * - send_workflow_input keeps its rule (the parent, or any session of the same user): an ancestor of the same user may send;
+ * - owner classes as built (owner decision 2026-11-26, kept): in an all-unowned tree an ancestor reads and cancels a nested
+ *   Workflow (typed input stays with the parent); a system root is another owner to the Workflows below its direct child.
  *
  * Run: npx vitest run test/local/workflow-nested-access.test.js
  */
@@ -19,6 +21,7 @@ import { openWorkflowStore } from "../helpers/workflow-request-fixture.js";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { resolveEffectiveSpawnOwner } from "../../src/cms.ts";
 import { childWorkflowsFromTool, readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -262,6 +265,77 @@ describe("I2: nested Workflows are read and controlled by every session above th
             expect([crossOwner.ok, crossOwner.error?.code]).toEqual([false, "FORBIDDEN"]);
             expect(crossOwner.error.message).toBe("This session belongs to another owner than the Workflow, so it may not read or control it.");
             expect((await read(aliceSub, aliceWorkflow.workflowSessionId)).ok, "the Workflow's own parent").toBe(true);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    // Owner decision 2026-11-26 (i2-trees = keep-code), pinned as built: owners compare exactly ("none" for every ownerless
+    // session, "system" for a system session, the provider and subject of a user, the System user included).
+    it("an all-unowned tree lets an ancestor read and cancel a nested Workflow; a system root is another owner below its direct child", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const host = hostOf(h);
+            const read = async (caller, workflowId) => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId }, { callerSessionId: caller, host }));
+            const update = async (caller, workflowId, args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowId, ...args },
+                { callerSessionId: caller, host }));
+            const send = async (caller, workflowId, n) => JSON.parse(await sendWorkflowInputFromTool({ workflow_id: workflowId, contract: "Ping@1",
+                payload: { n }, operation_id: `ping-${n}` }, { callerSessionId: caller, host }));
+            const OTHER_OWNER = "This session belongs to another owner than the Workflow, so it may not read or control it.";
+
+            // Unowned: top → W1 → W2, no session with an owner.
+            const top = randomUUID();
+            await h.catalog.createSession(top, {});
+            const w1 = await workflowOf(h, top, null);
+            const w2 = await workflowOf(h, w1.workflowSessionId, null);
+            for (const id of [top, w1.workflowSessionId, w2.workflowSessionId]) expect((await h.catalog.getSession(id)).owner ?? null, id).toBeNull();
+            const unownedRead = await read(top, w2.workflowSessionId);
+            expect(unownedRead.ok, JSON.stringify(unownedRead.error)).toBe(true);
+            // Typed input stays with the parent: top may send to W1 (its own), not to W2.
+            const toChild = await send(top, w1.workflowSessionId, 1);
+            expect(toChild.ok, JSON.stringify(toChild.error)).toBe(true);
+            const toGrandchild = await send(top, w2.workflowSessionId, 2);
+            expect([toGrandchild.ok, toGrandchild.error?.code]).toEqual([false, "FORBIDDEN"]);
+            // Control: the unowned grandparent cancels W2.
+            const cancelled = await update(top, w2.workflowSessionId, { operation: "cancel", operation_id: "cancel-unowned" });
+            expect(cancelled.ok, JSON.stringify(cancelled.error)).toBe(true);
+            expect((await h.store.readRun(w2.runId)).status).toBe("cancelled");
+            // An ownerless session outside the tree is not above W1: refused.
+            const outsider = randomUUID();
+            await h.catalog.createSession(outsider, {});
+            const outside = await read(outsider, w1.workflowSessionId);
+            expect([outside.ok, outside.error?.code]).toEqual([false, "FORBIDDEN"]);
+            expect(outside.error.message).toMatch(PARENT_RULE);
+
+            // System: root (is_system) → its sub-agent → W3 → W4, owners as spawning gives them (the System user below the root).
+            const root = randomUUID();
+            await h.catalog.createSession(root, { isSystem: true });
+            const spawnOwner = parent => resolveEffectiveSpawnOwner(id => h.catalog.getSession(id), parent);
+            const system = await spawnOwner(root);
+            expect(system).toMatchObject({ provider: "system", subject: "system" });
+            const agent = randomUUID();
+            await h.catalog.createSession(agent, { parentSessionId: root, owner: system });
+            expect(await h.catalog.getSession(root)).toMatchObject({ isSystem: true });
+            expect(await h.catalog.getSession(agent)).toMatchObject({ isSystem: false, owner: { provider: "system", subject: "system" } });
+            const own = await workflowOf(h, root, await spawnOwner(root));
+            const w3 = await workflowOf(h, agent, await spawnOwner(agent));
+            const w4 = await workflowOf(h, w3.workflowSessionId, await spawnOwner(w3.workflowSessionId));
+            // The root reads and controls the Workflow it started (the parent rule compares no owners) ...
+            expect((await read(root, own.workflowSessionId)).ok).toBe(true);
+            const rootPause = await update(root, own.workflowSessionId, { operation: "pause", operation_id: "pause-own" });
+            expect(rootPause.ok, JSON.stringify(rootPause.error)).toBe(true);
+            // ... but is another owner to the Workflows below its direct child, read and control alike.
+            for (const workflow of [w3, w4]) {
+                const refusedRead = await read(root, workflow.workflowSessionId);
+                expect([refusedRead.ok, refusedRead.error?.code]).toEqual([false, "FORBIDDEN"]);
+                expect(refusedRead.error.message).toBe(OTHER_OWNER);
+                const refusedCancel = await update(root, workflow.workflowSessionId, { operation: "cancel", operation_id: `root-cancel-${workflow.runId}` });
+                expect([refusedCancel.ok, refusedCancel.error?.code]).toEqual([false, "FORBIDDEN"]);
+            }
+            // The System-user sessions between them match one another: the sub-agent reads and controls W4 as its ancestor.
+            expect((await read(agent, w4.workflowSessionId)).ok).toBe(true);
+            const agentPause = await update(agent, w4.workflowSessionId, { operation: "pause", operation_id: "pause-by-system-agent" });
+            expect(agentPause.ok, JSON.stringify(agentPause.error)).toBe(true);
         } finally {
             await h.stop();
         }

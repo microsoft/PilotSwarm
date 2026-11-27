@@ -23,9 +23,13 @@ and sets the variables of a child Workflow of its batch, through any number of
 nested Workflows, when every session between is live and has the same owner.
 Changing, testing and starting a definition, and controlling a test run, stay
 with the session that started the Workflow. A Workflow's own agent step, and
-its sub-agents, read the Workflow but do not control it. Each refusal names its
-rule. A cleaned-up Workflow's kept outcome is readable by the same sessions
-above it.
+its sub-agents, read the Workflow (its definition, variables and step outputs)
+but do not control it. Each refusal names its rule. A cleaned-up Workflow's
+kept outcome is readable by the same sessions above it. Owners compare exactly:
+in a tree of sessions without an owner, a session above a nested Workflow may
+read and cancel it; a system session is refused on the Workflows below its
+direct child, as another owner is, because the sessions it spawns belong to
+the System user.
 
 ### Workflows: whole child results
 

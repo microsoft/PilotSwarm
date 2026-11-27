@@ -737,6 +737,14 @@ read, pause or cancel each of the three.
 | The Workflow's own agent step, and the sub-agents of that step | Yes | No | No |
 | Any other session | No | No | No |
 
+The agent step's sub-agents read the whole Workflow too: its definition, its
+variables and the output of each step. "The same owner" means exactly the
+same user, both system sessions, or both without an owner. So in a tree of
+sessions without an owner, a session above a nested Workflow may read and
+cancel it. A system session that starts a Workflow is refused on the
+Workflows nested below its direct child, as another owner is, because the
+sessions it spawns belong to the System user, not to the system session.
+
 A session above a deleted session is refused: the chain is broken there. The
 check is made when the command arrives: a command allowed then still finishes
 if a session in between is deleted while it runs. A session above the

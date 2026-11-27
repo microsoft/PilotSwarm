@@ -1403,9 +1403,21 @@ A Workflow belongs to the session that coordinates it, and it cannot move to ano
 |---|---|---|
 | The parent session | Yes. `read_workflow` gives the status, the output and the record of each step. `update_workflow` changes variables, pauses, resumes, stops, cancels and recovers, and changes, tests and starts the definition | `workflow/access.ts` |
 | A session above the parent in the same owner's tree (a grandparent of a child Workflow, and up), when no session between them is deleted | Yes: `read_workflow`, and the `update_workflow` run operations and `recover`. Not the definition operations | `workflow/access.ts` |
-| The Workflow's own agent step, and the sub-agents of that step | Read only: `read_workflow` | `workflow/access.ts` |
+| The Workflow's own agent step, and the sub-agents of that step (owner decision 26 Nov: every session under the step reads the Workflow's definition, variables and step outputs) | Read only: `read_workflow` | `workflow/access.ts` |
 | A person who can use the session | Yes: the Workflow tab of the portal, or `readWorkflow` and `updateWorkflow` of the management API | `management-client.ts:2008, 2079`; `workflow/human-commands.ts:217-249` |
 | Every other session, also one of the same user, also a replacement coordinator | No. The call is refused `FORBIDDEN`, with a message that names the rule, for example "Only a session above this Workflow (the session that started it, or one above that) may read or control it with this tool; its own agent steps may read it." | `workflow/access.ts` |
+
+"The same owner" compares owner identities exactly: a user's provider and subject, "system" for a system session
+(`is_system`), or "none" for a session without an owner (`ownerIdentity`, `workflow/access.ts`). Two kinds of tree follow
+from that, and they are kept as they are (owner decision 26 Nov):
+
+- **A tree without owners.** Every ownerless session has the identity "none", so in an all-unowned chain a session above
+  a nested Workflow reads and controls it (it may cancel it). Typed input stays with the parent there
+  (`send_workflow_input` allows no one beyond the parent when the owner is unknown or system).
+- **A system tree.** The system root (`is_system`) is "system", but the sessions it spawns carry the System user
+  principal and are not `is_system` (`resolveEffectiveSpawnOwner`). So the root reads and controls only the Workflows it
+  started, and is refused (`otherOwner`) on a Workflow below its direct child, as another owner is; the System-principal
+  sessions between them match one another.
 
 The notice of a run's end carries only a preview of the output, at most 1,000 characters (`workflow/runtime.ts`). The owning session's child-outcome row keeps the exact canonical terminal output/error text (`outputText` and `errorText`), including escaped NUL and lone surrogates. `read_workflow` returns that retained outcome after the Workflow session is swept and gives the whole execution record while it still exists.
 

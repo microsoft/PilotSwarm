@@ -14,7 +14,9 @@ import { WORKFLOW_LINEAGE_MAX_DEPTH, WorkflowStoreError, type WorkflowStore } fr
  * | Anyone else | no | no | no |
  *
  * A session above a deleted session is not an ancestor any more: the chain is broken there. Owners compare exactly: the
- * same user, both system, or both without an owner; anything else is another owner.
+ * same user, both system, or both without an owner; anything else is another owner. So an all-unowned chain grants an
+ * ancestor read and control, and a system root (is_system) is another owner to the System-principal sessions it spawns:
+ * it is refused below its direct child (owner decision 2026-11-26: kept as it is).
  */
 export type WorkflowAccess = "read" | "control" | "definition";
 
