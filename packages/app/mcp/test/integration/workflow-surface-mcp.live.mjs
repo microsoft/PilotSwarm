@@ -123,6 +123,7 @@ async function runMode(modeLabel, stdioOpts, packageOps) {
                     skills: true,
                     commands: true,
                     definitions: true,
+                    input: true,
                 }, `mcp-${modeLabel} S1: workflow_tools all enabled`);
                 return caps.workflows;
             },
@@ -179,6 +180,15 @@ async function runMode(modeLabel, stdioOpts, packageOps) {
                 ...(options.kvKey !== undefined ? { kv_key: options.kvKey } : {}),
             }),
             updateWorkflow: (workflowId, command) => call("update_workflow", { session_id: workflowId, command }),
+            sendWorkflowInput: (workflowId, input) => call("send_workflow_input", {
+                workflow_id: workflowId,
+                contract: input.contract,
+                payload: input.payload,
+                ...(input.correlation !== undefined ? { correlation: input.correlation } : {}),
+                operation_id: input.operationId,
+                ...(input.ttlSeconds !== undefined ? { ttl_seconds: input.ttlSeconds } : {}),
+                ...(input.runId !== undefined ? { run_id: input.runId } : {}),
+            }),
             deleteDefinition: ({ ownerSessionId, definitionId, name, operationId }) =>
                 call("workflow_definition", {
                     operation: "delete",

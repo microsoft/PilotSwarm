@@ -8,13 +8,13 @@ import { cacheSessionHandle } from "./sessions.js";
 import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../util/respond.js";
 
 const WORKFLOW_MCP_GAP_WORKAROUND =
-    "Over MCP there is no test and no send_workflow_input; workaround: ask the owner session to run it via send_and_wait, "
-    + "or use a Workflow with a messaging send state.";
+    "Over MCP there is no test; workaround: ask the owner session to run it via send_and_wait. "
+    + "To deliver typed input to a waiting receive step, call send_workflow_input directly.";
 
 const WORKFLOW_SKILL_MCP_NOTE =
     "This skill is written for agents inside a PilotSwarm session. Over MCP: load_skill(name) is read_workflow_skill { name }; "
-    + "definitions are workflow_definition with your own operation_id; runs are read_workflow / update_workflow (pause, resume, stop, cancel, set_vars); "
-    + "test, recover, send_workflow_input, respond_session_request and child_workflows are not available, and nothing notifies you: poll read_workflow. "
+    + "definitions are workflow_definition with your own operation_id; runs are read_workflow / update_workflow (pause, resume, stop, cancel, set_vars) and send_workflow_input; "
+    + "test, recover, respond_session_request and child_workflows are not available, and nothing notifies you: poll read_workflow. "
     + WORKFLOW_MCP_GAP_WORKAROUND;
 
 const PERSON_START_TOOL_BINDING_WARNING = {
@@ -37,6 +37,12 @@ function isOlderPortalWithoutPhase4Definitions(ctx: ServerContext): boolean {
     if (!ctx.webMode) return false;
     if (!ctx.workflowsAdvert || typeof ctx.workflowsAdvert !== "object") return true;
     return !ctx.workflowsAdvert.validate || !ctx.workflowsAdvert.card;
+}
+
+function isOlderPortalWithoutWorkflowInput(ctx: ServerContext): boolean {
+    if (!ctx.webMode) return false;
+    if (!ctx.workflowsAdvert || typeof ctx.workflowsAdvert !== "object") return true;
+    return ctx.workflowsAdvert.input !== true;
 }
 
 function irScriptsCallTools(ir: ReturnType<typeof compileWorkflow>["ir"]): boolean {
@@ -279,8 +285,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
         ])
         : z.discriminatedUnion("operation", baseCommandBranches);
     const updateGapWorkaround = testMode
-        ? "Over MCP there is no send_workflow_input; workaround: ask the owner session to run it via send_and_wait, "
-            + "or use a Workflow with a messaging send state."
+        ? "To deliver typed input to a waiting receive step, call send_workflow_input directly."
         : WORKFLOW_MCP_GAP_WORKAROUND;
     server.registerTool(
         "update_workflow",
@@ -617,6 +622,101 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 });
             } catch (err: unknown) {
                 return refusal(err, owner_session_id);
+            }
+        }),
+    );
+
+    server.registerTool(
+        "send_workflow_input",
+        {
+            title: "Send Workflow Input",
+            description:
+                "Deliver one typed contract message (Name@version + JSON payload + optional correlation) to a Workflow waiting at an open receive step "
+                + "(receive steps with `from:` bound to a session are refused with 409 UNSUPPORTED_CONTRACT). "
+                + "Accepts workflow_id (canonical) or session_id (alias); if both are given they must match. "
+                + "Idempotent per (workflow, caller, operation_id): reuse operation_id unchanged only to retry the same message. "
+                + "Refused for agent-originated MCP calls (403 FORBIDDEN; agents use their native send_workflow_input tool) and agent-controlled child Workflows (403 WORKFLOW_HUMAN_INPUT_DENIED). "
+                + "Returns the stored receipt including claimedBy ({ nodeExecutionId, stateId } | null); poll read_workflow to observe completion.",
+            inputSchema: {
+                workflow_id: sessionIdShape().optional()
+                    .describe("Target Workflow session ID (alias: session_id)"),
+                session_id: sessionIdShape().optional()
+                    .describe("Target Workflow session ID (alias of workflow_id; must match if both are provided)"),
+                contract: z.string().min(1)
+                    .describe("Message contract name declared under contracts: in the Workflow YAML (e.g. DeploySignal@1)"),
+                payload: z.unknown()
+                    .describe("JSON value validated against the contract schema (<= 256 KiB)"),
+                correlation: z.record(z.string(), z.unknown()).optional()
+                    .describe("Optional correlation key-value object matching the receive step's correlate values (<= 4 KiB, default {})"),
+                operation_id: z.string().min(1).max(256)
+                    .describe("Caller idempotency token (choose a fresh id per message; reuse unchanged only to retry)"),
+                ttl_seconds: z.number().int().min(1).max(86400).optional()
+                    .describe("Inbox expiry in seconds, 1..86400 (default 86400)"),
+                run_id: z.string().min(1).optional()
+                    .describe("Optional target run ID (defaults to the Workflow's live run)"),
+                originating_session_id: z.string().optional()
+                    .describe("Originating agent session ID when proxied; agent-originated MCP calls are refused with 403 FORBIDDEN"),
+            },
+        },
+        withToolErrors(async ({ workflow_id, session_id, contract, payload, correlation, operation_id, ttl_seconds, run_id, originating_session_id }) => {
+            const originatingSessionId = ctx.originatingSessionId ?? originating_session_id;
+            if (originatingSessionId !== undefined && originatingSessionId !== null) {
+                if (typeof originatingSessionId !== "string" || !originatingSessionId.trim()) {
+                    return errorResult("originating_session_id, when given, must be a non-empty session id.", {
+                        code: "WORKFLOW_COMMAND_INVALID",
+                        status: 400,
+                    });
+                }
+                return errorResult(
+                    "Agent sessions must use their native send_workflow_input tool so session sender identity is preserved.",
+                    { code: "FORBIDDEN", status: 403 },
+                );
+            }
+            if (!workflow_id && !session_id) {
+                return errorResult("workflow_id (or session_id) is required.", {
+                    code: "WORKFLOW_COMMAND_INVALID",
+                    status: 400,
+                });
+            }
+            if (workflow_id && session_id && workflow_id !== session_id) {
+                return errorResult("workflow_id and session_id must match when both are provided.", {
+                    code: "WORKFLOW_COMMAND_INVALID",
+                    status: 400,
+                });
+            }
+            const targetId = (workflow_id ?? session_id)!;
+            if (payload === undefined) {
+                return errorResult("payload is required.", {
+                    code: "WORKFLOW_COMMAND_INVALID",
+                    status: 400,
+                    session_id: targetId,
+                });
+            }
+            if (isOlderPortalWithoutWorkflowInput(ctx)) {
+                return errorResult(
+                    "This deployment is older than this MCP server and has no sendWorkflowInput; upgrade the portal.",
+                    { code: "WORKFLOW_API_UNAVAILABLE", status: 501, session_id: targetId },
+                );
+            }
+            try {
+                const input: {
+                    contract: string;
+                    payload: unknown;
+                    operationId: string;
+                    correlation?: Record<string, unknown>;
+                    ttlSeconds?: number;
+                    runId?: string;
+                } = {
+                    contract,
+                    payload,
+                    operationId: operation_id,
+                    ...(correlation !== undefined ? { correlation } : {}),
+                    ...(ttl_seconds !== undefined ? { ttlSeconds: ttl_seconds } : {}),
+                    ...(run_id !== undefined ? { runId: run_id } : {}),
+                };
+                return jsonResult(await ctx.mgmt.sendWorkflowInput(targetId, input));
+            } catch (err: unknown) {
+                return refusal(err, targetId, "sendWorkflowInput");
             }
         }),
     );

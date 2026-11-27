@@ -85,7 +85,7 @@ describe("Workflow surface scenario: SDK direct (PilotSwarmManagementClient)", (
                 prefix: "sdk",
                 timeoutMs: testTime.ms(60_000),
             });
-            expect(outcome.steps).toEqual(["S1", "S2", "S3", "S4", "S5", "S6"]);
+            expect(outcome.steps).toEqual(["S1", "S2", "S3", "S4", "S4b", "S5", "S6"]);
         } finally {
             await mgmt.stop().catch(() => {});
             await client.stop().catch(() => {});

@@ -138,9 +138,9 @@ const ALWAYS_TOOLS = [
     "set_session_visibility", "grant_session_share", "revoke_session_share",
     "list_session_shares", "list_known_users",
 ];
-// Workflow: discovery/read/skills/session creation are always registered; update_workflow and workflow_definition require workflowCommands: true.
+// Workflow: discovery/read/skills/session creation are always registered; update_workflow, workflow_definition, and send_workflow_input require workflowCommands: true.
 const WORKFLOW_TOOLS = ["read_workflow", "list_creatable_workflows", "create_session_for_workflow", "read_workflow_skill"];
-const WORKFLOW_COMMAND_TOOLS = ["update_workflow", "workflow_definition"];
+const WORKFLOW_COMMAND_TOOLS = ["update_workflow", "workflow_definition", "send_workflow_input"];
 
 function expectAll(names, tools, present, label) {
     const misses = tools.filter((t) => names.has(t) !== present);

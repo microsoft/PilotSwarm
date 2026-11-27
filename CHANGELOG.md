@@ -32,6 +32,20 @@ limits as it arrived.
 
 **Behaviour change for `workflow_definition`.** `workflow_definition` (and the Web API it uses) now refuses a `definition_id` together with a different `name` with `WORKFLOW_COMMAND_INVALID`; before, the id won.
 
+- **Typed Workflow `receive` input across SDK, Web API, and MCP:** Added
+  `sendWorkflowInput` on `PilotSwarmManagementClient`,
+  `WebPilotSwarmManagementClient`, `HttpApiTransport`, and `NodeSdkTransport`,
+  exposed `POST /api/v1/sessions/:sessionId/workflow/inputs` (`session:manage`,
+  enforced even when ownership enforcement is off), advertised
+  `workflows.input: true` in `GET /api/v1/bootstrap` (and fail-closed
+  `workflow_tools.input` in MCP `get_capabilities`), and added the MCP
+  `send_workflow_input` tool (accepting `workflow_id` or `session_id`, refusing
+  conflicts with `400`, agent-originated calls with `403 FORBIDDEN`,
+  `from:`-bound-only contracts with `409 UNSUPPORTED_CONTRACT`, and adding
+  `send_workflow_input` to `WORKFLOW_DEFINITION_MCP_TOOLS`). Reuses the single
+  `workflow_inbox` table, lock order, and idempotency/rate-limit rules with
+  canonical `person:*` sender IDs and zero SQL migrations.
+
 ### Workflows over MCP
 
 An external LLM connected only through `pilotswarm-mcp` can now discover and

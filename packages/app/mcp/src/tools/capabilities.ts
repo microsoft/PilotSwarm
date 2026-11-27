@@ -87,6 +87,7 @@ export function buildCapabilities(ctx: ServerContext) {
             skills: advert ? Boolean(advert.skills) : true,
             commands: ctx.workflowCommands === true,
             definitions: ctx.workflowCommands === true && (advert ? Boolean(advert.validate && advert.card) : true),
+            input: ctx.workflowCommands === true && (ctx.webMode ? Boolean(advert?.input) : true),
         },
     };
 }

@@ -71,6 +71,48 @@ states:
 `;
 }
 
+function receiveYaml(name) {
+    return `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata:
+  name: ${name}
+  version: "1.0.0"
+inputs:
+  schema:
+    type: object
+    required: [ticketId]
+    properties:
+      ticketId: { type: string }
+    additionalProperties: false
+schemas:
+  DeploySignal:
+    type: object
+    required: [approvedBy, slot]
+    properties:
+      approvedBy: { type: string, minLength: 1 }
+      slot: { type: string, minLength: 1 }
+    additionalProperties: false
+contracts:
+  DeploySignal@1:
+    schema: { $ref: "#/schemas/DeploySignal" }
+initial: await_signal
+states:
+  await_signal:
+    type: messaging
+    mode: receive
+    contract: DeploySignal@1
+    correlate:
+      ticketId: "\${inputs.ticketId}"
+    transition:
+      next:
+        received: done
+  done:
+    type: terminal
+    outcome: succeeded
+    output: "\${input}"
+`;
+}
+
 function makeTestPackageFiles(pkgName, workflowName) {
     const b64 = (text) => Buffer.from(text, "utf8").toString("base64");
     const yaml = `apiVersion: pilotswarm.dev/v1
@@ -177,6 +219,7 @@ export function managementClientAdapter(mgmt, overrides) {
             }),
         readWorkflow: (workflowId, options) => mgmt.readWorkflow(workflowId, options),
         updateWorkflow: (workflowId, command) => mgmt.updateWorkflow(workflowId, command),
+        sendWorkflowInput: (workflowId, input) => mgmt.sendWorkflowInput(workflowId, input),
         deleteDefinition: ({ ownerSessionId, definitionId, name, operationId }) =>
             mgmt.deleteSessionWorkflowDefinition(ownerSessionId, { definitionId, name, operationId }),
         readPackageCard: ({ ownerSessionId, name }) => mgmt.readSessionWorkflowCard(ownerSessionId, { name }),
@@ -194,6 +237,7 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
     const tag = randomBytes(4).toString("hex");
     const computeName = `${prefix}-compute`;
     const holdName = `${prefix}-hold`;
+    const receiveName = `${prefix}-receive`;
     const pkgWfName = `${prefix}-pkg-echo`;
     const pkgName = `${prefix}-pkg-${tag}`;
     const pkgRef = `${pkgName}/${pkgWfName}`;
@@ -207,6 +251,7 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
         const caps = await adapter.getWorkflowCapabilities();
         assert.equal(caps?.read, true, `${prefix} S1: workflows.read`);
         assert.equal(caps?.card, true, `${prefix} S1: workflows.card`);
+        assert.equal(caps?.input, true, `${prefix} S1: workflows.input`);
         assert.equal(caps?.commands?.available, true, `${prefix} S1: workflows.commands.available`);
         for (const needed of ["pause", "resume", "set_vars", "cancel"]) {
             assert.ok(caps?.commands?.operations?.includes(needed),
@@ -398,6 +443,58 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
         assert.equal(cancelledView.run.lastControl?.operation, "cancel", `${prefix} S4: lastControl operation`);
         assert.equal(cancelledView.run.lastControl?.reason, cancelReason, `${prefix} S4: lastControl reason`);
 
+        // ── S4b Send typed input to waiting receive step ───────────────
+        const savedReceive = await adapter.saveDefinition({
+            ownerSessionId: owner.sessionId,
+            name: receiveName,
+            yaml: receiveYaml(receiveName),
+            operationId: op("save-receive-1"),
+        });
+        assert.equal(savedReceive?.revision, 1, `${prefix} S4b: receive definition saved`);
+
+        const startedReceive = await adapter.startDefinition({
+            ownerSessionId: owner.sessionId,
+            definitionId: savedReceive.definitionId,
+            name: receiveName,
+            inputs: { ticketId: `CHG-${tag}` },
+            notifyParent: false,
+            workspace: "none",
+            operationId: op("start-receive"),
+        });
+        assert.ok(startedReceive?.workflowId, `${prefix} S4b: receive workflowId`);
+        sessionsToClean.add(startedReceive.workflowId);
+
+        await waitUntil(async () => {
+            const view = await adapter.readWorkflow(startedReceive.workflowId);
+            const execs = view?.run?.nodeExecutions ?? [];
+            return execs.find((n) => n.stateId === "await_signal" && n.state === "pending") ?? null;
+        }, `${prefix} S4b await_signal pending`, { timeoutMs });
+
+        const sendPayload = { approvedBy: "surface-tester", slot: "westus2" };
+        const sendReq = {
+            contract: "DeploySignal@1",
+            payload: sendPayload,
+            correlation: { ticketId: `CHG-${tag}` },
+            operationId: op("send-input-1"),
+        };
+        const sentReceipt = await adapter.sendWorkflowInput(startedReceive.workflowId, sendReq);
+        assert.equal(sentReceipt?.replayed, false, `${prefix} S4b: initial send not replayed`);
+        assert.equal(sentReceipt?.workflowId, startedReceive.workflowId, `${prefix} S4b: receipt workflowId`);
+        assert.equal(sentReceipt?.claimedBy?.stateId, "await_signal", `${prefix} S4b: claimed await_signal`);
+        assert.match(String(sentReceipt?.senderSessionId ?? ""), /^person:/, `${prefix} S4b: canonical person sender`);
+
+        const replayedReceipt = await adapter.sendWorkflowInput(startedReceive.workflowId, sendReq);
+        assert.equal(replayedReceipt?.replayed, true, `${prefix} S4b: idempotent replay`);
+        assert.equal(replayedReceipt?.messageId, sentReceipt.messageId, `${prefix} S4b: replay preserves messageId`);
+
+        const completedReceive = await waitUntil(async () => {
+            const view = await adapter.readWorkflow(startedReceive.workflowId);
+            return TERMINAL_STATUSES.has(view?.run?.status) ? view : null;
+        }, `${prefix} S4b receive run completion`, { timeoutMs });
+        assert.equal(completedReceive.run.status, "completed", `${prefix} S4b: receive run status completed`);
+        assert.equal(completedReceive.run.outcome, "succeeded", `${prefix} S4b: receive run outcome succeeded`);
+        assert.deepEqual(parseJsonField(completedReceive.run.output), sendPayload, `${prefix} S4b: receive output matches sent payload`);
+
         // ── S5 Packages ────────────────────────────────────────────────
         await adapter.publishPackage(pkgName, makeTestPackageFiles(pkgName, pkgWfName));
         pkgActive = true;
@@ -463,11 +560,21 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
         });
         assert.equal(delHold?.definitionId, savedHold.definitionId, `${prefix} S6: deleted hold definitionId`);
 
+        const delReceive = await adapter.deleteDefinition({
+            ownerSessionId: owner.sessionId,
+            definitionId: savedReceive.definitionId,
+            name: receiveName,
+            operationId: op("del-receive"),
+        });
+        assert.equal(delReceive?.definitionId, savedReceive.definitionId, `${prefix} S6: deleted receive definitionId`);
+
         const remaining = await adapter.listDefinitions(owner.sessionId);
         assert.equal(remaining.some((d) => d.definitionId === saved1.definitionId || d.name === computeName), false,
             `${prefix} S6: compute definition gone from list`);
         assert.equal(remaining.some((d) => d.definitionId === savedHold.definitionId || d.name === holdName), false,
             `${prefix} S6: hold definition gone from list`);
+        assert.equal(remaining.some((d) => d.definitionId === savedReceive.definitionId || d.name === receiveName), false,
+            `${prefix} S6: receive definition gone from list`);
 
         await adapter.deletePackage(pkgName);
         pkgActive = false;
@@ -480,7 +587,7 @@ export async function runWorkflowSurfaceScenario(adapter, { prefix, timeoutMs = 
             sessionsToClean.delete(sid);
         }
 
-        return { steps: ["S1", "S2", "S3", "S4", "S5", "S6"] };
+        return { steps: ["S1", "S2", "S3", "S4", "S4b", "S5", "S6"] };
     } finally {
         for (const sid of [...sessionsToClean].reverse()) {
             await adapter.deleteSession(sid).catch(() => {});

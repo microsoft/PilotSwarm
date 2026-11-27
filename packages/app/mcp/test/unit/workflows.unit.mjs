@@ -39,7 +39,8 @@ function toolsWith(ctx) {
 assert.equal(toolsWith({ mgmt: {} }).has("update_workflow"), false, "absent by default");
 assert.equal(toolsWith({ mgmt: {}, workflowCommands: false }).has("update_workflow"), false, "absent when off");
 assert.equal(toolsWith({ mgmt: {} }).has("workflow_definition"), false, "workflow_definition absent by default");
-// Always discovery/read/skills/session-for-workflow; command & definition tools only with workflowCommands: true.
+assert.equal(toolsWith({ mgmt: {} }).has("send_workflow_input"), false, "send_workflow_input absent by default");
+// Always discovery/read/skills/session-for-workflow; command, definition, and input tools only with workflowCommands: true.
 assert.deepEqual(
     [...toolsWith({ mgmt: {} }).keys()].sort(),
     ["create_session_for_workflow", "list_creatable_workflows", "read_workflow", "read_workflow_skill"],
@@ -47,7 +48,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
     [...toolsWith({ mgmt: {}, workflowCommands: true }).keys()].sort(),
-    ["create_session_for_workflow", "list_creatable_workflows", "read_workflow", "read_workflow_skill", "update_workflow", "workflow_definition"],
+    ["create_session_for_workflow", "list_creatable_workflows", "read_workflow", "read_workflow_skill", "send_workflow_input", "update_workflow", "workflow_definition"],
     "all workflow tools with workflowCommands",
 );
 
@@ -148,8 +149,8 @@ const webClient = (bootstrap) => new WebPilotSwarmManagementClient({ api: { getB
     const { tool, resource } = await describedBy(capabilityCtx(mgmt));
     assert.deepEqual(tool.workflows, advertised, "the management client's own answer, which a bootstrap carries");
     assert.deepEqual(resource.workflows, advertised);
-    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false });
-    assert.deepEqual(resource.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false });
+    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false, input: false });
+    assert.deepEqual(resource.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false, input: false });
     assert.equal(toolsWith({ mgmt }).has("update_workflow"), false);
 }
 
@@ -163,13 +164,13 @@ for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.3.0", true]])
     assert.equal(tool.workflows.commands.available, true);
     assert.equal(tool.workflows.commands.controllerVersion, controllerVersion);
     assert.equal(tool.workflows.commands.operations.includes("stop"), stop);
-    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true });
+    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true, input: true });
     assert.equal(toolsWith({ mgmt, workflowCommands: true }).has("update_workflow"), true);
 }
 
 // 5c. Web mode: the server's bootstrap through the SDK's web client, said as it is. Where this server and the deployment
 //     differ (update_workflow registered here while the deployment refuses commands), the descriptor shows both;
-//     nothing is merged or inferred.
+//     nothing is merged or inferred; workflow_tools.input fails closed unless advert.input === true.
 {
     const advertised = {
         schema: 1,
@@ -180,7 +181,7 @@ for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.3.0", true]])
     assert.equal(tool.mode, "web");
     assert.deepEqual(tool.workflows, advertised);
     assert.deepEqual(resource.workflows, advertised);
-    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true });
+    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true, input: false });
     assert.equal(tool.workflows.commands.available, false);
     assert.equal(tool.workflows.read, true);
 }
@@ -199,7 +200,7 @@ for (const mgmt of [
     assert.equal(tool.workflows, null);
     assert.equal(resource.workflows, null);
     assert.equal(tool.mode, "web");
-    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false });
+    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false, input: false });
 }
 
 // 5e. A host that cannot be asked now, or whose answer is not an advertisement, is not an older host: get_capabilities
@@ -469,19 +470,24 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     assert.match(skillBody.note, /load_skill\(name\) is read_workflow_skill \{ name \}/);
     assert.match(skillBody.note, /poll read_workflow/);
     assert.match(skillBody.note, /send_and_wait/);
-    assert.match(skillBody.note, /messaging/);
+    assert.match(skillBody.note, /send_workflow_input/);
+    assert.doesNotMatch(skillBody.note, /no send_workflow_input/i);
+    assert.doesNotMatch(skillBody.note, /send_workflow_input[^;.]*not available/i);
 
-    // B1, B3, B4: tool descriptions & schema text for workflow_definition, update_workflow, create_session_for_workflow
+    // B1, B3, B4: tool descriptions & schema text for workflow_definition, update_workflow, create_session_for_workflow, send_workflow_input
     {
         const specs = new Map();
         registerWorkflowTools({ registerTool: (name, spec) => { specs.set(name, spec); } }, { workflowCommands: true, workflowTestMode: false, mgmt: {} });
         const wdSpec = specs.get("workflow_definition");
         const uwSpec = specs.get("update_workflow");
         const csfwSpec = specs.get("create_session_for_workflow");
+        const swiSpec = specs.get("send_workflow_input");
+        assert.ok(swiSpec, "send_workflow_input spec registered");
         for (const [label, desc] of [["workflow_definition", wdSpec.description], ["update_workflow", uwSpec.description]]) {
-            assert.match(desc, /no .*test.*send_workflow_input/i, `${label} must state missing test and send_workflow_input`);
+            assert.match(desc, /no test/i, `${label} must state missing test`);
+            assert.doesNotMatch(desc, /no send_workflow_input/i, `${label} must not say send_workflow_input is missing`);
             assert.match(desc, /send_and_wait/, `${label} must mention send_and_wait workaround`);
-            assert.match(desc, /messaging/, `${label} must mention messaging send workaround`);
+            assert.match(desc, /send_workflow_input/, `${label} must point callers to send_workflow_input`);
         }
         assert.match(csfwSpec.description, /chat/i, "create_session_for_workflow must explain it starts a chat, not a run");
         assert.match(csfwSpec.description, /workflow_definition.*start/i, "create_session_for_workflow must explain direct workflow_definition start");
@@ -714,15 +720,15 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
         workflowsAdvert: olderAdvert,
     });
     assert.deepEqual(olderTool.workflow_tools, {
-        read: true, catalog: true, session_for_workflow: true, skills: false, commands: true, definitions: false,
+        read: true, catalog: true, session_for_workflow: true, skills: false, commands: true, definitions: false, input: false,
     });
-    const newerAdvert = { schema: 1, enabled: true, apiVersion: "pilotswarm.dev/v1", read: true, validate: true, skills: true, card: true };
+    const newerAdvert = { schema: 1, enabled: true, apiVersion: "pilotswarm.dev/v1", read: true, validate: true, skills: true, card: true, input: true };
     const { tool: newerTool } = await describedBy({
         ...capabilityCtx(webClient({ ok: true, workflows: newerAdvert }), { workflowCommands: true, webMode: true }),
         workflowsAdvert: newerAdvert,
     });
     assert.deepEqual(newerTool.workflow_tools, {
-        read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true,
+        read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true, input: true,
     });
 
     const missingRouteErr = () => Object.assign(new Error("Unknown API route: POST /api/v1/workflow-definitions/validate"), {
@@ -812,6 +818,110 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     assert.equal(JSON.parse(nullAdvertDel.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
     assert.equal(JSON.parse(nullAdvertDel.content[0].text).status, 501);
     assert.equal(nullAdvertReachedMgmt, false);
+}
+
+// 11. send_workflow_input (Gap G8): workflow_id / session_id resolution, agent refusal, field mapping, falsy payloads, fail-closed 501.
+{
+    const OTHER_SID = "c7f23cda-5cfd-4f0e-aff1-d6b0400b8da5";
+    const calls = [];
+    const mgmt = {
+        sendWorkflowInput: async (wfId, input) => {
+            calls.push([wfId, input]);
+            return {
+                replayed: false,
+                workflowId: wfId,
+                runId: input.runId ?? "run-1",
+                messageId: "msg-1",
+                senderSessionId: "person:system:management-client",
+                operationId: input.operationId,
+                contract: input.contract,
+                requestSha256: "req",
+                payloadSha256: "pay",
+                acceptedAt: "2026-11-27T00:00:00.000Z",
+                expiresAt: "2026-11-28T00:00:00.000Z",
+                claimedBy: { nodeExecutionId: "nx-1", stateId: "await_signal" },
+            };
+        },
+    };
+    const sendTool = toolsWith({ workflowCommands: true, mgmt }).get("send_workflow_input");
+    assert.ok(sendTool, "send_workflow_input handler exists");
+
+    // Accepts workflow_id, session_id, or both identical.
+    const r1 = JSON.parse((await sendTool({
+        workflow_id: SID, contract: "Deploy@1", payload: { ok: true }, correlation: { ticket: "T-1" },
+        operation_id: "op-1", ttl_seconds: 300, run_id: "run-9",
+    })).content[0].text);
+    assert.equal(r1.workflowId, SID);
+    assert.deepEqual(calls[0], [SID, {
+        contract: "Deploy@1", payload: { ok: true }, correlation: { ticket: "T-1" },
+        operationId: "op-1", ttlSeconds: 300, runId: "run-9",
+    }]);
+
+    await sendTool({ session_id: SID, contract: "Deploy@1", payload: null, operation_id: "op-2" });
+    assert.deepEqual(calls[1], [SID, { contract: "Deploy@1", payload: null, operationId: "op-2" }]);
+
+    await sendTool({ workflow_id: SID, session_id: SID, contract: "Deploy@1", payload: false, operation_id: "op-3" });
+    assert.deepEqual(calls[2], [SID, { contract: "Deploy@1", payload: false, operationId: "op-3" }]);
+
+    // Missing both workflow_id and session_id -> 400 WORKFLOW_COMMAND_INVALID.
+    const noId = await sendTool({ contract: "Deploy@1", payload: {}, operation_id: "op-4" });
+    assert.equal(noId.isError, true);
+    assert.equal(JSON.parse(noId.content[0].text).code, "WORKFLOW_COMMAND_INVALID");
+    assert.equal(JSON.parse(noId.content[0].text).status, 400);
+
+    // Conflicting workflow_id and session_id -> 400 WORKFLOW_COMMAND_INVALID.
+    const conflict = await sendTool({ workflow_id: SID, session_id: OTHER_SID, contract: "Deploy@1", payload: {}, operation_id: "op-5" });
+    assert.equal(conflict.isError, true);
+    assert.equal(JSON.parse(conflict.content[0].text).code, "WORKFLOW_COMMAND_INVALID");
+    assert.equal(JSON.parse(conflict.content[0].text).status, 400);
+
+    // Missing payload (undefined) -> 400 WORKFLOW_COMMAND_INVALID.
+    const noPayload = await sendTool({ workflow_id: SID, contract: "Deploy@1", operation_id: "op-6" });
+    assert.equal(noPayload.isError, true);
+    assert.equal(JSON.parse(noPayload.content[0].text).code, "WORKFLOW_COMMAND_INVALID");
+    assert.equal(JSON.parse(noPayload.content[0].text).status, 400);
+
+    // originating_session_id or ctx.originatingSessionId -> 403 FORBIDDEN without calling mgmt.
+    const prevCalls = calls.length;
+    const origArg = await sendTool({ workflow_id: SID, contract: "Deploy@1", payload: {}, operation_id: "op-7", originating_session_id: OTHER_SID });
+    assert.equal(origArg.isError, true);
+    assert.equal(JSON.parse(origArg.content[0].text).code, "FORBIDDEN");
+    assert.equal(JSON.parse(origArg.content[0].text).status, 403);
+
+    const boundSend = toolsWith({ workflowCommands: true, originatingSessionId: OTHER_SID, mgmt }).get("send_workflow_input");
+    const origCtx = await boundSend({ workflow_id: SID, contract: "Deploy@1", payload: {}, operation_id: "op-8" });
+    assert.equal(origCtx.isError, true);
+    assert.equal(JSON.parse(origCtx.content[0].text).code, "FORBIDDEN");
+    assert.equal(JSON.parse(origCtx.content[0].text).status, 403);
+    assert.equal(calls.length, prevCalls, "agent-originated MCP calls must be refused before reaching mgmt");
+
+    // Web mode fail-closed when workflowsAdvert is null or workflowsAdvert.input !== true -> 501 WORKFLOW_API_UNAVAILABLE.
+    for (const workflowsAdvert of [null, { read: true, validate: true, card: true, skills: true }, { read: true, input: false }]) {
+        let called = false;
+        const oldSend = toolsWith({
+            webMode: true, workflowCommands: true, workflowsAdvert,
+            mgmt: { sendWorkflowInput: async () => { called = true; return {}; } },
+        }).get("send_workflow_input");
+        const res = await oldSend({ workflow_id: SID, contract: "Deploy@1", payload: {}, operation_id: "op-old" });
+        assert.equal(res.isError, true);
+        assert.equal(JSON.parse(res.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+        assert.equal(JSON.parse(res.content[0].text).status, 501);
+        assert.equal(called, false);
+    }
+
+    // Route 404 fallback in webMode when advert had input: true -> 501 WORKFLOW_API_UNAVAILABLE via refusal().
+    const route404Send = toolsWith({
+        webMode: true, workflowCommands: true, workflowsAdvert: { read: true, input: true },
+        mgmt: {
+            sendWorkflowInput: async () => {
+                throw Object.assign(new Error("Unknown API route: POST /api/v1/sessions/x/workflow/inputs"), { code: "NOT_FOUND", status: 404 });
+            },
+        },
+    }).get("send_workflow_input");
+    const r404 = await route404Send({ workflow_id: SID, contract: "Deploy@1", payload: {}, operation_id: "op-404" });
+    assert.equal(r404.isError, true);
+    assert.equal(JSON.parse(r404.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(JSON.parse(r404.content[0].text).status, 501);
 }
 
 console.log("✅ Phase 4 MCP workflow tools unit suite passed");

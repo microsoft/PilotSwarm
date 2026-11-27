@@ -160,10 +160,12 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
             skills: true,
             commands: true,
             definitions: true,
+            input: true,
         }, `${modeLabel}: workflow_tools all true`);
         assert.equal(caps.workflows?.validate, true, `${modeLabel}: bootstrap advertises validate`);
         assert.equal(caps.workflows?.skills, true, `${modeLabel}: bootstrap advertises skills`);
         assert.equal(caps.workflows?.card, true, `${modeLabel}: bootstrap advertises card`);
+        assert.equal(caps.workflows?.input, true, `${modeLabel}: bootstrap advertises input`);
 
         // 2. list_creatable_workflows -> create_session_for_workflow -> list_sessions session_kind
         const creatable = parse(await client.callTool({ name: "list_creatable_workflows", arguments: {} }));
@@ -471,6 +473,164 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
             },
         });
         assert.equal(appRes.isError, true, `${modeLabel}: approval_respond must be refused over MCP`);
+
+        // 10. send_workflow_input end-to-end: correlated receive -> claimedBy -> idempotent replay -> succeeded + refusal guards
+        const recvYaml = [
+            "apiVersion: pilotswarm.dev/v1",
+            "kind: Workflow",
+            'metadata: { name: deploy-wait, version: "1.0.0" }',
+            "inputs: { schema: { type: object, required: [ticketId], properties: { ticketId: { type: string } }, additionalProperties: false } }",
+            "schemas:",
+            "  DeploySignal: { type: object, required: [approvedBy, slot], properties: { approvedBy: { type: string }, slot: { type: string } }, additionalProperties: false }",
+            "contracts:",
+            '  DeploySignal@1: { schema: { $ref: "#/schemas/DeploySignal" } }',
+            "initial: await_signal",
+            "states:",
+            "  await_signal:",
+            "    type: messaging",
+            "    mode: receive",
+            "    contract: DeploySignal@1",
+            '    correlate: { ticketId: "${inputs.ticketId}" }',
+            "    transition: { next: { received: done } }",
+            '  done: { type: terminal, outcome: succeeded, output: "${input}" }',
+        ].join("\n");
+        const boundYaml = [
+            "apiVersion: pilotswarm.dev/v1",
+            "kind: Workflow",
+            'metadata: { name: parent-only-wait, version: "1.0.0" }',
+            "schemas:",
+            "  DeploySignal: { type: object, required: [approvedBy], properties: { approvedBy: { type: string } }, additionalProperties: false }",
+            "contracts:",
+            '  DeploySignal@1: { schema: { $ref: "#/schemas/DeploySignal" } }',
+            "initial: await_parent",
+            "states:",
+            "  await_parent:",
+            "    type: messaging",
+            "    mode: receive",
+            "    contract: DeploySignal@1",
+            "    from: { parent: true }",
+            "    transition: { next: { received: done } }",
+            '  done: { type: terminal, outcome: succeeded, output: "${input}" }',
+        ].join("\n");
+
+        await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "save", owner_session_id: owner.session_id, name: "deploy-wait", yaml: recvYaml, operation_id: "save-recv-1" },
+        });
+        const startedRecv = parse(await client.callTool({
+            name: "workflow_definition",
+            arguments: {
+                operation: "start", owner_session_id: owner.session_id, name: "deploy-wait",
+                inputs: { ticketId: "CHG-99" }, workspace: "none", operation_id: "start-recv-1",
+            },
+        }));
+        assert.ok(startedRecv.workflowId);
+        sessionsToClean.push(startedRecv.workflowId);
+
+        // Wait for await_signal pending
+        const waitDeadline = Date.now() + 30_000;
+        let pendingNode = null;
+        while (Date.now() < waitDeadline) {
+            const rv = parse(await client.callTool({ name: "read_workflow", arguments: { session_id: startedRecv.workflowId } }));
+            pendingNode = (rv?.run?.nodeExecutions ?? []).find((n) => n.stateId === "await_signal" && n.state === "pending");
+            if (pendingNode) break;
+            await new Promise((r) => setTimeout(r, 250));
+        }
+        assert.ok(pendingNode, `${modeLabel}: deploy-wait entered await_signal`);
+
+        // Conflicting workflow_id + session_id -> 400 WORKFLOW_COMMAND_INVALID
+        const badAlias = await client.callTool({
+            name: "send_workflow_input",
+            arguments: {
+                workflow_id: startedRecv.workflowId, session_id: owner.session_id,
+                contract: "DeploySignal@1", payload: { approvedBy: "a", slot: "b" }, operation_id: "bad-alias-1",
+            },
+        });
+        assert.equal(badAlias.isError, true);
+        assert.equal(parse(badAlias).code, "WORKFLOW_COMMAND_INVALID");
+        assert.equal(parse(badAlias).status, 400);
+
+        // Agent-originated call -> 403 FORBIDDEN
+        const agentOrig = await client.callTool({
+            name: "send_workflow_input",
+            arguments: {
+                workflow_id: startedRecv.workflowId, originating_session_id: owner.session_id,
+                contract: "DeploySignal@1", payload: { approvedBy: "a", slot: "b" }, operation_id: "orig-1",
+            },
+        });
+        assert.equal(agentOrig.isError, true);
+        assert.equal(parse(agentOrig).code, "FORBIDDEN");
+        assert.equal(parse(agentOrig).status, 403);
+
+        // Deliver valid correlated message
+        const sent = parse(await client.callTool({
+            name: "send_workflow_input",
+            arguments: {
+                workflow_id: startedRecv.workflowId,
+                contract: "DeploySignal@1",
+                payload: { approvedBy: "affan", slot: "westus2" },
+                correlation: { ticketId: "CHG-99" },
+                operation_id: "send-mcp-1",
+            },
+        }));
+        assert.equal(sent.replayed, false);
+        assert.equal(sent.workflowId, startedRecv.workflowId);
+        assert.equal(sent.claimedBy?.stateId, "await_signal");
+        assert.match(String(sent.senderSessionId), /^person:/);
+
+        // Idempotent replay
+        const replay = parse(await client.callTool({
+            name: "send_workflow_input",
+            arguments: {
+                session_id: startedRecv.workflowId,
+                contract: "DeploySignal@1",
+                payload: { approvedBy: "affan", slot: "westus2" },
+                correlation: { ticketId: "CHG-99" },
+                operation_id: "send-mcp-1",
+            },
+        }));
+        assert.equal(replay.replayed, true);
+        assert.equal(replay.messageId, sent.messageId);
+
+        // Poll until succeeded
+        let recvView = null;
+        const doneDeadline = Date.now() + 30_000;
+        while (Date.now() < doneDeadline) {
+            recvView = parse(await client.callTool({ name: "read_workflow", arguments: { session_id: startedRecv.workflowId } }));
+            if (recvView?.run?.status === "completed" || recvView?.run?.status === "failed") break;
+            await new Promise((r) => setTimeout(r, 250));
+        }
+        assert.equal(recvView?.run?.status, "completed");
+        assert.equal(recvView?.run?.outcome, "succeeded");
+        const recvOut = typeof recvView?.run?.output === "string" ? JSON.parse(recvView.run.output) : recvView?.run?.output;
+        assert.deepEqual(recvOut, { approvedBy: "affan", slot: "westus2" });
+
+        // from:-bound only contract -> 409 UNSUPPORTED_CONTRACT
+        await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "save", owner_session_id: owner.session_id, name: "parent-only-wait", yaml: boundYaml, operation_id: "save-bound-1" },
+        });
+        const startedBound = parse(await client.callTool({
+            name: "workflow_definition",
+            arguments: { operation: "start", owner_session_id: owner.session_id, name: "parent-only-wait", workspace: "none", operation_id: "start-bound-1" },
+        }));
+        sessionsToClean.push(startedBound.workflowId);
+        const boundRes = await client.callTool({
+            name: "send_workflow_input",
+            arguments: {
+                workflow_id: startedBound.workflowId,
+                contract: "DeploySignal@1",
+                payload: { approvedBy: "affan" },
+                operation_id: "bound-send-1",
+            },
+        });
+        assert.equal(boundRes.isError, true);
+        assert.equal(parse(boundRes).code, "UNSUPPORTED_CONTRACT");
+        assert.equal(parse(boundRes).status, 409);
+        await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: startedBound.workflowId, command: { operation: "cancel", operation_id: "cancel-bound-1" } },
+        });
 
         console.log(`✅ workflows-mcp.live.mjs [${modeLabel}] PASS`);
     } finally {

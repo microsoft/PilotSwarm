@@ -96,6 +96,6 @@ describe("Workflow surface scenario: Web API (WebPilotSwarmManagementClient)", (
             prefix: "web",
             timeoutMs: testTime.ms(60_000),
         });
-        expect(outcome.steps).toEqual(["S1", "S2", "S3", "S4", "S5", "S6"]);
+        expect(outcome.steps).toEqual(["S1", "S2", "S3", "S4", "S4b", "S5", "S6"]);
     });
 });

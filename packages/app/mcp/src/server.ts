@@ -53,7 +53,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
                 "['agents']) — to learn what kinds of work this deployment can actually do: each registered agent",
                 "definition (name, description, parent constraint) is a capability you can run by creating a",
                 "session bound to it (create_session {agent: <name>, prompt: ...}).",
-                "Workflows: call list_creatable_workflows and create_session_for_workflow to run packaged Workflows; to author, validate, save, or start Workflow Definitions on a session, call read_workflow_skill (start with name: 'workflow-authoring') and use workflow_definition, read_workflow, and update_workflow. Over MCP there is no test and no send_workflow_input; workaround: ask the owner session to run it via send_and_wait, or use a Workflow with a messaging send state.",
+                "Workflows: call list_creatable_workflows and create_session_for_workflow to run packaged Workflows; to author, validate, save, or start Workflow Definitions on a session, call read_workflow_skill (start with name: 'workflow-authoring') and use workflow_definition, read_workflow, update_workflow, and send_workflow_input. Over MCP there is no test; workaround: ask the owner session to run it via send_and_wait.",
                 "Sessions queue durably and run asynchronously: after create_session or send_message, monitor the",
                 "session itself — get_session_detail (include: ['status']) for a snapshot, get_session_events",
                 "(wait: true) to long-poll for progress. For deep diagnosis of a misbehaving session, use",

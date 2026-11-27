@@ -499,6 +499,7 @@ an MCP client and from the terminal. Two facts hold everywhere:
 | Start it | **Start…** | Ask the session, or `startSessionWorkflowDefinition` | `list_creatable_workflows` + `create_session_for_workflow`, or `workflow_definition` `start` | `S` |
 | Watch it | Graph, Log, timeline | `readWorkflow`, `getSessionEvents` | `read_workflow` | `w` |
 | Pause, resume, stop, cancel, variables | Header buttons, **Variables** | `updateWorkflow` | `update_workflow` | `p` `r` `s` `c`, `v` `V` |
+| Send typed input to a `receive` step | — | `sendWorkflowInput` (`POST /api/v1/sessions/:sessionId/workflow/inputs`) | `send_workflow_input` | — |
 | Answer its request | Answer the session | Send the session a prompt | `send_and_wait` to the session | Answer the session |
 
 ## 2.1 The SDK
@@ -523,6 +524,7 @@ client with these Workflow methods. Results are plain JSON objects.
 | `copySessionWorkflowDefinition`, `updateSessionWorkflowPackage`, `deleteSessionWorkflowDefinition` | **Make a copy** of a package definition, take its newer version for the next Workflow, and delete a definition (refused while one of its Workflows runs or an active Workflow's `spawn` state names it). |
 | `readWorkflow(workflowId, options?)` | A Workflow: its graph, runs, each step's visits and results, variables, and the controls the caller may use (`personCommands`). |
 | `updateWorkflow(workflowId, command)` | A person's control. `command` is `{ operation, operation_id, ... }`, with `operation` one of `pause`, `resume`, `stop` (with `grace_seconds`, 0 to 3,600), `cancel` (with an optional `reason`) or `set_vars` (with `set`, `delete` and `expected_kv_revision`). |
+| `sendWorkflowInput(workflowId, input)` | Deliver a typed contract message to a Workflow waiting at an open `receive` step. `input` is `{ contract, payload, correlation?, operationId, ttlSeconds?, runId? }`. Idempotent by `(workflowId, sender, operationId)`; refuses `from:`-bound-only contracts (`409 UNSUPPORTED_CONTRACT`), agent-originated calls (`403 FORBIDDEN`), and agent-controlled child Workflows (`403 WORKFLOW_HUMAN_INPUT_DENIED`). |
 | `listCreatableWorkflows()` | The package Workflows the caller can make a session for. |
 
 **Which saved revision ran?** `readWorkflow` (and the agent's
