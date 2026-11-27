@@ -4885,12 +4885,22 @@ export class WorkflowStore {
         sendExchangeId?: string | null;
         /** True only for runtime-generated WorkflowEnded@1 notices: bypasses the 100-message inbox cap and rate limit. */
         bypassInboxLimits?: boolean;
+        /** True only for host-authenticated person senders (`person:*`): skips sender session lookup while keeping full inbox limits. */
+        trustedPersonSender?: boolean;
     }): Promise<{ receipt: WorkflowInputReceipt; replayed: boolean; run: WorkflowRunRow }> {
         if (!Number.isSafeInteger(input.ttlSeconds) || input.ttlSeconds < 1) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${input.messageId} has an invalid ttl.`);
         }
+        if (input.trustedPersonSender === true) {
+            if (input.bypassInboxLimits === true || Boolean(input.sendExchangeId) || !input.senderSessionId.startsWith("person:")) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT",
+                    "trustedPersonSender requires a person: sender without bypassInboxLimits or sendExchangeId.");
+            }
+        }
         return this.idempotentTransaction(async client => {
-            const decided = await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
+            const decided = input.trustedPersonSender === true
+                ? { live: await this.lockLiveSession(client, input.workflowSessionId), authority: "allowed" as const, senderParentSessionId: null }
+                : await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
             if (!decided.live) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             const { rows: priorRows } = await client.query(
                 `SELECT run_id, request_sha256, receipt, contract FROM ${this.t.inbox}

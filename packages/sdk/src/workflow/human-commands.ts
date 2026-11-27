@@ -3,7 +3,7 @@ import type { ClusterDecisionCapability } from "../provider-catalog.js";
 import { sessionInsideWorkflow, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED, workflowHumanInputError } from "./input-policy.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { WORKFLOW_CONTROLLER_VERSION } from "./runtime.js";
-import { requireOperationId, respondWorkflowApproval, type WorkflowHost } from "./service.js";
+import { requireOperationId, respondWorkflowApproval, sendTypedWorkflowInputForPerson, type WorkflowHost } from "./service.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowStore } from "./store.js";
 import { inputJsonArg, optionalString, requiredString, UPDATE_WORKFLOW_OPERATIONS, operationWords, runUpdateWorkflowCommand, workflowTestModeAbsentError } from "./tools.js";
 import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-mode-switch.js";
@@ -356,5 +356,57 @@ export function parsePersonWorkflowInput(rawInput: unknown): ParsedPersonWorkflo
         operationId: args.operationId,
         ttlSeconds: typeof ttl === "number" ? ttl : null,
         runId,
+    };
+}
+
+/**
+ * Deliver a typed message to a Workflow waiting at an open receive step on behalf of a person or host-system caller.
+ * Refuses agent actors and agent-originated calls (originatingSessionId), enforces agent-subtree isolation,
+ * and delegates to acceptTypedInput/store.acceptInput with canonical `person:*` senderSessionId.
+ */
+export async function sendWorkflowInputForPerson(
+    rawInput: unknown,
+    context: { host: WorkflowHost; workflowSessionId: string; actor: WorkflowActor; originatingSessionId?: string | null },
+): Promise<WorkflowInputSendReceipt> {
+    const { host, workflowSessionId, actor, originatingSessionId } = context;
+    const senderSessionId = personSenderId(actor);
+    if (originatingSessionId !== undefined && originatingSessionId !== null) {
+        if (typeof originatingSessionId !== "string" || !originatingSessionId.trim() || originatingSessionId.length > 256) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "originatingSessionId, when given, must be a session id of 1 to 256 characters.");
+        }
+        throw new WorkflowStoreError("FORBIDDEN",
+            "Agent sessions must send typed Workflow input with their native send_workflow_input tool so session sender identity is preserved.");
+    }
+    const parsed = parsePersonWorkflowInput(rawInput);
+    const [row, definition] = await Promise.all([host.catalog.getSession(workflowSessionId), host.store.readDefinition(workflowSessionId)]);
+    if (!row || row.deletedAt || row.sessionKind !== "workflow" || !definition || definition.state === "deleted") {
+        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Session ${workflowSessionId} is not a durable Workflow.`);
+    }
+    const lineage = await host.store.readWorkflowLineage(workflowSessionId);
+    if (lineage?.agentRoot) throw workflowHumanInputError(workflowSessionId, "workflow", lineage);
+    const sent = await sendTypedWorkflowInputForPerson(host, {
+        workflowSessionId,
+        senderSessionId,
+        runId: parsed.runId,
+        contract: parsed.contract,
+        correlation: parsed.correlation,
+        payload: parsed.payload,
+        ttlSeconds: parsed.ttlSeconds,
+        operationId: parsed.operationId,
+    }, { hideTestRuns: !resolveWorkflowTestMode(host.testMode) });
+    const receipt = sent.receipt;
+    return {
+        replayed: sent.replayed,
+        workflowId: receipt.workflowSessionId,
+        runId: receipt.runId,
+        messageId: receipt.messageId,
+        senderSessionId: receipt.senderSessionId,
+        operationId: receipt.operationId,
+        contract: receipt.contract,
+        requestSha256: receipt.requestSha256,
+        payloadSha256: receipt.payloadSha256,
+        acceptedAt: receipt.acceptedAt,
+        expiresAt: receipt.expiresAt,
+        claimedBy: receipt.claimedBy ? { nodeExecutionId: receipt.claimedBy.nodeExecutionId, stateId: receipt.claimedBy.stateId } : null,
     };
 }
