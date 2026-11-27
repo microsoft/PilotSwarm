@@ -685,6 +685,10 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Selection to restore when leaving a chat-opened preview, so
             // following a chat link never disturbs the list.
             restoreArtifactId: null,
+            // Mobile pane to restore when leaving a chat-opened overlay
+            // (e.g. chat workspace, or canvas/diagnostics if show_artifact
+            // fired while viewing another phone surface).
+            restoreMobilePane: null,
             // The portal's artifact takeover pane: a full-height reader that
             // replaces the inspector AND activity panes in the right column.
             // Opened by chat artifact cards and artifact deep links; the Files

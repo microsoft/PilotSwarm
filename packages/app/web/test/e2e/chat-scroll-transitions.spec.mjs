@@ -131,29 +131,20 @@ async function setupSession(page, viewport, { eventsRef = null } = {}) {
 }
 
 async function scrollToMiddleArtifact(page, scroller) {
-    // Scroll so the middle artifact card (in Assessment 21) is comfortably inside the viewport.
+    // Scroll so Assessment 21 and its artifact card sit near the top of the viewport.
     await scroller.evaluate((el) => {
         const card = el.querySelector(".ps-artifact-card");
         if (card) {
             const top = card.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
-            el.scrollTop = Math.max(200, Math.round(top - el.clientHeight * 0.35));
+            el.scrollTop = Math.max(200, Math.round(top - 96));
         } else {
             el.scrollTop = Math.round((el.scrollHeight - el.clientHeight) * 0.45);
         }
         el.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
-    // Wait a couple frames for scroll state + layout to settle.
-    await page.waitForTimeout(150);
-    const before = await scroller.evaluate((el) => {
-        const rect = el.getBoundingClientRect();
-        const card = el.querySelector(".ps-artifact-card");
-        const cardTop = card ? Math.round(card.getBoundingClientRect().top - rect.top) : null;
-        return {
-            scrollTop: Math.round(el.scrollTop),
-            maxScroll: Math.round(el.scrollHeight - el.clientHeight),
-            cardTop,
-        };
-    });
+    // Wait two frames so coalesced anchor capture and layout settle.
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    const before = await measureScroll(scroller);
     expect(before.scrollTop).toBeGreaterThan(200);
     expect(before.maxScroll - before.scrollTop).toBeGreaterThan(200);
     return before;
@@ -174,7 +165,18 @@ async function measureScroll(scroller) {
 
 async function expectScrollRestored(page, scroller, before, label, tolerancePx = 24) {
     await expect(scroller).toBeVisible({ timeout: 15_000 });
-    await page.waitForTimeout(150);
+    await expect.poll(async () => {
+        const after = await measureScroll(scroller);
+        const topOk = Math.abs(after.scrollTop - before.scrollTop) <= tolerancePx;
+        const cardOk = before.cardTop == null || after.cardTop == null
+            || Math.abs(after.cardTop - before.cardTop) <= tolerancePx;
+        return topOk && cardOk;
+    }, {
+        timeout: 5_000,
+        message: `${label}: expected scrollTop ~${before.scrollTop} and cardTop ~${before.cardTop} (±${tolerancePx})`,
+    }).toBe(true);
+    // Confirm stability after layout settles (two frames later).
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     const after = await measureScroll(scroller);
     expect(
         Math.abs(after.scrollTop - before.scrollTop),
@@ -191,7 +193,14 @@ async function expectScrollRestored(page, scroller, before, label, tolerancePx =
 
 async function expectAnchorRestored(page, scroller, before, label, tolerancePx = 28) {
     await expect(scroller).toBeVisible({ timeout: 15_000 });
-    await page.waitForTimeout(150);
+    await expect.poll(async () => {
+        const after = await measureScroll(scroller);
+        return after.scrollTop > 200 && Math.abs(after.cardTop - before.cardTop) <= tolerancePx;
+    }, {
+        timeout: 5_000,
+        message: `${label}: expected visible anchor cardTop ~${before.cardTop} (±${tolerancePx})`,
+    }).toBe(true);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     const after = await measureScroll(scroller);
     expect(after.scrollTop, `${label}: must not jump to top`).toBeGreaterThan(200);
     expect(
@@ -456,6 +465,73 @@ test.describe("phone (390px) chat scroll preservation across transitions", () =>
 
         await expectScrollRestored(page, scroller, before, "phone MoA toggle");
     });
+
+    test("non-zen show_artifact opens preview overlay and close X returns to exact chat position", async ({ page }) => {
+        const eventsRef = { events: [] };
+        const scroller = await setupSession(page, PHONE, { eventsRef });
+        const before = await scrollToMiddleArtifact(page, scroller);
+
+        const nextSeq = eventsRef.events.length + 1;
+        eventsRef.events.push({
+            seq: nextSeq,
+            eventType: "session.artifact_presented",
+            createdAt: new Date().toISOString(),
+            timestamp: Date.now(),
+            data: { filename: "report-a.md", fullscreen: false },
+        });
+        const overlay = page.locator(".ps-artifact-overlay");
+        await expect(overlay).toBeVisible({ timeout: 10_000 });
+        await expect(overlay).toContainText("Report A", { timeout: 10_000 });
+
+        await overlay.getByRole("button", { name: /^Close/ }).click();
+        await expect(overlay).toBeHidden();
+        await expectScrollRestored(page, scroller, before, "phone non-zen show_artifact close");
+    });
+
+    test("live message arriving while paused + preview open/close stays at paused position", async ({ page }) => {
+        const eventsRef = { events: [] };
+        const scroller = await setupSession(page, PHONE, { eventsRef });
+        const before = await scrollToMiddleArtifact(page, scroller);
+
+        const nextSeq = eventsRef.events.length + 1;
+        eventsRef.events.push({
+            seq: nextSeq,
+            eventType: "assistant.message",
+            timestamp: Date.now(),
+            data: { content: `**LIVE_PAUSED_${nextSeq}**\n\n${PARA}` },
+        });
+        eventsRef.events.push({
+            seq: nextSeq + 1,
+            eventType: "session.turn_completed",
+            timestamp: Date.now() + 1,
+            data: { resultType: "completed" },
+        });
+        await expect(scroller).toContainText(`LIVE_PAUSED_${nextSeq}`, { timeout: 15_000 });
+
+        await scroller.locator(".ps-artifact-card").first().click();
+        const overlay = page.locator(".ps-artifact-overlay");
+        await expect(overlay).toBeVisible({ timeout: 15_000 });
+        await overlay.getByRole("button", { name: /^Close/ }).click();
+        await expect(overlay).toBeHidden();
+
+        await expectScrollRestored(page, scroller, before, "phone paused + live message + preview close");
+    });
+
+    test("list-opened preview on phone still returns to Files list, not chat", async ({ page }) => {
+        await setupSession(page, PHONE);
+        const diagBtn = page.locator('.ps-toolbar.is-mobile button[aria-label^="Diagnostics"]').first();
+        await diagBtn.click();
+        await page.getByRole("button", { name: "Files" }).first().click();
+        await page.getByText("report-a.md").first().click();
+        const overlay = page.locator(".ps-artifact-overlay");
+        await expect(overlay).toBeVisible({ timeout: 15_000 });
+        await expect(overlay).toContainText("Report A", { timeout: 15_000 });
+
+        await overlay.getByRole("button", { name: "Close, back to artifacts" }).click();
+        await expect(overlay).toBeHidden();
+        // Should remain on Diagnostics / Files list, NOT jump to chat.
+        await expect(diagBtn).toHaveAttribute("aria-label", "Diagnostics — back to the chat");
+    });
 });
 
 test.describe("desktop (1440px) chat scroll preservation across transitions", () => {
@@ -510,15 +586,83 @@ test.describe("desktop (1440px) chat scroll preservation across transitions", ()
         await expectAtBottomAndFollows(page, scroller, eventsRef, "desktop artifact preview close at bottom");
     });
 
-    test("canvas open -> close keeps middle position", async ({ page }) => {
+    test("canvas open -> keeps anchor while narrowed -> close keeps middle position", async ({ page }) => {
         const scroller = await setupSession(page, DESKTOP);
         const before = await scrollToMiddleArtifact(page, scroller);
 
         await page.getByRole("button", { name: "Show canvas", exact: true }).click();
         await expect(page.getByRole("button", { name: "Hide the canvas", exact: true })).toBeVisible();
-        await page.getByRole("button", { name: "Hide the canvas", exact: true }).click();
+        await expectAnchorRestored(page, scroller, before, "desktop while canvas open", 32);
 
-        await expectScrollRestored(page, scroller, before, "desktop canvas toggle");
+        await page.getByRole("button", { name: "Hide the canvas", exact: true }).click();
+        await expectScrollRestored(page, scroller, before, "desktop canvas toggle close");
+    });
+
+    test("diagnostics open -> keeps anchor while narrowed -> close keeps middle position", async ({ page }) => {
+        const scroller = await setupSession(page, DESKTOP);
+        const before = await scrollToMiddleArtifact(page, scroller);
+
+        await page.getByRole("button", { name: "Show diagnostics (inspector and activity)", exact: true }).click();
+        await expect(page.getByRole("button", { name: "Hide diagnostics", exact: true })).toBeVisible();
+        await expectAnchorRestored(page, scroller, before, "desktop while diagnostics open", 32);
+
+        await page.getByRole("button", { name: "Hide diagnostics", exact: true }).click();
+        await expectScrollRestored(page, scroller, before, "desktop diagnostics toggle close");
+    });
+
+    test("workflow tab open -> close keeps middle position", async ({ page }) => {
+        const scroller = await setupSession(page, DESKTOP);
+        const before = await scrollToMiddleArtifact(page, scroller);
+
+        await page.getByRole("button", { name: "Workflow", exact: true }).click();
+        await expect(page.getByRole("button", { name: "Hide the Workflow tab", exact: true })).toBeVisible();
+        await expectAnchorRestored(page, scroller, before, "desktop while workflow tab open", 32);
+
+        await page.getByRole("button", { name: "Hide the Workflow tab", exact: true }).click();
+        await expectScrollRestored(page, scroller, before, "desktop workflow toggle close");
+    });
+
+    test("keyboard scroll after paused wheel scroll does not snap back to stale anchor on width resize", async ({ page }) => {
+        const scroller = await setupSession(page, DESKTOP);
+        await scrollToMiddleArtifact(page, scroller);
+
+        // Focus chat pane and jump to top via keyboard (Home), which must clear the stale middle anchor.
+        await scroller.click({ position: { x: 20, y: 20 } });
+        await page.keyboard.press("Home");
+        await expect.poll(() => scroller.evaluate((el) => Math.round(el.scrollTop))).toBeLessThanOrEqual(24);
+
+        // Open and close Canvas (triggers width resize): must stay at top, NOT snap back to middle.
+        await page.getByRole("button", { name: "Show canvas", exact: true }).click();
+        await expect(page.getByRole("button", { name: "Hide the canvas", exact: true })).toBeVisible();
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+        expect(await scroller.evaluate((el) => Math.round(el.scrollTop))).toBeLessThanOrEqual(24);
+
+        await page.getByRole("button", { name: "Hide the canvas", exact: true }).click();
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+        expect(await scroller.evaluate((el) => Math.round(el.scrollTop))).toBeLessThanOrEqual(24);
+    });
+
+    test("two paused sessions keep independent scroll positions across switches", async ({ page }) => {
+        const scroller = await setupSession(page, DESKTOP);
+        const firstBefore = await scrollToMiddleArtifact(page, scroller);
+
+        // Switch to Session 1 and pause it near the top (different scrollTop).
+        await page.locator(".ps-session-list-button").nth(1).click();
+        await expect(scroller).toContainText("Assessment 47", { timeout: 15_000 });
+        await scroller.evaluate((el) => {
+            el.scrollTop = 420;
+            el.dispatchEvent(new Event("scroll", { bubbles: true }));
+        });
+        await expect.poll(() => scroller.evaluate((el) => Math.round(el.scrollTop))).toBeGreaterThan(350);
+        const secondBefore = await measureScroll(scroller);
+
+        // Switch back to Session 0 -> restores Session 0's middle position.
+        await page.locator(".ps-session-list-button").nth(0).click();
+        await expectScrollRestored(page, scroller, firstBefore, "session 0 restored after switching from paused session 1");
+
+        // Switch back to Session 1 -> restores Session 1's paused position.
+        await page.locator(".ps-session-list-button").nth(1).click();
+        await expectScrollRestored(page, scroller, secondBefore, "session 1 restored after switching from paused session 0");
     });
 
     test("budget open -> close keeps middle position", async ({ page }) => {
@@ -552,21 +696,5 @@ test.describe("desktop (1440px) chat scroll preservation across transitions", ()
         await page.getByRole("button", { name: "Sessions — session list, chat and panels", exact: true }).click();
 
         await expectScrollRestored(page, scroller, before, "desktop MoA toggle");
-    });
-
-    test("list-opened preview on phone still returns to Files list, not chat", async ({ page }) => {
-        await setupSession(page, PHONE);
-        const diagBtn = page.locator('.ps-toolbar.is-mobile button[aria-label^="Diagnostics"]').first();
-        await diagBtn.click();
-        await page.getByRole("button", { name: "Files" }).first().click();
-        await page.getByText("report-a.md").first().click();
-        const overlay = page.locator(".ps-artifact-overlay");
-        await expect(overlay).toBeVisible({ timeout: 15_000 });
-        await expect(overlay).toContainText("Report A", { timeout: 15_000 });
-
-        await overlay.getByRole("button", { name: "Close, back to artifacts" }).click();
-        await expect(overlay).toBeHidden();
-        // Should remain on Diagnostics / Files list, NOT jump to chat.
-        await expect(diagBtn).toHaveAttribute("aria-label", "Diagnostics — back to the chat");
     });
 });

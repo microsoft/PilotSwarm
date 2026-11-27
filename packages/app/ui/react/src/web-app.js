@@ -1378,13 +1378,45 @@ export function computeAnchoredScrollTop(
         : Math.min(maxScroll, offsetPixels);
 }
 
-function scrollAnchorChildKey(child) {
+const SCROLL_ANCHOR_LEAF_SELECTOR = ".ps-line, .ps-chat-card-line, .ps-md-code-block, .ps-chat-table tbody tr, .ps-system-notice-summary";
+
+function scrollAnchorDirectKey(child) {
     if (!child || child.nodeType !== 1) return "";
-    const clientId = child.dataset?.clientMessageId;
-    if (clientId) return `msg:${clientId}`;
+    if (child.dataset?.scrollKey) return `sk:${child.dataset.scrollKey}`;
+    if (child.dataset?.clientMessageId) return `msg:${child.dataset.clientMessageId}`;
+    return "";
+}
+
+function scrollAnchorChildKey(child) {
+    const direct = scrollAnchorDirectKey(child);
+    if (direct) return direct;
+    if (!child || child.nodeType !== 1) return "";
     const text = String(child.textContent || "").replace(/\s+/g, " ").trim();
     if (!text) return "";
     return `txt:${text.slice(0, 120)}`;
+}
+
+function firstVisibleIndexByRect(elements, thresholdY) {
+    let low = 0;
+    let high = elements.length - 1;
+    let found = -1;
+    while (low <= high) {
+        const mid = (low + high) >> 1;
+        const rect = elements[mid].getBoundingClientRect();
+        if (rect.bottom > thresholdY) {
+            found = mid;
+            high = mid - 1;
+        } else {
+            low = mid + 1;
+        }
+    }
+    return found;
+}
+
+function scrollAnchorLeaves(blockEl) {
+    if (!blockEl || typeof blockEl.querySelectorAll !== "function") return [];
+    const list = blockEl.querySelectorAll(SCROLL_ANCHOR_LEAF_SELECTOR);
+    return list && list.length > 0 ? Array.from(list) : [];
 }
 
 export function captureScrollAnchor(node) {
@@ -1392,32 +1424,63 @@ export function captureScrollAnchor(node) {
     const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
     if (maxScroll <= 0) return null;
     const nodeTop = node.getBoundingClientRect().top;
+    const thresholdY = nodeTop + 6;
     const children = Array.from(node.children || []);
+    const startIdx = firstVisibleIndexByRect(children, thresholdY);
     let anchorEl = null;
     let anchorKey = "";
-    for (const child of children) {
-        const key = scrollAnchorChildKey(child);
-        if (!key) continue;
-        const rect = child.getBoundingClientRect();
-        if (rect.height <= 0) continue;
-        if (rect.bottom > nodeTop + 6) {
+    let anchorIdx = -1;
+    if (startIdx >= 0) {
+        for (let i = startIdx; i < children.length; i += 1) {
+            const child = children[i];
+            const rect = child.getBoundingClientRect();
+            if (rect.height <= 0 || rect.bottom <= thresholdY) continue;
+            const key = scrollAnchorChildKey(child);
+            if (!key) continue;
             anchorEl = child;
             anchorKey = key;
+            anchorIdx = i;
             break;
         }
     }
     if (!anchorEl) {
-        return { key: "", occurrence: 0, offsetPx: 0, scrollTop: Math.round(node.scrollTop) };
+        return { key: "", occurrence: 0, leafIndex: -1, offsetPx: 0, ratio: 0, scrollTop: Math.round(node.scrollTop) };
     }
+    // Stable model keys (sk:*, msg:*) are unique per block; only count prior
+    // occurrences for text-fallback keys, and avoid scanning past anchorIdx.
     let occurrence = 0;
-    for (const child of children) {
-        if (child === anchorEl) break;
-        if (scrollAnchorChildKey(child) === anchorKey) occurrence += 1;
+    if (!scrollAnchorDirectKey(anchorEl)) {
+        for (let i = 0; i < anchorIdx; i += 1) {
+            if (scrollAnchorChildKey(children[i]) === anchorKey) occurrence += 1;
+        }
     }
+    let targetEl = anchorEl;
+    let leafIndex = -1;
+    const leaves = scrollAnchorLeaves(anchorEl);
+    if (leaves.length > 1) {
+        const leafStart = firstVisibleIndexByRect(leaves, thresholdY);
+        if (leafStart >= 0) {
+            for (let i = leafStart; i < leaves.length; i += 1) {
+                const rect = leaves[i].getBoundingClientRect();
+                if (rect.height > 0 && rect.bottom > thresholdY) {
+                    targetEl = leaves[i];
+                    leafIndex = i;
+                    break;
+                }
+            }
+        }
+    }
+    const targetRect = targetEl.getBoundingClientRect();
+    const offsetPx = Math.round(targetRect.top - nodeTop);
+    const ratio = offsetPx < 0 && targetRect.height > 0
+        ? Math.max(0, Math.min(1, Math.round(((-offsetPx) / targetRect.height) * 1000) / 1000))
+        : 0;
     return {
         key: anchorKey,
         occurrence,
-        offsetPx: Math.round(anchorEl.getBoundingClientRect().top - nodeTop),
+        leafIndex,
+        offsetPx,
+        ratio,
         scrollTop: Math.round(node.scrollTop),
     };
 }
@@ -1432,16 +1495,40 @@ export function resolveAnchoredScrollTop(node, anchor, scrollOffset, scrollMode)
     if (anchor && typeof anchor === "object") {
         if (anchor.key) {
             const children = Array.from(node.children || []);
-            let seen = 0;
-            for (const child of children) {
-                if (scrollAnchorChildKey(child) !== anchor.key) continue;
-                if (seen === (anchor.occurrence || 0)) {
-                    const nodeTop = node.getBoundingClientRect().top;
-                    const childTop = child.getBoundingClientRect().top;
-                    const delta = (childTop - nodeTop) - (Number(anchor.offsetPx) || 0);
-                    return Math.max(0, Math.min(maxScroll, node.scrollTop + delta));
+            let matchedEl = null;
+            if (anchor.key.startsWith("sk:") || anchor.key.startsWith("msg:")) {
+                for (const child of children) {
+                    if (scrollAnchorDirectKey(child) === anchor.key) {
+                        matchedEl = child;
+                        break;
+                    }
                 }
-                seen += 1;
+            } else {
+                let seen = 0;
+                for (const child of children) {
+                    if (scrollAnchorChildKey(child) !== anchor.key) continue;
+                    if (seen === (anchor.occurrence || 0)) {
+                        matchedEl = child;
+                        break;
+                    }
+                    seen += 1;
+                }
+            }
+            if (matchedEl) {
+                let targetEl = matchedEl;
+                if (Number.isInteger(anchor.leafIndex) && anchor.leafIndex >= 0) {
+                    const leaves = scrollAnchorLeaves(matchedEl);
+                    if (leaves[anchor.leafIndex]) targetEl = leaves[anchor.leafIndex];
+                }
+                const nodeTop = node.getBoundingClientRect().top;
+                const targetRect = targetEl.getBoundingClientRect();
+                const offsetPx = Number(anchor.offsetPx) || 0;
+                const ratio = Number(anchor.ratio) || 0;
+                const desiredTopOffset = offsetPx < 0 && ratio > 0 && targetRect.height > 0
+                    ? -Math.round(ratio * targetRect.height)
+                    : offsetPx;
+                const delta = (targetRect.top - nodeTop) - desiredTopOffset;
+                return Math.max(0, Math.min(maxScroll, node.scrollTop + delta));
             }
         }
         if (Number.isFinite(Number(anchor.scrollTop))) {
@@ -1652,7 +1739,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             && widthChanged
             && stickyBottom
             && scrollMode === "top"
-            && !interacting
+            && !interaction.touching
             && maxScroll > 0
             && savedChatAnchor != null,
         );
@@ -1707,6 +1794,24 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
                     programmaticScrollRef.current = null;
                 }
             });
+            // A keyboard or programmatic paused scroll (Home, PageUp, j/k)
+            // suppresses onScroll; recapture the fresh DOM anchor so a later
+            // width resize or session switch stays on the new position.
+            if (
+                paneKey === "chat"
+                && stickyBottom
+                && activeSessionId
+                && scrollMode === "top"
+                && !useAnchorRestore
+                && !pageArrived
+                && !prependedWhilePaused
+                && !preservePausedStickyScroll
+                && maxScroll > 0
+                && !isScrollViewportAtBottom(node)
+            ) {
+                const freshAnchor = captureScrollAnchor(node);
+                if (freshAnchor) controller.setChatScrollAnchor?.(activeSessionId, freshAnchor);
+            }
         }
         if ((restoreInitialPaused || restoreOnSessionSwitch) && savedChatAnchor && !pendingMountAnchorRef.current) {
             // Re-apply the same anchor if measured column width settles on the
@@ -1742,6 +1847,20 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
 
     const dispatchScrollOffset = useFrameCoalescedCallback((offset) => {
         controller.dispatch({ type: "ui/scroll", pane: paneKey, offset });
+    });
+
+    // Coalesce anchor capture to at most once per animation frame during
+    // momentum scrolling so rapid scroll events never churn the store; the
+    // unmount layout cleanup still captures synchronously before teardown.
+    const scheduleChatAnchorCapture = useFrameCoalescedCallback((sessionId) => {
+        const node = ref.current;
+        if (!node || !sessionId || paneKey !== "chat" || !stickyBottom) return;
+        if (node.dataset?.sessionId && node.dataset.sessionId !== sessionId) return;
+        if (controller.getState().ui.followBottom?.chat !== false) return;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        if (maxScroll <= 0 || isScrollViewportAtBottom(node)) return;
+        const anchor = captureScrollAnchor(node);
+        if (anchor) controller.setChatScrollAnchor?.(sessionId, anchor);
     });
 
     const onScroll = React.useCallback(() => {
@@ -1785,7 +1904,8 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             if (paneKey === "chat") {
                 const sessionId = mountedSessionIdRef.current || controller.getState().sessions.activeSessionId;
                 if (sessionId) {
-                    controller.setChatScrollAnchor?.(sessionId, atBottom ? null : captureScrollAnchor(node));
+                    if (atBottom) controller.setChatScrollAnchor?.(sessionId, null);
+                    else scheduleChatAnchorCapture(sessionId);
                 }
             }
             // Pausing bottom-follow changes chat to top-anchored scroll state,
@@ -1809,7 +1929,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         if (paneKey === "chat" && scrollMode === "bottom" && node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
             controller.armChatTopHistoryLoad?.();
         }
-    }, [controller, dispatchScrollOffset, paneKey, ref, scrollMode, stickyBottom]);
+    }, [controller, dispatchScrollOffset, paneKey, ref, scheduleChatAnchorCapture, scrollMode, stickyBottom]);
 
     const requestHistoryPage = React.useCallback(() => {
         const node = ref.current;
@@ -4524,6 +4644,7 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
 
     return React.createElement("details", {
         className: `ps-system-notice ps-assistant-preview${line.final ? " is-final" : ""}`,
+        "data-scroll-key": line.previewKey ? `preview:${line.previewKey}` : undefined,
         open: expanded,
         onToggle: (event) => {
             if (event.target === event.currentTarget && !line.final) setOpen(event.currentTarget.open);
@@ -4716,6 +4837,7 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
             if (block.type === "card") {
                 return React.createElement("section", {
                     key: `card:${block.cardKey || index}`,
+                    "data-scroll-key": block.cardKey ? `card:${block.cardKey}` : undefined,
                     className: "ps-chat-card",
                     style: { "--ps-chat-card-accent": resolveColor(theme, block.borderColor) || "var(--ps-border)" },
                 },
@@ -18728,8 +18850,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         : null;
 
     const mobileArtifactOverlayActive = mobile
-        && !state.adminVisible
-        && (filesFullscreenActive || (state.artifactPaneOpen && Boolean(state.selectedArtifactId)));
+        && filesFullscreenActive
+        && !state.adminVisible;
 
     if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement(Toolbar, { controller, mobile: false, moa, viewNavigation }),

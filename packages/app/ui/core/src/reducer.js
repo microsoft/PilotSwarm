@@ -2110,11 +2110,14 @@ function baseReducer(state, action) {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
             const current = state.ui.chatScrollAnchorBySession?.[sessionId] ?? null;
+            const rawRatio = Number(action.anchor?.ratio);
             const next = action.anchor && typeof action.anchor === "object"
                 ? {
                     key: String(action.anchor.key || ""),
                     occurrence: Math.max(0, Math.floor(Number(action.anchor.occurrence) || 0)),
+                    leafIndex: Number.isInteger(Number(action.anchor.leafIndex)) ? Number(action.anchor.leafIndex) : -1,
                     offsetPx: Number.isFinite(Number(action.anchor.offsetPx)) ? Math.round(Number(action.anchor.offsetPx)) : 0,
+                    ratio: Number.isFinite(rawRatio) ? Math.max(0, Math.min(1, Math.round(rawRatio * 1000) / 1000)) : 0,
                     scrollTop: Number.isFinite(Number(action.anchor.scrollTop)) ? Math.max(0, Math.round(Number(action.anchor.scrollTop))) : 0,
                 }
                 : null;
@@ -2123,7 +2126,9 @@ function baseReducer(state, action) {
                 || (current && next
                     && current.key === next.key
                     && current.occurrence === next.occurrence
+                    && current.leafIndex === next.leafIndex
                     && current.offsetPx === next.offsetPx
+                    && current.ratio === next.ratio
                     && current.scrollTop === next.scrollTop)
             ) {
                 return state;
@@ -4315,6 +4320,9 @@ function baseReducer(state, action) {
                     previewOrigin: action.origin || null,
                     restoreArtifactId: action.origin === "chat"
                         ? (action.restoreArtifactId ?? state.files.restoreArtifactId ?? null)
+                        : null,
+                    restoreMobilePane: action.origin === "chat"
+                        ? (action.restoreMobilePane ?? state.files.restoreMobilePane ?? null)
                         : null,
                 },
             };

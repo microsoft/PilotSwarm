@@ -193,7 +193,13 @@ export function useViewNavigation(controller, moa) {
         if (controller.mobileView) controller.mobileView.set(view.mobilePane || (view.canvasOpen ? "canvas" : "workspace"));
         if (view.artifactFullscreen && view.artifactFilename && view.artifactSessionId) {
             // The phone's full-screen preview, over the screen restored above.
-            controller.revealArtifact(view.artifactSessionId, view.artifactFilename, { fullscreen: true, preserveSession: true })
+            // Preserve list origin when returning via history onto a preview
+            // opened from the Files tab so closing stays on the Files list.
+            controller.revealArtifact(view.artifactSessionId, view.artifactFilename, {
+                fullscreen: true,
+                preserveSession: true,
+                origin: view.mobilePane === "inspector" ? "list" : "chat",
+            })
                 .then((shown) => { if (shown === false) unavailable(); })
                 .catch(unavailable);
         } else if (view.artifactFilename && view.artifactSessionId) {
