@@ -28,6 +28,11 @@ function updateOperationIdFor(opId: string, key?: string): string {
     return `update:${createHash("sha256").update(candidate).digest("hex")}`;
 }
 
+function isOlderPortalWithoutPhase4Definitions(ctx: ServerContext): boolean {
+    if (!ctx.webMode || !ctx.workflowsAdvert || typeof ctx.workflowsAdvert !== "object") return false;
+    return !ctx.workflowsAdvert.validate || !ctx.workflowsAdvert.card;
+}
+
 function graphHasScriptState(states: unknown): boolean {
     if (!Array.isArray(states)) return false;
     for (const s of states) {
@@ -163,6 +168,12 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
         withToolErrors(async ({ ref, model, reasoning_effort, context_tier, group_id, originating_session_id }) => {
             try {
                 const originatingSessionId = ctx.originatingSessionId ?? originating_session_id;
+                if (originatingSessionId !== undefined && isOlderPortalWithoutPhase4Definitions(ctx)) {
+                    return errorResult(
+                        "This deployment is older than this MCP server and cannot enforce originating_session_id on createSessionForWorkflow; upgrade the portal.",
+                        { code: "WORKFLOW_API_UNAVAILABLE", status: 501 },
+                    );
+                }
                 const created = await ctx.mgmt.createSessionForWorkflow(ref, {
                     ...(model !== undefined ? { model } : {}),
                     ...(reasoning_effort !== undefined ? { reasoningEffort: reasoning_effort } : {}),
@@ -358,6 +369,22 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
 
             const originatingSessionId = ctx.originatingSessionId ?? originating_session_id;
             const mutOpts = originatingSessionId !== undefined ? { originatingSessionId } : {};
+            const isMutation = operation === "save" || operation === "start" || operation === "delete" || operation === "copy";
+
+            if (isMutation && isOlderPortalWithoutPhase4Definitions(ctx)) {
+                if (originatingSessionId !== undefined) {
+                    return errorResult(
+                        "This deployment is older than this MCP server and cannot enforce originating_session_id on workflow_definition; upgrade the portal.",
+                        { code: "WORKFLOW_API_UNAVAILABLE", status: 501, session_id: owner_session_id },
+                    );
+                }
+                if (operation !== "save" && !definition_id && name) {
+                    return errorResult(
+                        "This deployment is older than this MCP server and requires definition_id (name lookup is unavailable); upgrade the portal.",
+                        { code: "WORKFLOW_API_UNAVAILABLE", status: 501, session_id: owner_session_id },
+                    );
+                }
+            }
 
             try {
                 if (operation === "list") {

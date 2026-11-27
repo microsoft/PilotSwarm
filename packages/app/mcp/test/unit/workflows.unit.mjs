@@ -687,6 +687,52 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
     assert.equal(card501.code, "WORKFLOW_API_UNAVAILABLE");
     assert.equal(card501.status, 501);
     assert.equal(card501.session_id, OWNER_SID);
+
+    // SF-3: older-portal advert fails closed (501 WORKFLOW_API_UNAVAILABLE) for originatingSessionId and name-only start/delete/copy
+    let skewReachedMgmt = false;
+    const skewTools = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        workflowsAdvert: olderAdvert,
+        originatingSessionId: "inside-wf-1",
+        mgmt: {
+            createSessionForWorkflow: async () => { skewReachedMgmt = true; return {}; },
+            saveSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            startSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            deleteSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            copySessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+        },
+    });
+    const skewCsfw = await skewTools.get("create_session_for_workflow")({ ref: "demo/echo" });
+    assert.equal(skewCsfw.isError, true);
+    assert.equal(JSON.parse(skewCsfw.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(JSON.parse(skewCsfw.content[0].text).status, 501);
+
+    const skewSave = await skewTools.get("workflow_definition")({
+        operation: "save", owner_session_id: OWNER_SID, name: "w", yaml: "y", operation_id: "op-1",
+    });
+    assert.equal(skewSave.isError, true);
+    assert.equal(JSON.parse(skewSave.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+
+    const skewNoOrigTools = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        workflowsAdvert: olderAdvert,
+        mgmt: {
+            startSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            deleteSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            copySessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+        },
+    });
+    for (const op of ["start", "delete", "copy"]) {
+        const res = await skewNoOrigTools.get("workflow_definition")({
+            operation: op, owner_session_id: OWNER_SID, name: "by-name-only", operation_id: `op-${op}`,
+        });
+        assert.equal(res.isError, true, `older portal must fail closed for name-only ${op}`);
+        assert.equal(JSON.parse(res.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+        assert.equal(JSON.parse(res.content[0].text).status, 501);
+    }
+    assert.equal(skewReachedMgmt, false, "older-portal fail-closed guard must stop before hitting mgmt");
 }
 
 console.log("✅ Phase 4 MCP workflow tools unit suite passed");
