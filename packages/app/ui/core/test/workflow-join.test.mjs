@@ -235,7 +235,7 @@ test("a branch choice is kept for its workflow, run, parallel visit and step onl
 });
 
 // Owner, 2026-11-26 20:03 PST: the join is a solid horizontal bar (BPMN/UML join bar) where its lines end; the line after it
-// starts at the bar's middle; its words beside it, under the bar right of that line; its error mark at the bar's right end.
+// starts at the bar's middle; its words beside it, under the bar left of that line; its error mark at the bar's right end.
 test("the join bar: as wide as its incoming lines (at least a step), at the box's top; its mark and chips at its right end", () => {
     const layout = layoutWorkflowGraphTB(workflowDefinition(graph));
     const join = layout.joins.get("fan");

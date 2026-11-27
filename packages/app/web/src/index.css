@@ -14704,7 +14704,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 
 /* Owner, 2026-11-26 20:03 PST: the join is a solid horizontal bar (a BPMN/UML join bar) at the top of its box, where its
    incoming lines end (its place and width are set inline: the span of those lines, at least a step's width). A stem
-   from its middle carries the line after it, which leaves from the box's bottom; its words sit under the bar, right of
+   from its middle carries the line after it, which leaves from the box's bottom; its words sit under the bar, left of
    the stem, where no line crosses them; its error marks sit on the bar's right end and its end chips beside them. Both
    renderers, every width. In a run the bar takes the state colours above, is faded when not reached, and is lit. */
 .ps-workflow-join { position: relative; display: block; padding: 0; }
@@ -14727,7 +14727,8 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   width: 1.5px;
   background: var(--ps-wf-edge, var(--ps-muted));
 }
-.ps-workflow-join-rule { position: absolute; top: 9px; left: calc(50% + 8px); max-width: calc(50% - 8px); text-align: left; }
+/* The words end left of the stem, so the error mark and the end chips at the bar's right end never meet them. */
+.ps-workflow-join-rule { position: absolute; top: 9px; right: calc(50% + 8px); max-width: none; text-align: right; }
 .ps-workflow-join.is-not-reached { opacity: 0.45; }
 .ps-workflow-join[data-lit], .ps-workflow-join[data-current="true"] { outline: none; background: none; }
 .ps-workflow-join[data-lit] .ps-workflow-join-bar { outline: 1.5px solid var(--ps-wf-lit, var(--ps-warning)); outline-offset: 2px; }

@@ -306,7 +306,7 @@ function WorkflowJoinBarFace({ join, node = null, selected = false, onSelect, li
         },
     },
     // Owner, 2026-11-26 20:03 PST: the bar where the incoming lines end (`bar`: its place in the box), a stem from its middle
-    // down to where the line after it leaves, and the words under the bar, right of the stem, where no line crosses them.
+    // down to where the line after it leaves, and the words under the bar, left of the stem, where no line crosses them.
     h("span", { className: "ps-workflow-join-bar", "aria-hidden": true, ...(bar ? { style: { left: bar.left, width: bar.width } } : {}) }),
     h("span", { className: "ps-workflow-join-stem", "aria-hidden": true }),
     h("span", { className: "ps-workflow-join-rule" }, short));
