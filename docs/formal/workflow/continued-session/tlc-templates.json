@@ -35,7 +35,10 @@
       "TimeoutFair",
       "AllowRecover",
       "SplitTurn",
-      "NoStopOnDone"
+      "NoStopOnDone",
+      "SessionEndStop",
+      "AllowStall",
+      "ReplyLimit"
     ],
     "lists": "block",
     "deadlockFirst": false

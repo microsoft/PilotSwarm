@@ -24,7 +24,7 @@ proof.
 | `Prop_AllEnded`, `Prop_OthersEnded` | After the run ends, every agent session is ended (G3). |
 | `Prop_OwedSent` | An owed end is eventually sent. |
 | `Prop_VisitsDecided` | Every visit is decided (guaranteed by the time limit). |
-| `Inv_DoneTurnCommits`, `Inv_StopOwnVisit`, `Inv_TurnsInOrder` | i1: a completed visit's turn is not stopped while the run is active; a Stop ends only a turn of its own visit; a session's turns run in visit order. |
+| `Inv_NoStopOnActiveDone`, `Inv_StopOwnVisit`, `Inv_TurnsInOrder`, `Inv_EndStopsTurn`, `Prop_PromptTaken` | i1: no Workflow Stop ends a completed visit's turn while the run is active; a Stop ends only a turn of its own visit; a session's turns run in visit order; the session's end stops a turn still running; a queued prompt is taken. |
 
 Constants switch on a person's end or delete, a stop or cancel, failing Stops and a failing end, and each proposed
 fix (`SpawnRecheck`, `StopBeforeSpawn`, `PerAgentSessionEnd`, `StopAtRunEnd`, and `EndMark` for the G1 residual).
@@ -140,47 +140,57 @@ decided visit with the next visit's prompt; at most one of them is pending, and 
 it names (the model's turns carry one prompt; `fault.cc-report-binds-newest` checks that a report never decides a visit
 it did not carry).
 
-## i1 (2026-11-27): a completed visit's turn is not stopped (issue I1, bound to 4753e1cd)
+## i1 (2026-11-27): a completed visit's turn is not stopped (issue I1, bound to 5f24054e)
 
 The agent reports its result with `complete_workflow_node` in the middle of its turn, and the turn goes on to write its
 reply. The code before the fix (`b79be29d`) sent that turn the visit's cycle Stop at the visit's end; a stopped turn
 commits no snapshot, so the next visit did not remember the earlier one. The fix: a visit its agent completed while
 the run is active sends no Stop; the turn ends by itself and commits. The Stop stays for a time limit, a cancel, and a
 run that is stopping or ended. The next visit's prompt waits behind the turn and starts a new turn on its own visit.
+Review R1 of the fix found that the turn could then outlive its run, and that a reply that never ends held the next
+visit's prompt forever. Its fixes: the session's end stops whichever turn still runs (R1-1), and a reported reply has a
+limit (R1-2).
 
-New constants `SplitTurn` (the result and the turn's end are two steps: `TurnReport`, then `TurnFinish`, which commits)
-and `NoStopOnDone` (the fix), and the fault `"stop-unfenced"` (a Stop ends whatever turn runs). Both constants are
-`FALSE` in every earlier case, whose behavior does not change. New properties:
+New constants: `SplitTurn` (the result and the turn's end are two steps: `TurnReport`, then `TurnFinish`, which
+commits), `NoStopOnDone` (the fix), `SessionEndStop` (R1-1), `ReplyLimit` (R1-2: `ReplyExpire` ends a reported turn
+without a commit) and `AllowStall` (a reported turn may never finish by itself); the fault `"stop-unfenced"` (a Stop
+ends whatever turn runs). All five are `FALSE` in every earlier case, whose behavior does not change. New properties:
 
 | Property | Meaning |
 |---|---|
-| `Inv_DoneTurnCommits` | The turn of a visit its agent completed is not stopped while the run is active (it commits its memory). |
+| `Inv_NoStopOnActiveDone` | No Workflow Stop ends the turn of a visit its agent completed while the run is active. That turn commits when it finishes by itself; the reply limit, a lost session or the run's end may still end it without a commit. |
 | `Inv_StopOwnVisit` | A Stop never ends a turn of another visit (the turn-to-visit fence). |
 | `Inv_TurnsInOrder` | A session's turns run one at a time, in visit order: the next visit's turn runs after the previous one ended. |
+| `Inv_EndStopsTurn` | The session's end never waits behind the turn of a visit its agent completed whose end sent no Stop. |
+| `Prop_PromptTaken` | A prompt queued in a live session is taken by a turn (or the session ends), also when a reply stalls. |
 
 Witnesses: `W_NoDoneCommitted` (a completed visit's turn commits), `W_NoRanAfterDone` (the next visit's prompt waits
-behind that turn, then runs its own turn: Admit, Spawn while the turn runs, TurnFinish, TurnStart), `W_NoStopFenced`
-(the next visit's Stop finds the completed visit's turn and the fence keeps it), `W_NoDoneStoppedAtEnd` (the run's end
-still stops a completed visit's turn) and `W_NoCycleStop` (a time limit or a cancel still stops its own turn).
-`CORRESPONDENCE-i1-4753e1cd.md` maps the model to the code. The cases are written by
+behind that turn, then runs its own turn: Admit, Spawn while the turn runs, TurnFinish, TurnStart),
+`W_NoRanWithMemory` (that turn starts after the completed visit's turn committed), `W_NoStopFenced` (the next visit's
+Stop finds the completed visit's turn and the fence keeps it), `W_NoDoneStoppedAtEnd` (the run's end still stops a
+completed visit's turn), `W_NoEndStoppedTurn` (the session's end stops it), `W_NoReplyExpired` (the reply limit ends a
+stalled reply) and `W_NoCycleStop` (a time limit or a cancel still stops its own turn). `CORRESPONDENCE-i1-5f24054e.md`
+maps the model to the code. The cases are written by
 
     G1B_HEAD=7024ef6f DRR1_HEAD=69d07073 DRR2_HEAD=5451a22e DRR1B_HEAD=7bd79a46 \
       DRR1C_HEAD=9b2ca643 DR2FIX_HEAD=781441bf python3 gen-cases.py 9a8d0f66
 
-Batch i1 (TLC 2.19, two workers, 1,800 s per case):
+Batch i1 (TLC 2.19, two workers, 1,800 s per case; 17 cases):
 
 | Case | Expected | Result |
 |---|---|---|
-| `i1.cc-done-turn-stopped` (the code before the fix) | `Inv_DoneTurnCommits` violated | violated (140 distinct states) |
-| `i1.fix-safety` (three visits, a person's end or delete, failing Stops; every earlier invariant and the three new) | PASS | PASS, 246,471 distinct states |
-| `i1.fix-live` (two visits; `LIVE` properties) | PASS | PASS, 16,276 distinct states |
-| `i1.fix-turn-fails` (with tf1's failing turns; every safety property) | PASS | PASS, 93,448 distinct states |
-| `i1.fix-turn-fails-live` | PASS | PASS, 4,070 distinct states |
+| `i1.cc-done-turn-stopped` (the code before the fix) | `Inv_NoStopOnActiveDone` violated | violated |
+| `i1.cc-end-behind-turn` (`4753e1cd`: TurnReport, EndVisit with no Stop, RunStop, the session's end) | `Inv_EndStopsTurn` violated | violated |
+| `i1.cc-stalled-reply` (`4753e1cd` with R1-1; a reply that stalls, time limits not forced) | `Prop_PromptTaken` violated | violated (liveness) |
+| `i1.fix-safety` (three visits, a person's end or delete, failing Stops; every earlier invariant and the four new) | PASS | PASS, 445,565 distinct states |
+| `i1.fix-live` (two visits; `LIVE` and `Prop_PromptTaken`) | PASS | PASS, 23,899 distinct states |
+| `i1.fix-stalled-reply` | PASS | PASS, 1,872 distinct states |
+| `i1.fix-turn-fails` (with tf1's failing turns; every safety property) | PASS | PASS, 112,294 distinct states |
+| `i1.fix-turn-fails-live` | PASS | PASS, 4,392 distinct states |
 | `i1.fault-stop-unfenced` | `Inv_StopOwnVisit` violated | violated |
-| `i1.wit-*` (five witnesses) | reached | all reached |
+| `i1.wit-*` (eight witnesses) | reached | all reached |
 
-Thirteen earlier cases run on the changed model (`cc.safety`, `cc.live`, `cc.late-reply-binding`, the G2 and G5
-findings and fixes, `impl.cc-live`, `tf.cc-turn-fails-safety`, two faults and two witnesses): 13 of 13 as before.
+The earlier cases on the changed model: see the full run below.
 
 ## How to run
 

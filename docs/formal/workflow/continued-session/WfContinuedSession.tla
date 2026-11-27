@@ -78,14 +78,19 @@ CONSTANTS
     SplitTurn,      \* the turn reports its result (complete_workflow_node decides its visit) and then goes on to write its
                     \* reply (TurnReport, then TurnFinish, which commits the turn's snapshot: its memory); a Stop ends a
                     \* turn without a commit. FALSE: the result and the turn's end are one step (TurnEnd), as before i1
-    NoStopOnDone    \* fix I1: a visit its agent completed while the run is active sends its turn no Stop (the Stop stays
+    NoStopOnDone,   \* fix I1: a visit its agent completed while the run is active sends its turn no Stop (the Stop stays
                     \* for a time limit, a cancel, and a run that is stopping or ended)
+    SessionEndStop, \* fix review R1-1: the session's end (the run ended or is stopping) stops whichever turn still runs
+                    \* (a Stop that names no visit) before its command; FALSE: the command waits behind that turn
+    AllowStall,     \* a reported turn may never finish its reply by itself (TurnFinish is not fair)
+    ReplyLimit      \* fix review R1-2: a reported turn still running after the reply limit is stopped (ReplyExpire); its
+                    \* reply is not committed
 
 ASSUME V \in 1..3 /\ Person \in {"none", "end", "delete", "any"}
 ASSUME {AllowStop, AllowCancel, AllowStopFail, RecoverFair, SpawnRecheck, RecheckSeesEnding, EndMark, StopBeforeSpawn, PerAgentSessionEnd, StopAtRunEnd} \subseteq BOOLEAN
 ASSUME FailAgentSession \in 0..V
 ASSUME Fault \in {"none", "bind-newest", "replace-without-check", "no-owed-mark", "end-without-lock", "run-decided", "stop-unfenced"}
-ASSUME {SplitTurn, NoStopOnDone} \subseteq BOOLEAN
+ASSUME {SplitTurn, NoStopOnDone, SessionEndStop, AllowStall, ReplyLimit} \subseteq BOOLEAN
 ASSUME {SplitSpawn, CheckAll, Backstop, AllowSpawnCrash, MarkSplit, Withdraw, Outbox, Carry} \subseteq BOOLEAN
 ASSUME CarryDelete \in {"none", "visible", "owed", "queued", "queued-skew", "queued-race"}
 ASSUME {TurnGuard, MarkCreating, CarryNotFound} \subseteq BOOLEAN
@@ -300,6 +305,8 @@ TurnStart(s) ==
           /\ gh' = gh \cup (IF skip THEN {"skipped"} ELSE {}) \cup (IF ~skip /\ vis[u].node = "decided" THEN {"ranDecided"} ELSE {})
                       \cup (IF SplitTurn /\ ~skip /\ u < ses[s].last THEN {"outOfOrder"} ELSE {})
                       \cup (IF SplitTurn /\ ~skip /\ vis[u].qb THEN {"ranAfterDone"} ELSE {})
+                      \cup (IF SplitTurn /\ ~skip /\ vis[u].qb /\ \E w \in Vis : w < u /\ vis[w].s = s /\ vis[w].how = "result" /\ vis[w].mem
+                            THEN {"ranAfterDoneCommitted"} ELSE {})
     /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 
 (* The turn ends with the agent's result: it decides only its own pending  *)
@@ -337,6 +344,15 @@ TurnFinish(s) ==
           /\ gh' = gh \cup (IF vis[u].how = "result" THEN {"doneCommitted"} ELSE {})
     /\ ses' = [ses EXCEPT ![s].turn = 0, ![s].rep = FALSE]
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
+
+(* Review R1-2 (ReplyLimit): a reported turn still running after the reply *)
+(* limit is stopped (session-proxy's settle timer, also with a turn time   *)
+(* limit of 0); its reply is not committed. Not a Workflow Stop.           *)
+ReplyExpire(s) ==
+    /\ SplitTurn /\ ReplyLimit /\ ses[s].turn # 0 /\ ses[s].rep
+    /\ ses' = [ses EXCEPT ![s].turn = 0, ![s].rep = FALSE]
+    /\ gh' = gh \cup {"replyExpired"}
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 
 (* i1: what a Stop that ends visit u's running turn costs: a stopped turn  *)
 (* commits nothing, so the session forgets it. "doneStoppedActive": the   *)
@@ -429,16 +445,31 @@ RetryStop(u) ==
     /\ UNCHANGED <<pend, marked, run, nv, readers, afterDone, acted, reports, failedV>>
 
 (* The end of one agent session under its end lock (endContinuedSessionLocked). *)
+(* i1, review R1-1 (SessionEndStop): the end first stops whichever turn    *)
+(* still runs (a Stop that names no visit); without it the end command     *)
+(* waits behind that turn ("endBehindTurn").                               *)
 Due(s) == Used(s) /\ ses[s].endState = "open" /\ vis[Newest(s)].node = "decided"
+EndStops == SplitTurn /\ SessionEndStop
 AgentSessionEnd(r) ==
     IF r.st \in {"none", "row", "creating"}
     THEN IF r.st = "creating" /\ Fault # "no-owed-mark" THEN [r EXCEPT !.endState = "owed"] ELSE [r EXCEPT !.endState = "ended"]
+    ELSE IF r.st = "live" /\ EndStops
+    THEN [r EXCEPT !.endState = "ended", !.ends = @ + 1, !.st = "ended", !.turn = 0, !.rep = FALSE]
     ELSE IF r.st = "live"
     THEN [r EXCEPT !.endState = "ended", !.ends = @ + 1, !.st = IF r.turn = 0 THEN "ended" ELSE "ending"]
     \* an orchestration running on a deleted row is ended too (endContinuedSessionLocked reads its status, not the row)
     ELSE IF r.st = "orphan"
     THEN [r EXCEPT !.endState = "ended", !.ends = @ + 1, !.st = "deleted"]
     ELSE [r EXCEPT !.endState = "ended"]
+(* What ending session s now records (i1 only): its running turn stopped,  *)
+(* or the end left behind the turn of a visit its agent completed and      *)
+(* whose end already sent no Stop (no Stop of its own will come for that   *)
+(* turn; any other visit's turn still gets one from EndVisit).             *)
+EndFlags(s) ==
+    IF SplitTurn /\ ses[s].st = "live" /\ ses[s].turn # 0
+    THEN IF SessionEndStop THEN {"endStoppedTurn"} \cup StopLoss(ses[s].turn)
+         ELSE IF vis[ses[s].turn].how = "result" /\ vis[ses[s].turn].endReq /\ ~vis[ses[s].turn].stopOk THEN {"endBehindDoneTurn"} ELSE {}
+    ELSE {}
 
 (* afterEnd: once the run ended, every agent session in order; one whose   *)
 (* end keeps failing stops the loop (G3) unless PerAgentSessionEnd; it is then *)
@@ -447,8 +478,9 @@ Looked(s) == s # FailAgentSession /\ (FailAgentSession = 0 \/ PerAgentSessionEnd
 AfterEnd ==
     /\ run = "ended" /\ ~afterDone /\ (\A v \in Vis : vis[v].node # "pending")
     /\ ses' = [s \in Ses |-> IF Looked(s) /\ Due(s) THEN AgentSessionEnd(ses[s]) ELSE ses[s]]
+    /\ gh' = gh \cup UNION {EndFlags(s) : s \in {x \in Ses : Looked(x) /\ Due(x)}}
     /\ afterDone' = TRUE
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, acted, gh, reports, failedV>>
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, acted, reports, failedV>>
 
 (* A stopping run ends an idle agent session at collect; also the owed     *)
 (* end's retry (wfc) and the visit's own end after the run stopped.        *)
@@ -457,7 +489,8 @@ LookLocked(s) ==
     /\ \/ run = "stopping" /\ Due(s)
        \/ ses[s].endState = "owed" /\ ses[s].st # "creating"
     /\ ses' = [ses EXCEPT ![s] = AgentSessionEnd([ses[s] EXCEPT !.endState = "open"])]
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
+    /\ gh' = gh \cup EndFlags(s)
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 LookRead(s) ==
     /\ Fault = "end-without-lock" /\ s \notin readers
     /\ run # "active" /\ Due(s) /\ ses[s].st = "live"
@@ -473,7 +506,8 @@ LookSend(s) ==
 Recover ==
     /\ run = "ended" /\ afterDone /\ (\E s \in Ses : Due(s))
     /\ ses' = [s \in Ses |-> IF Due(s) THEN AgentSessionEnd(ses[s]) ELSE ses[s]]
-    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, gh, reports, failedV>>
+    /\ gh' = gh \cup UNION {EndFlags(s) : s \in {x \in Ses : Due(x)}}
+    /\ UNCHANGED <<pend, marked, run, nv, vis, readers, afterDone, acted, reports, failedV>>
 
 (* An ended session's command lands after its running turn.                *)
 Finish(s) ==
@@ -537,7 +571,7 @@ Next ==
                       \/ ReportDecide(v) \/ RecoveredTurn(v)
     \/ \E s \in Ses : Visible(s) \/ TurnStart(s) \/ TurnEnd(s) \/ LookLocked(s) \/ LookRead(s) \/ LookSend(s)
                       \/ Finish(s) \/ PersonEnd(s) \/ PersonMark(s) \/ PersonDelete(s) \/ RaceResolve(s) \/ OrphanTurn(s)
-                      \/ TurnFails(s) \/ TurnReport(s) \/ TurnFinish(s)
+                      \/ TurnFails(s) \/ TurnReport(s) \/ TurnFinish(s) \/ ReplyExpire(s)
 
 Spec == Init /\ [][Next]_vars
 Fairness ==
@@ -545,8 +579,8 @@ Fairness ==
     /\ WF_vars(PersonEnqueue) /\ WF_vars(WithdrawMark)
     /\ \A v \in Vis : WF_vars(Spawn(v)) /\ WF_vars(SpawnCheck(v)) /\ WF_vars(SpawnCreate(v)) /\ WF_vars(SpawnSend(v)) /\ WF_vars(TimeoutFair /\ Timeout(v)) /\ WF_vars(EndVisit(v)) /\ WF_vars(RetryStop(v))
                       /\ WF_vars(ReportDecide(v))
-    \* i1: a turn reports and then ends by itself (the turn's own time limit, 20 minutes by default, ends a turn that hangs)
-    /\ \A s \in Ses : WF_vars(TurnReport(s)) /\ WF_vars(TurnFinish(s))
+    \* i1: a turn reports and then ends by itself, unless it may stall (AllowStall); the reply limit (ReplyLimit) then ends it
+    /\ \A s \in Ses : WF_vars(TurnReport(s)) /\ WF_vars(~AllowStall /\ TurnFinish(s)) /\ WF_vars(ReplyExpire(s))
     /\ \A s \in Ses : WF_vars(Visible(s)) /\ WF_vars(TurnStart(s)) /\ WF_vars(TurnEnd(s)) /\ WF_vars(LookLocked(s))
                       /\ WF_vars(LookSend(s)) /\ WF_vars(Finish(s)) /\ WF_vars(RaceResolve(s))
                       /\ WF_vars(TurnGuard /\ OrphanTurn(s))
@@ -582,9 +616,14 @@ Inv_NoPromptBehindStaleTurn ==
                    => ~\E v \in ses[s].q : vis[v].node = "pending"
 (* G5: a visit ended by the run's end stops its running turn.              *)
 Inv_StopAtRunEnd == "noStopAtEnd" \notin gh
-(* i1: the turn of a visit its agent completed is not stopped while the    *)
-(* run is active: it ends by itself and its memory is committed.           *)
-Inv_DoneTurnCommits == "doneStoppedActive" \notin gh
+(* i1: no Workflow Stop ends the turn of a visit its agent completed while *)
+(* the run is active (the turn ends by itself, and commits when it         *)
+(* finishes; the reply limit, a lost session or the run's end may still    *)
+(* end it without a commit).                                               *)
+Inv_NoStopOnActiveDone == "doneStoppedActive" \notin gh
+(* Review R1-1: the session's end never waits behind the running turn of a *)
+(* visit its agent completed (no other Stop would end that turn).          *)
+Inv_EndStopsTurn == "endBehindDoneTurn" \notin gh
 (* i1: a Stop never ends a turn of another visit (the turn-to-visit fence). *)
 Inv_StopOwnVisit == "stopOther" \notin gh
 (* i1: a session's turns run one at a time, in visit order: the next      *)
@@ -601,6 +640,9 @@ Prop_OrphanEnded == \A s \in Ses : (ses[s].st \in {"orphan", "orphanq"}) ~> (ses
 (* DR2-001: no model turn runs on a deleted agent session.                 *)
 Inv_NoTurnOnDeleted == "turnOnDeleted" \notin gh
 Prop_OwedSent == \A s \in Ses : (ses[s].endState = "owed") ~> (ses[s].endState = "ended")
+(* Review R1-2: a prompt queued in a live session is taken by a turn (or   *)
+(* the session ends), also when a reported reply stalls.                   *)
+Prop_PromptTaken == \A s \in Ses : \A v \in Vis : (v \in ses[s].q /\ ses[s].st = "live") ~> (v \notin ses[s].q \/ ses[s].st # "live")
 
 (* DRR-1: a deleted agent session is never brought back.                  *)
 Inv_NoRevive == "revived" \notin gh
@@ -632,4 +674,10 @@ W_NoDoneCommitted == "doneCommitted" \notin gh
 W_NoRanAfterDone == "ranAfterDone" \notin gh
 W_NoStopFenced == "stopFenced" \notin gh
 W_NoDoneStoppedAtEnd == "doneTurnStopped" \notin gh
+(* Review R1-5: the next visit's queued prompt runs its turn with the      *)
+(* completed visit's memory committed; the session's end stops a held      *)
+(* reply; a stalled reply is ended by the reply limit.                     *)
+W_NoRanWithMemory == "ranAfterDoneCommitted" \notin gh
+W_NoEndStoppedTurn == "endStoppedTurn" \notin gh
+W_NoReplyExpired == "replyExpired" \notin gh
 =============================================================================
