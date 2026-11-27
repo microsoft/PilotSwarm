@@ -293,6 +293,28 @@ distinct states in 16 minutes. The PASS cases keep their state counts (`cc.safet
 (two workers): `i1.cc-false-memory-claim` violated `Inv_NoFalseMemoryClaim` at 1,035 distinct states, the witness
 `i1.wit-loss-told` was reached at 983 and `limit.i1-turn-fails-untold` at 1,349.
 
+### Issue I8 (`session: continue` in named parallel branches)
+
+`WfBranchContinuedSession.tla` models an enclosing `parallel` state with named `branches:` that an outer loop can
+re-enter (`MaxForks = 2`, resetting per-scope `n.ordinal` to `1`), checking concurrent branch isolation, branch cuts
+(`failFast` / `join: { first: k }` / `parallel.timeoutSeconds`) racing against `completeAgentNode` CAS and `I1`'s
+post-report reply turns, owed cycle Stops resolved at run end with no re-entry, cross-fork session replacements,
+graceful stop (`run.stop`) with mixed idle/pending branches (`Q5`), and the deliberate `OrderByNodeOrdinalOnly` fault
+(bare `n.ordinal` ordering inverting fork-2 visit 1 behind fork-1 visit 2).
+
+Run on TLC 2.19 (2026-11-27, Temurin JDK 21.0.13.1, two workers): 14 of 14 `i8.*` cases as expected, no timeouts.
+
+| Case | Expected | Result |
+|---|---|---|
+| `i8.fix-two-branch-safety` | PASS | PASS, 2,700,838 distinct states (86 s) |
+| `i8.fix-two-branch-live` | PASS | PASS, 87,455 distinct states (13 s) |
+| `i8.fix-fail-branch-isolation` | PASS | PASS, 10,398 distinct states (3 s) |
+| `i8.fix-outer-loop-safety` | PASS | PASS, 644,319 distinct states (20 s) |
+| `i8.fix-outer-loop-live` | PASS | PASS, 644,319 distinct states (97 s) |
+| `i8.fault-node-ordinal-only` (`OrderByNodeOrdinalOnly = TRUE`) | `Inv_MonotonicCycleOrder` violated | violated (39 distinct states) |
+| `i8.fault-node-ordinal-q5` (`OrderByNodeOrdinalOnly = TRUE`) | `Inv_StoppingKeepsActiveVisit` violated | violated (636 distinct states) |
+| `i8.wit-*` (7 non-vacuity witnesses) | reached | all 7 reached (`W_BranchLoopCommitRecall`, `W_CutPendingStopsVisit`, `W_CutAfterDoneKeepsReply`, `W_OuterForkReentry`, `W_CrossForkReplacement`, `W_StoppingMixedBranches`, `W_OwedCutThenRunEnd`) |
+
 ## How to run
 
 As in `../../session-orchestration/README.md`: `TLA_TOOLS=<dir with tla2tools.jar> ./check-packet.sh` then

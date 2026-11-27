@@ -10734,5 +10734,595 @@
    "properties": [],
    "deadlock": true
   }
+ },
+ {
+  "id": "i8.fix-two-branch-safety",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.fix-two-branch-safety.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_BranchIsolation",
+   "Inv_CutPendingStopsVisit",
+   "Inv_NoStopOnActiveDone",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_MonotonicCycleOrder",
+   "Inv_StoppingKeepsActiveVisit",
+   "Inv_ReplacementDistinct"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8: two concurrent named branches (2 visits each), cuts, stop failures, graceful stop and cancel: isolation, I1 no-stop-on-done, cut stops pending, G2 drain, Q5 mixed-branch stop.",
+  "tlc": {
+   "comment": "i8.fix-two-branch-safety (expected PASS): I8: two concurrent named branches (2 visits each), cuts, stop failures, graceful stop and cancel: isolation, I1 no-stop-on-done, cut stops pending, G2 drain, Q5 mixed-branch stop.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\", \"B\"}",
+    "MaxForks": "1",
+    "MaxBranchVisits": "2",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "TRUE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "TRUE",
+    "AllowRunCancel": "TRUE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_BranchIsolation",
+    "Inv_CutPendingStopsVisit",
+    "Inv_NoStopOnActiveDone",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_MonotonicCycleOrder",
+    "Inv_StoppingKeepsActiveVisit",
+    "Inv_ReplacementDistinct"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.fix-two-branch-live",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.fix-two-branch-live.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_BranchIsolation",
+   "Inv_CutPendingStopsVisit",
+   "Inv_NoStopOnActiveDone",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_MonotonicCycleOrder",
+   "Inv_StoppingKeepsActiveVisit",
+   "Inv_ReplacementDistinct"
+  ],
+  "properties": [
+   "Prop_AllEnded"
+  ],
+  "deadlock": true,
+  "note": "I8 liveness: two concurrent named branches with cuts and failing cycle Stops (owed Stop then run end with no re-entry): every session ends and turns idle.",
+  "tlc": {
+   "comment": "i8.fix-two-branch-live (expected PASS): I8 liveness: two concurrent named branches with cuts and failing cycle Stops (owed Stop then run end with no re-entry): every session ends and turns idle.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Branches": "{\"A\", \"B\"}",
+    "MaxForks": "1",
+    "MaxBranchVisits": "1",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "TRUE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "TRUE",
+    "AllowRunCancel": "TRUE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_BranchIsolation",
+    "Inv_CutPendingStopsVisit",
+    "Inv_NoStopOnActiveDone",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_MonotonicCycleOrder",
+    "Inv_StoppingKeepsActiveVisit",
+    "Inv_ReplacementDistinct"
+   ],
+   "properties": [
+    "Prop_AllEnded"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.fix-fail-branch-isolation",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.fix-fail-branch-isolation.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_BranchIsolation",
+   "Inv_CutPendingStopsVisit",
+   "Inv_NoStopOnActiveDone",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_MonotonicCycleOrder",
+   "Inv_StoppingKeepsActiveVisit",
+   "Inv_ReplacementDistinct"
+  ],
+  "properties": [
+   "Prop_OtherBranchEnded"
+  ],
+  "deadlock": true,
+  "note": "I8 branch isolation: failing run-end on branch A does not block ending branch B's continued session.",
+  "tlc": {
+   "comment": "i8.fix-fail-branch-isolation (expected PASS): I8 branch isolation: failing run-end on branch A does not block ending branch B's continued session.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Branches": "{\"A\", \"B\"}",
+    "MaxForks": "1",
+    "MaxBranchVisits": "1",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "TRUE",
+    "AllowRunCancel": "TRUE",
+    "FailEndBranch": "\"A\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_BranchIsolation",
+    "Inv_CutPendingStopsVisit",
+    "Inv_NoStopOnActiveDone",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_MonotonicCycleOrder",
+    "Inv_StoppingKeepsActiveVisit",
+    "Inv_ReplacementDistinct"
+   ],
+   "properties": [
+    "Prop_OtherBranchEnded"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.fix-outer-loop-safety",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.fix-outer-loop-safety.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "Spec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_BranchIsolation",
+   "Inv_CutPendingStopsVisit",
+   "Inv_NoStopOnActiveDone",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_MonotonicCycleOrder",
+   "Inv_StoppingKeepsActiveVisit",
+   "Inv_ReplacementDistinct"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 outer-loop re-entry: 2 forks x 2 visits with cuts, stop failures, person-ended cross-fork replacement, and graceful stop: composite rank keeps monotonic cycles, distinct replacements, and Q5.",
+  "tlc": {
+   "comment": "i8.fix-outer-loop-safety (expected PASS): I8 outer-loop re-entry: 2 forks x 2 visits with cuts, stop failures, person-ended cross-fork replacement, and graceful stop: composite rank keeps monotonic cycles, distinct replacements, and Q5.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "2",
+    "MaxBranchVisits": "2",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "TRUE",
+    "AllowPersonEnd": "TRUE",
+    "AllowGracefulStop": "TRUE",
+    "AllowRunCancel": "TRUE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_BranchIsolation",
+    "Inv_CutPendingStopsVisit",
+    "Inv_NoStopOnActiveDone",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_MonotonicCycleOrder",
+    "Inv_StoppingKeepsActiveVisit",
+    "Inv_ReplacementDistinct"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.fix-outer-loop-live",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.fix-outer-loop-live.cfg",
+  "mode": "proposal",
+  "meaning": "proposed-fix",
+  "spec": "LiveSpec",
+  "expected": "PASS",
+  "invariants": [
+   "TypeOK",
+   "Inv_BranchIsolation",
+   "Inv_CutPendingStopsVisit",
+   "Inv_NoStopOnActiveDone",
+   "Inv_NoPromptBehindStaleTurn",
+   "Inv_MonotonicCycleOrder",
+   "Inv_StoppingKeepsActiveVisit",
+   "Inv_ReplacementDistinct"
+  ],
+  "properties": [
+   "Prop_AllEnded"
+  ],
+  "deadlock": true,
+  "note": "I8 outer-loop liveness: 2 forks x 2 visits with owed cut Stops and cross-fork replacements: every session ends and no Stop remains owed.",
+  "tlc": {
+   "comment": "i8.fix-outer-loop-live (expected PASS): I8 outer-loop liveness: 2 forks x 2 visits with owed cut Stops and cross-fork replacements: every session ends and no Stop remains owed.",
+   "spec": "LiveSpec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "2",
+    "MaxBranchVisits": "2",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "TRUE",
+    "AllowPersonEnd": "TRUE",
+    "AllowGracefulStop": "TRUE",
+    "AllowRunCancel": "TRUE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_BranchIsolation",
+    "Inv_CutPendingStopsVisit",
+    "Inv_NoStopOnActiveDone",
+    "Inv_NoPromptBehindStaleTurn",
+    "Inv_MonotonicCycleOrder",
+    "Inv_StoppingKeepsActiveVisit",
+    "Inv_ReplacementDistinct"
+   ],
+   "properties": [
+    "Prop_AllEnded"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.fault-node-ordinal-only",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.fault-node-ordinal-only.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_MonotonicCycleOrder"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "I8 deliberate fault (OrderByNodeOrdinalOnly): bare n.ordinal ranks fork-2 visit 1 behind fork-1 visit 2, corrupting cycle numbering.",
+  "tlc": {
+   "comment": "i8.fault-node-ordinal-only (expected safety): I8 deliberate fault (OrderByNodeOrdinalOnly): bare n.ordinal ranks fork-2 visit 1 behind fork-1 visit 2, corrupting cycle numbering.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "2",
+    "MaxBranchVisits": "2",
+    "AllowCut": "FALSE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "FALSE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_MonotonicCycleOrder"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "i8.fault-node-ordinal-q5",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.fault-node-ordinal-q5.cfg",
+  "mode": "deliberate",
+  "meaning": "deliberate",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "TypeOK",
+   "Inv_StoppingKeepsActiveVisit"
+  ],
+  "properties": [],
+  "deadlock": false,
+  "note": "I8 deliberate fault (OrderByNodeOrdinalOnly): bare n.ordinal makes endContinuedSessionLocked read fork-1 visit 2 (completed) as newest while fork-2 visit 1 is pending, ending a live session during graceful stop (Q5).",
+  "tlc": {
+   "comment": "i8.fault-node-ordinal-q5 (expected safety): I8 deliberate fault (OrderByNodeOrdinalOnly): bare n.ordinal makes endContinuedSessionLocked read fork-1 visit 2 (completed) as newest while fork-2 visit 1 is pending, ending a live session during graceful stop (Q5).",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "2",
+    "MaxBranchVisits": "2",
+    "AllowCut": "FALSE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "TRUE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "TRUE"
+   },
+   "invariants": [
+    "TypeOK",
+    "Inv_StoppingKeepsActiveVisit"
+   ],
+   "properties": [],
+   "deadlock": false
+  }
+ },
+ {
+  "id": "i8.wit-branch-loop-recall",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.wit-branch-loop-recall.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_BranchLoopCommitRecall"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 witness: intra-branch loop commits visit 1 memory without Stop and visit 2 runs seeing visit 1 committed.",
+  "tlc": {
+   "comment": "i8.wit-branch-loop-recall (expected safety): I8 witness: intra-branch loop commits visit 1 memory without Stop and visit 2 runs seeing visit 1 committed.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "1",
+    "MaxBranchVisits": "2",
+    "AllowCut": "FALSE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "FALSE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "W_BranchLoopCommitRecall"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.wit-cut-pending-stops",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.wit-cut-pending-stops.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_CutPendingStopsVisit"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 witness: pending visit cut by failFast/join/timeout receives a cycle Stop.",
+  "tlc": {
+   "comment": "i8.wit-cut-pending-stops (expected safety): I8 witness: pending visit cut by failFast/join/timeout receives a cycle Stop.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "1",
+    "MaxBranchVisits": "1",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "FALSE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "W_CutPendingStopsVisit"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.wit-cut-after-done-keeps-reply",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.wit-cut-after-done-keeps-reply.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_CutAfterDoneKeepsReply"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 witness: branch cut after visit already reported (agent) lets the post-report reply finish and commit memory without Stop.",
+  "tlc": {
+   "comment": "i8.wit-cut-after-done-keeps-reply (expected safety): I8 witness: branch cut after visit already reported (agent) lets the post-report reply finish and commit memory without Stop.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "1",
+    "MaxBranchVisits": "1",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "FALSE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "W_CutAfterDoneKeepsReply"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.wit-outer-fork-reentry",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.wit-outer-fork-reentry.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_OuterForkReentry"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 witness: outer loop re-enters parallel fork 2 after 2 visits in fork 1; fork 2 visit 1 runs as cycle 3 recalling fork 1 memory.",
+  "tlc": {
+   "comment": "i8.wit-outer-fork-reentry (expected safety): I8 witness: outer loop re-enters parallel fork 2 after 2 visits in fork 1; fork 2 visit 1 runs as cycle 3 recalling fork 1 memory.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "2",
+    "MaxBranchVisits": "2",
+    "AllowCut": "FALSE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "FALSE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "W_OuterForkReentry"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.wit-cross-fork-replacement",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.wit-cross-fork-replacement.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_CrossForkReplacement"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 witness: session ended on its own in fork 1 gets a distinct replacement session in fork 2.",
+  "tlc": {
+   "comment": "i8.wit-cross-fork-replacement (expected safety): I8 witness: session ended on its own in fork 1 gets a distinct replacement session in fork 2.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "2",
+    "MaxBranchVisits": "1",
+    "AllowCut": "FALSE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "TRUE",
+    "AllowGracefulStop": "FALSE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "W_CrossForkReplacement"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.wit-stopping-mixed-branches",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.wit-stopping-mixed-branches.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_StoppingMixedBranches"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 witness: during graceful stop, idle branch A's session ends immediately while branch B's pending visit keeps running.",
+  "tlc": {
+   "comment": "i8.wit-stopping-mixed-branches (expected safety): I8 witness: during graceful stop, idle branch A's session ends immediately while branch B's pending visit keeps running.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\", \"B\"}",
+    "MaxForks": "1",
+    "MaxBranchVisits": "1",
+    "AllowCut": "FALSE",
+    "AllowStopFail": "FALSE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "TRUE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "W_StoppingMixedBranches"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "i8.wit-owed-cut-then-run-end",
+  "module": "WfBranchContinuedSession",
+  "config": "i8.wit-owed-cut-then-run-end.cfg",
+  "mode": "proposal",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_OwedCutThenRunEnd"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "I8 witness: a cut's cycle Stop fails (owed), the run ends with no re-entry, and run-end session close stops and ends the session.",
+  "tlc": {
+   "comment": "i8.wit-owed-cut-then-run-end (expected safety): I8 witness: a cut's cycle Stop fails (owed), the run ends with no re-entry, and run-end session close stops and ends the session.",
+   "spec": "Spec",
+   "constants": {
+    "Branches": "{\"A\"}",
+    "MaxForks": "1",
+    "MaxBranchVisits": "1",
+    "AllowCut": "TRUE",
+    "AllowStopFail": "TRUE",
+    "AllowPersonEnd": "FALSE",
+    "AllowGracefulStop": "FALSE",
+    "AllowRunCancel": "FALSE",
+    "FailEndBranch": "\"none\"",
+    "OrderByNodeOrdinalOnly": "FALSE"
+   },
+   "invariants": [
+    "W_OwedCutThenRunEnd"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
  }
 ]

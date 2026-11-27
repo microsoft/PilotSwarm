@@ -372,6 +372,76 @@ CASES = [
  ("wit.cycle-stop", "reviewed", "witness", "Spec", cc(), ["W_NoCycleStop"], [], "safety", True, "A cycle Stop ends a decided visit's running turn."),
  ("wit.skip-decided", "reviewed", "witness", "Spec", cc(), ["W_NoSkip"], [], "safety", True, "A queued prompt of a decided visit is skipped at turn start."),
 ]
+MB = "WfBranchContinuedSession"
+def i8c(branches=("A", "B"), forks=1, visits=2, cut=True, stopfail=False, personend=False, stop=True, cancel=True, failbranch="none", nodeordonly=False):
+    br = "{" + ", ".join(q(x) for x in branches) + "}"
+    return dict(Branches=br, MaxForks=forks, MaxBranchVisits=visits, AllowCut=b(cut), AllowStopFail=b(stopfail),
+                AllowPersonEnd=b(personend), AllowGracefulStop=b(stop), AllowRunCancel=b(cancel),
+                FailEndBranch=q(failbranch), OrderByNodeOrdinalOnly=b(nodeordonly))
+I8_SAFE = ["TypeOK", "Inv_BranchIsolation", "Inv_CutPendingStopsVisit", "Inv_NoStopOnActiveDone",
+           "Inv_NoPromptBehindStaleTurn", "Inv_MonotonicCycleOrder", "Inv_StoppingKeepsActiveVisit", "Inv_ReplacementDistinct"]
+I8_CASES = [
+ # Two concurrent named branches: isolation, branch cuts vs I1 post-report replies, completion-vs-cut CAS race, graceful stop with mixed states
+ ("i8.fix-two-branch-safety", "proposal", "proposed-fix", "Spec",
+  i8c(branches=("A", "B"), forks=1, visits=2, cut=True, stopfail=True, personend=False, stop=True, cancel=True),
+  I8_SAFE, [], "PASS", True,
+  "I8: two concurrent named branches (2 visits each), cuts, stop failures, graceful stop and cancel: isolation, I1 no-stop-on-done, cut stops pending, G2 drain, Q5 mixed-branch stop."),
+ ("i8.fix-two-branch-live", "proposal", "proposed-fix", "LiveSpec",
+  i8c(branches=("A", "B"), forks=1, visits=1, cut=True, stopfail=True, personend=False, stop=True, cancel=True),
+  I8_SAFE, ["Prop_AllEnded"], "PASS", True,
+  "I8 liveness: two concurrent named branches with cuts and failing cycle Stops (owed Stop then run end with no re-entry): every session ends and turns idle."),
+ ("i8.fix-fail-branch-isolation", "proposal", "proposed-fix", "LiveSpec",
+  i8c(branches=("A", "B"), forks=1, visits=1, cut=True, stopfail=False, personend=False, stop=True, cancel=True, failbranch="A"),
+  I8_SAFE, ["Prop_OtherBranchEnded"], "PASS", True,
+  "I8 branch isolation: failing run-end on branch A does not block ending branch B's continued session."),
+ # Outer-loop parallel re-entry (2 forks x 2 visits): composite (p.ordinal, n.ordinal) ordering, cross-fork replacement, graceful stop across forks
+ ("i8.fix-outer-loop-safety", "proposal", "proposed-fix", "Spec",
+  i8c(branches=("A",), forks=2, visits=2, cut=True, stopfail=True, personend=True, stop=True, cancel=True),
+  I8_SAFE, [], "PASS", True,
+  "I8 outer-loop re-entry: 2 forks x 2 visits with cuts, stop failures, person-ended cross-fork replacement, and graceful stop: composite rank keeps monotonic cycles, distinct replacements, and Q5."),
+ ("i8.fix-outer-loop-live", "proposal", "proposed-fix", "LiveSpec",
+  i8c(branches=("A",), forks=2, visits=2, cut=True, stopfail=True, personend=True, stop=True, cancel=True),
+  I8_SAFE, ["Prop_AllEnded"], "PASS", True,
+  "I8 outer-loop liveness: 2 forks x 2 visits with owed cut Stops and cross-fork replacements: every session ends and no Stop remains owed."),
+ # Deliberate faults: bare n.ordinal ordering (OrderByNodeOrdinalOnly = TRUE) breaks both monotonic cycles and Q5 graceful stop!
+ ("i8.fault-node-ordinal-only", "deliberate", "deliberate", "Spec",
+  i8c(branches=("A",), forks=2, visits=2, cut=False, stopfail=False, personend=False, stop=False, cancel=False, nodeordonly=True),
+  ["TypeOK", "Inv_MonotonicCycleOrder"], [], "safety", False,
+  "I8 deliberate fault (OrderByNodeOrdinalOnly): bare n.ordinal ranks fork-2 visit 1 behind fork-1 visit 2, corrupting cycle numbering."),
+ ("i8.fault-node-ordinal-q5", "deliberate", "deliberate", "Spec",
+  i8c(branches=("A",), forks=2, visits=2, cut=False, stopfail=False, personend=False, stop=True, cancel=False, nodeordonly=True),
+  ["TypeOK", "Inv_StoppingKeepsActiveVisit"], [], "safety", False,
+  "I8 deliberate fault (OrderByNodeOrdinalOnly): bare n.ordinal makes endContinuedSessionLocked read fork-1 visit 2 (completed) as newest while fork-2 visit 1 is pending, ending a live session during graceful stop (Q5)."),
+ # Non-vacuity witnesses
+ ("i8.wit-branch-loop-recall", "proposal", "witness", "Spec",
+  i8c(branches=("A",), forks=1, visits=2, cut=False, stopfail=False, personend=False, stop=False, cancel=False),
+  ["W_BranchLoopCommitRecall"], [], "safety", True,
+  "I8 witness: intra-branch loop commits visit 1 memory without Stop and visit 2 runs seeing visit 1 committed."),
+ ("i8.wit-cut-pending-stops", "proposal", "witness", "Spec",
+  i8c(branches=("A",), forks=1, visits=1, cut=True, stopfail=False, personend=False, stop=False, cancel=False),
+  ["W_CutPendingStopsVisit"], [], "safety", True,
+  "I8 witness: pending visit cut by failFast/join/timeout receives a cycle Stop."),
+ ("i8.wit-cut-after-done-keeps-reply", "proposal", "witness", "Spec",
+  i8c(branches=("A",), forks=1, visits=1, cut=True, stopfail=False, personend=False, stop=False, cancel=False),
+  ["W_CutAfterDoneKeepsReply"], [], "safety", True,
+  "I8 witness: branch cut after visit already reported (agent) lets the post-report reply finish and commit memory without Stop."),
+ ("i8.wit-outer-fork-reentry", "proposal", "witness", "Spec",
+  i8c(branches=("A",), forks=2, visits=2, cut=False, stopfail=False, personend=False, stop=False, cancel=False),
+  ["W_OuterForkReentry"], [], "safety", True,
+  "I8 witness: outer loop re-enters parallel fork 2 after 2 visits in fork 1; fork 2 visit 1 runs as cycle 3 recalling fork 1 memory."),
+ ("i8.wit-cross-fork-replacement", "proposal", "witness", "Spec",
+  i8c(branches=("A",), forks=2, visits=1, cut=False, stopfail=False, personend=True, stop=False, cancel=False),
+  ["W_CrossForkReplacement"], [], "safety", True,
+  "I8 witness: session ended on its own in fork 1 gets a distinct replacement session in fork 2."),
+ ("i8.wit-stopping-mixed-branches", "proposal", "witness", "Spec",
+  i8c(branches=("A", "B"), forks=1, visits=1, cut=False, stopfail=False, personend=False, stop=True, cancel=False),
+  ["W_StoppingMixedBranches"], [], "safety", True,
+  "I8 witness: during graceful stop, idle branch A's session ends immediately while branch B's pending visit keeps running."),
+ ("i8.wit-owed-cut-then-run-end", "proposal", "witness", "Spec",
+  i8c(branches=("A",), forks=1, visits=1, cut=True, stopfail=True, personend=False, stop=False, cancel=False),
+  ["W_OwedCutThenRunEnd"], [], "safety", True,
+  "I8 witness: a cut's cycle Stop fails (owed), the run ends with no re-entry, and run-end session close stops and ends the session."),
+]
 def cfg(cid, spec, consts, invs, props, dl, note, exp):
     l = [f"\\* {cid} (expected {exp}): {note}", f"SPECIFICATION {spec}", "CONSTANTS"] + [f"    {k} = {v}" for k, v in consts.items()]
     if invs: l += ["INVARIANTS"] + [f"    {i}" for i in invs]
@@ -379,11 +449,12 @@ def cfg(cid, spec, consts, invs, props, dl, note, exp):
     l.append(f"CHECK_DEADLOCK {'TRUE' if dl else 'FALSE'}")
     return "\n".join(l) + "\n"
 tsv, out, texts = [], [], []
-for cid, mode, meaning, spec, consts, invs, props, exp, dl, note in CASES:
-    texts.append(cfg(cid, spec, consts, invs, props, dl, note, exp))
-    tsv.append(f"{cid}\t{cid}.cfg\t{M}")
-    out.append(dict(id=cid, module=M, config=f"{cid}.cfg", mode=mode, meaning=meaning, spec=spec, expected=exp,
-                    invariants=invs, properties=props, deadlock=dl, note=note))
+for mod, group in ((M, CASES), (MB, I8_CASES)):
+    for cid, mode, meaning, spec, consts, invs, props, exp, dl, note in group:
+        texts.append(cfg(cid, spec, consts, invs, props, dl, note, exp))
+        tsv.append(f"{cid}\t{cid}.cfg\t{mod}")
+        out.append(dict(id=cid, module=mod, config=f"{cid}.cfg", mode=mode, meaning=meaning, spec=spec, expected=exp,
+                        invariants=invs, properties=props, deadlock=dl, note=note))
 templates = tlc_cases.attach(out, texts)
 open("cases.tsv", "w").write("\n".join(tsv) + "\n"); json.dump(out, open("cases.json", "w"), indent=1)
 tlc_cases.dump_json("tlc-templates.json", templates, 2); print(len(tsv), "cases")
