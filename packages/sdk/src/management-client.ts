@@ -2241,8 +2241,13 @@ export class PilotSwarmManagementClient {
         // catalog), the view is exactly the tool's. A page, an execution's value or a read of its own is not the view: it has
         // no commands.
         const given = (value: unknown) => value !== undefined && value !== null;
-        if (!enabled || workflowExclusiveRead(request) !== null || given(request.cursor) || given(request.executionId)
+        if (workflowExclusiveRead(request) !== null || given(request.cursor) || given(request.executionId)
             || given(request.kvRevision) || given(request.kvKey)) return view;
+        // A deployment that takes no person's command takes no person's approval answer either.
+        if (!enabled) {
+            workflowApprovalAnswers(view, { acceptsAnswer: false, callerIsOwner: false });
+            return view;
+        }
         const run = view.run as { runId?: unknown } | null | undefined;
         const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
         // A draft's current revision: its YAML is what a person who may change the draft edits.
@@ -2251,7 +2256,10 @@ export class PilotSwarmManagementClient {
         const personCommands = await workflowCommandsForPerson(store, sessionId,
             { runId: shown, draftRevision, published: definition?.state === "published",
                 testMode: resolveWorkflowTestMode(enabled.testMode) });
-        const approvals = workflowApprovalAnswers(view);
+        const reader = workflowReaderOf(context).actor;
+        const approvals = workflowApprovalAnswers(view, {
+            acceptsAnswer: (personCommands.operations as string[]).includes("approval_respond"),
+            callerIsOwner: reader.kind === "user" && session.owner?.provider === reader.provider && session.owner?.subject === reader.subject });
         return { ...view, personCommands: { ...personCommands, ...(approvals.length > 0 ? { approvals } : {}) } };
     }
 

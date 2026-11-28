@@ -66,7 +66,7 @@ Script and agent take `supply: never`: re-runs cannot supply it.
 
 ### approval
 
-Owner consent: load `workflow-approval`. Agents cannot answer it.
+Owner consent: load `workflow-approval`.
 
 ### script
 

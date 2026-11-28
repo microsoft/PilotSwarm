@@ -817,6 +817,8 @@ export interface WorkflowModelReader {
     callerSessionId?: string | null;
     actor?: WorkflowActor | null;
     originatingSessionId?: string | null;
+    /** The person a session's read_workflow answers approvals for: its owner. */
+    approvalViewer?: Extract<WorkflowActor, { kind: "user" }> | null;
 }
 
 /**
@@ -844,7 +846,7 @@ export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "reso
     // With test mode off (the host's, or else the deployment flag), test runs are not shown and not found (review SF-5).
     const view = await readWorkflowView(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
         hideTestRuns: !resolveWorkflowTestMode(host.testMode), callerSessionId: reader.callerSessionId ?? null,
-        approvalViewer: reader.actor?.kind === "user" && !reader.originatingSessionId ? reader.actor : undefined });
+        approvalViewer: reader.approvalViewer ?? (reader.actor?.kind === "user" ? reader.actor : undefined) });
     if (host.readPackagePins && !(["cursor", "executionId", "kvRevision", "kvKey"] as const)
         .some(key => readOptionGiven(request, key))) {
         view.pins = (await host.readPackagePins(workflowSessionId)).map(pin => ({ ...pin }));
@@ -2083,19 +2085,43 @@ export function runControlView(control: WorkflowRunControl, callerSessionId: str
 }
 
 /**
- * The approvals a read shows and whether each takes an answer now (approval_respond). Every read says it the same way: the
- * agent's read_workflow (approvals) and a person's read (personCommands.approvals); the portal also checks its viewer.
+ * The approvals a read shows and whether each takes an answer now from the caller (approval_respond), by the rules
+ * approvals.respond() applies: the Workflow takes the answer (`acceptsAnswer`); the caller is the Workflow's current owner
+ * (`callerIsOwner`; for a session, its owner), may control it (`mayControl`) and is the approval's pinned owner (the row's
+ * `viewerIsPinnedOwner`); the live run and the approval's branch are open; and the deadline has not passed. Every surface
+ * reads it the same way: each approval row's `mayAnswer` and `answerReason`, which this sets, and the mirror it returns (the
+ * agent's read_workflow `approvals`; a person's `personCommands.approvals`).
  */
-export function workflowApprovalAnswers(view: Record<string, unknown>): JsonValue[] {
+export function workflowApprovalAnswers(view: Record<string, unknown>, options: {
+    callerIsOwner: boolean; mayControl?: boolean; acceptsAnswer?: boolean; now?: number }): JsonValue[] {
     const run = isJsonObject(view.run) ? view.run : null;
     if (run === null || typeof run.runId !== "string") return [];
+    const now = options.now ?? Date.now();
+    const list = (key: string): JsonValue[] => (Array.isArray(run[key]) ? run[key] as JsonValue[] : []);
+    const executions = [...list("nodeExecutions"), ...list("openExecutions")];
+    const past = (at: unknown) => typeof at === "string" && Number.isFinite(Date.parse(at)) && Date.parse(at) <= now;
+    const branchOpen = (execution: JsonObject): boolean => {
+        const id = isJsonObject(execution.branch) ? execution.branch.parallelNodeExecutionId : null;
+        const parent = executions.find(item => isJsonObject(item) && item.nodeExecutionId === id);
+        return !isJsonObject(parent) || (parent.state === "pending" && !past(parent.deadline));
+    };
     const answers = new Map<string, JsonValue>();
-    for (const execution of [...(Array.isArray(run.nodeExecutions) ? run.nodeExecutions : []), ...(Array.isArray(run.openExecutions) ? run.openExecutions : [])]) {
-        if (!isJsonObject(execution) || !isJsonObject(execution.approval) || typeof execution.approval.approvalId !== "string") continue;
-        const open = execution.approval.status === "pending";
-        answers.set(execution.approval.approvalId, { approvalId: execution.approval.approvalId, runId: run.runId, mayAnswer: open,
-            reason: open ? null : "This approval no longer accepts a new answer." });
-    }
+    const annotate = (execution: JsonValue): JsonValue => {
+        if (!isJsonObject(execution) || !isJsonObject(execution.approval) || typeof execution.approval.approvalId !== "string") return execution;
+        const approval = execution.approval;
+        let reason: string | null = null;
+        if (options.acceptsAnswer === false) reason = "This Workflow does not accept a person's approval answer.";
+        else if (!options.callerIsOwner || options.mayControl === false || approval.viewerIsPinnedOwner !== true) reason = "Only the pinned owner, while still the Workflow's owner, can answer.";
+        else if (run.mode !== "live" || run.stop || !["admitted", "running", "paused"].includes(String(run.status))
+            || approval.status !== "pending" || !branchOpen(execution)) reason = "This approval no longer accepts a new answer.";
+        else if (typeof approval.deadlineAt !== "string" || !Number.isFinite(Date.parse(approval.deadlineAt)) || past(approval.deadlineAt)) {
+            reason = "The approval deadline has passed.";
+        }
+        answers.set(approval.approvalId as string, { approvalId: approval.approvalId, runId: run.runId, mayAnswer: reason === null, reason });
+        return { ...execution, approval: { ...approval, mayAnswer: reason === null, answerReason: reason } };
+    };
+    view.run = { ...run, ...(Array.isArray(run.nodeExecutions) ? { nodeExecutions: run.nodeExecutions.map(annotate) } : {}),
+        ...(Array.isArray(run.openExecutions) ? { openExecutions: run.openExecutions.map(annotate) } : {}) };
     return [...answers.values()];
 }
 
@@ -2114,12 +2140,15 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
             }
             return payload({ ok: true, ...retainedWorkflowReadModel(workflowSessionId, retained, args) });
         }
+        // A session answers approvals as its owner (approvalFromTool), so it reads them as its owner.
+        const owner = await resolveEffectiveSpawnOwner(id => context.host.catalog.getSession(id), context.callerSessionId);
+        const approvalViewer = owner ? { kind: "user" as const, provider: owner.provider, subject: owner.subject } : null;
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
         const view = await readWorkflowModel(context.host, workflowSessionId, {
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml, cursor: args.cursor, limit: args.limit,
             executionId: args.execution_id, kvRevision: args.kv_revision, kvKey: args.kv_key, agentVersions: args.agent_versions,
             definitionRevision: args.definition_revision, stepInput: args.step_input, rerunPlan: args.rerun_plan,
-        }, "tool", { callerSessionId: context.callerSessionId });
+        }, "tool", { callerSessionId: context.callerSessionId, approvalViewer });
         // Report (never change) whether an active run's controller can still end it; the view only (a page, an execution's value
         // or a read of its own has no run object).
         const shown = isJsonObject(view.run) && typeof view.run.runId === "string" ? await context.host.store.readRun(view.run.runId) : null;
@@ -2127,7 +2156,14 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
             const controller = await inspectWorkflowController(context.host, shown);
             view.run = { ...view.run, controller: { status: controller.status, error: controller.error, needsRecovery: controller.needsRecovery } };
         }
-        const approvals = workflowApprovalAnswers(view);
+        let approvals: JsonValue[] = [];
+        if (shown) {
+            const workflowOwner = (await context.host.catalog.getSession(workflowSessionId))?.owner;
+            const mayControl = await authorizeRunControl(context.host, workflowSessionId, context.callerSessionId, shown.runId)
+                .then(() => true, () => false);
+            approvals = workflowApprovalAnswers(view, { mayControl, callerIsOwner: !!approvalViewer && !!workflowOwner
+                && workflowOwner.provider === approvalViewer.provider && workflowOwner.subject === approvalViewer.subject });
+        }
         return payload({ ok: true, ...view, ...(approvals.length > 0 ? { approvals } : {}) });
     } catch (error) {
         return errorPayload(error);

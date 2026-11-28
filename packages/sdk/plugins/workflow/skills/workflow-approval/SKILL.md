@@ -5,10 +5,10 @@ description: Owner approval state fields, frozen context, identity, deadlines, a
 
 # Workflow owner approval
 
-An owner decision. The owner answers it in the portal, over MCP or the API, or
-the session that controls the Workflow answers it for the owner with
-`update_workflow` `approval_respond`; it gets an `approval` notice when the
-visit opens. The first answer wins. Available to new runs at controller 1.1.0;
+An owner decision. The owner answers it in the portal, over MCP or the API,
+or a session that may control the Workflow answers it for the owner with
+`update_workflow` `approval_respond`. The immediate parent gets an `approval`
+notice when the visit opens. The first answer wins. Available to new runs at controller 1.1.0;
 existing 1.0.0 runs keep their original behavior. An agent may author this
 state and answer it for the owner.
 
@@ -62,8 +62,11 @@ permission to Azure, Git, ADO or any other downstream operation.
 Every surface sends the same `approval_respond` (`run_id`, `approval_id`, the
 node execution id, its exact `context_sha256`, `decision` `approved` or
 `rejected`, `reason`, `operation_id`) to the same check. The host stamps
-identity; an answer through a session records `viaSessionId` in the receipt.
-A session sees `decidedBy` as `{ by: "a person", name }`, as for pause.
+identity; only a session's own `update_workflow` records `viaSessionId` in the
+receipt. Every reader sees `decidedBy` as `{ by: "a person", name }`, as for
+pause. Each approval row's `mayAnswer` says if the reader can answer it now.
 It commits the result, audit, receipt and event atomically; an exact
 authorized retry returns the original receipt even after the run ends. A
-later answer fails `APPROVAL_CLOSED`; a late one, `APPROVAL_EXPIRED`.
+fresh answer fails `APPROVAL_EXPIRED` when the deadline passed before the
+timeout was recorded, and `APPROVAL_CLOSED` when the approval is decided or
+timed out, or the run or branch no longer takes answers.

@@ -275,8 +275,9 @@ export async function updateWorkflowForPerson(command: unknown,
     }
     if (absent) throw absent;
     if (args.operation === "approval_respond") {
-        if (actor.kind !== "user") throw new WorkflowStoreError("FORBIDDEN", "Only the owner can answer this approval.");
-        return respondWorkflowApproval(host, workflowSessionId, parseApprovalCommand(args), actor, context.originatingSessionId ?? null);
+        // Parsed first, so a malformed answer is WORKFLOW_COMMAND_INVALID on every surface; respond() refuses a non-person
+        // actor. A caller-supplied originating session is not verified here: only the agent's update_workflow records viaSessionId.
+        return respondWorkflowApproval(host, workflowSessionId, parseApprovalCommand(args), actor);
     }
     return await runUpdateWorkflowCommand({ ...args, workflow_id: workflowSessionId }, host, actor, async () => {});
 }

@@ -400,19 +400,19 @@ console.log("✅ every server registers update_workflow unless a test passes nul
 console.log("✅ update_workflow names the test operations, and read_workflow a test run's part, only with workflow test mode on");
 
 // 10. Phase 4 (Task 4): approval_respond goes to the same person's command as every other surface (it answers as the owner,
-//     and names the originating session); list_creatable_workflows; create_session_for_workflow;
+//     and passes the originating session on); list_creatable_workflows; create_session_for_workflow;
 //     read_workflow_skill; and workflow_definition (all 8 ops, operation_id, script warning, update:true, SF-2).
 {
     const calls = [];
     const upd = toolsWith({
         workflowCommands: true,
-        mgmt: { updateWorkflow: async (...args) => { calls.push(args); return { approvalId: "a1", decision: "approved", viaSessionId: "agent-1", replayed: false }; } },
+        mgmt: { updateWorkflow: async (...args) => { calls.push(args); return { approvalId: "a1", decision: "approved", viaSessionId: null, replayed: false }; } },
     }).get("update_workflow");
     const command = { operation: "approval_respond", operation_id: "ans-1", run_id: "run-1", approval_id: "a1", context_sha256: "a".repeat(64), decision: "approved" };
     const appRes = await upd({ session_id: SID, command, originating_session_id: "agent-1" });
     assert.equal(appRes.isError, undefined);
     assert.deepEqual(calls, [[SID, command, { originatingSessionId: "agent-1" }]]);
-    assert.equal(JSON.parse(appRes.content[0].text).viaSessionId, "agent-1");
+    assert.equal(JSON.parse(appRes.content[0].text).viaSessionId, null, "a person's answer names no session, whatever it is passed on from");
 }
 
 {

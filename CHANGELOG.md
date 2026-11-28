@@ -49,19 +49,23 @@ limits as it arrived.
 
 ### Workflows: the controlling session answers approvals
 
-An approval step can now be answered by the session that controls the
-Workflow, for its owner: it gets a `[WORKFLOW_UPDATE … type=approval]` notice
-when the step opens (question, a short context, deadline, run id, approval id
-and the exact call) and answers with `update_workflow` `approval_respond`.
+An approval step can now be answered for its owner by any session that may
+control the Workflow, with `update_workflow` `approval_respond`. The immediate
+parent gets a `[WORKFLOW_UPDATE … type=approval]` notice when the step opens
+(question, a context preview of at most 1,500 characters, deadline, run id,
+approval id and the exact call).
 Every surface sends the same `approval_respond` (`run_id`, `approval_id`,
 `context_sha256`, `decision`, `reason`, `operation_id`) to the same check: the
 portal node (unchanged), the Web API and SDK `updateWorkflow`, MCP
-`update_workflow` (no longer refused) and the agent tool. Each read says
-`mayAnswer` (agent `read_workflow` adds `approvals`). The owner checks, the
-first-answer-wins rule and the errors (`APPROVAL_CLOSED`, `APPROVAL_EXPIRED`,
-`APPROVAL_NOT_FOUND`, `FORBIDDEN`) are unchanged. An answer through a session
-records `viaSessionId` in the receipt; the session sees `decidedBy` as "a
-person" and a name, as for pause and resume. No migration and no controller version
+`update_workflow` (no longer refused; `reason` may be `null`) and the agent
+tool. Each approval row's `mayAnswer` says whether the reader can answer it
+now; `personCommands.approvals` and the agent's `approvals` mirror it. The
+owner checks, the first-answer-wins rule and the errors
+(`APPROVAL_CONTEXT_CHANGED`, `APPROVAL_CLOSED`, `APPROVAL_EXPIRED`,
+`APPROVAL_NOT_FOUND`, `OPERATION_CONFLICT`, `FORBIDDEN`,
+`WORKFLOW_COMMAND_INVALID`) are unchanged. Only a session's own
+`update_workflow` records `viaSessionId` in the receipt, which every surface
+shows with `decidedBy` as "a person" and a name, as for pause and resume. No migration and no controller version
 change; turns frozen at 1.0.82 keep their old `update_workflow` declaration.
 
 ### Workflows: re-run from a step

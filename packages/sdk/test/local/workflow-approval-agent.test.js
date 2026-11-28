@@ -6,6 +6,7 @@
  * the management client (with or without an originating session) is the same respond(): the first answer wins.
  */
 import { describe, it, expect } from "vitest";
+import pg from "pg";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -109,6 +110,8 @@ async function finished(h, runId) {
     }, `run ${runId} to finish`);
 }
 
+const row = (view, s) => view.run.nodeExecutions.find(execution => execution.approval?.approvalId === s.approvalId);
+
 const answer = (s, decision, operationId, reason) => ({ operation: "approval_respond", operation_id: operationId, run_id: s.runId,
     approval_id: s.approvalId, context_sha256: s.contextSha256, decision, ...(reason ? { reason } : {}) });
 
@@ -130,6 +133,8 @@ describe("workflow approval answered by the controlling session", () => {
 
             const before = await s.read();
             expect(before.approvals).toEqual([{ approvalId: s.approvalId, runId: s.runId, mayAnswer: true, reason: null }]);
+            expect(row(before, s).approval).toMatchObject({ mayAnswer: true, answerReason: null });
+            expect(JSON.stringify(before)).not.toContain(OWNER.subject);
 
             const receipt = await s.update(answer(s, "approved", "agent-approve"));
             expect(receipt).toMatchObject({ ok: true, operation: "approval_respond", approvalId: s.approvalId, runId: s.runId,
@@ -145,6 +150,7 @@ describe("workflow approval answered by the controlling session", () => {
             const after = await s.read();
             expect(after.approvals).toEqual([{ approvalId: s.approvalId, runId: s.runId, mayAnswer: false,
                 reason: "This approval no longer accepts a new answer." }]);
+            expect(row(after, s).approval).toMatchObject({ mayAnswer: false, answerReason: "This approval no longer accepts a new answer." });
         } finally {
             await h.stop();
         }
@@ -171,18 +177,59 @@ describe("workflow approval answered by the controlling session", () => {
         await mgmt.start();
         try {
             const s = await openApproval(h);
-            const view = await mgmt.readWorkflow(s.workflowId);
+            // One read field on every surface: the approval row's mayAnswer, mirrored in personCommands.approvals.
+            const view = await mgmt.readWorkflow(s.workflowId, {}, { principal: OWNER, originatingSessionId: s.parentId });
             expect(view.personCommands.approvals).toEqual([{ approvalId: s.approvalId, runId: s.runId, mayAnswer: true, reason: null }]);
+            expect(row(view, s).approval).toMatchObject({ mayAnswer: true, answerReason: null });
+            const notOwner = "Only the pinned owner, while still the Workflow's owner, can answer.";
+            const other = await mgmt.readWorkflow(s.workflowId, {}, { principal: { provider: "test", subject: "someone-else" } });
+            expect(other.personCommands.approvals).toEqual([{ approvalId: s.approvalId, runId: s.runId, mayAnswer: false, reason: notOwner }]);
+            expect(row(other, s).approval).toMatchObject({ mayAnswer: false, answerReason: notOwner });
+            await expect(mgmt.updateWorkflow(s.workflowId, answer(s, "approved", "other-approve"), { principal: { provider: "test", subject: "someone-else" } }))
+                .rejects.toMatchObject({ code: "FORBIDDEN" });
 
+            // A caller-supplied originating session is not verified, so it is not recorded: viaSessionId is null.
             const person = await mgmt.updateWorkflow(s.workflowId, answer(s, "approved", "person-approve"),
                 { principal: OWNER, originatingSessionId: s.parentId });
-            expect(person).toMatchObject({ decision: "approved", viaSessionId: s.parentId, replayed: false });
+            expect(person).toMatchObject({ decision: "approved", viaSessionId: null, replayed: false });
 
             const late = await s.update(answer(s, "rejected", "agent-late", "Too late."));
             expect(late).toMatchObject({ ok: false, error: { code: "APPROVAL_CLOSED" } });
             const run = await finished(h, s.runId);
             expect(run).toMatchObject({ terminalNodeId: "release", terminalOutcome: "succeeded" });
         } finally {
+            await mgmt.stop();
+            await h.stop();
+        }
+    });
+
+    it("one operation_id retried through another surface replays the first receipt; a changed answer conflicts", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const h = await harness(env);
+        const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
+            factsSchema: env.factsSchema, workflowCommands: {} });
+        await mgmt.start();
+        const sql = new pg.Pool({ connectionString: env.store, max: 1 });
+        try {
+            const s = await openApproval(h);
+            const { ok, ...first } = await s.update(answer(s, "approved", "shared-op"));
+            expect(first).toMatchObject({ decision: "approved", viaSessionId: s.parentId, replayed: false });
+            // viaSessionId is not in the request digest: the person's retry of the same command replays the session's receipt.
+            const retried = await mgmt.updateWorkflow(s.workflowId, answer(s, "approved", "shared-op"), { principal: OWNER });
+            expect(retried).toEqual({ ...first, replayed: true });
+            await expect(mgmt.updateWorkflow(s.workflowId, answer(s, "rejected", "shared-op", "Changed."), { principal: OWNER }))
+                .rejects.toMatchObject({ code: "OPERATION_CONFLICT" });
+            // A receipt stored before viaSessionId existed replays with viaSessionId null.
+            const schema = `"${env.cmsSchema.replace(/"/g, '""')}"`;
+            const { rows } = await sql.query(`SELECT receipt FROM ${schema}.workflow_operations WHERE workflow_session_id=$1 AND operation_id='shared-op'`,
+                [s.workflowId]);
+            const { viaSessionId, ...legacy } = JSON.parse(rows[0].receipt);
+            await sql.query(`UPDATE ${schema}.workflow_operations SET receipt=$3 WHERE workflow_session_id=$1 AND operation_id=$2`,
+                [s.workflowId, "shared-op", JSON.stringify(legacy)]);
+            const replayed = await mgmt.updateWorkflow(s.workflowId, answer(s, "approved", "shared-op"), { principal: OWNER });
+            expect(replayed).toEqual({ ...first, viaSessionId: null, replayed: true });
+        } finally {
+            await sql.end();
             await mgmt.stop();
             await h.stop();
         }

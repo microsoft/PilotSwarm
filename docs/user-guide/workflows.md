@@ -1114,16 +1114,20 @@ proposal, owner and deadline, then choose **Approve** or **Reject**. Rejection
 requires a reason. The same details and controls are available on a phone.
 The TUI directs you to the portal to answer.
 
-The session that controls the Workflow (its parent) also gets an `approval`
-notice when the step opens, and may answer for you with `update_workflow`
-`approval_respond`. Every way to answer sends the same `approval_respond`
-(`run_id`, `approval_id`, `context_sha256`, `decision` `approved` or
-`rejected`, `reason`, `operation_id`) to the same check: the portal, the Web
-API and SDK (`updateWorkflow`), MCP `update_workflow` and that session. Each
-read says `mayAnswer` for an open approval. The first answer wins; a later
-one fails `APPROVAL_CLOSED`, and one after the deadline `APPROVAL_EXPIRED`.
-An answer through a session records that session as `viaSessionId` in the
-receipt.
+Who gets the notice and who may answer are separate. The Workflow's
+immediate parent session gets an `approval` notice when the step opens. You
+may answer directly, and so may any session that may control the Workflow
+(its parent, or an ancestor allowed to control it), for you, with
+`update_workflow` `approval_respond`. Every way to answer sends the same
+`approval_respond` (`run_id`, `approval_id`, `context_sha256`, `decision`
+`approved` or `rejected`, `reason`, `operation_id`) to the same check: the
+portal, the Web API and SDK (`updateWorkflow`), MCP `update_workflow` and
+that session. Each approval row's `mayAnswer` says whether the reader can
+answer it now. The first answer wins. A fresh answer fails `APPROVAL_EXPIRED`
+when the deadline passed before the timeout was recorded, and
+`APPROVAL_CLOSED` when the approval is already decided or timed out, or the
+run or branch no longer takes answers. Only a session's own
+`update_workflow` records that session as `viaSessionId` in the receipt.
 
 ```yaml
 consent:

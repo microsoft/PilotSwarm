@@ -955,10 +955,13 @@ An authenticated person uses the existing commands endpoint:
 The host stamps the actor; the body cannot. The person must match both the
 pinned owner and current owner under the session lock. Management access,
 administrator status and sharing do not grant consent; anonymous and system
-actors are refused. MCP forwards the same command. The session that controls
-the Workflow gets a `type=approval` notice and answers with `update_workflow`
-`approval_respond` as its own owner; a call through a session (the agent, or
-an `originatingSessionId`) records it as `viaSessionId` in the receipt.
+actors are refused. MCP forwards the same command. The immediate parent gets
+a `type=approval` notice. Any session that may control the Workflow answers
+with `update_workflow` `approval_respond` as its own owner, and only that path
+records the session as `viaSessionId` in the receipt; a person's command
+records `null`, even with an `originatingSessionId`. `viaSessionId` is not in
+the request digest, so a retry through another surface replays the first
+receipt.
 
 Migration 0091 adds `workflow_approvals` and the test-interception operation.
 Snapshot identity and an accepted decision are immutable. Under one locked
@@ -969,9 +972,11 @@ backstop and deadline processing also recover a lost wake. An exact authorized
 retry returns the original receipt, including after the run ends.
 
 Reads include the approval on execution rows and details, including old open
-executions outside history pages. The human projection adds per-caller
-`personCommands.approvals[].mayAnswer`; an unqualified direct read never
-assumes consent authority. The portal shows the full proposal before its
+executions outside history pages. `workflowApprovalAnswers` sets each row's
+`approval.mayAnswer` for the caller from the same rules as the write path
+(caller, pinned and current owner, control, live run, stop, branch, deadline);
+`personCommands.approvals` and the agent's `approvals` mirror it. An
+unqualified direct read never assumes consent authority. The portal shows the full proposal before its
 controls. The TUI directs the person to the portal. Test answers are simulated
 interceptions and create no live consent audit. Consent does not grant
 permission for downstream protected operations.

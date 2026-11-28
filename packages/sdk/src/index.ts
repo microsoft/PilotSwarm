@@ -87,7 +87,7 @@ export {
     workflowScriptsDisabledText, workflowScriptsEnabledFromEnv, workflowScriptsOptionFromEnv, workflowScriptNodes,
 } from "./workflow/scripts-gate.js";
 // Workflow: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
-export { workflowReaderView } from "./workflow/tools.js";
+export { workflowApprovalAnswers, workflowReaderView } from "./workflow/tools.js";
 export type { SendWorkflowInputRequest, WorkflowInputSendReceipt } from "./workflow/human-commands.js";
 // Workflow: pure compilation and no-write validation (Phase 4).
 export { compileWorkflow } from "./workflow/compiler.js";

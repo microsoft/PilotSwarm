@@ -122,11 +122,14 @@ export class WorkflowApprovalStore {
                 outcome: "timed_out", resultKind: "runtime_error", error: envelope } }], update: { touch: true } });
     }
 
-    /** viaSessionId: the session that answered for the owner (its update_workflow), kept in the receipt only. */
+    /**
+     * viaSessionId: the session that answered for the owner (its update_workflow), kept in the receipt only: the request digest
+     * is the owner and the command, so a retry through another surface replays the first receipt.
+     */
     async respond(workflowSessionId: string, command: ApprovalCommand, actor: WorkflowActor, viaSessionId: string | null = null)
         : Promise<{ [key: string]: JsonValue }> {
         if (actor.kind !== "user") throw new WorkflowStoreError("FORBIDDEN", "Only the owner can answer this approval.");
-        const requestSha256 = jsonSha256(viaSessionId === null ? { ...command, actor } : { ...command, actor, viaSessionId });
+        const requestSha256 = jsonSha256({ ...command, actor });
         const accepted = await this.context.transaction(async client => {
             const { rows: sessions } = await client.query(`SELECT deleted_at FROM ${this.t.sessions} WHERE session_id=$1 FOR NO KEY UPDATE`, [workflowSessionId]);
             if (!sessions[0] || sessions[0].deleted_at !== null) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", "This Workflow is deleted or unavailable.");
@@ -140,7 +143,8 @@ export class WorkflowApprovalStore {
                 if (receipts[0].kind !== "approval_respond" || receipts[0].request_sha256 !== requestSha256) {
                     throw new WorkflowStoreError("OPERATION_CONFLICT", "This operation_id was used for another request.");
                 }
-                return { receipt: { ...object(parseStoredJson(text(receipts[0], "receipt"), "approval receipt"), "receipt"), replayed: true } };
+                const stored = object(parseStoredJson(text(receipts[0], "receipt"), "approval receipt"), "receipt");
+                return { receipt: { ...stored, viaSessionId: stored.viaSessionId ?? null, replayed: true } };
             }
             const { run, node, approval } = await this.locked(client, workflowSessionId, command.runId, command.approvalId);
             if (approval.owner_provider !== actor.provider || approval.owner_subject !== actor.subject) {

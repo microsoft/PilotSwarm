@@ -464,8 +464,8 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
         assert.equal(del2.replayed, true);
         assert.equal(del2.definitionId, del1.definitionId);
 
-        // 9. a malformed approval_respond is refused over MCP (the command schema needs run_id, context_sha256, operation_id and
-        //    decision approved or rejected); a well-formed one goes to the person's command, as on every surface.
+        // 9. a malformed approval_respond is refused over MCP with the shared parser's code (run_id, context_sha256, operation_id and
+        //    decision approved or rejected are needed); a well-formed one goes to the person's command, as on every surface.
         const appRes = await client.callTool({
             name: "update_workflow",
             arguments: {
@@ -474,6 +474,7 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
             },
         });
         assert.equal(appRes.isError, true, `${modeLabel}: a malformed approval_respond must be refused over MCP`);
+        assert.equal(parse(appRes)?.code, "WORKFLOW_COMMAND_INVALID", `${modeLabel}: ${appRes.content?.[0]?.text}`);
 
         // 9b. The owner approves over MCP and the run continues on the approved route (web mode: the no-auth person owns the run).
         if (modeLabel === "web") {
@@ -510,7 +511,8 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
                 if (!pending) await new Promise((r) => setTimeout(r, 500));
             }
             assert.ok(pending, `${modeLabel}: the approval opens`);
-            assert.equal(answer?.mayAnswer, true, `${modeLabel}: the owner may answer (${JSON.stringify(answer)})`);
+            assert.equal(pending.mayAnswer, true, `${modeLabel}: the approval row says the owner may answer (${JSON.stringify(pending)})`);
+            assert.equal(answer?.mayAnswer, true, `${modeLabel}: personCommands mirrors it (${JSON.stringify(answer)})`);
             const receipt = parse(await client.callTool({
                 name: "update_workflow",
                 arguments: { session_id: gated.workflowId, command: { operation: "approval_respond", operation_id: "answer-gate-1", run_id: gated.runId,

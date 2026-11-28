@@ -398,14 +398,15 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             delete: z.array(z.string()).optional().describe("Variable names to delete"),
             expected_kv_revision: z.number().int().positive().describe("Current kvRevision from read_workflow"),
         }).passthrough(),
+        // The shared parser checks an answer's fields, so a bad one is WORKFLOW_COMMAND_INVALID here as on every surface.
         z.object({
             operation: z.literal("approval_respond"),
-            operation_id: cmdOpId,
-            run_id: z.string().describe("The approval's run id"),
-            approval_id: z.string().describe("The approval id from read_workflow"),
-            context_sha256: z.string().describe("The approval's contextSha256 from read_workflow"),
-            decision: z.enum(["approved", "rejected"]),
-            reason: z.string().optional().describe("Required to reject"),
+            operation_id: z.unknown().optional().describe("New id per change; reuse unchanged only to retry"),
+            run_id: z.unknown().optional().describe("The approval's run id"),
+            approval_id: z.unknown().optional().describe("The approval id from read_workflow"),
+            context_sha256: z.unknown().optional().describe("The approval's contextSha256 from read_workflow"),
+            decision: z.unknown().optional().describe("approved or rejected"),
+            reason: z.unknown().optional().describe("Required to reject; otherwise omit it or send null"),
         }).passthrough(),
     ] as const;
     const commandSchema = testMode
@@ -426,7 +427,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             description:
                 "Send one command to a running Workflow, as a person: "
                 + operations
-                + "Persons are refused recover (the parent agent recovers runs). approval_respond answers an approval as its owner; the first answer wins. "
+                + "Persons are refused recover (the parent agent recovers runs). approval_respond answers an approval as its owner when its read row says mayAnswer; the first answer wins. "
                 + `${updateGapWorkaround} `
                 + "Answers the command's receipt. "
                 + "A workflow started under another workflow's agent step takes only pause, stop and cancel; read a workflow with read_workflow "
