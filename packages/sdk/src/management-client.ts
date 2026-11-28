@@ -181,7 +181,7 @@ import { workflowAgentToolOffer } from "./workflow/agent-tools.js";
 import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
 import { NATIVE_EXCLUDED_TOOLS } from "./native-subagents.js";
 import { readWorkflowModel, retainedWorkflowReadModel, workflowExclusiveRead } from "./workflow/tools.js";
-import { WORKFLOW_READ_STATUS } from "./workflow/read-pages.js";
+import { WORKFLOW_RERUN_READ_STATUS, workflowReadStatus } from "./workflow/read-pages.js";
 import { PilotSwarmClient, type PilotSwarmSession } from "./client.js";
 import { loadSkillsSync } from "./skills.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/human-commands.js";
@@ -271,6 +271,49 @@ const DEFAULT_SESSION_PAGE_LIMIT = 50;
 const MAX_SESSION_PAGE_LIMIT = 200;
 const DEFAULT_TOP_EVENT_EMITTER_LIMIT = 20;
 const MAX_TOP_EVENT_EMITTER_LIMIT = 100;
+
+const RERUN_FROM_FIELDS = ["workflowId", "executionId", "mode", "result", "note"];
+
+/**
+ * Phase 3 I7: a person's Start's rerunFrom, only its own fields, or null when absent. A re-run takes its source Workflow's
+ * inputs and workspace and names no other Workflow to repeat, so those arguments (and any other rerunFrom field, such as a
+ * child) are refused before anything is read (400 RERUN_ARGUMENT_REFUSED).
+ */
+function personRerunFrom(request: { rerunFrom?: unknown; inputs?: unknown; workspace?: unknown; runAgainOf?: unknown })
+    : { workflowId: string; executionId?: string | null; mode?: "run_again" | "continue" | "supply" | null; result?: unknown; note?: unknown } | null {
+    const value = request.rerunFrom;
+    if (value === undefined || value === null) return null;
+    const refused = (message: string) => new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", message);
+    if (!isJsonObject(value)) throw refused("rerunFrom must be { workflowId, executionId?, mode?, result?, note? }.");
+    const extra = Object.keys(value).filter(key => !RERUN_FROM_FIELDS.includes(key));
+    if (extra.length) throw refused(`rerunFrom takes ${RERUN_FROM_FIELDS.join(", ")}; leave out ${extra.join(", ")}.`);
+    if (typeof value.workflowId !== "string" || !value.workflowId.trim()) throw refused("rerunFrom.workflowId must name an ended Workflow.");
+    if (value.executionId !== undefined && value.executionId !== null && (typeof value.executionId !== "string" || !value.executionId.trim())) {
+        throw refused("rerunFrom.executionId, when given, must be a node execution id.");
+    }
+    const inputs = request.inputs;
+    if (inputs !== undefined && inputs !== null && !(isJsonObject(inputs) && Object.keys(inputs).length === 0)) {
+        throw refused("A re-run takes the source Workflow's inputs: omit inputs with rerunFrom.");
+    }
+    if (Object.hasOwn(request, "workspace")) throw refused("A re-run keeps the source Workflow's workspace: omit workspace with rerunFrom.");
+    if (request.runAgainOf !== undefined && request.runAgainOf !== null) throw refused("rerunFrom cannot be combined with runAgainOf.");
+    return Object.fromEntries(RERUN_FROM_FIELDS.filter(key => value[key] !== undefined).map(key => [key, value[key]])) as {
+        workflowId: string; executionId?: string | null; mode?: "run_again" | "continue" | "supply" | null; result?: unknown; note?: unknown };
+}
+
+/**
+ * Phase 3 I7: who reads a re-run plan (`rerunPlan`), for its allowed and grantSource fields: `context.principal` (a user), or
+ * the management client as a system caller; `context.originatingSessionId` marks an agent-proxied call (M3).
+ */
+function workflowReaderOf(context: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null;
+    originatingSessionId?: string | null }): { actor: WorkflowActor; originatingSessionId: string | null } {
+    const provider = String(context.principal?.provider ?? "").trim();
+    const subject = String(context.principal?.subject ?? "").trim();
+    const actor: WorkflowActor = provider && subject
+        ? { kind: "user", provider, subject, ...(context.principal?.displayName ? { name: context.principal.displayName } : {}) } as WorkflowActor
+        : { kind: "system", name: "management-client" };
+    return { actor, originatingSessionId: context.originatingSessionId ?? null };
+}
 
 function clampInteger(value: number | undefined, defaultValue: number, min: number, max: number): number {
     if (value == null) return defaultValue;
@@ -2128,16 +2171,18 @@ export class PilotSwarmManagementClient {
      * A store that cannot be reached or has no room now is
      * WORKFLOW_STORE_UNAVAILABLE (503) with its reason (batch 7, n-3).
      */
-    async readWorkflow(sessionId: string, options: WorkflowReadOptions = {})
+    async readWorkflow(sessionId: string, options: WorkflowReadOptions = {},
+        context: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null; originatingSessionId?: string | null } = {})
         : Promise<Record<string, unknown>> {
         try {
-            return await this._readWorkflow(sessionId, options);
+            return await this._readWorkflow(sessionId, options, context);
         } catch (error) {
             throw workflowAdapterFailure(error);
         }
     }
 
-    private async _readWorkflow(sessionId: string, options: WorkflowReadOptions)
+    private async _readWorkflow(sessionId: string, options: WorkflowReadOptions,
+        context: { principal?: { provider?: string | null; subject?: string | null; displayName?: string | null } | null; originatingSessionId?: string | null } = {})
         : Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
@@ -2154,9 +2199,10 @@ export class PilotSwarmManagementClient {
                         ...(options?.runId !== undefined ? { run_id: options.runId } : {}),
                     });
                 } catch (error) {
-                    const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
+                    const status = error instanceof WorkflowStoreError ? workflowReadStatus(error.code) : undefined;
                     if (error instanceof WorkflowStoreError && status !== undefined) {
-                        Object.assign(error, { status });
+                        // A cleaned-up Workflow's re-run refusal (I7) shows its kept outcome.
+                        Object.assign(error, { status, ...(Object.hasOwn(WORKFLOW_RERUN_READ_STATUS, error.code) ? { exposeDetails: true } : {}) });
                         throw error;
                     }
                     throw error;
@@ -2174,13 +2220,18 @@ export class PilotSwarmManagementClient {
             // and a step's proposed inputs (q6) compiled as its saves compile them. The portal reads a definition revision's and a
             // step's YAML only for a person who may change the workflow; this client is trusted.
             // With test mode off, test runs are not shown or found (review SF-5): this client's own test mode, or else the flag.
-            view = await readWorkflowModel({ store,
+            view = await readWorkflowModel({ store, catalog: this._catalog!,
                 readPackagePins: id => import("./workflow/package-pins.js").then(module => module.readWorkflowPackagePins(this._catalog!, id)),
                 ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled
-                ? { resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
+                ? { resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api", workflowReaderOf(context));
         } catch (error) {
-            const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
-            if (error instanceof WorkflowStoreError && status !== undefined) throw failure(error.code, status, error.message);
+            const status = error instanceof WorkflowStoreError ? workflowReadStatus(error.code) : undefined;
+            if (error instanceof WorkflowStoreError && status !== undefined) {
+                // A re-run plan's refusal (I7) keeps its details (the visit, its reason) for the caller, as Start's do.
+                throw Object.hasOwn(WORKFLOW_RERUN_READ_STATUS, error.code)
+                    ? Object.assign(failure(error.code, status, error.message), { details: error.details, exposeDetails: true })
+                    : failure(error.code, status, error.message);
+            }
             throw error;
         }
         // The read never depends on the option: absent (or no options at all, as for a host that lends this adapter its
@@ -2504,10 +2555,15 @@ export class PilotSwarmManagementClient {
         /** Agent node models chosen at start, by state id (agent-models.ts); absent with runAgainOf: the repeated one's. */
         agentModels?: unknown;
         /** Additive Decision-node model overrides; absent with Run again retains the repeated effective bindings. */
-        decisionModels?: unknown },
+        decisionModels?: unknown;
+        /** Phase 3 I7: re-run an ended Workflow of this definition from a step (its inputs and workspace are the source's). */
+        rerunFrom?: { workflowId: string; executionId?: string | null; mode?: "run_again" | "continue" | "supply" | null; result?: unknown; note?: unknown } | null;
+        /** Phase 3 I7 (OQ5): an MCP server's call; it never reuses an answered approval. */
+        viaMcp?: boolean },
         options: { principal?: { provider?: string | null; subject?: string | null } | null; originatingSessionId?: string | null } = {}): Promise<Record<string, unknown>> {
         try {
             this._requirePersonCommands();
+            const rerunFrom = personRerunFrom(request);
             const host = await this._sessionForDefinitions(ownerSessionId);
             await refuseSessionDefinitionFromInsideWorkflow(host.store, options.originatingSessionId);
             const provider = String(options.principal?.provider ?? "").trim();
@@ -2533,7 +2589,8 @@ export class PilotSwarmManagementClient {
                     ? creation.workspace as SessionWorkspace : null);
             const defaultsEvent = latestDefaultsEvents.find(event => event.eventType === "session.workspace_defaults") as any;
             const hasCreationDefaults = creation !== null && Object.hasOwn(creation, "workspaceDefaults");
-            if (request.workspace !== "none" && !defaultsEvent && !hasCreationDefaults) {
+            // A re-run keeps its source Workflow's workspace, so a session with no turn yet may start one (S9).
+            if (!rerunFrom && request.workspace !== "none" && !defaultsEvent && !hasCreationDefaults) {
                 throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "The Workflow was not started because this session's effective "
                     + "default folders have not been captured yet. Send one turn in the session, then start it again. Nothing was started.");
             }
@@ -2557,6 +2614,8 @@ export class PilotSwarmManagementClient {
                 // OF7-R4: kept as given, an explicit {} included (it clears Run again's choices); the start parses and checks it.
                 ...(request.agentModels !== undefined && request.agentModels !== null ? { agentModels: request.agentModels } : {}),
                 ...(request.decisionModels !== undefined && request.decisionModels !== null ? { decisionModels: request.decisionModels } : {}),
+                // Phase 3 I7: OQ5 (viaMcp) and M3 (originatingSessionId) decide approval reuse and the OQ1 tool grant.
+                ...(rerunFrom ? { rerunFrom, viaMcp: request.viaMcp === true, originatingSessionId: options.originatingSessionId ?? null } : {}),
             })) as unknown as Record<string, unknown>;
         } catch (error) {
             throw this._definitionFailure(error);

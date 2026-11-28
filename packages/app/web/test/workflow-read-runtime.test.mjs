@@ -39,7 +39,7 @@ test("readWorkflow is one GET session:read operation: the session in the path, a
         params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string", strict: true },
             cursor: { in: "query", type: "json" }, executionId: { in: "query", type: "string", strict: true }, limit: { in: "query", type: "json" },
             kvRevision: { in: "query", type: "json" }, kvKey: { in: "query", type: "string", strict: true }, agentVersions: { in: "query", type: "json" },
-            definitionRevision: { in: "query", type: "json" }, stepInput: { in: "query", type: "json" } },
+            definitionRevision: { in: "query", type: "json" }, stepInput: { in: "query", type: "json" }, rerunPlan: { in: "query", type: "json" } },
     });
     // Stage 2.5 (PR 235 8055fcd8): the legacy creation route is gone (every call was refused: a Workflow needs a parent agent).
     assert.equal(OPERATIONS.find((entry) => entry.name === "createWorkflowSession"), undefined);

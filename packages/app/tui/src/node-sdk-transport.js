@@ -1115,9 +1115,14 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionWorkspace(sessionId);
     }
 
-    /** Workflow: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read). */
-    async readWorkflow(sessionId, options = {}) {
-        return this.mgmt.readWorkflow(sessionId, options);
+    /**
+     * Workflow: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read).
+     * Phase 3 I7: a re-run plan (rerunPlan) says whether its reader may start it: `context.principal` (the portal's signed-in
+     * caller), else this transport's user.
+     */
+    async readWorkflow(sessionId, options = {}, context = undefined) {
+        if (options?.rerunPlan === undefined || options?.rerunPlan === null) return this.mgmt.readWorkflow(sessionId, options);
+        return this.mgmt.readWorkflow(sessionId, options, context ?? { principal: this._definitionPrincipal({}) });
     }
 
     /** Stage 2.1: a session's Workflow Definitions (list, read; a person's save, start and delete with its principal). */

@@ -8,6 +8,7 @@ import { readWorkflowRerunPlan, saveSessionWorkflowDefinition, startSessionWorkf
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { readWorkflowFromTool } from "../../src/workflow/tools.ts";
 import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
+import { PilotSwarmManagementClient } from "../../src/index.ts";
 
 /**
  * Phase 3 I7 Task 7: read_workflow's rerun_plan, reused and supplied provenance, run.rerunOf and view.reruns, and
@@ -350,4 +351,59 @@ describe("I7 Task 7: rerun_plan, reused/supplied provenance and workflow_definit
                 expect((await h.store.readRun(started.runId))?.rerunOfWorkflowSessionId).toBe(src.workflowId);
             });
         });
+
+    it("Task 8a person surface (PilotSwarmManagementClient): rerunPlan for the principal, approval reuse only directly (viaMcp and proxied 403), "
+        + "a 0-turn session may re-run, and arguments a re-run inherits are refused 400", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const env = getEnv();
+            const h = deferHost(client);
+            const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
+                factsSchema: env.factsSchema, workflowCommands: {} });
+            await mgmt.start();
+            // Admit each Start without running it, as deferHost does.
+            mgmt._duroxideClient = Object.assign(Object.create(mgmt._duroxideClient), { startOrchestrationVersioned: async () => {} });
+            const refused = async (promise, code, status) => {
+                let caught = null;
+                try { await promise; } catch (error) { caught = error; }
+                expect(caught?.code, caught?.message).toBe(code);
+                expect(caught?.status).toBe(status);
+                return caught;
+            };
+            try {
+                const app = await seedEnded(h, { yaml: APPROVAL_YAML, visits: [
+                    { nodeId: "gate", nodeType: "approval", outcome: "approved", resultKind: "business", output: { decidedBy: OWNER } },
+                    { nodeId: "step2", nodeType: "script", arrivalRoute: "approved", outcome: "timed_out", resultKind: "runtime_error" },
+                ] });
+                const principal = { provider: OWNER.provider, subject: OWNER.subject };
+                const fromStep2 = { executionId: app.ids.step2, mode: "run_again" };
+                expect((await mgmt.readWorkflow(app.workflowId, { rerunPlan: fromStep2 }, { principal })).rerunPlan)
+                    .toMatchObject({ allowed: true, mode: "run_again", from: { stateId: "step2" } });
+                expect((await mgmt.readWorkflow(app.workflowId, { rerunPlan: { ...fromStep2, viaMcp: true } }, { principal })).rerunPlan.allowed).toBe(false);
+                expect((await mgmt.readWorkflow(app.workflowId, { rerunPlan: fromStep2 })).rerunPlan.allowed).toBe(false);
+                await refused(mgmt.readWorkflow(app.workflowId, { rerunPlan: fromStep2, executionId: app.ids.step2 }, { principal }), "WORKFLOW_READ_INVALID", 400);
+                const missing = await refused(mgmt.readWorkflow(app.workflowId, { rerunPlan: { executionId: "nx-none" } }, { principal }),
+                    "RERUN_VISIT_NOT_FOUND", 404);
+                expect(missing.details).toMatchObject({ executionId: "nx-none" });
+
+                const start = (request, options = { principal }) => mgmt.startSessionWorkflowDefinition(app.ownerSessionId,
+                    { definitionId: app.definitionId, operationId: `op-${randomUUID()}`, ...request }, options);
+                // The owner session has had no turn: a fresh Start is refused for its uncaptured default folders, a re-run is not.
+                await refused(start({}), "WORKFLOW_COMMAND_INVALID", 400);
+                const rerunFrom = { workflowId: app.workflowId, executionId: app.ids.step2 };
+                for (const [request, options] of [[{ rerunFrom, viaMcp: true }, { principal }],
+                    [{ rerunFrom }, { principal, originatingSessionId: app.ownerSessionId }], [{ rerunFrom }, {}]]) {
+                    await refused(start(request, options), "RERUN_APPROVAL_REUSED", 403);
+                }
+                for (const request of [{ rerunFrom, inputs: { a: 1 } }, { rerunFrom, workspace: null }, { rerunFrom, runAgainOf: app.workflowId },
+                    { rerunFrom: { ...rerunFrom, child: "c-1" } }, { rerunFrom: { ...rerunFrom, _skipFitCheckForTest: true } }]) {
+                    await refused(start(request), "RERUN_ARGUMENT_REFUSED", 400);
+                }
+                const started = await start({ rerunFrom });
+                expect(started).toMatchObject({ operation: "start", revision: 1, rerun: { ofWorkflowId: app.workflowId, mode: "run_again", reused: 1 } });
+                await refused(start({ rerunFrom: { workflowId: started.workflowId } }), "RERUN_SOURCE_ACTIVE", 409);
+            } finally {
+                await mgmt.stop();
+            }
+        });
+    });
 });

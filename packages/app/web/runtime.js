@@ -34,6 +34,19 @@ function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
 
+/**
+ * Phase 3 I7 (OQ2, owner decision 27 Nov): a re-run plan as a caller who can read the session but not start its Workflows
+ * reads it: the revision's fit only ({ target, source, fits }), never its problems, the supply contract, a supply preview or
+ * the carried messages, and allowed: false.
+ */
+function rerunPlanForReader(read) {
+    const plan = read?.rerunPlan;
+    if (!plan || typeof plan !== "object" || Array.isArray(plan)) return read;
+    const { supplyContract: _contract, supply: _supply, carried: _carried, revision, ...rest } = plan;
+    return { ...read, rerunPlan: { ...rest, revision: { target: revision?.target ?? null, source: revision?.source ?? null, fits: revision?.fits ?? null },
+        allowed: false, blockedReason: "Only the owner or an admin can start a Workflow." } };
+}
+
 function clampInteger(value, defaultValue, min, max) {
     if (value == null) return defaultValue;
     const numeric = Number(value);
@@ -851,14 +864,18 @@ export class PortalRuntime {
                     const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
                     if (!viewer.allowed) throw forbiddenError(`${viewer.reason ?? "You cannot change this workflow."} Its versions' YAML is for those who can.`);
                 }
-                const read = await this.transport.readWorkflow(safeParams.sessionId, readOptions);
+                // Phase 3 I7: a re-run plan's allowed and grant fields are the signed-in caller's (OQ1, OQ5).
+                const read = await this.transport.readWorkflow(safeParams.sessionId, readOptions,
+                    ...(readOptions.rerunPlan !== undefined ? [{ principal: owner ? { provider: owner.provider, subject: owner.subject,
+                        displayName: owner.displayName ?? null } : null }] : []));
                 const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
+                if (readOptions.rerunPlan !== undefined && !viewer.allowed) return rerunPlanForReader(read);
                 const readerView = viewer.allowed ? read : workflowReaderView(read);
                 if (!readerView || typeof readerView !== "object" || Array.isArray(readerView)) return readerView;
                 // Review SF-D4: whether this viewer may read the Workflow's owner-only files (its whole base instructions),
                 // on every Workflow read, whether or not the deployment takes a person's workflow commands; the portal shows
                 // the owner-only summary otherwise. The file stays gated on each read of it.
-                const overview = !["cursor", "executionId", "kvRevision", "kvKey", "agentVersions", "definitionRevision", "stepInput"]
+                const overview = !["cursor", "executionId", "kvRevision", "kvKey", "agentVersions", "definitionRevision", "stepInput", "rerunPlan"]
                     .some((key) => readOptions[key] !== undefined);
                 const view = overview
                     ? { ...readerView, ownerOnlyArtifacts: { readable: this._ownerOnlyArtifactsReadable(gate?.snapshot ?? null, isAdmin) } }
@@ -929,7 +946,9 @@ export class PortalRuntime {
                     ...(Object.hasOwn(safeParams, "workspace") ? { workspace: safeParams.workspace } : {}),
                     // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning session's catalog).
                     ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}),
-                    ...(safeParams.decisionModels !== undefined && safeParams.decisionModels !== null ? { decisionModels: safeParams.decisionModels } : {}) },
+                    ...(safeParams.decisionModels !== undefined && safeParams.decisionModels !== null ? { decisionModels: safeParams.decisionModels } : {}),
+                    // Phase 3 I7: a re-run from a step, and whether an MCP server sent it (OQ5: it never reuses an answered approval).
+                    ...(safeParams.rerunFrom !== undefined && safeParams.rerunFrom !== null ? { rerunFrom: safeParams.rerunFrom, viaMcp: Boolean(safeParams.viaMcp) } : {}) },
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null,
                         ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
             case "deleteSessionWorkflowDefinition":

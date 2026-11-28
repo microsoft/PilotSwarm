@@ -71,6 +71,7 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  * - apiVersion: the workflow document version this build compiles.
  * - read: readWorkflow (GET /sessions/{id}/workflow) reads workflows; false where the host has no workflow store (each
  *   read is then WORKFLOW_NOT_FOUND).
+ * - rerun: always true. Start takes rerunFrom and the read takes rerunPlan (Phase 3 I7).
  * - create and input: false. A person creates no workflow and sends one no typed input over this API; the workflow's
  *   parent agent does (workflow_definition, send_workflow_input).
  * - commands: a person's commands (updateWorkflow, POST /sessions/{id}/workflow/commands). On unless the host has no
@@ -97,6 +98,9 @@ export function workflowCapabilities(options: {
         validate: true,
         skills: true,
         card: options.read === true,
+        // Phase 3 I7 (R2-N9, M1): Start takes rerunFrom and the read takes rerunPlan. A client fails closed on a server that does
+        // not say so: an older server would start a fresh run from step 1 instead.
+        rerun: true,
         // Review SF-D5: the server's word that workflow test mode is on, only then, so a client shows stored test notices (a
         // parent session's "test waiting" card) only while it is; absent: hidden.
         ...(resolveWorkflowTestMode(commands?.testMode) ? { testMode: true } : {}),
