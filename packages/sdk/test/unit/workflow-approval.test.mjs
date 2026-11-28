@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { compileWorkflow, parseWorkflowIr } from "../../dist/workflow/compiler.js";
 import { canonicalJson } from "../../dist/workflow/json.js";
 import { parseApprovalCommand } from "../../dist/workflow/approval.js";
-import { workflowControllerFeatures, describeWorkflowState } from "../../dist/workflow/runtime.js";
+import { workflowApprovalPrompt, workflowControllerFeatures, describeWorkflowState } from "../../dist/workflow/runtime.js";
 import { testResultFor } from "../../dist/workflow/test-mode.js";
 import { updateWorkflowForPerson } from "../../dist/workflow/human-commands.js";
 
@@ -89,4 +89,27 @@ test("approval fixtures are visibly mocked and validate rejection reasons", () =
     assert.equal(result.winner, "test");
     assert.equal(JSON.parse(result.valueText).mocked, true);
     assert.throws(() => decide({ decision: "rejected" }), error => error.code === "TEST_RESPONSE_INVALID");
+});
+test("an approval notice cuts its context to at most 1,500 characters with its marker, whole code points, and no person's identity", () => {
+    const notice = context => {
+        const text = workflowApprovalPrompt({ workflowSessionId: "wf", runId: "run", approvalId: "visit", stateId: "consent", question: "Q",
+            context, contextSha256: "a".repeat(64), deadlineAt: "2030-01-01T00:00:00.000Z" });
+        return JSON.parse(text.slice(text.lastIndexOf("\n") + 1)).context;
+    };
+    // canonicalJson of the string puts a quote first, so the 1,499th UTF-16 unit is the high half of a pair.
+    for (const filler of ["x".repeat(1_496), "x".repeat(1_497)]) {
+        const preview = notice(filler + "\u{1F600}".repeat(800));
+        assert.ok(preview.length <= 1_500, `${preview.length}`);
+        assert.ok(preview.endsWith("…"));
+        assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(preview), false);
+    }
+    assert.equal(notice({ build: "1.2.3" }), '{"build":"1.2.3"}');
+    // An earlier approval's output carried in this one's context shows its decider as a person, whole or cut inside the
+    // provider (a: 1,440) or the subject (a: 1,414).
+    const decided = { decision: "approved", decidedBy: { provider: "github", subject: "secret-subject", displayName: "Ada" } };
+    for (const context of [{ earlier: decided }, { a: "x".repeat(1_440), earlier: decided }, { a: "x".repeat(1_414), earlier: decided }]) {
+        const preview = notice(context);
+        assert.ok(preview.length <= 1_500);
+        assert.doesNotMatch(preview, /secret|github|gi…|se…/);
+    }
 });

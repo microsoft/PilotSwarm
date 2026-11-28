@@ -41,6 +41,31 @@ states:
   hold: { type: terminal, outcome: failed }
 `;
 
+// A second approval whose context is the first's output (its decision and who decided).
+const TWO_GATES = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: agent-two-gates, version: "1.0.0" }
+initial: consent
+states:
+  consent:
+    type: approval
+    question: Release this exact build?
+    input: "\${inputs}"
+    timeoutSeconds: 172800
+    transition:
+      next: { approved: confirm, rejected: hold, timed_out: hold, failure: hold }
+  confirm:
+    type: approval
+    question: Confirm the release?
+    input: "\${states.consent.output}"
+    timeoutSeconds: 172800
+    transition:
+      next: { approved: release, rejected: hold, timed_out: hold, failure: hold }
+  release: { type: terminal, outcome: succeeded }
+  hold: { type: terminal, outcome: failed }
+`;
+
 async function until(check, label, timeoutMs = 60_000) {
     const deadline = Date.now() + timeoutMs;
     let last;
@@ -83,12 +108,12 @@ async function harness(env) {
 }
 
 /** A controlling session owned by OWNER, its Workflow started with `input`, and the approval once it is open. */
-async function openApproval(h, input = { build: "1.2.3" }) {
+async function openApproval(h, input = { build: "1.2.3" }, yaml = CONSENT) {
     const parentId = randomUUID();
     await h.host.catalog.createSession(parentId, { owner: OWNER });
     const context = { callerSessionId: parentId, host: h.host };
     const workflowId = randomUUID();
-    const created = await createWorkflow(h.host, { workflowSessionId: workflowId, parentSessionId: parentId, yaml: CONSENT,
+    const created = await createWorkflow(h.host, { workflowSessionId: workflowId, parentSessionId: parentId, yaml,
         actor: ACTOR, operationId: "start", start: { inputs: input } });
     const { runId } = created.receipt.run;
     const approvalId = nodeExecutionIdFor(runId, "root", "consent", 1);
@@ -151,6 +176,24 @@ describe("workflow approval answered by the controlling session", () => {
             expect(after.approvals).toEqual([{ approvalId: s.approvalId, runId: s.runId, mayAnswer: false,
                 reason: "This approval no longer accepts a new answer." }]);
             expect(row(after, s).approval).toMatchObject({ mayAnswer: false, answerReason: "This approval no longer accepts a new answer." });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("a later approval's notice shows the earlier approval's decider as a person", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const s = await openApproval(h, { build: "1.2.3" }, TWO_GATES);
+            const first = await s.update(answer(s, "approved", "approve-first"));
+            expect(first).toMatchObject({ ok: true, decision: "approved" });
+            const confirmId = nodeExecutionIdFor(s.runId, "root", "confirm", 1);
+            const notice = await until(async () => h.notified.find(n => n.clientMessageId === `workflow-approval:${confirmId}`), "the second notice");
+            const { context } = JSON.parse(notice.text.trim().split("\n").at(-1));
+            expect(context).toContain('"decision":"approved"');
+            expect(context).toContain('"by":"a person"');
+            expect(notice.text).not.toContain(OWNER.subject);
+            expect(context).not.toContain('"provider"');
         } finally {
             await h.stop();
         }
@@ -223,11 +266,13 @@ describe("workflow approval answered by the controlling session", () => {
             const schema = `"${env.cmsSchema.replace(/"/g, '""')}"`;
             const { rows } = await sql.query(`SELECT receipt FROM ${schema}.workflow_operations WHERE workflow_session_id=$1 AND operation_id='shared-op'`,
                 [s.workflowId]);
+            // It also carries the owner's identity as it was stored; every replay shows a person (approvalReceiptView).
             const { viaSessionId, ...legacy } = JSON.parse(rows[0].receipt);
             await sql.query(`UPDATE ${schema}.workflow_operations SET receipt=$3 WHERE workflow_session_id=$1 AND operation_id=$2`,
-                [s.workflowId, "shared-op", JSON.stringify(legacy)]);
+                [s.workflowId, "shared-op", JSON.stringify({ ...legacy, decidedBy: { ...OWNER, displayName: null } })]);
             const replayed = await mgmt.updateWorkflow(s.workflowId, answer(s, "approved", "shared-op"), { principal: OWNER });
             expect(replayed).toEqual({ ...first, viaSessionId: null, replayed: true });
+            expect(JSON.stringify(replayed)).not.toContain(OWNER.subject);
         } finally {
             await sql.end();
             await mgmt.stop();

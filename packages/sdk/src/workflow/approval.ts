@@ -144,7 +144,8 @@ export class WorkflowApprovalStore {
                     throw new WorkflowStoreError("OPERATION_CONFLICT", "This operation_id was used for another request.");
                 }
                 const stored = object(parseStoredJson(text(receipts[0], "receipt"), "approval receipt"), "receipt");
-                return { receipt: { ...stored, viaSessionId: stored.viaSessionId ?? null, replayed: true } };
+                // Every replay is the public receipt: one stored before masking also shows a person (approvalReceiptView).
+                return { receipt: approvalReceiptView({ ...stored, viaSessionId: stored.viaSessionId ?? null, replayed: true }) };
             }
             const { run, node, approval } = await this.locked(client, workflowSessionId, command.runId, command.approvalId);
             if (approval.owner_provider !== actor.provider || approval.owner_subject !== actor.subject) {

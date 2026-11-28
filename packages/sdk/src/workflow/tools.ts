@@ -721,10 +721,8 @@ async function approvalFromTool(args: Record<string, unknown>, context: { caller
     const owner = await resolveEffectiveSpawnOwner(id => context.host.catalog.getSession(id), context.callerSessionId);
     const actor: WorkflowActor = owner ? { kind: "user", provider: owner.provider, subject: owner.subject }
         : { kind: "agent", sessionId: context.callerSessionId };
-    const { decidedBy, ...receipt } = await respondWorkflowApproval(context.host, workflowSessionId, parseApprovalCommand(args), actor, context.callerSessionId);
-    // A session sees the owner as pause and resume show a person (runControlView): never the provider or subject.
-    const name = isJsonObject(decidedBy) && typeof decidedBy.displayName === "string" && decidedBy.displayName ? decidedBy.displayName : null;
-    return payload({ ok: true, ...receipt, decidedBy: { by: "a person", ...(name ? { name } : {}) } });
+    // The receipt is every surface's (approvalReceiptView): the owner shows as a person, never the provider or subject.
+    return payload({ ok: true, ...await respondWorkflowApproval(context.host, workflowSessionId, parseApprovalCommand(args), actor, context.callerSessionId) });
 }
 
 export async function updateWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {

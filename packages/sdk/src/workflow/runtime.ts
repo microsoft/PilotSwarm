@@ -1,5 +1,5 @@
 import { WORKFLOW_CONTROLLER_REGISTRY } from "./controller-registry.js";
-import { workflowPublicValueView, workflowTerminalErrorView } from "./actor-view.js";
+import { workflowPublicValuePreview, workflowPublicValueView, workflowTerminalErrorView } from "./actor-view.js";
 // Each frozen effect module keeps its own copy of the error redaction and clipping (about 110 lines) on purpose: a
 // shared helper could change in a later release and alter the error text an old history replays. Do not merge them.
 import {
@@ -5001,6 +5001,14 @@ export function workflowRequestPrompt(message: {
 }
 
 /**
+ * An approval's context for its notice: at most 1,500 characters with the "…" that marks a cut, a person in it shown as a
+ * person (workflowPublicValuePreview), as the event reads show a cut preview.
+ */
+export function approvalContextPreview(context: JsonValue): string {
+    return jsonbSafeText(workflowPublicValuePreview(previewJson(context, 1_499)), 1_499);
+}
+
+/**
  * The notice of an approval that opened, to the session that controls the Workflow: the header (type=approval, its
  * state, approval and deadline), one sentence that says how to answer for the owner, then the approval as untrusted
  * JSON on one line (promptSafeJson) with its context cut short.
@@ -5011,7 +5019,7 @@ export function workflowApprovalPrompt(message: {
 }): string {
     const json = promptSafeJson({
         approvalId: message.approvalId, workflowSessionId: message.workflowSessionId, runId: message.runId, stateId: message.stateId,
-        question: message.question, context: previewJson(message.context, 1_500), contextSha256: message.contextSha256, deadline: message.deadlineAt,
+        question: message.question, context: approvalContextPreview(message.context), contextSha256: message.contextSha256, deadline: message.deadlineAt,
     });
     const header = workflowUpdateHeader({ from: message.workflowSessionId, workflow: message.workflow ?? null, run: message.runId, type: "approval",
         fields: [["state", message.stateId], ["approval", message.approvalId], ["deadline", message.deadlineAt]] });
