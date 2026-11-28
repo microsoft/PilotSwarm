@@ -323,7 +323,7 @@ receive, `parentNotification`, the request field `request` and the route
 
 ## Tools
 
-`workflow-tools`: arguments/refusals, script canvas calls.
+`workflow-tools`: read fields, refusals, canvas calls.
 Use `read_workflow`, not `list_sessions`, for a Workflow's status.
 
 ## Example: bounded review

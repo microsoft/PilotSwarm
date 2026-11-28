@@ -50,8 +50,9 @@ or a branch cutoff prevents a fresh answer or further routing. A response at
 the deadline is too late.
 
 `approved` and `rejected` are business outcomes. Their output is
-`{ decision, reason, decidedAt, decidedBy: { provider, subject, displayName },
-contextSha256 }`. Expiry is the runtime error `timed_out`; other errors use
+`{ decision, reason, decidedAt, decidedBy, contextSha256 }`.
+`${states.<approval>.output.decidedBy}` is `{ by: "a person", name? }`,
+never a sign-in identity. Expiry is the runtime error `timed_out`; other errors use
 the normal error routes. Decisions and exact-retry receipts are saved
 atomically with the node result and audit event. Consent grants no additional
 permission to Azure, Git, ADO or any other downstream operation.

@@ -122,6 +122,68 @@ const start = (host, session, definitionId, extra = {}) => startSessionWorkflowD
     revision: extra.revision ?? null, runAgainOf: extra.runAgainOf ?? null, inputs: {}, actor: ENGINE, operationId: extra.operationId ?? `start-${randomUUID()}` });
 
 describe("a definition belongs to the session (stage 2.1)", () => {
+    it("numbers only started Workflows in definition order and in the Workflow overview", { timeout: TIMEOUT }, async () => {
+        const { h, host, session } = await harness();
+        try {
+            const yaml = YAML(30);
+            const { definitionId } = (await save(host, session, yaml, null)).receipt;
+            const draftId = randomUUID();
+            await h.catalog.createWorkflowSession(draftId, { parentSessionId: session, owner: OWNER, creationConfig: { workflow: {} } });
+            await h.store.createDefinition({ workflowSessionId: draftId, parentSessionId: session, notifyParent: false, yaml, compiled: compileWorkflow(yaml),
+                actor: ENGINE, operationId: "draft", requestSha256: "draft", publish: false, start: null,
+                sessionPin: { ownerSessionId: session, definitionId, revision: 1 } });
+            const first = await start(host, session, definitionId);
+            const second = await start(host, session, definitionId);
+            const [view] = await listSessionWorkflowDefinitions(host, session);
+            expect(view.workflows).toMatchObject([
+                { workflowSessionId: draftId, number: null }, { workflowSessionId: first.workflowId, number: 1 },
+                { workflowSessionId: second.workflowId, number: 2 },
+            ]);
+            expect((await readWorkflowView(h.store, second.workflowId)).number).toBe(2);
+            expect((await readWorkflowView(h.store, draftId)).number).toBeNull();
+            await h.catalog.softDeleteSession(first.workflowId);
+            expect((await listSessionWorkflowDefinitions(host, session))[0].workflows).toMatchObject([
+                { workflowSessionId: draftId, number: null }, { workflowSessionId: second.workflowId, number: 1 },
+            ]);
+            expect((await readWorkflowView(h.store, second.workflowId)).number).toBe(1);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("shows revision summaries, started Workflows and requested deleted definitions to the agent", { timeout: TIMEOUT }, async () => {
+        const { h, host, session } = await harness();
+        try {
+            const { definitionId } = (await save(host, session, YAML(30), null, { actor: PERSON, by: "person" })).receipt;
+            const workflow = await start(host, session, definitionId);
+            const test = await startSessionWorkflowTest(host, { ownerSessionId: session, definition: { definitionId },
+                revision: 1, inputs: {}, fixtures: [], operationId: "test-parity", actor: ENGINE, owner: async () => OWNER, binding: async () => null });
+            await save(host, session, BROKEN(), { definitionId, revision: 1 });
+            const gone = (await save(host, session, YAML(30, "gone"), null, { name: "gone" })).receipt;
+            const call = async args => JSON.parse(await workflowDefinitionFromTool(args,
+                { callerSessionId: session, host, toolCallId: randomUUID(), owner: OWNER, binding: async () => null }));
+            expect(await call({ operation: "delete", definition_id: gone.definitionId })).toMatchObject({ ok: true });
+            const list = await call({ operation: "list", include_deleted: true });
+            const read = await call({ operation: "read", definition_id: definitionId });
+            const listed = list.definitions.find(item => item.definitionId === definitionId);
+            expect(list.definitions.find(item => item.definitionId === gone.definitionId)).toMatchObject({ deletedAt: expect.any(String) });
+            for (const view of [listed, read]) {
+                expect(view.revisions).toMatchObject([
+                    { revision: 1, valid: true, errorCount: 0, savedBy: "Ada Lovelace",
+                        lastTest: { testId: test.testId, verdict: "running", at: expect.any(String) } },
+                    { revision: 2, valid: false, errorCount: 1 },
+                ]);
+                expect(view.workflows).toMatchObject([{ workflowId: workflow.workflowId, workflowSessionId: workflow.workflowId,
+                    revision: 1, status: "admitted", runStatus: "admitted", createdAt: expect.any(String), number: 1 }]);
+                expect(view.revisions[0]).not.toHaveProperty("actor");
+            }
+            expect(listed.revisions[0]).not.toHaveProperty("yaml");
+            expect(read.shown.yaml).toContain("initial: nowhere");
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("revisions with author and base; a stale save refused with who and when; errors saved; start pins a revision (R1, E2-3, E2-5, Q10)", { timeout: TIMEOUT }, async () => {
         const { h, host, session } = await harness();
         try {

@@ -433,9 +433,9 @@ export function workflowRerunReruns(reruns, { numberOf = null } = {}) {
 
 const actorWords = actor => {
     if (!isRecord(actor)) return null;
-    if (actor.kind === "agent") return "an agent";
+    if (actor.kind === "agent" || actor.by === "this session" || actor.by === "another session") return "an agent";
     const name = text(actor.name) ?? text(actor.displayName) ?? text(actor.display);
-    return name ?? (actor.kind === "user" ? "a person" : "the system");
+    return name ?? (actor.kind === "user" || actor.by === "a person" ? "a person" : "the system");
 };
 
 /**

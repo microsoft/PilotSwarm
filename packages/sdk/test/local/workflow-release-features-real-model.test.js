@@ -415,7 +415,7 @@ describe("Release C features with an always-on live model", () => {
                 const consent = nodes.find(node => node.nodeId === "consent");
                 return consent ? (await store.approvals.readMany([consent.nodeExecutionId])).get(consent.nodeExecutionId) : null;
             }, "pending owner approval");
-            expect(approval).toMatchObject({ status: "pending", context: { proposal: 7 }, owner: OWNER });
+            expect(approval).toMatchObject({ status: "pending", context: { proposal: 7 }, owner: { by: "a person" } });
             const command = { operation: "approval_respond", operation_id: `approve-${randomUUID()}`, run_id: run.runId,
                 approval_id: approval.approvalId, context_sha256: approval.contextSha256, decision: "approved" };
             await expect(mgmt.updateWorkflow(run.workflowSessionId, command,
@@ -428,7 +428,7 @@ describe("Release C features with an always-on live model", () => {
                 winner: "approval_owner", outcome: "approved", state: "completed",
             });
             expect((await store.approvals.readMany([approval.approvalId])).get(approval.approvalId).decision.decidedBy)
-                .toMatchObject(OWNER);
+                .toEqual({ by: "a person" });
             receipt.definition = { revision: revision.revision, yamlSha256: revision.yamlSha256 };
             receipt.approval = { approvalId: approval.approvalId, contextSha256: approval.contextSha256, answer };
             receipt.run = ended;

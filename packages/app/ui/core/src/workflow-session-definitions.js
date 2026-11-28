@@ -80,7 +80,7 @@ export function sessionDefinitionsModel(items) {
             .sort((a, b) => b.revision - a.revision);
         const rows = (Array.isArray(item.workflows) ? item.workflows : []).filter(entry => isRecord(entry) && text(entry.workflowSessionId));
         const started = rows.filter(entry => entry.runStatus !== null && entry.runStatus !== undefined);
-        const workflows = started.map((entry, index) => ({ sessionId: entry.workflowSessionId, number: index + 1, revision: int(entry.revision),
+        const workflows = started.map((entry, index) => ({ sessionId: entry.workflowSessionId, number: int(entry.number) ?? index + 1, revision: int(entry.revision),
             runStatus: text(entry.runStatus), createdAt: text(entry.createdAt) }));
         const deleted = Boolean(item.deletedAt);
         if (deleted && !workflows.length) continue;

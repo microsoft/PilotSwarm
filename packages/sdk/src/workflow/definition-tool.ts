@@ -32,7 +32,7 @@ import {
 import { workflowToolErrorPayload } from "./tools.js";
 import { definitionTestBench, startSessionWorkflowTest, waitSessionWorkflowTest, WORKFLOW_DEFINITION_TEST_EXPECT_MAX_CHARS } from "./definition-test.js";
 import { parseTestFixtures } from "./test-mode.js";
-import type { SessionRevisionRow, SessionSaveReceipt } from "./session-definition-store.js";
+import type { SessionRevisionRow, SessionRevisionSummary, SessionSaveReceipt } from "./session-definition-store.js";
 import {
     attachSessionPackageWorkflow, readPackageWorkflowCard, refuseLockedSave, requirePackageRef, withPackageUpdates,
 } from "./session-definitions.js";
@@ -47,7 +47,7 @@ export const WORKFLOW_DEFINITION_TOOL = "workflow_definition";
  * The tool's declaration, its contract only (owner 2026-11-08T16:55Z: details in the workflow-tools skill). Every turn's
  * host runs a Workflow test, a frozen 1.0.82 turn's included, so every turn declares the test operation.
  */
-export function workflowDefinitionToolSpec() {
+export function workflowDefinitionToolSpec(options: { milestone?: boolean } = {}) {
     return {
         description:
             "This session's Workflow Definitions, each named, with revisions 1, 2, 3. list: yours, and under canStart the package definitions "
@@ -63,6 +63,7 @@ export function workflowDefinitionToolSpec() {
             type: "object",
             properties: {
                 operation: { type: "string", enum: ["list", "read", "save", "start", "test", "card", "delete"] },
+                ...(options.milestone ? { include_deleted: { type: "boolean", description: "list: also show deleted definitions." } } : {}),
                 name: { type: "string", description: "metadata.name, or <package>/<name>." },
                 definition_id: { type: "string" },
                 operation_id: { type: "string", description: "delete: optional idempotency id (reuse on retry; defaults to this tool call)." },
@@ -200,11 +201,19 @@ function intArg(args: Args, key: string): number | null {
     return value;
 }
 
+function revisionAuthor(actor: SessionRevisionSummary["actor"]): string {
+    return actor.kind === "session" ? "this session" : actor.kind === "user" ? (actor.display ?? "a person") : "imported";
+}
+
+function revisionSummaryJson({ actor, package: pkg, ...revision }: SessionRevisionSummary) {
+    return { ...revision, package: pkg && { ...pkg }, version: revision.semver, savedAt: revision.createdAt, savedBy: revisionAuthor(actor) };
+}
+
 function revisionJson(revision: SessionRevisionRow | null, includeYaml: boolean): { [key: string]: JsonValue } | null {
     if (!revision) return null;
     return {
         revision: revision.revision, valid: revision.valid, version: revision.semver, basedOn: revision.basedOn, savedAt: revision.createdAt,
-        savedBy: revision.actor.kind === "session" ? "this session" : revision.actor.kind === "user" ? (revision.actor.display ?? "a person") : "imported",
+        savedBy: revisionAuthor(revision.actor),
         errors: revision.diagnostics.filter(item => item.severity !== "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
             ...(Number.isSafeInteger(item.line) ? { line: item.line as number } : {}) })),
         warnings: revision.diagnostics.filter(item => item.severity === "warning").map(item => ({ code: item.code, path: item.path, message: item.message,
@@ -217,10 +226,12 @@ function definitionJson(view: SessionDefinitionView): { [key: string]: JsonValue
     return {
         definitionId: view.definitionId, name: view.name, currentRevision: view.currentRevision, newestValidRevision: view.newestValidRevision,
         currentValid: view.current?.valid ?? null, version: view.current?.semver ?? null,
+        source: view.source, createdAt: view.createdAt, updatedAt: view.updatedAt, deletedAt: view.deletedAt,
+        current: view.current && revisionSummaryJson(view.current), revisions: view.revisions.map(revisionSummaryJson),
         // Stage 2.3: a package's definition is locked; its package version, and a newer one offered for the next Workflow (P6).
         ...(view.locked ? { locked: true, package: { name: view.packageName ?? "", version: view.current?.package?.semver ?? null },
             ...(view.packageUpdate ? { newerVersion: view.packageUpdate.semver } : {}) } : {}),
-        workflows: view.workflows.map(item => ({ workflowId: item.workflowSessionId, revision: item.revision, status: item.runStatus })),
+        workflows: view.workflows.map(item => ({ ...item, workflowId: item.workflowSessionId, status: item.runStatus })),
         // L1: a person's copy of a package's definition says which revision and package version it was copied from.
         ...(view.copiedFrom ? { copiedFrom: { name: view.copiedFrom.name, revision: view.copiedFrom.revision,
             ...(view.copiedFrom.package ? { packageVersion: view.copiedFrom.package.semver } : {}) } } : {}),
@@ -294,7 +305,8 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
         const sessionActor = { kind: "session" as const, sessionId: session };
         const engineActor: WorkflowActor = { kind: "agent", sessionId: session } as WorkflowActor;
         if (operation === "list") {
-            const views = await withPackageUpdates(context.host, await listSessionWorkflowDefinitions(context.host, session, { forSession: true }), viewerOf(context));
+            const views = await withPackageUpdates(context.host, await listSessionWorkflowDefinitions(context.host, session,
+                { forSession: true, includeDeleted: args.include_deleted === true }), viewerOf(context));
             // Stage 2.3 (P4), option a: every package definition the session's owner can see (the new-session picker's), with
             // what each is for; those its agent names (or its coordinating session was made for) first, marked suggested. A
             // suggested one no package the owner can see has is shown as not available.
@@ -328,8 +340,6 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             const [view] = await withPackageUpdates(context.host,
                 [await readSessionWorkflowDefinition(context.host, session, ref, { revision: intArg(args, "revision"), forSession: true, graph: true })], viewerOf(context));
             return JSON.stringify({ ok: true, operation: "read", ...definitionJson(view), deleted: view.deletedAt !== null,
-                revisions: view.revisions.map(item => ({ revision: item.revision, valid: item.valid, version: item.semver, savedAt: item.createdAt,
-                    savedBy: item.actor.kind === "session" ? "this session" : item.actor.kind === "user" ? (item.actor.display ?? "a person") : "imported" })),
                 shown: revisionJson(view.revision, true), graph: view.graph ?? null });
         }
         if (operation === "save") {

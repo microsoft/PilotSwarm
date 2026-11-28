@@ -57,7 +57,7 @@ test("the activity lists who did what, newest first, for one run and one visit",
     assert.deepEqual(workflowActivity(EVENTS, { runId: RUN, limit: 2 }).map(row => row.seq), [6, 5]);
     assert.deepEqual(workflowActivity(EVENTS, { runId: "run-2" }).map(row => [row.what, row.who]), [["Paused", "Alice"]]);
     assert.deepEqual(workflowActivity(null), []);
-    assert.equal(workflowActorText({ kind: "user", subject: "bob" }), "bob");
+    assert.equal(workflowActorText({ kind: "user", subject: "bob" }), "a person");
     assert.equal(workflowActorText({ kind: "system", name: "sweeper" }), "sweeper");
     assert.equal(workflowActorText(null), null);
     assert.equal(workflowEventTime("not a time"), null);

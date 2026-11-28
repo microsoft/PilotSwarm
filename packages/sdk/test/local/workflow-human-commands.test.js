@@ -179,8 +179,8 @@ describe("workflow: a person's workflow command (direct management client, inact
             expect((await store.readRun(runId)).terminalError).toMatchObject({ code: "cancelled", message: "Cancelled by a person" });
             const actors = events.filter(event => ["workflow.vars_set", "workflow.paused", "workflow.resumed"].includes(event.eventType))
                 .map(event => [event.eventType, event.data.actor]);
-            expect(actors).toEqual([["workflow.vars_set", { kind: "user", ...PERSON }], ["workflow.paused", { kind: "user", ...PERSON }],
-                ["workflow.resumed", { kind: "user", ...PERSON }], ["workflow.vars_set", { kind: "system", name: "management-client" }]]);
+            expect(actors).toEqual([["workflow.vars_set", { by: "a person" }], ["workflow.paused", { by: "a person" }],
+                ["workflow.resumed", { by: "a person" }], ["workflow.vars_set", { by: "system", name: "management-client" }]]);
 
             // The command's target, recover and missing sessions.
             await refused(() => mgmt.updateWorkflow(draft.workflowSessionId, { workflow_id: randomUUID(), operation: "pause", operation_id: "x-1" }),

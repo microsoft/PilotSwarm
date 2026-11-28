@@ -39,6 +39,11 @@ const GONE_KEPT = { ...ALPHA, definitionId: "def-old", name: "older", deletedAt:
     workflows: [{ workflowSessionId: "wf-old", definitionId: "def-old", revision: 1, runStatus: "completed", createdAt: at(2) }] };
 const LIST = [HN, GONE_KEPT, GONE_EMPTY, ALPHA];
 
+test("the Portal uses the number supplied by the Workflow definition read", () => {
+    const [view] = sessionDefinitionsModel([{ ...HN, workflows: [{ ...HN.workflows[2], number: 2 }] }]);
+    assert.equal(view.workflows[0].number, 2);
+});
+
 test("the list becomes the tab's definitions: live by name, a deleted one only while it has Workflows, revisions newest first", () => {
     const model = sessionDefinitionsModel(LIST);
     assert.deepEqual(model.map(item => [item.name, item.deleted]), [["alpha", false], ["hn-top-watch", false], ["older", true]]);

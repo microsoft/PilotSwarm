@@ -22,6 +22,20 @@ test("a marked retained Workflow remains readable", () => {
     }).workflowId, "workflow");
 });
 
+test("a retained stopped Workflow masks legacy actor identity in both result copies", () => {
+    const errorText = JSON.stringify({ code: "stopped", message: "done", details: {
+        actor: { kind: "user", provider: "test-provider", subject: "private-subject" }, graceSeconds: 30,
+    } });
+    const current = { kind: "workflow", parentSessionId: "parent", status: "stopped", errorText };
+    const read = retainedWorkflowReadModel("workflow", {
+        outcomeType: "workflow", resultJson: { current, revisions: [{ revision: 1, result: current }] },
+    });
+    for (const error of [read.run.error, read.retainedOutcome.current.errorText, read.retainedOutcome.revisions[0].result.errorText]) {
+        assert.deepEqual(JSON.parse(error).details, { actor: { by: "a person" }, graceSeconds: 30 });
+    }
+    assert.equal(current.errorText, errorText);
+});
+
 test("the ordinary result writer owns the retained type", () => {
     const built = buildResultJson({ kind: "workflow", verdict: "success", summary: "done" },
         { sessionId: "child", parentSessionId: "parent" }, null, null, "success");

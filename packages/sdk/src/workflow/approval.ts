@@ -1,7 +1,8 @@
 import type { Pool, PoolClient, QueryResultRow } from "pg";
-import { canonicalJson, isJsonObject, jsonSha256, parseStoredJson, type JsonValue } from "./json.js";
+import { canonicalJson, isJsonObject, jsonSha256, parseStoredJson, type JsonObject, type JsonValue } from "./json.js";
 import { parseBranchScope } from "./parallel.js";
 import { workflowControllerFeatures } from "./controller-features.js";
+import { workflowActorView, workflowPublicValueView } from "./actor-view.js";
 import { WorkflowStoreError, type SessionProjection, type WorkflowActor, type WorkflowNodeExecutionRow, type WorkflowRunRow } from "./store.js";
 
 export interface ApprovalCommand {
@@ -12,6 +13,10 @@ export interface ApprovalCommand {
     contextSha256: string;
     decision: "approved" | "rejected";
     reason: string | null;
+}
+
+export function approvalReceiptView(receipt: JsonObject): JsonObject {
+    return { ...receipt, decidedBy: workflowActorView(receipt.decidedBy) };
 }
 
 export function parseApprovalCommand(value: Record<string, unknown>): ApprovalCommand {
@@ -160,7 +165,8 @@ export class WorkflowApprovalStore {
                 return { expired: true as const };
             }
             const decidedBy = { provider: actor.provider, subject: actor.subject, displayName: owner.displayName };
-            const output = { decision: command.decision, reason: command.reason, decidedAt: at, decidedBy, contextSha256: command.contextSha256 };
+            const output = { decision: command.decision, reason: command.reason, decidedAt: at,
+                decidedBy: workflowActorView(decidedBy), contextSha256: command.contextSha256 };
             const receipt = { workflowSessionId, runId: command.runId, approvalId: command.approvalId, operation: "approval_respond",
                 ...output, replayed: false };
             await client.query(`UPDATE ${this.t.nodes} SET state='completed', outcome=$2, result_kind='business', output=$3, error=NULL,
@@ -172,11 +178,12 @@ export class WorkflowApprovalStore {
                 VALUES ($1,$2,'approval_respond',$3,$4)`, [workflowSessionId, command.operationId, requestSha256, canonicalJson(receipt)]);
             await this.context.project(client, { sessionId: workflowSessionId, events: [{ eventType: "workflow.state_completed",
                 data: { runId: command.runId, nodeExecutionId: command.approvalId, stateId: text(node, "node_id"), outcome: command.decision,
-                    resultKind: "business", approval: true, decidedBy, reason: command.reason, contextSha256: command.contextSha256 } }], update: { touch: true } });
+                    resultKind: "business", approval: true, decidedBy: output.decidedBy, reason: command.reason,
+                    contextSha256: command.contextSha256 } }], update: { touch: true } });
             return { receipt };
         });
         if ("expired" in accepted) throw new WorkflowStoreError("APPROVAL_EXPIRED", "The approval deadline has passed.");
-        return accepted.receipt;
+        return approvalReceiptView(accepted.receipt);
     }
 
     async expire(workflowSessionId: string, runId: string, approvalId: string): Promise<{ remainingMs: number | null }> {
@@ -196,7 +203,7 @@ export class WorkflowApprovalStore {
         });
     }
 
-    async readMany(ids: string[]): Promise<Map<string, JsonValue>> {
+    async readMany(ids: string[], viewer?: Extract<WorkflowActor, { kind: "user" }>): Promise<Map<string, JsonValue>> {
         if (ids.length === 0) return new Map();
         const { rows } = await this.context.pool.query(`SELECT a.*, n.state, n.outcome,
                 to_char(n.deadline_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS deadline,
@@ -206,11 +213,14 @@ export class WorkflowApprovalStore {
         return new Map(rows.map(row => {
             const snapshot = object(parseStoredJson(text(row, "snapshot"), "approval snapshot"), "snapshot");
             const decision = row.decision === null ? null : { decision: text(row, "decision"), reason: row.reason === null ? null : text(row, "reason"),
-                decidedAt: text(row, "decided"), decidedBy: parseStoredJson(text(row, "decided_by"), "approval actor") };
+                decidedAt: text(row, "decided"), decidedBy: workflowActorView(parseStoredJson(text(row, "decided_by"), "approval actor")) };
             const outcome = row.state === "pending" ? "pending" : row.outcome === "approved" || row.outcome === "rejected" || row.outcome === "timed_out"
                 || row.outcome === "cancelled" ? text(row, "outcome") : "failed";
-            return [text(row, "node_execution_id"), { approvalId: text(row, "node_execution_id"), question: snapshot.question, context: snapshot.input,
-                contextSha256: text(row, "context_sha256"), owner: snapshot.owner, activatedAt: text(row, "activated"), deadlineAt: text(row, "deadline"),
+            return [text(row, "node_execution_id"), { approvalId: text(row, "node_execution_id"), question: snapshot.question,
+                context: workflowPublicValueView(snapshot.input),
+                contextSha256: text(row, "context_sha256"), owner: workflowActorView(snapshot.owner),
+                ...(viewer ? { viewerIsPinnedOwner: row.owner_provider === viewer.provider && row.owner_subject === viewer.subject } : {}),
+                activatedAt: text(row, "activated"), deadlineAt: text(row, "deadline"),
                 status: outcome, decision }] as [string, JsonValue];
         }));
     }

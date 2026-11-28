@@ -15,6 +15,7 @@ import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/input-policy.ts"
 import { sendWorkflowInputForPerson } from "../../src/workflow/human-commands.ts";
 import { createWorkflow, WORKFLOW_INBOX_LIMITS } from "../../src/workflow/service.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { readWorkflowView } from "../../src/workflow/tools.ts";
 import { registerWorkflow, WORKFLOW_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/runtime.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
@@ -275,7 +276,7 @@ describe("workflow: person typed input (store, service, human-commands)", () => 
         const h = await runtimeHarness(env);
         try {
             const parent = randomUUID();
-            await h.catalog.createSession(parent, { owner: { provider: "entra", subject: "user-1" } });
+            await h.catalog.createSession(parent, { owner: { provider: "entra", subject: "user-1", displayName: "Ada Lovelace" } });
             // 1. Immediate claim while waiting at correlated receive.
             const created = (await createWorkflow(h.host, {
                 workflowSessionId: randomUUID(), parentSessionId: parent, yaml: OPEN_RECEIVE_YAML, actor: SYSTEM_ACTOR,
@@ -363,6 +364,20 @@ describe("workflow: person typed input (store, service, human-commands)", () => 
                 from: "person:user:entra:user-1",
                 payload: { approvedBy: "affan", slot: "eastus" },
             });
+            const read = await readWorkflowView(h.store, listCreated.workflowSessionId);
+            expect(read.run.inbox.find(message => message.messageId === queued.messageId)).toMatchObject({
+                senderSessionId: null, sender: { by: "a person", name: "Ada Lovelace" },
+            });
+            const visit = read.run.nodeExecutions.find(node => node.receive);
+            const detail = await readWorkflowView(h.store, listCreated.workflowSessionId, { executionId: visit.nodeExecutionId });
+            expect(detail.execution.result.value.from).toEqual({ by: "a person" });
+            const { rows } = await h.catalog.pool.query(`SELECT event_type, data FROM "${env.cmsSchema}".session_events
+                WHERE session_id=$1 AND data->>'messageId'=$2 ORDER BY seq`, [listCreated.workflowSessionId, queued.messageId]);
+            expect(rows.map(event => event.event_type)).toEqual(["workflow.input_accepted", "workflow.state_completed"]);
+            for (const { data } of rows) {
+                expect(data).toMatchObject({ sender: { by: "a person", name: "Ada Lovelace" } });
+                expect(JSON.stringify(data)).not.toContain(queued.senderSessionId);
+            }
         } finally {
             await h.stop();
         }

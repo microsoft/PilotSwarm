@@ -161,7 +161,7 @@ test("the nine control events are workflow events, in the history paging types, 
 
     const user = { kind: "user", provider: "entra", subject: "u-1" };
     const cases = [
-        [event("workflow.paused", { runId: "r", actor: user, reason: "maintenance" }), "⏸ Workflow paused by `u-1`: `maintenance`", "paused", "yellow"],
+        [event("workflow.paused", { runId: "r", actor: user, reason: "maintenance" }), "⏸ Workflow paused by a person: `maintenance`", "paused", "yellow"],
         [event("workflow.resumed", { runId: "r", actor: { kind: "agent", sessionId: "abcdef12-3456" } }), "▶ Workflow resumed by an agent.", "resumed", "gray"],
         [event("workflow.vars_set", { runId: "r", kvRevision: 4, set: ["a", "b"], deleted: ["c"], actor: { kind: "system", name: "controller" } }),
             "✎ Variables updated by `controller` · revision 4: set `a`, `b` · removed `c`.", "variables updated", "gray"],
@@ -175,7 +175,7 @@ test("the nine control events are workflow events, in the history paging types, 
             "⏹ Asked 2 running actions to stop.", "2 actions asked to stop", "yellow"],
         // Adversarial review R2-UI-6: a graceful stop's request.
         [event("workflow.stop_requested", { runId: "r", actor: user, graceSeconds: 60, reason: "release freeze" }),
-            "⏹ Stop asked by `u-1`: started nodes may finish. Reason: `release freeze`", "stop asked", "yellow"],
+            "⏹ Stop asked by a person: started nodes may finish. Reason: `release freeze`", "stop asked", "yellow"],
         [event("workflow.parent_notified", { runId: "r", parentSessionId: "parent-123456" }),
             "✉ Parent told the Workflow ended.", "parent told the Workflow ended", "gray"],
         [event("workflow.parent_notification_skipped", { runId: "r", reason: "Parent authority is no longer available" }),
@@ -302,7 +302,7 @@ test("missing or malformed control payloads still read sensibly and never throw"
 
 test("untrusted text is an inline code span: no markup, no line break, bounded", () => {
     const hostile = "`x`\n<script>alert(1)</script> **bold** [l](javascript:1)";
-    const paused = formatWorkflowEventText(event("workflow.paused", { actor: { kind: "user", subject: hostile }, reason: hostile }));
+    const paused = formatWorkflowEventText(event("workflow.paused", { actor: { by: "a person", name: hostile }, reason: hostile }));
     assert.ok(!paused.includes("\n"));
     assert.equal((paused.match(/`/g) || []).length, 4, "two code spans, and no backtick of the payload survives");
     assert.ok(paused.includes("'x' <script>alert(1)</script> **bold** [l](javascript:1)`"));
