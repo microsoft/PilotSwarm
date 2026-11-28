@@ -37,7 +37,11 @@
 (*     source inbox (Inv_InboxCarryExact) incl. stray child notices,       *)
 (*     second-generation carry times (RR-1) and the source run's end time  *)
 (*     racing an acceptance (MSG-1), & TTL expiry, quiescence              *)
-(*     safety (Inv_QuiescentNoLive) and liveness (Live_Quiesces).          *)
+(*     safety (Inv_QuiescentNoLive) and liveness (Live_Quiesces);          *)
+(*   - #3's new receive R2 when nothing carried is takeable (R5, review    *)
+(*     H1): it waits for a new message (AcceptNewMessage: acceptInput's    *)
+(*     claim, only while deadline_at > at) or its wait deadline (RxTick,   *)
+(*     ElapseWait: deadline_at <= now); it starts no effect.               *)
 (*                                                                         *)
 (* Lock waits are modeled as disabled actions so any lock cycle surfaces   *)
 (* as a TLC deadlock (CHECK_DEADLOCK TRUE on every case).                  *)
@@ -113,7 +117,10 @@ CONSTANTS
     RetryAfterCut,                \* RR-9: an enterNode result is lost and re-run after the cut too (not only in the pass-over)
     TakeIgnoresTaken,             \* fault (RR-9): a re-run enterNode of a receive that took a carried message takes it again
     \* ---- Task R5 (owner ruling, 27 Nov 22:35 PST) ----
-    NoNewMessage                  \* TRUE = nobody sends #3 a new message: a receive with nothing to take hits its time limit
+    NoNewMessage,                 \* TRUE = nobody sends #3 a new message: a receive with nothing to take hits its time limit
+    \* ---- Task 6b (review H1) ----
+    ReceiveSkipsWait,             \* fault (H1): a pending receive completes at once (msg, or elapsed) with no accepted message and no due deadline
+    WaitRearms                    \* fault (H1): a due wait timer re-arms from now instead of elapsing the receive (it never times out)
 
 ASSUME SourceKind \in {"loop", "catchall", "parallel", "approval", "inbox", "supply_first", "spawn", "spawn_lane"}
 ASSUME Mode \in {"run_again", "continue", "supply"}
@@ -133,7 +140,8 @@ ASSUME {StartVars, InputHashMismatch, AllowDeleters, AllowOwnerEnd, AllowClaimCr
         AllowUndeclaredSupplyOutcome, IgnoreSupplyNever, IgnoreMissingSupplyNote,
         RepickSuppliedOnRetry, SkipGr1CutBack, SkipParentEndCancel, SkipImmediateRefusalCleanup,
         SweeperSkipsNewLockOrRecheck, StrayNotice, CarryNoticeByTime, CutVisitCopied, CarryComparesCopyTime,
-        SourceEndRace, AllowCleanupCrash, RetryAfterCut, TakeIgnoresTaken, NoNewMessage} \subseteq BOOLEAN
+        SourceEndRace, AllowCleanupCrash, RetryAfterCut, TakeIgnoresTaken, NoNewMessage, ReceiveSkipsWait,
+        WaitRearms} \subseteq BOOLEAN
 ASSUME EndClock \in {"begin", "locked"}
 ASSUME (StrayNotice \/ CutVisitCopied \/ SourceEndRace) => SourceKind = "inbox"
 ASSUME CutVisitCopied => (Generations = 2 /\ ~StrayNotice)
@@ -226,6 +234,9 @@ Gr1Active == (Gr1EarliestIdx > 0)
 \* end (SourceEndRaceStep). Its stored accepted_at is accAt, the cut is #2's finished_at (srcEndAt), and its shape is fixed.
 CutTime == 2
 CopyTime == 5
+\* Review H1: #3's new receive R2 enters at rxClk = 0 with deadline_at = WaitDeadline (one tick of its wait). The clock is
+\* a separate, bounded abstraction of #3's store clock that runs only while R2 is pending.
+WaitDeadline == 1
 MsgTimes == {1, 2, 3}
 ExpireTimes == {CutTime, 4}
 KeptReader == RNode(1)
@@ -429,6 +440,7 @@ NewWorkOutcomes(x) ==
                        ELSE IF Mode = "supply" THEN {"ok"}
                        ELSE {"again", "ok", "error"}
       [] x[1] = "H"  -> {"ok"}
+      \* Only under fault ReceiveSkipsWait (review H1): the rr8 shortcut that completed a pending receive as an effect.
       [] x[1] = "R"  -> IF NoNewMessage THEN {"elapsed"} ELSE {"msg"}
       [] x = SPNode  -> {"started"}
       [] x = PNode   -> {"ok"}
@@ -509,6 +521,11 @@ VARIABLES
     accPc,                 \* acceptance of m_late into #2: "idle" | "locked" (holds #2's session lock) | "done"
     accAt,                 \* m_late's stored accepted_at (the clock read after the acceptance's locks)
 
+    \* #3's new receive R2 waiting for a new message or its wait deadline (R5, review H1)
+    rxClk,                 \* the store's clock while R2 is pending: 0 at R2's entry; R2's deadline_at is WaitDeadline
+    newMsg,                \* a new message sent to #3: "none" | "claimed" (it claimed pending R2) | "waiting" (accepted unclaimed)
+    rxSeen,                \* ghost: the controller's collect read R2 pending (before any claim or elapse completed it)
+
     \* Controller state (1.3.0) for #3
     pc,                 \* "idle" | "begin" | "poll" | "admit" | "start" | "collect" | "wait" | "finish" | "finishFail" | "cancel" | "done"
     curNode,            \* current cursor node in TopNodes \cup {NoNode}
@@ -546,7 +563,8 @@ runVars == <<runStatus, failCode, nState, nPred, nRoute, nWinner, nOutcome, nRes
              reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
              copyHitMismatch, downstreamReadSupplied, events>>
 raceVars == <<srcClk, endPc, endTxStart, srcEndAt, accPc, accAt>>
-inboxVars == <<srcInbox, carriedInbox, unexpiredCarriedInbox, inboxTaken, raceVars>>
+rxVars == <<rxClk, newMsg, rxSeen>>
+inboxVars == <<srcInbox, carriedInbox, unexpiredCarriedInbox, inboxTaken, raceVars, rxVars>>
 ctrlVars == <<pc, curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
               retriedInPassOver, canInPassOver>>
 effCmdVars == <<eff, agentSession, oldChildStatus, newSpawnChildStatus, q, pauseUsed, stopRequested, cancelSent>>
@@ -585,7 +603,7 @@ TypeOK ==
     /\ nState \in [AllNodes -> {"absent", "pending", "completed"}]
     /\ nPred \in [AllNodes -> AllNodes \cup {NoNode}]
     /\ nRoute \in [AllNodes -> Routes]
-    /\ nWinner \in [AllNodes -> {"none", "reused", "supplied", "effect", "timer", "cancel", "controller", "delete"}]
+    /\ nWinner \in [AllNodes -> {"none", "reused", "supplied", "effect", "message", "timer", "cancel", "controller", "delete"}]
     /\ nOutcome \in [AllNodes -> Outcomes]
     /\ nResultKind \in [AllNodes -> {"none", "business", "runtime_error"}]
     /\ nOrigin \in [AllNodes -> {"none", "wf1", "wf2", "wf3"}]
@@ -607,6 +625,7 @@ TypeOK ==
     /\ inboxTaken \in [InboxMsgs -> 0..2]
     /\ srcClk \in 0..3 /\ endTxStart \in 0..3 /\ srcEndAt \in 0..3 /\ accAt \in 0..3
     /\ endPc \in {"idle", "begun", "done"} /\ accPc \in {"idle", "locked", "done"}
+    /\ rxClk \in 0..WaitDeadline /\ newMsg \in {"none", "claimed", "waiting"} /\ rxSeen \in BOOLEAN
     /\ pc \in {"idle", "begin", "poll", "admit", "start", "collect", "wait", "finish", "finishFail", "cancel", "done"}
     /\ curNode \in TopNodes \cup {NoNode}
     /\ curPred \in TopNodes \cup {NoNode}
@@ -686,6 +705,7 @@ Init ==
     /\ srcClk = 0 /\ endTxStart = 0 /\ srcEndAt = 0 /\ accAt = 0
     /\ endPc = IF SourceEndRace THEN "idle" ELSE "done"
     /\ accPc = "idle"
+    /\ rxClk = 0 /\ newMsg = "none" /\ rxSeen = FALSE
     /\ pc = "idle"
     /\ curNode = InitialStep
     /\ curPred = NoNode
@@ -798,7 +818,7 @@ ReleaseCopyLocks ==
 \* lockedClockText). An acceptance that finds #2 ended is refused (no message). The re-run is claimed after E committed.
 RaceUnchanged ==
     UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, srcInbox, carriedInbox, unexpiredCarriedInbox,
-                inboxTaken, ctrlVars, effCmdVars, delVars>>
+                inboxTaken, rxVars, ctrlVars, effCmdVars, delVars>>
 
 SrcClockTick ==
     /\ SourceEndRace /\ endPc # "done" /\ srcClk < 3
@@ -1136,7 +1156,7 @@ CopyCommit ==
                            sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
                            refusalCleanup, failCode, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
                            firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events,
-                           srcInbox, inboxTaken, raceVars, curNode, curPred, curRoute, curPending, curCaught, curSteps,
+                           srcInbox, inboxTaken, raceVars, rxVars, curNode, curPred, curRoute, curPending, curCaught, curSteps,
                            planMaxSteps, actRes, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
 CopyFinishPartial ==
@@ -1174,7 +1194,7 @@ CopyFinishPartial ==
     /\ UNCHANGED <<lockVars, sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                    copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
                    runStatus, failCode, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
-                   firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events, srcInbox, inboxTaken, raceVars,
+                   firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events, srcInbox, inboxTaken, raceVars, rxVars,
                    curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
@@ -1430,7 +1450,7 @@ AdmitExec ==
                              /\ \E m \in carriedInbox : inboxTaken[m] = 1
                           THEN LET m == CHOOSE msg \in carriedInbox : inboxTaken[msg] = 1
                                IN /\ inboxTaken' = [inboxTaken EXCEPT ![m] = @ + 1]
-                                  /\ UNCHANGED <<runVars, srcInbox, carriedInbox, unexpiredCarriedInbox, raceVars>>
+                                  /\ UNCHANGED <<runVars, srcInbox, carriedInbox, unexpiredCarriedInbox, raceVars, rxVars>>
                           ELSE UNCHANGED <<runVars, inboxVars>>
        ELSE IF runStatus = "paused"
          THEN /\ actRes' = "paused"
@@ -1492,7 +1512,7 @@ AdmitExec ==
                  ELSE UNCHANGED <<inboxTaken, unexpiredCarriedInbox>>
             /\ actRes' = st
             /\ UNCHANGED <<runStatus, failCode, reusedSet, suppliedSet, copyHitMismatch, downstreamReadSupplied, srcInbox,
-                           carriedInbox, raceVars>>
+                           carriedInbox, raceVars, rxVars>>
     /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, pc, curNode, curPred, curRoute, curPending, curCaught,
                    curSteps, planMaxSteps, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
@@ -1537,10 +1557,13 @@ AdmitRecord ==
     /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, planMaxSteps,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
+\* A pending receive starts no effect: it waits for acceptInput's claim or its wait deadline (review H1). Fault
+\* ReceiveSkipsWait starts one, which EffFinish completes at once (msg, or elapsed) with neither.
 StartEffect ==
     /\ pc = "start"
     /\ curPending \in WorkNodes
-    /\ eff' = [eff EXCEPT ![curPending] = IF @ = "absent" THEN "started" ELSE @]
+    /\ eff' = [eff EXCEPT ![curPending] =
+          IF @ = "absent" /\ (NodeKindOf(curPending) # "receive" \/ ReceiveSkipsWait) THEN "started" ELSE @]
     /\ agentSession' = [agentSession EXCEPT ![curPending] =
           IF NodeKindOf(curPending) = "script_or_agent" /\ @ = "absent" THEN "live" ELSE @]
     /\ newSpawnChildStatus' =
@@ -1559,7 +1582,9 @@ CollectExec ==
     /\ IF nState[curPending] = "completed"
          THEN actRes' = nOutcome[curPending]
          ELSE actRes' = "nothing"
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars,
+    /\ rxSeen' = (rxSeen \/ (curPending = RNode(2) /\ nState[RNode(2)] = "pending"))
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, srcInbox, carriedInbox, unexpiredCarriedInbox,
+                   inboxTaken, raceVars, rxClk, newMsg,
                    pc, curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
@@ -1664,6 +1689,61 @@ EffFinish(x) ==
                    firstNewHashOk, copyHitMismatch, inboxVars, ctrlVars, oldChildStatus, newSpawnChildStatus,
                    q, pauseUsed, stopRequested, cancelSent, delVars>>
 
+\* Review H1 (R5): #3's new receive R2 is pending (nothing carried was takeable at its entry, store.ts enterNode). Only a
+\* new message or its wait deadline completes it; a run end ends it with the run (EndPendingNodes).
+R2Waits == RNode(2) \in newVisits /\ nState[RNode(2)] = "pending" /\ runStatus \in Active
+RxUnchanged ==
+    UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runStatus, failCode, nPred, nRoute, nOrigin, nDeadline,
+                reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
+                copyHitMismatch, downstreamReadSupplied, srcInbox, carriedInbox, unexpiredCarriedInbox, inboxTaken,
+                raceVars, rxSeen, ctrlVars, effCmdVars, delVars>>
+
+\* store.ts acceptInput, one transaction under #3's session and run locks, one clock reading after them: a new matching
+\* message sent to #3. An ended run takes no input (RUN_ENDED: R2Waits needs an active run, a paused one included). The
+\* message claims pending R2 in the same transaction (winner message, outcome msg, the message consumed) only when R2's
+\* deadline is after the acceptance (deadline_at > at); at or after it the message is stored unclaimed and R2 elapses.
+\* A message sent before R2's entry is not modeled (R2's enterNode would take it as it takes a carried one).
+AcceptNewMessage ==
+    /\ ~NoNewMessage
+    /\ newMsg = "none"
+    /\ R2Waits
+    /\ IF rxClk < WaitDeadline
+         THEN /\ nState' = [nState EXCEPT ![RNode(2)] = "completed"]
+              /\ nWinner' = [nWinner EXCEPT ![RNode(2)] = "message"]
+              /\ nOutcome' = [nOutcome EXCEPT ![RNode(2)] = "msg"]
+              /\ nResultKind' = [nResultKind EXCEPT ![RNode(2)] = "business"]
+              /\ events' = [events EXCEPT !.stateCompleted[RNode(2)] = @ + 1]
+              /\ newMsg' = "claimed"
+         ELSE /\ newMsg' = "waiting"
+              /\ UNCHANGED <<nState, nWinner, nOutcome, nResultKind, events>>
+    /\ UNCHANGED rxClk
+    /\ RxUnchanged
+
+\* The store's clock advances while R2 waits, up to its deadline.
+RxTick ==
+    /\ R2Waits
+    /\ rxClk < WaitDeadline
+    /\ rxClk' = rxClk + 1
+    /\ UNCHANGED <<nState, nWinner, nOutcome, nResultKind, events, newMsg>>
+    /\ RxUnchanged
+
+\* The controller's wait timer, then store.ts elapseWait: a pending receive whose deadline_at <= now completes elapsed
+\* (stored winner controller; the model names it timer). Fault WaitRearms: the due timer re-arms from now instead.
+ElapseWait ==
+    /\ R2Waits
+    /\ rxClk >= WaitDeadline
+    /\ IF WaitRearms
+         THEN /\ rxClk' = 0
+              /\ UNCHANGED <<nState, nWinner, nOutcome, nResultKind, events>>
+         ELSE /\ nState' = [nState EXCEPT ![RNode(2)] = "completed"]
+              /\ nWinner' = [nWinner EXCEPT ![RNode(2)] = "timer"]
+              /\ nOutcome' = [nOutcome EXCEPT ![RNode(2)] = "elapsed"]
+              /\ nResultKind' = [nResultKind EXCEPT ![RNode(2)] = "business"]
+              /\ events' = [events EXCEPT !.stateCompleted[RNode(2)] = @ + 1]
+              /\ UNCHANGED rxClk
+    /\ UNCHANGED newMsg
+    /\ RxUnchanged
+
 \* G-R2: #2's old spawn child winds down asynchronously via parent-end cancel (disabled by SkipParentEndCancel fault)
 OldChildWindDown ==
     /\ ~SkipParentEndCancel
@@ -1685,7 +1765,7 @@ ExpireCarriedInbox ==
     /\ (pc = "done" \/ runStatus \in Terminal \/ startPhase \in Refused)
     /\ \E m \in unexpiredCarriedInbox :
          unexpiredCarriedInbox' = unexpiredCarriedInbox \ {m}
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, srcInbox, carriedInbox, inboxTaken, raceVars,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, srcInbox, carriedInbox, inboxTaken, raceVars, rxVars,
                    ctrlVars, effCmdVars, delVars>>
 
 PauseRun ==
@@ -1779,15 +1859,20 @@ Next ==
     \/ DeleterObservesCopyLock \/ SweeperLockTarget \/ DelWfLock \/ OwnerEndLockOwner \/ DeleterCommit
     \/ CtrlProgress \/ ControllerCan \/ AdmitRetry \/ EffProgress
     \/ LifecycleProgress
+    \/ AcceptNewMessage \/ RxTick \/ ElapseWait
     \/ PauseRun \/ RequestStop \/ SendCancel
     \/ Done
 
+\* No fairness on AcceptNewMessage: nobody need ever send #3 a message. The clock (RxTick) and the wait timer
+\* (ElapseWait) are weakly fair, as are the controller (CtrlProgress) and effects.
 Fairness ==
     /\ WF_vars(StartProgress)
     /\ WF_vars(DeleterCommit)
     /\ WF_vars(CtrlProgress)
     /\ WF_vars(LifecycleProgress)
     /\ \A x \in WorkNodes : WF_vars(EffFinish(x))
+    /\ WF_vars(RxTick)
+    /\ WF_vars(ElapseWait)
 
 Spec == Init /\ [][Next]_vars
 LiveSpec == Init /\ [][Next]_vars /\ Fairness
@@ -1943,6 +2028,16 @@ Inv_AcceptedBeforeEnd ==
 Inv_TakeOnce ==
     \A m \in InboxMsgs : inboxTaken[m] <= 1
 
+\* Review H1 (R5): #3's new receive R2 completes only by a carried take at its entry (enterNode, winner controller,
+\* outcome msg), a new message accepted before its deadline (acceptInput's claim: deadline_at > at), its due deadline
+\* (elapseWait: deadline_at <= now), or the run's end (EndPendingNodes, outcome cancelled). Never at once with neither.
+Inv_ReceiveWaitsForInputOrDeadline ==
+    (RNode(2) \in newVisits /\ nState[RNode(2)] = "completed") =>
+        \/ nWinner[RNode(2)] = "controller" /\ nOutcome[RNode(2)] = "msg" /\ \E m \in carriedInbox : inboxTaken[m] >= 1
+        \/ nWinner[RNode(2)] = "message" /\ nOutcome[RNode(2)] = "msg" /\ newMsg = "claimed" /\ rxClk < WaitDeadline
+        \/ nWinner[RNode(2)] = "timer" /\ nOutcome[RNode(2)] = "elapsed" /\ rxClk >= WaitDeadline
+        \/ nOutcome[RNode(2)] = "cancelled"
+
 Inv_EventsOnce ==
     /\ events.started <= 1
     /\ events.ended <= 1
@@ -1995,6 +2090,15 @@ Live_ReachesCutOnly == <>resumedAtCut
 \* Strong liveness for incompatible/mismatched-hash divergence cases: MUST reach rerun_diverged cleanly.
 Live_DivergesCleanly == <>(runStatus = "failed" /\ failCode = "rerun_diverged")
 
+\* Review H1 (R5), conditional: when nobody sends #3 a new message, a pending R2 eventually times out at its deadline
+\* and the run follows its failure route (elapsed has no route: unhandled_error), under weak fairness of the clock
+\* (RxTick), the wait timer (ElapseWait) and the controller (CtrlProgress).
+Live_NoInputTimesOut ==
+    NoNewMessage =>
+        ((RNode(2) \in newVisits /\ nState[RNode(2)] = "pending")
+           ~> (nWinner[RNode(2)] = "timer" /\ nOutcome[RNode(2)] = "elapsed" /\ runStatus = "failed"
+               /\ failCode = "unhandled_error"))
+
 -----------------------------------------------------------------------------
 (* Non-Vacuity Witnesses (each expected VIOLATED, exit 12)                 *)
 
@@ -2042,11 +2146,13 @@ Wit_NoLateRetryAfterSweep ==
 Wit_NoCarryAtCut ==
     ~(\E m \in OrdMsgs : srcInbox[m].accept = CutTime /\ m \in carriedInbox /\ inboxTaken[m] = 1 /\ runStatus = "completed")
 
-\* Task R5: #3 starts before R2, the receive whose message #2 read. That message is not carried, R2 waits (pending) for a
-\* new one, a new message arrives in #3 (R2's effect, winner effect, outcome msg) and the run completes.
+\* Task R5 (review H1): #3 starts before R2, the receive whose message #2 read. That message is not carried, R2 enters
+\* pending and the controller's collect reads it pending; then a new message is accepted before R2's deadline and claims
+\* R2 in its own transaction (winner message, outcome msg), and the run completes.
 Wit_NoNewMessageAfterRead ==
     ~(/\ \E m \in OrdMsgs : srcInbox[m].reader = DroppedReader /\ m \notin carriedInbox
-      /\ RNode(2) \in newVisits /\ eff[RNode(2)] = "done" /\ nWinner[RNode(2)] = "effect" /\ nOutcome[RNode(2)] = "msg"
+      /\ RNode(2) \in newVisits /\ rxSeen /\ newMsg = "claimed" /\ rxClk < WaitDeadline
+      /\ nWinner[RNode(2)] = "message" /\ nOutcome[RNode(2)] = "msg"
       /\ runStatus = "completed")
 
 \* Task R5: the reused spawn child's WorkflowEnded@1 notice, read by #2's dropped receive R2, is not carried by an admitted
@@ -2054,11 +2160,14 @@ Wit_NoNewMessageAfterRead ==
 Wit_NoReadNoticeLeft ==
     ~(startPhase = "admitted" /\ \E m \in ReusedNoticeMsgs : srcInbox[m].reader = DroppedReader /\ m \notin carriedInbox)
 
-\* Task R5 (NoNewMessage): #3 starts before R2, R2's old message is not carried, nobody sends a new one, and R2 hits its
-\* time limit: the run ends failed. No liveness property asks this run to complete.
+\* Task R5 (NoNewMessage, review H1): #3 starts before R2, R2's old message is not carried, the controller's collect reads
+\* R2 pending, no input arrives, the clock reaches R2's deadline and the wait elapses it; elapsed has no route, so the run
+\* ends failed (unhandled_error). No liveness property asks this run to complete.
 Wit_NoReceiveTimedOut ==
     ~(/\ \E m \in OrdMsgs : srcInbox[m].reader = DroppedReader /\ m \notin carriedInbox
-      /\ nWinner[RNode(2)] = "timer" /\ nOutcome[RNode(2)] = "elapsed" /\ runStatus = "failed")
+      /\ RNode(2) \in newVisits /\ rxSeen /\ newMsg = "none" /\ rxClk >= WaitDeadline
+      /\ nWinner[RNode(2)] = "timer" /\ nOutcome[RNode(2)] = "elapsed"
+      /\ runStatus = "failed" /\ failCode = "unhandled_error")
 
 \* An unconsumed message accepted before the cut that expires exactly at it is left behind by an admitted re-run.
 Wit_NoExpiredAtCutLeft ==

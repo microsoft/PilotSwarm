@@ -118,6 +118,9 @@ rr.design-gr1-top-spawn-ctrl-owner	rr.design-gr1-top-spawn-ctrl-owner.cfg	Workfl
 wit.rr-no-lost-refusal-cleanup-swept	wit.rr-no-lost-refusal-cleanup-swept.cfg	WorkflowRerun
 rr-df-refusal-cleanup-lost-no-sweeper	rr-df-refusal-cleanup-lost-no-sweeper.cfg	WorkflowRerun
 rr-df-retry-retakes-carried	rr-df-retry-retakes-carried.cfg	WorkflowRerun
+rr-df-receive-skips-wait	rr-df-receive-skips-wait.cfg	WorkflowRerun
+rr-df-receive-skips-wait-elapsed	rr-df-receive-skips-wait-elapsed.cfg	WorkflowRerun
+rr-df-wait-rearms	rr-df-wait-rearms.cfg	WorkflowRerun
 rs.design-locks	rs.design-locks.cfg	RerunStartRaces
 rs.design-refusals-crash	rs.design-refusals-crash.cfg	RerunStartRaces
 rs.design-identity	rs.design-identity.cfg	RerunStartRaces
@@ -160,7 +163,7 @@ wit.rp-no-two-bad-spawns	wit.rp-no-two-bad-spawns.cfg	RerunPlanGate
 wit.rp-no-lane-lift	wit.rp-no-lane-lift.cfg	RerunPlanGate
 wit.rp-no-stale-flag	wit.rp-no-stale-flag.cfg	RerunPlanGate
 wit.rp-no-notice-after-completion	wit.rp-no-notice-after-completion.cfg	RerunPlanGate
-wit.rp-no-late-notice	wit.rp-no-late-notice.cfg	RerunPlanGate
+wit.rp-no-refused-late-notice	wit.rp-no-refused-late-notice.cfg	RerunPlanGate
 wit.rp-no-kept-receive-cut-back	wit.rp-no-kept-receive-cut-back.cfg	RerunPlanGate
 wit.rp-no-lane-approval-reused	wit.rp-no-lane-approval-reused.cfg	RerunPlanGate
 wit.rp-no-mcp-refusal	wit.rp-no-mcp-refusal.cfg	RerunPlanGate
@@ -193,6 +196,7 @@ rpo.live-cleanup	rpo.live-cleanup.cfg	RerunPassOver
 wit.rpo-no-expired-before-receive	wit.rpo-no-expired-before-receive.cfg	RerunPassOver
 wit.rpo-no-take-at-last-instant	wit.rpo-no-take-at-last-instant.cfg	RerunPassOver
 wit.rpo-no-take-of-late-message	wit.rpo-no-take-of-late-message.cfg	RerunPassOver
+wit.rpo-no-accept-at-wait-deadline	wit.rpo-no-accept-at-wait-deadline.cfg	RerunPassOver
 wit.rpo-no-retry-after-cut	wit.rpo-no-retry-after-cut.cfg	RerunPassOver
 wit.rpo-no-expire-in-pass-over	wit.rpo-no-expire-in-pass-over.cfg	RerunPassOver
 wit.rpo-no-wait-timer-at-deadline	wit.rpo-no-wait-timer-at-deadline.cfg	RerunPassOver
@@ -211,6 +215,7 @@ rpo-df-wait-deadline-early	rpo-df-wait-deadline-early.cfg	RerunPassOver
 rpo-df-parallel-deadline-early	rpo-df-parallel-deadline-early.cfg	RerunPassOver
 rpo-df-run-deadline-early	rpo-df-run-deadline-early.cfg	RerunPassOver
 rpo-df-take-ignores-end	rpo-df-take-ignores-end.cfg	RerunPassOver
+rpo-df-claim-at-deadline	rpo-df-claim-at-deadline.cfg	RerunPassOver
 rpo-df-skip-child-cancel-on-stop	rpo-df-skip-child-cancel-on-stop.cfg	RerunPassOver
 rpo-df-skip-agent-end-on-cancel	rpo-df-skip-agent-end-on-cancel.cfg	RerunPassOver
 rpo-df-stop-keeps-pending	rpo-df-stop-keeps-pending.cfg	RerunPassOver

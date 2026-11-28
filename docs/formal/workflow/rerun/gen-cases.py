@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1 + supply + generated inbox + fix wave R3 +
 the unread-only carry) and its companion modules RerunStartRaces, RerunPlanGate, RerunPassOver and RerunContinuedSession
-(Task 6a-TLA+2, batch rr8), after checking that every property is checked and tripped (coverage(); --check runs only that).
+(Task 6a-TLA+2, review H1..H3: batch rr9), after checking that every property is checked and tripped (coverage(); --check runs only that).
 The .cfg files are generated from these by run-tlc.sh / check-packet.sh (../../tlc_cases.py)."""
 import json
 import os as _os
@@ -10,7 +10,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import tlc_cases  # docs/formal/tlc_cases.py
 
-BATCH = "rr8"
+BATCH = "rr9"
 M = "WorkflowRerun"
 
 
@@ -84,6 +84,8 @@ def c(
     retry_after_cut=False,
     take_ignores_taken=False,
     no_new_message=False,
+    receive_skips_wait=False,
+    wait_rearms=False,
 ):
     return dict(
         SourceKind=q(source_kind),
@@ -151,6 +153,8 @@ def c(
         RetryAfterCut=retry_after_cut,
         TakeIgnoresTaken=take_ignores_taken,
         NoNewMessage=no_new_message,
+        ReceiveSkipsWait=receive_skips_wait,
+        WaitRearms=wait_rearms,
     )
 
 
@@ -187,6 +191,7 @@ ALL_SAFE_INVS = [
     "Inv_NoWaitingLostAcrossGenerations",
     "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce",
+    "Inv_ReceiveWaitsForInputOrDeadline",
 ]
 SAFE_PROPS = ["Prop_NoAdmissionAfterTerminal", "Prop_SweepRequiresLockAndNoRun"]
 LIVE_PROPS = ["Live_ReachesCut", "Live_Quiesces"]
@@ -300,7 +305,7 @@ CASES = [
         SAFE_PROPS,
         "PASS",
         True,
-        "Task R5: generated #2 inbox (1,728 inboxes) and nobody sends #3 a new message: a receive with nothing carried to take hits its time limit; the carry stays exact.",
+        "Task R5: generated #2 inbox (1,728 inboxes) and nobody sends #3 a new message: a receive with nothing carried to take waits for its deadline (the clock ticks, the wait elapses it) and never completes earlier; the carry stays exact.",
     ),
     (
         "rr.design-inbox-notices",
@@ -556,10 +561,10 @@ CASES = [
         "LiveSpec",
         c(source_kind="inbox", no_new_message=True),
         ["TypeOK"],
-        STRONG_LIVE_PROPS,
+        STRONG_LIVE_PROPS + ["Live_NoInputTimesOut"],
         "PASS",
         True,
-        "Task R5 liveness: with no new message, a receive whose message a dropped visit read waits, hits its time limit and the run still terminates (failed); no liveness property asks it to complete.",
+        "Task R5 liveness (review H1): with no new message, a pending receive whose message a dropped visit read reaches its deadline and times out, and the run fails by its failure route (Live_NoInputTimesOut), under weak fairness of the clock, the wait timer and the controller; no liveness property asks it to complete.",
     ),
     (
         "rr.live-gen2",
@@ -736,7 +741,7 @@ CASES = [
         [],
         "VIOLATION:Wit_NoNewMessageAfterRead",
         True,
-        "Task R5 witness: #3 starts before the receive whose message #2 read; that message is not carried, the receive waits, a new message arrives in #3 and the run completes.",
+        "Task R5 witness (review H1): #3 starts before the receive whose message #2 read; that message is not carried, the receive enters pending and the controller reads it pending, a new message accepted before its deadline claims it (winner message), and the run completes.",
     ),
     (
         "wit.rr-no-read-notice-left",
@@ -758,7 +763,7 @@ CASES = [
         [],
         "VIOLATION:Wit_NoReceiveTimedOut",
         True,
-        "Task R5 witness: the receive whose message #2 read gets no new message, hits its time limit, and the run ends failed.",
+        "Task R5 witness (review H1): the receive whose message #2 read is read pending by the controller, no input arrives, the clock reaches its deadline, the wait elapses it, and the run ends failed (unhandled_error).",
     ),
     (
         "wit.rr-no-expired-at-cut-left",
@@ -1683,6 +1688,39 @@ CASES = [
         "RR-9 fault: a re-run enterNode of the receive that took a carried message takes it again (only reachable with a "
         "retry after the cut).",
     ),
+    (
+        "rr-df-receive-skips-wait",
+        "fault",
+        "Spec",
+        c(source_kind="inbox", receive_skips_wait=True),
+        ["Inv_ReceiveWaitsForInputOrDeadline"],
+        [],
+        "VIOLATION:Inv_ReceiveWaitsForInputOrDeadline",
+        True,
+        "Review H1 fault (the rr8 shortcut): a pending receive completes msg as an effect, with no message accepted.",
+    ),
+    (
+        "rr-df-receive-skips-wait-elapsed",
+        "fault",
+        "Spec",
+        c(source_kind="inbox", no_new_message=True, receive_skips_wait=True),
+        ["Inv_ReceiveWaitsForInputOrDeadline"],
+        [],
+        "VIOLATION:Inv_ReceiveWaitsForInputOrDeadline",
+        True,
+        "Review H1 fault (the rr8 shortcut): with no new message, a pending receive completes elapsed at once, before the clock reaches its deadline.",
+    ),
+    (
+        "rr-df-wait-rearms",
+        "fault",
+        "LiveSpec",
+        c(source_kind="inbox", no_new_message=True, wait_rearms=True),
+        ["TypeOK"],
+        ["Live_NoInputTimesOut"],
+        "VIOLATION:Live_NoInputTimesOut",
+        True,
+        "Review H1 fault: a due wait timer re-arms from now instead of elapsing the receive, so with no input the receive never times out.",
+    ),
 ]
 
 
@@ -1729,8 +1767,8 @@ def rp(max_top=3, top_kinds=("work",), lane_kinds=("work",), with_bumps=False, a
 def rpo(reused=1, chains=(("receive", "receive"),), msgs=(), late_msgs=(), exps=(1, 2, 3), run_limits=(0,), wait_limits=(1,),
         par_limits=(1,), max_clk=3, max_retries=1, ctrl=False, owner_end=False, lost_dispatch=False,
         stamp_separate_tx=False, take_not_idempotent=False, take_at_expiry=False, copy_keeps_run_deadline=False,
-        deadline_early_for=(), take_ignores_end=False, skip_child_cancel_when=(), skip_agent_end_when=(),
-        no_cleanup_on_owner_end=False, stop_keeps_pending=False):
+        deadline_early_for=(), take_ignores_end=False, claim_at_deadline=False, skip_child_cancel_when=(),
+        skip_agent_end_when=(), no_cleanup_on_owner_end=False, stop_keeps_pending=False):
     nums = lambda xs: "{" + ", ".join(str(x) for x in xs) + "}"
     return tf(Reused=reused, Chains=seqs(*chains), Msgs=sset(*msgs), LateMsgs=sset(*late_msgs), ExpChoices=nums(exps),
               RunLimits=nums(run_limits),
@@ -1738,7 +1776,8 @@ def rpo(reused=1, chains=(("receive", "receive"),), msgs=(), late_msgs=(), exps=
               AllowCtrl=ctrl, AllowOwnerEnd=owner_end, AllowLostDispatch=lost_dispatch, StampSeparateTx=stamp_separate_tx,
               TakeNotIdempotent=take_not_idempotent, TakeAtExpiry=take_at_expiry,
               CopyKeepsRunDeadline=copy_keeps_run_deadline, DeadlineEarlyFor=sset(*deadline_early_for),
-              TakeIgnoresEnd=take_ignores_end, SkipChildCancelWhen=sset(*skip_child_cancel_when),
+              TakeIgnoresEnd=take_ignores_end, ClaimAtDeadline=claim_at_deadline,
+              SkipChildCancelWhen=sset(*skip_child_cancel_when),
               SkipAgentEndWhen=sset(*skip_agent_end_when), NoCleanupOnOwnerEnd=no_cleanup_on_owner_end,
               StopKeepsPending=stop_keeps_pending)
 
@@ -1756,7 +1795,8 @@ RP_PART = ["TypeOK", "Inv_ReusedIsPrefix", "Inv_KvAtCut", "Inv_ExactPartition", 
 RP_GR1 = RP_PART + ["Inv_ReusedSpawnFinished", "Inv_Gr1CutAtMinBad"]
 RP_GATE = RP_PART + ["Inv_ReuseNeedsOwnerInPerson", "Inv_PlanRefusesWhatItSees", "Inv_RefusalShellAccounted"]
 RPO_INVS = ["TypeOK", "Inv_TakeOnce", "Inv_NoExpiredTake", "Inv_ResumedIffNew", "Inv_ExpiresNotEarly", "Inv_TimersNotEarly",
-            "Inv_TerminalNoPending", "Inv_EndedNoLiveAgent", "Inv_EndedNoActiveChild", "Inv_EndedNoTake"]
+            "Inv_TerminalNoPending", "Inv_EndedNoLiveAgent", "Inv_EndedNoActiveChild", "Inv_EndedNoTake",
+            "Inv_NoClaimAtOrAfterWaitDeadline"]
 RCS_INVS = ["TypeOK", "Inv_NoFalseRecapClaim", "Inv_RecapAvailable", "Inv_SessionIsolation"]
 RPO_RECEIVE = dict(reused=1, chains=(("receive", "receive"),), msgs=("m1", "m2"), late_msgs=("m2",), exps=(1, 2, 3), run_limits=(0, 4),
                    wait_limits=(1, 2), max_clk=3, max_retries=2, ctrl=True, lost_dispatch=True)
@@ -1893,7 +1933,7 @@ COMPANION = [
     w("RerunPlanGate", "wit.rp-no-lane-lift", rp(**RP_G), "Wit_NoLaneLift"),
     w("RerunPlanGate", "wit.rp-no-stale-flag", rp(**RP_G), "Wit_NoStaleFlag"),
     w("RerunPlanGate", "wit.rp-no-notice-after-completion", rp(**RP_G), "Wit_NoNoticeAfterCompletion"),
-    w("RerunPlanGate", "wit.rp-no-late-notice", rp(**RP_G), "Wit_NoLateNotice"),
+    w("RerunPlanGate", "wit.rp-no-refused-late-notice", rp(**RP_G), "Wit_NoRefusedLateNotice"),
     w("RerunPlanGate", "wit.rp-no-kept-receive-cut-back", rp(**RP_G2), "Wit_NoKeptReceiveCutBack"),
     w("RerunPlanGate", "wit.rp-no-lane-approval-reused", rp(**RP_GATE_C), "Wit_NoLaneApprovalReused"),
     w("RerunPlanGate", "wit.rp-no-mcp-refusal", rp(**RP_GATE_C), "Wit_NoMcpRefusal"),
@@ -1963,8 +2003,8 @@ COMPANION = [
 ] + [
     # ---- RerunPassOver (RR-3, RR-5, RR-9, RR-11) ----
     ("RerunPassOver", "rpo.design-receive", "design", "Spec", rpo(**RPO_RECEIVE), RPO_INVS, [], "PASS", True,
-     "RR-3, RR-5, RR-9, RR-11: two receives after a copied visit, two messages with every restarted expiry (one carried, "
-     "the other carried or sent after the admission), a lost and recovered dispatch, two lost enterNode results anywhere, cancel / stop / pause racing the receives, wait "
+     "RR-3, RR-5, RR-9, RR-11, review H2: two receives after a copied visit, two messages with every expiry (m1 carried, "
+     "m2 sent after the admission, its acceptance claiming a pending receive only before its deadline), a lost and recovered dispatch, two lost enterNode results anywhere, cancel / stop / pause racing the receives, wait "
      "deadlines and the run deadline at every boundary (the read-only expired answer, then expireRun)."),
     ("RerunPassOver", "rpo.design-work-timers", "design", "Spec", rpo(**RPO_WORK), RPO_INVS, [], "PASS", True,
      "RR-5, RR-11: agent, spawn and parallel steps after two copied visits, a lost and recovered dispatch, cancel / stop "
@@ -1975,6 +2015,7 @@ COMPANION = [
     w("RerunPassOver", "wit.rpo-no-expired-before-receive", rpo(**RPO_RECEIVE), "Wit_NoExpiredBeforeReceive"),
     w("RerunPassOver", "wit.rpo-no-take-at-last-instant", rpo(**RPO_RECEIVE), "Wit_NoTakeAtLastInstant"),
     w("RerunPassOver", "wit.rpo-no-take-of-late-message", rpo(**RPO_RECEIVE), "Wit_NoTakeOfLateMessage"),
+    w("RerunPassOver", "wit.rpo-no-accept-at-wait-deadline", rpo(**RPO_RECEIVE), "Wit_NoAcceptAtWaitDeadline"),
     w("RerunPassOver", "wit.rpo-no-retry-after-cut", rpo(**RPO_RECEIVE), "Wit_NoRetryAfterCut"),
     w("RerunPassOver", "wit.rpo-no-expire-in-pass-over", rpo(**RPO_WORK), "Wit_NoExpireInPassOver"),
     w("RerunPassOver", "wit.rpo-no-wait-timer-at-deadline", rpo(**RPO_RECEIVE), "Wit_NoWaitTimerAtDeadline"),
@@ -2010,6 +2051,10 @@ COMPANION = [
      ["Inv_EndedNoTake"], [], "VIOLATION:Inv_EndedNoTake", True,
      "RR-5 fault (no terminal fence): a message delivered to a waiting receive after the run's end transaction (a cancel, "
      "a stop, the deadline) is still taken."),
+    ("RerunPassOver", "rpo-df-claim-at-deadline", "fault", "Spec", rpo(**RPO_RECEIVE, claim_at_deadline=True),
+     ["Inv_NoClaimAtOrAfterWaitDeadline"], [], "VIOLATION:Inv_NoClaimAtOrAfterWaitDeadline", True,
+     "Review H2 fault: acceptInput claims a pending receive when deadline_at >= at, so a message accepted exactly at the "
+     "wait deadline wins the receive."),
     ("RerunPassOver", "rpo-df-skip-child-cancel-on-stop", "fault", "Spec", rpo(**RPO_WORK, skip_child_cancel_when=("stopped",)),
      ["Inv_EndedNoActiveChild"], [], "VIOLATION:Inv_EndedNoActiveChild", True,
      "RR-5 fault: a stopped run's end activities leave its active child running."),

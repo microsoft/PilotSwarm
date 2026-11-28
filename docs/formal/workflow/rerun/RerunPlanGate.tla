@@ -32,8 +32,12 @@
 (* The plan's approval gate refuses before any claim (no shell); the      *)
 (* admission's re-check refuses after the claim (a rollback; the shell's  *)
 (* cleanup is owed). Between the plan and the admission a child can still *)
-(* end, its notice can arrive, and an approval's recorded provenance can  *)
-(* change; the admission does not read the spawn flags again.             *)
+(* end, and an approval's recorded provenance can change; the admission   *)
+(* does not read the spawn flags again. #2 has ended before the plan      *)
+(* (prepareRerunStart refuses an active source), so no notice row can be  *)
+(* inserted into it any more: a late delivery of a child's notice is      *)
+(* refused (acceptInput RUN_ENDED, or the runtime skips an inactive        *)
+(* parent run) and leaves #2's inbox as the plan read it (review H3).     *)
 (*                                                                         *)
 (* The invariants state the design independently: by visit order and      *)
 (* instants (a KV write k at instant 2k-1, visit i entered at 2i, #2's    *)
@@ -105,7 +109,8 @@ VARIABLES
     snapOp, snapNotice, \* the spawn flags' inputs as the plan read them
     \* the admission's commit (store.ts createDefinition)
     aReused, aDropped, aSupplied, aKvRows, aKvSnap,
-    shellMade, cleanupOwed, provChanged
+    shellMade, cleanupOwed, provChanged,
+    noticeRefused   \* review H3: spawns whose late notice delivery to the ended #2 was attempted and refused (no row)
 
 TopVisit(i) == <<"T", i>>
 LaneVisit(j) == <<"L", j>>
@@ -146,8 +151,10 @@ Valid(i, m) ==
 
 vars == <<n, kind, laneKind, bump, life, op, notice, decider, chosen0, mode0, reqMode, actorKind, viaProxy, viaMcp, starter,
           phase, pChosen, pMode, pReusedTop, pReusedLanes, pDroppedTop, pDroppedLanes, pSupplied, pKv, pGr1Moved, pinned,
-          snapOp, snapNotice, aReused, aDropped, aSupplied, aKvRows, aKvSnap, shellMade, cleanupOwed, provChanged>>
-historyVars == <<n, kind, laneKind, bump, chosen0, mode0, reqMode, actorKind, viaProxy, viaMcp, starter>>
+          snapOp, snapNotice, aReused, aDropped, aSupplied, aKvRows, aKvSnap, shellMade, cleanupOwed, provChanged,
+          noticeRefused>>
+\* #2's history and the Start; noticeRefused records refused delivery attempts to the ended #2 (they change nothing else).
+historyVars == <<n, kind, laneKind, bump, chosen0, mode0, reqMode, actorKind, viaProxy, viaMcp, starter, noticeRefused>>
 planVars == <<pChosen, pMode, pReusedTop, pReusedLanes, pDroppedTop, pDroppedLanes, pSupplied, pKv, pGr1Moved, pinned,
               snapOp, snapNotice>>
 admitVars == <<aReused, aDropped, aSupplied, aKvRows, aKvSnap>>
@@ -166,6 +173,7 @@ TypeOK ==
     /\ aReused \subseteq Visits /\ aDropped \subseteq Visits /\ aSupplied \subseteq Visits
     /\ aKvRows \subseteq 1..(MaxTop + 2) /\ aKvSnap \in 0..(MaxTop + 2)
     /\ {shellMade, cleanupOwed, provChanged} \subseteq BOOLEAN
+    /\ noticeRefused \subseteq AllVisits
 
 \* Init chooses each value over the domain the earlier ones fix (TLC enumerates only those).
 Init ==
@@ -194,6 +202,7 @@ Init ==
     /\ snapOp = [v \in Spawns |-> FALSE] /\ snapNotice = [v \in Spawns |-> "none"]
     /\ aReused = {} /\ aDropped = {} /\ aSupplied = {} /\ aKvRows = {} /\ aKvSnap = 0
     /\ shellMade = FALSE /\ cleanupOwed = FALSE /\ provChanged = FALSE
+    /\ noticeRefused = {}
 
 -----------------------------------------------------------------------------
 (* The code                                                                *)
@@ -286,17 +295,23 @@ Claim ==
     /\ phase' = "claimed" /\ shellMade' = TRUE
     /\ UNCHANGED <<historyVars, life, op, notice, decider, planVars, admitVars, cleanupOwed, provChanged>>
 
-\* Between the plan and the admission: a running child ends (#2's parent-end cancel lands, or it finishes first); an ended
-\* child's notice arrives in #2's inbox; an answered approval's recorded provenance changes or goes missing.
+\* Between the plan and the admission: a running child ends (#2's parent-end cancel lands, or it finishes first); a late
+\* delivery of an ended child's notice to the ended #2 is refused; an answered approval's recorded provenance changes or
+\* goes missing.
 EnvUnchanged == UNCHANGED <<historyVars, phase, planVars, admitVars, shellMade, cleanupOwed>>
 ChildEnds(v) ==
     /\ phase \in {"planned", "claimed"} /\ v \in Spawns /\ life[v] = "running"
     /\ \E s \in {"completed", "cancelled"} : life' = [life EXCEPT ![v] = s]
     /\ UNCHANGED <<op, notice, decider, provChanged>> /\ EnvUnchanged
-NoticeArrives(v) ==
-    /\ phase \in {"planned", "claimed"} /\ v \in Spawns /\ life[v] # "running" /\ notice[v] = "none"
-    /\ notice' = [notice EXCEPT ![v] = "row"]
-    /\ UNCHANGED <<life, op, decider, provChanged>> /\ EnvUnchanged
+\* Review H3: the notice of a child that ended with no row in #2 is delivered after #2 ended. runtime.ts targets the
+\* spawning run (#2) and skips it when inactive; a delivery already in flight reaches store.ts acceptInput, which locks #2's
+\* run row and refuses it (RUN_ENDED) before any insert. #2's inbox (notice) is unchanged: no fresh notice row is ever
+\* inserted into an ended source run.
+LateNoticeRefused(v) ==
+    /\ phase \in {"planned", "claimed"} /\ v \in Spawns /\ life[v] # "running" /\ notice[v] = "none" /\ v \notin noticeRefused
+    /\ noticeRefused' = noticeRefused \cup {v}
+    /\ UNCHANGED <<n, kind, laneKind, bump, chosen0, mode0, reqMode, actorKind, viaProxy, viaMcp, starter>>
+    /\ UNCHANGED <<life, op, notice, decider, provChanged, phase, planVars, admitVars, shellMade, cleanupOwed>>
 ProvenanceChanges(v) ==
     /\ WithGate /\ ~provChanged /\ phase \in {"planned", "claimed"} /\ v \in Approvals
     /\ \E d \in Deciders \ {decider[v]} : decider' = [decider EXCEPT ![v] = d]
@@ -324,7 +339,7 @@ Admit ==
 Ended == phase \in {"admitted", "refused_plan", "refused_admit"}
 Done == Ended /\ UNCHANGED vars
 
-Next == Plan \/ Claim \/ (\E v \in AllVisits : ChildEnds(v) \/ NoticeArrives(v) \/ ProvenanceChanges(v)) \/ Admit \/ Done
+Next == Plan \/ Claim \/ (\E v \in AllVisits : ChildEnds(v) \/ LateNoticeRefused(v) \/ ProvenanceChanges(v)) \/ Admit \/ Done
 Spec == Init /\ [][Next]_vars
 
 -----------------------------------------------------------------------------
@@ -427,9 +442,11 @@ Wit_NoStaleFlag == ~(phase = "admitted" /\ pGr1Moved /\ \E v \in Spawns : TopOf(
 Wit_NoNoticeAfterCompletion ==
     ~(phase = "admitted" /\ pGr1Moved /\ \E v \in Spawns : TopOf(v) = pChosen /\ ~snapOp[v] /\ snapNotice[v] = "none"
                                                          /\ life[v] = "completed")
-\* RR-8: the notice arrives between the plan and the admission; the admission keeps the plan's cut.
-Wit_NoLateNotice ==
-    ~(phase = "admitted" /\ pGr1Moved /\ \E v \in Spawns : TopOf(v) = pChosen /\ snapNotice[v] = "none" /\ notice[v] = "row")
+\* RR-8 / review H3: a child ended with no notice row in the ended #2; a late delivery of its notice between the plan and
+\* the admission is refused and inserts nothing; the admission keeps the plan's cut-back to its spawn.
+Wit_NoRefusedLateNotice ==
+    ~(phase = "admitted" /\ pGr1Moved /\ \E v \in Spawns : TopOf(v) = pChosen /\ snapNotice[v] = "none" /\ v \in noticeRefused
+                                                         /\ notice[v] = "none")
 \* RR-8 (Generations = 2): #1's kept receive read the child's notice, #2 reused the spawn and the receive without a notice
 \* row, and the automatic pick on #2 cuts back to the spawn.
 Wit_NoKeptReceiveCutBack ==

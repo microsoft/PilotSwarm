@@ -36,9 +36,13 @@
 (* run kept open (runtime.ts endAgent) and cancel each active child        *)
 (* (parent-end:<run>), one activity per category. A message is carried at *)
 (* the admission or sent to #3 later (acceptInput, while the run is       *)
-(* active); a receive waiting for it takes it only while the run is       *)
-(* running (the take and the end lock the run row; whichever commits     *)
-(* second sees the other).                                                *)
+(* active, running or paused; the acceptance and the end lock the run    *)
+(* row, so whichever commits second sees the other). A receive takes a   *)
+(* message present at its entry (enterNode); a message accepted while a  *)
+(* receive is pending claims it in the acceptance's own transaction only  *)
+(* when the receive's deadline is after the acceptance (deadline_at > at, *)
+(* review H2); at or after it the message is stored unclaimed and the    *)
+(* receive's wait elapses.                                                *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -46,7 +50,7 @@ CONSTANTS
     Reused,             \* 0..2 copied visits before the cut
     Chains,             \* names of new-visit chains (ChainOf), TLC picks one: "receive_receive", "agent_spawn", ...
     Msgs,               \* messages, e.g. {"m1", "m2"} or {}: carried into #3 at its admission, or sent to it later
-    LateMsgs,           \* the messages TLC may choose to send to #3 after its admission instead of carrying them
+    LateMsgs,           \* the messages sent to #3 after its admission (never carried; review H2)
     ExpChoices,         \* restarted expiries TLC chooses from (the admission commit is at clock 0; TTL is at least 1 s)
     RunLimits,          \* the run's time limits TLC chooses from (0 = none)
     WaitLimits,         \* a receive's wait.totalSeconds, TLC chooses
@@ -63,6 +67,7 @@ CONSTANTS
     CopyKeepsRunDeadline, \* the copy keeps #2's run deadline (already past) instead of starting it at begin
     DeadlineEarlyFor,   \* timer kinds ("receive", "parallel", "run") that fire one tick early (deadline_at < now + 1)
     TakeIgnoresEnd,     \* a message delivered to a waiting receive is taken after the run ended (no terminal fence)
+    ClaimAtDeadline,    \* acceptInput claims a pending receive when deadline_at >= at (the strict fence relaxed)
     SkipChildCancelWhen,  \* end kinds whose end activities leave an active child running
     SkipAgentEndWhen,     \* end kinds whose end activities leave an agent session open
     NoCleanupOnOwnerEnd,  \* a run the owner's deletion ended gets no end activities
@@ -70,7 +75,7 @@ CONSTANTS
 
 ASSUME Reused \in 0..2 /\ MaxRetries \in 0..2 /\ MaxClk \in 1..8 /\ LateMsgs \subseteq Msgs
 ASSUME {AllowCtrl, AllowOwnerEnd, AllowLostDispatch, StampSeparateTx, TakeNotIdempotent, TakeAtExpiry, CopyKeepsRunDeadline,
-        TakeIgnoresEnd, NoCleanupOnOwnerEnd, StopKeepsPending} \subseteq BOOLEAN
+        TakeIgnoresEnd, ClaimAtDeadline, NoCleanupOnOwnerEnd, StopKeepsPending} \subseteq BOOLEAN
 ASSUME DeadlineEarlyFor \subseteq {"receive", "parallel", "run"}
 
 ChainOf(name) ==
@@ -116,7 +121,8 @@ VARIABLES
     timerEarly, expiredEarly,   \* a visit timer fired before its deadline; the run expired before its own deadline
     expFrom,        \* "none" | "running" | "paused": the status expireRun ended the run from
     expireIdle,     \* expireRun found the run already ended by something else after enterNode answered "expired"
-    rcvSawExpired   \* a receive was decided at an instant when an untaken carried message had already expired
+    rcvSawExpired,  \* a receive was decided at an instant when an untaken carried message had already expired
+    tieAccept       \* review H2: a message was accepted at the instant a pending receive's deadline came due (clk = deadline_at)
 
 Last == Reused + Len(chain)
 Visits == 1..Last
@@ -127,12 +133,12 @@ TimerKindAt(i) == KindAt(i)     \* "receive" (wait) or "parallel" (time limit)
 vars == <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, runStatus, endKind, endAt, failCode, begunAt, runDl,
           pc, cur, row, outcome, armedAt, dlOf, firedAt, resumedAt, stampOwed, actRes, retries, lostNew, taken, takenAt, tookBy,
           evt, takeSeq, endSeq, sess, child, agentEndDone, childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone,
-          timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired>>
+          timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired, tieAccept>>
 
 Init ==
     /\ chain \in {ChainOf(name) : name \in Chains}
     /\ exp \in [Msgs -> ExpChoices]
-    /\ arrived \in [Msgs -> BOOLEAN] /\ \A m \in Msgs \ LateMsgs : arrived[m]
+    /\ arrived = [m \in Msgs |-> m \notin LateMsgs]
     /\ runLimit \in RunLimits /\ waitLimit \in WaitLimits /\ parLimit \in ParLimits
     /\ clk = 0
     /\ disp = "committed" /\ recovered = FALSE
@@ -151,6 +157,7 @@ Init ==
     /\ sess = "absent" /\ child = "absent" /\ agentEndDone = FALSE /\ childCancelDone = FALSE
     /\ stopReq = FALSE /\ cancelUsed = FALSE /\ pauseUsed = FALSE /\ ownerGone = FALSE
     /\ timerEarly = FALSE /\ expiredEarly = FALSE /\ expFrom = "none" /\ expireIdle = FALSE /\ rcvSawExpired = FALSE
+    /\ tieAccept = FALSE
 
 -----------------------------------------------------------------------------
 (* Time                                                                    *)
@@ -165,22 +172,12 @@ Tick ==
     /\ UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, disp, recovered, runStatus, endKind, endAt, failCode, begunAt,
                    runDl, pc, cur, row, outcome, armedAt, dlOf, firedAt, resumedAt, stampOwed, actRes, retries, lostNew, taken,
                    takenAt, tookBy, evt, takeSeq, endSeq, sess, child, agentEndDone, childCancelDone, stopReq, cancelUsed,
-                   pauseUsed, ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired>>
+                   pauseUsed, ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired, tieAccept>>
 
 \* A carried message a receive can take now: not taken, and expires_at > now (fault TakeAtExpiry: >=).
 Takeable(m) == arrived[m] /\ taken[m] = 0 /\ (IF TakeAtExpiry THEN exp[m] >= clk ELSE exp[m] > clk)
 \* An untaken message in the inbox that has already expired now.
 ExpiredUntaken == \E m \in Msgs : arrived[m] /\ taken[m] = 0 /\ exp[m] <= clk
-
-\* store.ts acceptInput: a message sent to #3 after its admission is accepted while the run is active (its expiry is
-\* after now). A receive waiting for it can then take it.
-Arrive(m) ==
-    /\ m \in LateMsgs /\ ~arrived[m] /\ runStatus \in Active /\ exp[m] > clk
-    /\ arrived' = [arrived EXCEPT ![m] = TRUE]
-    /\ UNCHANGED <<chain, exp, runLimit, waitLimit, parLimit, clk, disp, recovered, runStatus, endKind, endAt, failCode, begunAt,
-                   runDl, pc, cur, row, outcome, armedAt, dlOf, firedAt, resumedAt, stampOwed, actRes, retries, lostNew, taken,
-                   takenAt, tookBy, evt, takeSeq, endSeq, sess, child, agentEndDone, childCancelDone, stopReq, cancelUsed,
-                   pauseUsed, ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired>>
 
 \* The run's end transaction (finishRun / cancelRun / expireRun / stop / the 0096 trigger): every pending visit ends with it,
 \* and it takes the next place in the causal order.
@@ -202,7 +199,8 @@ Take(m, i) ==
 DispUnchanged == UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, runStatus, endKind, endAt, failCode, begunAt, runDl,
                              cur, row, outcome, armedAt, dlOf, firedAt, resumedAt, stampOwed, actRes, retries, lostNew, taken,
                              takenAt, tookBy, evt, takeSeq, endSeq, sess, child, agentEndDone, childCancelDone, stopReq,
-                             cancelUsed, pauseUsed, ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired>>
+                             cancelUsed, pauseUsed, ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired,
+                             tieAccept>>
 \* A crash after the admission committed and before dispatchWorkflowRun ran: the run stays admitted with no controller.
 DispatchLost ==
     /\ AllowLostDispatch /\ disp = "committed" /\ ~recovered
@@ -228,7 +226,7 @@ DispatchStart ==
 (* Controller                                                              *)
 
 CtrlUnchanged == UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, sess, child, agentEndDone,
-                             childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone>>
+                             childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, tieAccept>>
 
 Begin ==
     /\ pc = "begin" /\ disp = "started"
@@ -380,7 +378,7 @@ StartWork ==
     /\ UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, runStatus, endKind, endAt, failCode, begunAt,
                    runDl, cur, row, outcome, armedAt, dlOf, firedAt, resumedAt, stampOwed, actRes, retries, lostNew, taken,
                    takenAt, tookBy, evt, takeSeq, endSeq, agentEndDone, childCancelDone, stopReq, cancelUsed, pauseUsed,
-                   ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired>>
+                   ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired, tieAccept>>
 WorkEndedEarly ==
     /\ pc = "work" /\ row[cur] # "pending"
     /\ pc' = IF runStatus \in Terminal THEN "endacts" ELSE "next"
@@ -389,24 +387,45 @@ WorkEndedEarly ==
                    expFrom, expireIdle, rcvSawExpired>>
     /\ CtrlUnchanged
 
-\* A pending visit completes: the agent reports, the child ends and its notice arrives, the lanes finish, or a pending
-\* receive takes a carried message that is still takeable. A take needs a running run (the terminal fence); fault
-\* TakeIgnoresEnd: a message delivered to the receive after the run's end transaction is still taken.
+\* A pending visit completes: the agent reports, the child ends and its notice arrives, or the lanes finish. A pending
+\* receive completes only by Accept's claim, its wait timer, or the run's end (review H2). Fault TakeIgnoresEnd (LateTake):
+\* a message delivered to the receive after the run's end transaction is still taken.
 Complete(i, o) ==
     /\ row' = [row EXCEPT ![i] = "completed"] /\ outcome' = [outcome EXCEPT ![i] = o] /\ armedAt' = [armedAt EXCEPT ![i] = NoTime]
+
+\* store.ts acceptInput, one transaction under #3's session and run locks, one clock reading after them (review H2): a
+\* message sent to #3 after its admission is accepted while the run is active (running or paused; an ended run refuses it,
+\* RUN_ENDED), with its expiry after now. In the same transaction it claims the pending receive (the one visit in flight)
+\* when that receive's deadline is after the acceptance (deadline_at > at; fault ClaimAtDeadline: >=): the receive
+\* completes msg and the message is consumed, a take distinct from enterNode's take at a new visit's entry. At or after the
+\* deadline the message is stored unclaimed (tieAccept records the exact tie) and the receive's wait elapses.
+ClaimFence(i) == IF ClaimAtDeadline THEN armedAt[i] >= clk ELSE armedAt[i] > clk
+Accept(m) ==
+    /\ m \in LateMsgs /\ ~arrived[m] /\ runStatus \in Active /\ exp[m] > clk
+    /\ arrived' = [arrived EXCEPT ![m] = TRUE]
+    /\ LET claim == IsNew(cur) /\ KindAt(cur) = "receive" /\ row[cur] = "pending" /\ armedAt[cur] # NoTime /\ ClaimFence(cur)
+       IN IF claim
+            THEN /\ Take(m, cur) /\ Complete(cur, "msg")
+                 /\ rcvSawExpired' = (rcvSawExpired \/ ExpiredUntaken)
+                 /\ UNCHANGED tieAccept
+            ELSE /\ tieAccept' = (tieAccept \/ (IsNew(cur) /\ KindAt(cur) = "receive" /\ row[cur] = "pending"
+                                                 /\ armedAt[cur] = clk))
+                 /\ UNCHANGED <<row, outcome, armedAt, taken, takenAt, tookBy, evt, takeSeq, rcvSawExpired>>
+    /\ UNCHANGED <<chain, exp, runLimit, waitLimit, parLimit, clk, disp, recovered, runStatus, endKind, endAt, failCode, begunAt,
+                   runDl, pc, cur, dlOf, firedAt, resumedAt, stampOwed, actRes, retries, lostNew, endSeq, sess, child,
+                   agentEndDone, childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, timerEarly, expiredEarly, expFrom,
+                   expireIdle>>
+
 VisitDone ==
     /\ pc = "wait" /\ row[cur] = "pending" /\ runStatus = "running"
     /\ \/ /\ KindAt(cur) = "agent" /\ Complete(cur, "ok") /\ UNCHANGED <<child, taken, takenAt, tookBy, evt, takeSeq, rcvSawExpired>>
        \/ /\ KindAt(cur) = "spawn" /\ child = "active" /\ child' = "completed" /\ Complete(cur, "ok")
           /\ UNCHANGED <<taken, takenAt, tookBy, evt, takeSeq, rcvSawExpired>>
        \/ /\ KindAt(cur) = "parallel" /\ Complete(cur, "ok") /\ UNCHANGED <<child, taken, takenAt, tookBy, evt, takeSeq, rcvSawExpired>>
-       \/ /\ KindAt(cur) = "receive" /\ \E m \in Msgs : Takeable(m)
-          /\ rcvSawExpired' = (rcvSawExpired \/ ExpiredUntaken)
-          /\ LET m == CHOOSE x \in Msgs : Takeable(x) IN Take(m, cur) /\ Complete(cur, "msg")
-          /\ UNCHANGED child
     /\ UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, runStatus, endKind, endAt, failCode, begunAt,
                    runDl, pc, cur, dlOf, firedAt, resumedAt, stampOwed, actRes, retries, lostNew, endSeq, sess, agentEndDone,
-                   childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, timerEarly, expiredEarly, expFrom, expireIdle>>
+                   childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, timerEarly, expiredEarly, expFrom, expireIdle,
+                   tieAccept>>
 LateTake ==
     /\ TakeIgnoresEnd
     /\ runStatus \in Terminal /\ KindAt(cur) = "receive" /\ outcome[cur] = "ended" /\ tookBy[cur] = "none"
@@ -415,7 +434,7 @@ LateTake ==
     /\ UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, runStatus, endKind, endAt, failCode, begunAt,
                    runDl, pc, cur, row, outcome, armedAt, dlOf, firedAt, resumedAt, stampOwed, actRes, retries, lostNew, endSeq,
                    sess, child, agentEndDone, childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, timerEarly,
-                   expiredEarly, expFrom, expireIdle, rcvSawExpired>>
+                   expiredEarly, expFrom, expireIdle, rcvSawExpired, tieAccept>>
 
 \* A visit timer: a receive's wait deadline or a parallel step's time limit (deadline_at <= now): the visit completes
 \* timed_out (the parallel's lanes are cancelled with it).
@@ -428,7 +447,7 @@ VisitTimerFires(i) ==
     /\ UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, runStatus, endKind, endAt, failCode, begunAt,
                    runDl, pc, cur, dlOf, resumedAt, stampOwed, actRes, retries, lostNew, taken, takenAt, tookBy, evt, takeSeq,
                    endSeq, sess, child, agentEndDone, childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, expiredEarly,
-                   expFrom, expireIdle>>
+                   expFrom, expireIdle, tieAccept>>
 
 \* The run deadline's own timer (runtime.ts expireRun -> store.ts expireRun): an active run, running or paused, ends
 \* failed, expired.
@@ -439,7 +458,7 @@ RunDeadlineFires ==
     /\ expFrom' = runStatus
     /\ UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, begunAt, runDl, pc, cur, dlOf, firedAt,
                    resumedAt, stampOwed, actRes, retries, lostNew, taken, takenAt, tookBy, takeSeq, sess, child, agentEndDone,
-                   childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, timerEarly, expireIdle, rcvSawExpired>>
+                   childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, timerEarly, expireIdle, rcvSawExpired, tieAccept>>
 
 \* The controller collects the visit and routes: ok or msg goes on; timed_out (no route for it) fails the run; past the
 \* last visit the run completes.
@@ -471,7 +490,7 @@ WaitSeesEnd ==
 EndActUnchanged == UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, runStatus, endKind, endAt,
                                failCode, begunAt, runDl, cur, row, outcome, armedAt, dlOf, firedAt, resumedAt, stampOwed, actRes,
                                retries, lostNew, taken, takenAt, tookBy, evt, takeSeq, endSeq, stopReq, cancelUsed, pauseUsed,
-                               ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired>>
+                               ownerGone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired, tieAccept>>
 \* runtime.ts endAgent for every session the run kept open (fault SkipAgentEndWhen: not for those end kinds).
 EndAgents ==
     /\ pc = "endacts" /\ ~agentEndDone /\ runStatus \in Terminal
@@ -498,7 +517,8 @@ EndActsDone ==
 
 CmdUnchanged == UNCHANGED <<chain, exp, arrived, runLimit, waitLimit, parLimit, clk, disp, recovered, begunAt, runDl, pc, cur, dlOf,
                             firedAt, resumedAt, stampOwed, actRes, retries, lostNew, taken, takenAt, tookBy, takeSeq, sess,
-                            child, agentEndDone, childCancelDone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired>>
+                            child, agentEndDone, childCancelDone, timerEarly, expiredEarly, expFrom, expireIdle, rcvSawExpired,
+                            tieAccept>>
 Cancel ==
     /\ AllowCtrl /\ ~cancelUsed /\ runStatus \in Active
     /\ EndRun("cancelled", "cancelled", "none") /\ cancelUsed' = TRUE
@@ -537,7 +557,7 @@ Dispatch == DispatchRead \/ DispatchStart \/ Recover
 Ctrl == Begin \/ AdmitExec \/ StampTx \/ AdmitRecord \/ ExpireTx \/ WaitResume \/ StopAtPoll \/ StartWork \/ WorkEndedEarly
         \/ Collect \/ WaitSeesEnd \/ EndAgents \/ CancelChildren \/ EndActsDone
 Timers == RunDeadlineFires \/ \E i \in Visits : VisitTimerFires(i)
-Next == Dispatch \/ DispatchLost \/ Ctrl \/ AdmitRetry \/ VisitDone \/ LateTake \/ (\E m \in Msgs : Arrive(m)) \/ Timers \/ Tick
+Next == Dispatch \/ DispatchLost \/ Ctrl \/ AdmitRetry \/ VisitDone \/ LateTake \/ (\E m \in Msgs : Accept(m)) \/ Timers \/ Tick
         \/ Cancel \/ Stop
         \/ StopGraceEnds \/ Pause \/ Resume \/ OwnerDeleted \/ ChildEndsAlone \/ Done
 
@@ -567,7 +587,7 @@ TypeOK ==
     /\ takeSeq \in [Msgs -> 0..(Cardinality(Msgs) * 2 + 2)]
     /\ sess \in {"absent", "live", "ended"} /\ child \in {"absent", "active", "completed", "cancelled"}
     /\ {resumedAt, stampOwed, agentEndDone, childCancelDone, stopReq, cancelUsed, pauseUsed, ownerGone, timerEarly,
-        expiredEarly, expireIdle, rcvSawExpired} \subseteq BOOLEAN
+        expiredEarly, expireIdle, rcvSawExpired, tieAccept} \subseteq BOOLEAN
     /\ expFrom \in {"none", "running", "paused"}
 
 \* RR-9: a carried message is taken at most once, also when an enterNode after the cut runs again.
@@ -590,6 +610,11 @@ Inv_EndedNoActiveChild == (runStatus \in Terminal /\ childCancelDone) => child #
 \* RR-5: an ended run takes no carried message after its end: every take precedes the end in the causal order (a take
 \* and the end in the same clock tick are still ordered).
 Inv_EndedNoTake == \A m \in Msgs : (takeSeq[m] > 0 /\ endSeq > 0) => takeSeq[m] < endSeq
+\* Review H2: a message accepted at or after a pending receive's wait deadline never wins it: a receive armed with a
+\* deadline (admitted pending) that took a message took it strictly before that deadline (acceptInput's
+\* deadline_at > at). A take at a receive's entry (enterNode) arms no deadline and is not constrained here.
+Inv_NoClaimAtOrAfterWaitDeadline ==
+    \A i \in Visits : (tookBy[i] # "none" /\ dlOf[i] # NoTime) => takenAt[tookBy[i]] < dlOf[i]
 \* RR-5: every ended run's agent sessions and children are eventually closed (the end activities run for every end).
 Live_EndedQuiesces == <>[](runStatus \in Terminal => (sess # "live" /\ child # "active"))
 
@@ -597,9 +622,16 @@ Live_EndedQuiesces == <>[](runStatus \in Terminal => (sess # "live" /\ child # "
 \* RR-3: a receive was decided (it took a message, waited, or timed out) at an instant when another carried message had
 \* already expired while the run waited for its dispatch or begin, or passed over copied visits.
 Wit_NoExpiredBeforeReceive == ~(rcvSawExpired /\ runStatus \in Terminal)
-\* RR-5: a message sent after the admission is taken by a receive that was waiting for it, and the run completes.
+\* RR-5 / review H2: a receive entered pending (armed with a wait deadline, dlOf # NoTime) before a message was sent to
+\* #3 (no late message is present at the admission); the message's acceptance claims it before its deadline, and the run
+\* completes.
 Wit_NoTakeOfLateMessage == ~(\E m \in LateMsgs : taken[m] = 1 /\ \E i \in Visits : tookBy[i] = m /\ row[i] = "completed"
+                                                   /\ dlOf[i] # NoTime /\ takenAt[m] < dlOf[i]
                                                    /\ outcome[i] = "msg" /\ runStatus = "completed")
+\* Review H2: a message is accepted exactly at a pending receive's deadline (at = deadline_at): it is stored unclaimed,
+\* and the receive's wait elapses (timed out, nothing taken).
+Wit_NoAcceptAtWaitDeadline == ~(tieAccept /\ \E i \in Visits : KindAt(i) = "receive" /\ outcome[i] = "timed_out" /\ tookBy[i] = "none"
+                                 /\ \E m \in LateMsgs : arrived[m] /\ taken[m] = 0)
 \* RR-3: a message taken the instant before it expires.
 Wit_NoTakeAtLastInstant == ~(\E m \in Msgs : taken[m] = 1 /\ takenAt[m] + 1 = exp[m])
 \* RR-9: the result of a new receive row that took a carried message was lost, the enterNode ran again (answered as it is,
