@@ -8903,7 +8903,9 @@ export class WorkflowStore {
             const stop = run.stop;
             // SF-6 verification: the stop's reason is stored with its secrets hidden.
             const errorText = redactWorkflowErrorText(canonicalJson({ code: "stopped", message: redactThenClip(stop.reason ?? "Stopped", 4_000), details: {
-                operationId: stop.operationId, actor: await this.eventActorIn(client, stop.actor), graceSeconds: stop.graceSeconds,
+                // Older workers use the agent actor in this error to suppress a notice back to the requesting parent.
+                operationId: stop.operationId, actor: isJsonObject(stop.actor) && stop.actor.kind === "user"
+                    ? await this.eventActorIn(client, stop.actor) : stop.actor, graceSeconds: stop.graceSeconds,
                 requestedAt: stop.requestedAt.toISOString(), deadlineAt: stop.deadlineAt.toISOString(),
                 graceExpired, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 100),
             } }), canonicalJson);
