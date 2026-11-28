@@ -100,6 +100,69 @@ async function followPages(store, workflowSessionId, runId, first, section, limi
 }
 
 describe("workflow readWorkflow (direct management client)", () => {
+    it("reads recorded run times for both the list and selected run through SDK and agent", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const mgmt = await createManagementClient(env);
+        try {
+            const { parent, workflowSessionId, runId } = await liveWorkflow(catalog, "read-run-times");
+            const store = catalog.workflowStore();
+            const createdAt = "2026-01-01T00:00:00.000Z";
+            const finishedAt = "2026-01-01T00:00:05.000Z";
+            await catalog.pool.query(`UPDATE "${env.cmsSchema}".workflow_runs SET created_at = $2 WHERE run_id = $1`, [runId, createdAt]);
+            const read = () => readWorkflowView(store, workflowSessionId);
+            const running = await read();
+            expect(running.runs[0]).toMatchObject({ runId, createdAt, finishedAt: null });
+            expect(running.run).toMatchObject({ runId, createdAt, finishedAt: null });
+            await catalog.pool.query(`UPDATE "${env.cmsSchema}".workflow_runs SET status = 'completed', finished_at = $2 WHERE run_id = $1`,
+                [runId, finishedAt]);
+            const tool = JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId }, { callerSessionId: parent, host: { catalog, store } }));
+            for (const result of [await read(), await mgmt.readWorkflow(workflowSessionId), tool]) {
+                expect(result.runs[0]).toMatchObject({ runId, createdAt, finishedAt });
+                expect(result.run).toMatchObject({ runId, createdAt, finishedAt });
+            }
+        } finally {
+            await mgmt.stop();
+            await catalog.close();
+        }
+    });
+
+    it("reads the recorded agent model for the visit in open rows, pages and execution details", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        try {
+            const store = catalog.workflowStore();
+            const { workflowSessionId, runId } = await liveWorkflow(catalog, "read-used-model");
+            const older = `${runId}-agent`;
+            const latest = `${runId}-latest`;
+            await catalog.pool.query(`INSERT INTO "${env.cmsSchema}".workflow_node_executions
+                (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, entered_at)
+                VALUES ($1,$3,'root','step',1,'agent','{}','agent-input','pending','2026-01-01T00:00:00Z'),
+                       ($2,$3,'root','step',2,'agent','{}','other-input','pending','2026-01-02T00:00:00Z')`, [older, latest, runId]);
+            const used = { model: "test:actual", reasoningEffort: "high", contextTier: "long_context", source: "session" };
+            const event = data => ({ eventType: "workflow.agent_spawned", data });
+            await catalog.recordEvents(workflowSessionId, [
+                event({ runId, nodeExecutionId: older, model: { ...used, privateField: "not-an-output-field" } }),
+                event({ runId: "another-run", nodeExecutionId: older, model: { ...used, model: "test:wrong-run" } }),
+            ]);
+            const view = await readWorkflowView(store, workflowSessionId, { limit: 1 });
+            expect(view.run.openExecutions[0]).toMatchObject({ nodeExecutionId: older });
+            expect(view.run.openExecutions[0].agentModel).toEqual(used);
+            expect(view.run.nodeExecutions[0]).toMatchObject({ nodeExecutionId: latest });
+            expect(view.run.nodeExecutions[0]).not.toHaveProperty("agentModel");
+            const overview = await readWorkflowView(store, workflowSessionId);
+            expect(overview.run.nodeExecutions[0].agentModel).toEqual(used);
+            const page = await readWorkflowView(store, workflowSessionId, { cursor: view.run.pages.executions.nextCursor, limit: 1 });
+            expect(page.items[0].agentModel).toEqual(used);
+            const detail = await readWorkflowView(store, workflowSessionId, { executionId: older });
+            expect(detail.execution.agentModel).toEqual(used);
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("a deleted ordinary child outcome is still not a Workflow", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);

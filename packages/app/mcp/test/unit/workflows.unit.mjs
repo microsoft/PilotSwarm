@@ -232,6 +232,13 @@ for (const [mgmt, message] of [
 
 console.log("✅ get_capabilities and the capabilities resource: the bootstrap's workflow advertisement, default off, test-only, web, older host, failures");
 
+{
+    const run = { runId: "run", createdAt: "2026-01-01T00:00:00Z", finishedAt: null };
+    const view = { workflowId: SID, run, runs: [run] };
+    const tools = toolsWith({ mgmt: { readWorkflow: async () => view } });
+    assert.deepEqual(JSON.parse((await tools.get("read_workflow")({ session_id: SID })).content[0].text), view);
+}
+
 // 6. read_workflow: always registered; the read goes to the management client as given (only the arguments given), its
 //    answer is the read's; a refusal with a code answers in update_workflow's JSON shape.
 {

@@ -93,6 +93,27 @@ async function nameThePerson(catalog, env, person, displayName) {
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 describe("read_workflow run.lastControl (UXP-AD-01)", () => {
+    it("attributes each variable revision to its own masked actor and time", { timeout: TIMEOUT }, async () => {
+        const h = await sessionWorkflow(getEnv(), "kv-history-actor");
+        try {
+            const read = async (rev, key) => JSON.parse(await readWorkflowFromTool(
+                { workflow_id: h.workflowSessionId, kv_revision: rev, kv_key: key }, { callerSessionId: h.session, host: h.host }));
+            const person = { kind: "user", provider: "private-provider", subject: "private-subject" };
+            await nameThePerson(h.catalog, h.env, person, "Ada");
+            await h.command(person, { operation: "set_vars", set: { mode: "fast" }, delete: [], expectedKvRevision: 1 });
+            const first = (await h.read()).lastControl;
+            await h.command({ kind: "agent", sessionId: h.session },
+                { operation: "set_vars", set: { mode: "slow" }, delete: [], expectedKvRevision: 2 });
+            expect((await read(1)).kv).not.toHaveProperty("change");
+            const historical = (await read(2, "mode")).kv;
+            expect(historical.change).toEqual({ operation: "set_vars", by: "a person", name: "Ada", at: first.at });
+            expect(JSON.stringify(historical)).not.toMatch(/private-provider|private-subject/);
+            expect((await read(3)).kv.change).toEqual({ operation: "set_vars", by: "this session", at: expect.stringMatching(ISO) });
+        } finally {
+            await h.catalog.close();
+        }
+    });
+
     it("is absent without a control action; a pause by this session, then a person's resume, reads as the person's resume", { timeout: TIMEOUT }, async () => {
         const h = await sessionWorkflow(getEnv(), "pause-resume");
         const before = await h.read();

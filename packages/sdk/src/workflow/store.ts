@@ -4670,6 +4670,15 @@ export class WorkflowStore {
      * nothing, and an actor of another shape is not shown.
      */
     async readLastRunControl(workflowSessionId: string, runId: string): Promise<WorkflowRunControl | null> {
+        return this.readRunControl(workflowSessionId, runId);
+    }
+
+    /** The recorded change that produced this KV revision, if any. */
+    async readKvRevisionChange(workflowSessionId: string, runId: string, revision: number): Promise<WorkflowRunControl | null> {
+        return this.readRunControl(workflowSessionId, runId, revision);
+    }
+
+    private async readRunControl(workflowSessionId: string, runId: string, revision?: number): Promise<WorkflowRunControl | null> {
         const { rows } = await this.pool.query(
             `SELECT e.event_type, e.data, e.created_at, u.display_name
                FROM ${this.t.sessionEvents} e
@@ -4678,9 +4687,11 @@ export class WorkflowStore {
               WHERE e.session_id = $1 AND e.event_type = ANY($2::text[]) AND e.data ->> 'runId' = $3
                 AND jsonb_typeof(e.data -> 'actor') = 'object'
                 AND (e.event_type <> 'workflow.cancelled' OR COALESCE(e.data ->> 'command', 'cancel') = 'cancel')
+                ${revision === undefined ? "" : "AND e.data ->> 'kvRevision' = $4"}
               ORDER BY e.seq DESC
               LIMIT 1`,
-            [workflowSessionId, Object.keys(RUN_CONTROL_EVENTS), runId]);
+            revision === undefined ? [workflowSessionId, Object.keys(RUN_CONTROL_EVENTS), runId]
+                : [workflowSessionId, ["workflow.vars_set"], runId, String(revision)]);
         const row = rows[0];
         if (!row) return null;
         const data = isJsonObject(row.data) ? row.data : {};
@@ -7991,6 +8002,25 @@ export class WorkflowStore {
             cycle: preCutCount + count + 1, reason: input.reason,
         } }]);
         return { recorded: true };
+    }
+
+    /** The latest recorded spawn model for each requested visit, not the current child session's model. */
+    async readAgentSpawnedModels(workflowSessionId: string, runId: string, nodeExecutionIds: readonly string[]): Promise<Map<string, JsonObject>> {
+        const { rows } = await this.pool.query(
+            `SELECT DISTINCT ON (data ->> 'nodeExecutionId') data ->> 'nodeExecutionId' AS execution_id, data -> 'model' AS model
+               FROM ${this.t.sessionEvents}
+              WHERE session_id = $1 AND event_type = 'workflow.agent_spawned' AND data ->> 'runId' = $2
+                AND data ->> 'nodeExecutionId' = ANY($3::text[])
+                AND jsonb_typeof(data #> '{model,model}') = 'string' AND data #>> '{model,model}' <> ''
+              ORDER BY data ->> 'nodeExecutionId', seq DESC`, [workflowSessionId, runId, nodeExecutionIds]);
+        const models = new Map<string, JsonObject>();
+        for (const { execution_id, model } of rows) {
+            models.set(execution_id, { model: model.model,
+                reasoningEffort: typeof model.reasoningEffort === "string" ? model.reasoningEffort : null,
+                contextTier: typeof model.contextTier === "string" ? model.contextTier : null,
+                source: model.source === "start" ? "start" : "session" });
+        }
+        return models;
     }
 
     /** Review D-2: the visits of Workflow `workflowSessionId` whose conversation was lost after their report, by node execution id. */

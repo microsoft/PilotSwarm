@@ -15,8 +15,8 @@ every save is a new revision, and a Workflow runs the revision it started with.
 
 | Operation | Arguments | Result |
 |---|---|---|
-| `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions your owner can see, your agent's suggestions first (`suggested`; `newerVersion` if any). |
-| `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
+| `list` | `include_deleted?` | Definitions with revisions and Workflows (`number` = Portal #). `canStart` lists visible package definitions, suggestions first. |
+| `read` | `name` or `definition_id`, `revision?` (default newest) | Same summaries (`errorCount`, `lastTest` when tested), plus YAML and diagnostics. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
 | `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `decision_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
 | `delete` | `name` or `definition_id`, `operation_id?` | Delete an own def (refused for package defs, active runs, or active `spawn` refs). |
@@ -198,18 +198,19 @@ run; to change or start a definition, use `workflow_definition`.
 
 ## read_workflow
 
-`workflow_id`, `run_id?` (default live run),
-`include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
-rows), `execution_id?` (its whole input and result). Shows the graph, runs, a
-run's rows (below), KV, stop, `agent.childSessionId`, branches. It is how
-you follow a run (`workflow-authoring`, Follow a run): use it, not `list_sessions`, for a workflow's status.
+`workflow_id`, `run_id?` (default live), `include_yaml?`, `limit?`, `cursor?`,
+`execution_id?`. Shows `number` (Portal #), graph, runs (`createdAt`,
+`finishedAt`), steps (`agent.childSessionId`, `agentModel` used per visit),
+KV, stop and branches. It is how you follow a run (`workflow-authoring`,
+Follow a run): use it, not `list_sessions`, for a workflow's status.
 
 Each section of a run (step executions, inbox, outbox) holds its newest
 rows, oldest first; open rows are listed apart however old. `limit` sets
 the rows per page (default 200 executions, 50 inputs, 50 sent messages);
 give a section's `run.pages` `nextCursor` back as `cursor` for its next, older page. Separate reads, each alone: `execution_id` (with
-`run_id`: one step execution's whole input and output or error), `kv_revision` (that
-revision of the variables; with `kv_key`, one variable whole),
+`run_id`: one step execution's whole input and output or error), `kv_revision`
+(variables at that revision and masked `kv.change` (`by`, `at`) if recorded;
+`kv_key`: one value),
 `agent_versions` (the agent versions publishing would lock now),
 `definition_revision` (one revision's YAML, hash and diagnostics) and
 `step_input` (`{ state, input? }`: an agent step's input fields and where

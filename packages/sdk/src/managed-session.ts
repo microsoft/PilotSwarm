@@ -1612,7 +1612,7 @@ export class ManagedSession {
         // Stage 2.1: the session's definitions, with revisions (definition-tool.ts).
         // Every turn's host runs a Workflow test, a frozen 1.0.82 turn's included.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
-            ...workflowDefinitionToolSpec(), handler: async () => "stub",
+            ...workflowDefinitionToolSpec({ milestone: workflowMilestone }), handler: async () => "stub",
         });
         const respondSessionRequestTools = workflowMilestone
             ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, { ...RESPOND_SESSION_REQUEST_TOOL_SPEC, handler: async () => "stub" })] : [];
@@ -3626,7 +3626,7 @@ export class ManagedSession {
         // (A1), as the other definition tools are.
         // Every turn's host runs a Workflow test, a frozen 1.0.82 turn's included.
         const workflowDefinitionTool = defineTool(WORKFLOW_DEFINITION_TOOL, {
-            ...workflowDefinitionToolSpec(),
+            ...workflowDefinitionToolSpec({ milestone: workflowSpecs.milestone }),
             handler: async (args: Record<string, unknown>, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(WORKFLOW_DEFINITION_TOOL);
                 if (insideWorkflow) return workflowDefinitionToolsRefusal();
