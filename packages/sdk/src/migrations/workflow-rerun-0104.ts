@@ -7,7 +7,9 @@
  *   1. Step 1 adds the nullable columns and `CHECK (...) NOT VALID` constraints under a bounded 5 s lock_timeout
  *      (also replacing an earlier form of either CHECK constraint when the steps run over one, via pg_get_constraintdef,
  *      read only for this schema's own table so a concurrently dropped schema's same-named constraint is never decompiled)
- *      and commits immediately, releasing ACCESS EXCLUSIVE without a full-table scan.
+ *      and commits immediately, releasing ACCESS EXCLUSIVE without a full-table scan. An earlier run check is one without
+ *      supply mode, or one without the explicit `rerun_mode IS NOT NULL` guard (a SQL-null mode made its re-run branch
+ *      UNKNOWN, which a CHECK accepts).
  *   2. Steps 2 and 3 run `VALIDATE CONSTRAINT` in separate transactions under SHARE UPDATE EXCLUSIVE (allowing concurrent
  *      reads and writes).
  *   3. Steps 4–7 drop any invalid leftover index (`NOT i.indisvalid`, as migration 0088 does) under a 5 s lock_timeout
@@ -60,7 +62,8 @@ BEGIN
     SELECT pg_get_constraintdef(c.oid) INTO v_def
       FROM pg_constraint c
      WHERE c.conrelid = v_table AND c.conname = 'workflow_runs_rerun_check';
-    IF v_def IS NOT NULL AND v_def NOT LIKE '%supply%' THEN
+    IF v_def IS NOT NULL AND v_def NOT LIKE '%supply%'
+       OR v_def IS NOT NULL AND v_def NOT LIKE '%rerun_mode IS NOT NULL%' THEN
         ALTER TABLE ${s}.workflow_runs DROP CONSTRAINT workflow_runs_rerun_check;
     END IF;
     IF NOT EXISTS (
@@ -73,7 +76,7 @@ BEGIN
              AND rerun_reused IS NULL AND rerun_unwalked IS NULL AND rerun_actor IS NULL)
             OR
             (rerun_of_workflow_session_id IS NOT NULL AND rerun_of_run_id IS NOT NULL AND rerun_from_execution_id IS NOT NULL
-             AND rerun_mode IN ('run_again', 'continue', 'supply') AND rerun_resume IS NOT NULL
+             AND rerun_mode IS NOT NULL AND rerun_mode IN ('run_again', 'continue', 'supply') AND rerun_resume IS NOT NULL
              AND rerun_reused IS NOT NULL AND rerun_unwalked IS NOT NULL AND rerun_unwalked >= 0
              AND (
                  (rerun_mode IN ('run_again', 'continue') AND rerun_reused >= 1 AND rerun_unwalked < rerun_reused)

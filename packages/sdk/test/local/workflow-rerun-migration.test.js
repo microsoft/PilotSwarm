@@ -539,6 +539,73 @@ describe("migration 0104: workflow_rerun", () => {
         }
     });
 
+    it("rejects a re-run row whose only missing field is rerun_mode (23514) and replaces the pre-final rerun check on DDL re-application (B2)", { timeout: testTime.ms(120_000) }, async () => {
+        const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+        const tag = randomUUID().replace(/-/g, "").slice(0, 10);
+        const target = `wf0104_${tag}_m`;
+        const qIdent = (name) => `"${name.replace(/"/g, '""')}"`;
+        const s = qIdent(target);
+        const rerunRow = (runId, mode) => pool.query(
+            `INSERT INTO ${s}.workflow_runs (run_id, rerun_of_workflow_session_id, rerun_of_run_id, rerun_from_execution_id, rerun_mode,
+                rerun_resume, rerun_reused, rerun_unwalked, rerun_actor)
+             VALUES ($1, 'wf2', 'run2', 'nx2', $2, '{}', 1, 0, '{}')`,
+            [runId, mode],
+        );
+        const runsCheck = async () => (await pool.query(
+            `SELECT pg_get_constraintdef(c.oid) AS def, c.convalidated
+               FROM pg_constraint c
+              WHERE c.conrelid = to_regclass(format('%I.%I', $1::text, 'workflow_runs')) AND c.conname = 'workflow_runs_rerun_check'`,
+            [target],
+        )).rows[0];
+        try {
+            await pool.query(`CREATE SCHEMA ${s}`);
+            await pool.query(`CREATE TABLE ${s}.workflow_runs (run_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+            await pool.query(`CREATE TABLE ${s}.workflow_node_executions (node_execution_id TEXT PRIMARY KEY, state TEXT NOT NULL, deadline_at TIMESTAMPTZ, winner TEXT, result_kind TEXT, effect_attempts INTEGER NOT NULL DEFAULT 0)`);
+            await pool.query(`CREATE TABLE ${s}.workflow_inbox (message_id TEXT PRIMARY KEY)`);
+            for (const stepSql of workflowRerunMigration(target)) await pool.query(stepSql);
+
+            // An ordinary run (every re-run field null) and a complete re-run row are accepted.
+            await pool.query(`INSERT INTO ${s}.workflow_runs (run_id) VALUES ('run-plain')`);
+            await rerunRow("run-rerun", "run_again");
+            // A re-run row with every other field valid but a SQL-null mode: the re-run branch must not evaluate to UNKNOWN.
+            await expectSqlState(rerunRow("run-null-mode", null), "23514");
+
+            // Re-applying 0104's steps over the pre-final rerun check (supply modes, no explicit mode guard) replaces it.
+            await pool.query(`ALTER TABLE ${s}.workflow_runs DROP CONSTRAINT workflow_runs_rerun_check`);
+            await pool.query(`ALTER TABLE ${s}.workflow_runs ADD CONSTRAINT workflow_runs_rerun_check CHECK (
+                (rerun_of_workflow_session_id IS NULL AND rerun_of_run_id IS NULL AND rerun_from_execution_id IS NULL
+                 AND rerun_mode IS NULL AND rerun_resume IS NULL AND rerun_resumed_at IS NULL
+                 AND rerun_reused IS NULL AND rerun_unwalked IS NULL AND rerun_actor IS NULL)
+                OR
+                (rerun_of_workflow_session_id IS NOT NULL AND rerun_of_run_id IS NOT NULL AND rerun_from_execution_id IS NOT NULL
+                 AND rerun_mode IN ('run_again', 'continue', 'supply') AND rerun_resume IS NOT NULL
+                 AND rerun_reused IS NOT NULL AND rerun_unwalked IS NOT NULL AND rerun_unwalked >= 0
+                 AND (
+                     (rerun_mode IN ('run_again', 'continue') AND rerun_reused >= 1 AND rerun_unwalked < rerun_reused)
+                     OR
+                     (rerun_mode = 'supply' AND (
+                         (rerun_reused = 0 AND rerun_unwalked = 0)
+                         OR (rerun_reused >= 1 AND rerun_unwalked < rerun_reused)
+                     ))
+                 )
+                 AND rerun_actor IS NOT NULL)
+            ) NOT VALID`);
+            await rerunRow("run-null-mode-pre-final", null);
+            await pool.query(`DELETE FROM ${s}.workflow_runs WHERE run_id = 'run-null-mode-pre-final'`);
+            expect((await runsCheck()).def).not.toContain("rerun_mode IS NOT NULL");
+            for (const stepSql of workflowRerunMigration(target)) await pool.query(stepSql);
+            const replaced = await runsCheck();
+            expect(replaced.def).toContain("rerun_mode IS NOT NULL");
+            expect(replaced.convalidated).toBe(true);
+            await expectSqlState(rerunRow("run-null-mode-reapplied", null), "23514");
+            const { rows } = await pool.query(`SELECT run_id FROM ${s}.workflow_runs ORDER BY run_id`);
+            expect(rows.map(r => r.run_id)).toEqual(["run-plain", "run-rerun"]);
+        } finally {
+            await pool.query(`DROP SCHEMA IF EXISTS ${s} CASCADE`);
+            await pool.end();
+        }
+    });
+
     it("upgrades one schema while another schema with the same 0104 constraints is dropped concurrently", { timeout: testTime.ms(120_000) }, async () => {
         const pool = new pg.Pool(pgPoolConfig(getEnv().store));
         const tag = randomUUID().replace(/-/g, "").slice(0, 10);
