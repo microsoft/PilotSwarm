@@ -149,7 +149,10 @@ update produced the revision. Like `run.lastControl`, it gives the actor
 and timestamp without giving a person's sign-in identity. Approval owners,
 approval answers and Workflow event actors use the same public attribution:
 `{ by: "a person", name? }`. The signed-in owner can still answer; the
-server checks ownership against the private approval record.
+server checks ownership against the private approval record. Typed-input
+events and inbox reads use `sender` instead of a person's `senderSessionId`.
+List-receive execution reads mask the engine's `from` field as well.
+This does not change delivery receipts, Workflow bindings, or authored payloads.
 
 ### Session sharing
 

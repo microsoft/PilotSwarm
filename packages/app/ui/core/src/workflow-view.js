@@ -941,6 +941,7 @@ function collectExecutions(events, runId, run, overlay) {
         for (const message of run.inbox) {
             const found = message.claimedBy ? executions.get(message.claimedBy) : null;
             if (found) found.inbox = { messageId: message.messageId, contract: message.contract, senderSessionId: message.senderSessionId,
+                ...definedOnly({ sender: message.sender }),
                 acceptedAt: message.acceptedAt, claimedAt: message.claimedAt, payloadPreview: message.payloadPreview };
         }
     }

@@ -16,7 +16,7 @@ import {
     redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets,
     type WorkflowErrorRedaction,
 } from "./redact.js";
-import { workflowActorView } from "./actor-view.js";
+import { workflowActorView, workflowInputEventView } from "./actor-view.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -5337,11 +5337,11 @@ export class WorkflowStore {
                     [claim.messageId, node.nodeExecutionId, decidedAt]);
                 if (!claimed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${claim.messageId} was claimed under its lock.`);
                 if (projection) {
-                    projection = { ...projection, events: [...(projection.events ?? []), { eventType: "workflow.state_completed", data: {
+                    projection = { ...projection, events: [...(projection.events ?? []), { eventType: "workflow.state_completed", data: workflowInputEventView({
                         runId: node.runId, nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, step: node.ordinal,
                         outcome: claim.outcome, resultKind: "business", messageId: claim.messageId, contract: claim.contract,
                         senderSessionId: claim.senderSessionId, outputPreview: jsonbSafeText(claim.valueText, 1_000),
-                    } }] };
+                    }) }] };
                 }
             }
             if (totalExpired && projection) {
@@ -5860,16 +5860,16 @@ export class WorkflowStore {
                 claimedBy: claimed ? { nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId } : null,
             };
             await client.query(`UPDATE ${this.t.inbox} SET receipt = $2 WHERE message_id = $1`, [input.messageId, canonicalJson(receipt)]);
-            const events: SessionEventRecord[] = [{ eventType: "workflow.input_accepted", data: {
+            const events: SessionEventRecord[] = [{ eventType: "workflow.input_accepted", data: workflowInputEventView({
                 runId: run.runId, messageId: input.messageId, contract: input.contract, senderSessionId: input.senderSessionId,
                 claimedBy: claimed ? claimed.nodeExecutionId : null,
-            } }];
+            }) }];
             if (claimed && claimedResult) {
-                events.push({ eventType: "workflow.state_completed", data: {
+                events.push({ eventType: "workflow.state_completed", data: workflowInputEventView({
                     runId: run.runId, nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId, step: claimed.ordinal,
                     outcome: claimedResult.outcome, resultKind: "business", messageId: input.messageId, contract: input.contract,
                     senderSessionId: input.senderSessionId, outputPreview: jsonbSafeText(claimedResult.valueText, 1_000),
-                } });
+                }) });
             }
             await this.project(client, { sessionId: input.workflowSessionId, events, update: { touch: true } });
             return { receipt, replayed: false, run };

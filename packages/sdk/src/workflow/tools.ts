@@ -1,5 +1,5 @@
 import { isMap, isNode, isScalar, parseDocument, visit } from "yaml";
-import { workflowActorView, workflowTerminalErrorView } from "./actor-view.js";
+import { workflowActorView, workflowInputSenderView, workflowTerminalErrorView } from "./actor-view.js";
 import {
     assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, parseStoredJson, previewJson, sha256Hex, utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES,
     WorkflowJsonError,
@@ -1761,8 +1761,10 @@ function errorWordsView(error: JsonValue): { errorWords?: string } {
 
 /** One typed input of a run's inbox, as a read shows it. */
 function inboxViewOf(message: WorkflowInboxMessage): { [key: string]: JsonValue } {
+    const sender = workflowInputSenderView(message.senderSessionId);
     return {
-        messageId: message.messageId, contract: message.contract, senderSessionId: message.senderSessionId,
+        messageId: message.messageId, contract: message.contract, senderSessionId: sender ? null : message.senderSessionId,
+        ...(sender ? { sender } : {}),
         correlation: message.correlation, acceptedAt: message.acceptedAt, expiresAt: message.expiresAt,
         claimedBy: message.consumedBy, claimedAt: message.consumedAt, payloadPreview: previewJson(message.payload, 300),
     };
@@ -1892,8 +1894,15 @@ function executionResultOf(node: WorkflowNodeExecutionRow): { [key: string]: Jso
 
 function executionOutputView(node: WorkflowNodeExecutionRow): JsonValue {
     const output = node.output;
-    return node.nodeType === "approval" && isJsonObject(output) && Object.hasOwn(output, "decidedBy")
-        ? { ...output, decidedBy: workflowActorView(output.decidedBy) } : output;
+    if (!isJsonObject(output)) return output;
+    if (node.nodeType === "approval" && Object.hasOwn(output, "decidedBy")) {
+        return { ...output, decidedBy: workflowActorView(output.decidedBy) };
+    }
+    if (Array.isArray(node.receive?.contract) && typeof output.from === "string") {
+        const sender = workflowInputSenderView(output.from);
+        if (sender) return { ...output, from: sender };
+    }
+    return output;
 }
 
 /**
