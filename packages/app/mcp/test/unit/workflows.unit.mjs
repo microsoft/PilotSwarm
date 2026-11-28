@@ -815,3 +815,234 @@ console.log("✅ update_workflow names the test operations, and read_workflow a 
 }
 
 console.log("✅ Phase 4 MCP workflow tools unit suite passed");
+
+// 11. Phase 3 I7 (Task 8b): re-run from a step over MCP. workflow_definition start takes rerun_from (the definition is read
+//     from the Workflow when name and definition_id are omitted, before update attaches a newer version); every call says
+//     viaMcp (OQ5: MCP never reuses an answered approval); read_workflow takes rerun_plan alone (outcome only, viaMcp); and a
+//     web-mode server whose portal does not advertise workflows.rerun fails closed before anything is changed (M1).
+{
+    const OWNER_SID = "c7f23cda-5cfd-4f0e-aff1-d6b0400b8da5";
+    const SOURCE = "wf-src-2";
+    const TOOL_YAML = 'apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: pkg, version: "1.0.0" }\ninitial: compute\nstates:\n'
+        + '  compute:\n    type: script\n    outcomes: [ok]\n    source: |\n      await callTool("read_facts", {});\n      await setResult("ok", {});\n'
+        + '    transition: { next: { ok: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n';
+    const RERUN_ADVERT = { validate: true, card: true, skills: true, rerun: true };
+    const rerunMgmt = ({ grant = "inherited", startError = null } = {}) => {
+        const calls = [];
+        const mgmt = {
+            readWorkflow: async (sid, opts, ...rest) => {
+                calls.push(["read", sid, opts, rest.length]);
+                if (sid === "wf-gone") return { workflowId: sid, deleted: true, definition: { state: "deleted" }, run: { outcome: "failed" } };
+                if (sid === "wf-plain") return { workflowId: sid, definition: { state: "published", source: null } };
+                if (sid === "wf-foreign") return { workflowId: sid, definition: { source: { ownerSessionId: "another-session", definitionId: "d-x", revision: 1 } } };
+                if (opts?.rerunPlan) return { workflowId: sid, rerunPlan: { allowed: false, blockedReason: "Only the owner in the portal can reuse an approval." } };
+                return { workflowId: sid, definition: { state: "published", source: { ownerSessionId: OWNER_SID, definitionId: "d-pkg", revision: 2 } } };
+            },
+            readSessionWorkflowDefinition: async (sid, ref) => {
+                calls.push(["readDef", sid, ref]);
+                return { definitionId: "d-pkg", name: "demo/pkg", locked: true, revision: { yaml: TOOL_YAML } };
+            },
+            updateSessionWorkflowPackage: async (sid, req, opts) => {
+                calls.push(["updatePkg", sid, req, opts]);
+                return { operation: "attach", definitionId: "d-pkg", name: "demo/pkg", revision: 4, replayed: false };
+            },
+            startSessionWorkflowDefinition: async (sid, req, opts) => {
+                calls.push(["start", sid, req, opts]);
+                if (startError) throw startError;
+                return { operation: "start", definitionId: "d-pkg", name: "demo/pkg", revision: req.revision ?? 2, workflowId: "wf-3", runId: "r-3",
+                    replayed: false, rerun: { ofWorkflowId: SOURCE, mode: req.rerunFrom?.mode ?? "run_again", reused: 1, ...(grant ? { grant } : {}) } };
+            },
+        };
+        return { mgmt, calls };
+    };
+    const body = (res) => JSON.parse(res.content[0].text);
+
+    // (a) name and definition_id omitted: the definition is the Workflow's; update attaches the newer version first and the
+    //     re-run pins it; rerun_from goes on as rerunFrom with viaMcp; an inherited grant warns of no missing tool grant.
+    {
+        const { mgmt, calls } = rerunMgmt();
+        const wfDef = toolsWith({ workflowCommands: true, mgmt }).get("workflow_definition");
+        const rerun_from = { workflow_id: SOURCE, execution_id: "nx-2", mode: "supply", result: { outcome: "ok", output: { fqdn: "a.db" } }, note: "Checked in the portal." };
+        const started = body(await wfDef({ operation: "start", owner_session_id: OWNER_SID, rerun_from, update: true, key: "k-1" }));
+        assert.equal(started.operation, "start");
+        assert.equal(started.revision, 4);
+        assert.equal(started.rerun.grant, "inherited");
+        assert.equal(started.warnings, undefined, "an inherited grant is not a person's Start without one");
+        assert.deepEqual(calls.map(c => c[0]), ["read", "readDef", "updatePkg", "start"]);
+        assert.equal(calls[0][1], SOURCE);
+        assert.deepEqual(calls[1][2], { definitionId: "d-pkg" });
+        assert.deepEqual(calls[2][2], { definitionId: "d-pkg", operationId: "key:k-1:update" });
+        assert.deepEqual(calls[3][2], {
+            definitionId: "d-pkg", revision: 4, key: "k-1", operationId: "key:k-1",
+            rerunFrom: { workflowId: SOURCE, executionId: "nx-2", mode: "supply", result: { outcome: "ok", output: { fqdn: "a.db" } }, note: "Checked in the portal." },
+            viaMcp: true,
+        });
+
+        // Without update and revision, the source revision is the server's default: none is sent.
+        calls.length = 0;
+        await wfDef({ operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: SOURCE }, operation_id: "op-r1" });
+        assert.deepEqual(calls.at(-1)[2], { definitionId: "d-pkg", operationId: "op-r1", rerunFrom: { workflowId: SOURCE }, viaMcp: true });
+        // An explicit revision and a name go as given; the Workflow is not read for its definition.
+        calls.length = 0;
+        await wfDef({ operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", revision: 3, rerun_from: { workflow_id: SOURCE, mode: "run_again" }, operation_id: "op-r2" });
+        assert.deepEqual(calls.map(c => c[0]), ["start"]);
+        assert.deepEqual(calls[0][2], { name: "demo/pkg", revision: 3, operationId: "op-r2", rerunFrom: { workflowId: SOURCE, mode: "run_again" }, viaMcp: true });
+        // A Start without rerun_from sends no viaMcp (an older portal takes no such field).
+        calls.length = 0;
+        await wfDef({ operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", operation_id: "op-plain", workspace: "none" });
+        assert.equal("viaMcp" in calls[0][2], false);
+    }
+
+    // A re-run that inherited no grant still warns when its scripts call tools.
+    {
+        const { mgmt } = rerunMgmt({ grant: null });
+        const wfDef = toolsWith({ workflowCommands: true, mgmt }).get("workflow_definition");
+        const started = body(await wfDef({ operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: SOURCE }, operation_id: "op-ng" }));
+        assert.ok(started.warnings?.some(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING"));
+    }
+
+    // The Workflow named must be this session's, started from a saved definition and not cleaned up; nothing starts otherwise.
+    for (const [workflowId, code, status] of [["wf-gone", "RERUN_SOURCE_GONE", 409], ["wf-plain", "RERUN_NOT_A_WORKFLOW", 422], ["wf-foreign", "WORKFLOW_NOT_FOUND", 404]]) {
+        const { mgmt, calls } = rerunMgmt();
+        const res = await toolsWith({ workflowCommands: true, mgmt }).get("workflow_definition")({
+            operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: workflowId }, update: true, operation_id: `op-${workflowId}`,
+        });
+        assert.equal(res.isError, true, workflowId);
+        assert.equal(body(res).code, code);
+        assert.equal(body(res).status, status);
+        assert.deepEqual(calls.map(c => c[0]), ["read"], `${workflowId}: nothing but the read`);
+    }
+
+    // (b) Every re-run refusal from Start answers its code, status and details.
+    for (const [code, status, details] of [
+        ["RERUN_ARGUMENT_REFUSED", 400, undefined],
+        ["RERUN_VISIT_REQUIRED", 400, { candidates: [{ executionId: "nx-1" }, { executionId: "nx-2" }] }],
+        ["RERUN_APPROVAL_REUSED", 403, undefined],
+        ["RERUN_VISIT_NOT_FOUND", 404, { executionId: "nx-9" }],
+        ["WORKFLOW_DELETED", 404, undefined],
+        ["RERUN_SOURCE_ACTIVE", 409, { status: "running" }],
+        ["RERUN_SOURCE_GONE", 409, { workflowId: SOURCE, outcome: "failed" }],
+        ["WORKFLOW_TOOLS_UNAVAILABLE", 409, undefined],
+        ["OPERATION_CONFLICT", 409, undefined],
+        ["RERUN_NOT_A_WORKFLOW", 422, undefined],
+        ["RERUN_VISIT_NOT_ALLOWED", 422, { reason: "inside_lane" }],
+        ["RERUN_SUPPLY_NOT_ALLOWED", 422, { nodeType: "approval" }],
+        ["RERUN_SUPPLIED_RESULT_INVALID", 422, { problems: [{ path: "$.fqdn", message: "required" }] }],
+        ["RERUN_INCOMPATIBLE", 422, { revision: 4, problems: [{ code: "step_missing", stateId: "provision" }] }],
+        ["RERUN_TOO_LARGE", 422, undefined],
+    ]) {
+        const error = Object.assign(new Error(`refused: ${code}`), { code, status, ...(details ? { details } : {}) });
+        const { mgmt } = rerunMgmt({ startError: error });
+        const res = await toolsWith({ workflowCommands: true, mgmt }).get("workflow_definition")({
+            operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: SOURCE }, operation_id: `op-${code}`,
+        });
+        assert.equal(res.isError, true, code);
+        assert.deepEqual(body(res), { error: `refused: ${code}`, code, session_id: OWNER_SID, status, ...(details ? { details } : {}) });
+    }
+
+    // (g) A re-run takes its source's inputs and workspace and repeats no other Workflow: refused before anything is read or
+    //     attached (400 RERUN_ARGUMENT_REFUSED).
+    for (const extra of [{ inputs: { a: 1 } }, { workspace: "none" }, { workspace: null }, { run_again_of: "wf-old" },
+        { rerun_from: { workflow_id: SOURCE, child: { execution_id: "nx-c" } } }, { rerun_from: { execution_id: "nx-2" } }]) {
+        const { mgmt, calls } = rerunMgmt();
+        const res = await toolsWith({ workflowCommands: true, mgmt }).get("workflow_definition")({
+            operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: SOURCE }, update: true, operation_id: "op-arg", ...extra,
+        });
+        assert.equal(res.isError, true, JSON.stringify(extra));
+        assert.equal(body(res).code, "RERUN_ARGUMENT_REFUSED", JSON.stringify(extra));
+        assert.equal(body(res).status, 400);
+        assert.deepEqual(calls, [], `${JSON.stringify(extra)}: refused before any call`);
+    }
+    {
+        const { mgmt, calls } = rerunMgmt();
+        const res = await toolsWith({ workflowCommands: true, mgmt }).get("workflow_definition")({
+            operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: SOURCE }, inputs: {}, operation_id: "op-empty-inputs",
+        });
+        assert.equal(res.isError, undefined, "empty inputs are no inputs");
+        assert.equal("inputs" in calls.at(-1)[2], false);
+    }
+
+    // (d) rerun_plan: alone, outcome only, viaMcp; the plan is the read's answer (allowed: false over MCP for an approval).
+    {
+        const { mgmt, calls } = rerunMgmt();
+        const read = toolsWith({ mgmt }).get("read_workflow");
+        const plan = body(await read({ session_id: SOURCE, rerun_plan: { execution_id: "nx-2", mode: "supply", revision: 3, outcome: "ok" } }));
+        assert.equal(plan.rerunPlan.allowed, false);
+        assert.deepEqual(calls, [["read", SOURCE, { rerunPlan: { executionId: "nx-2", mode: "supply", revision: 3, outcome: "ok", viaMcp: true } }, 0]]);
+        await read({ session_id: SOURCE, rerun_plan: {} });
+        assert.deepEqual(calls.at(-1)[2], { rerunPlan: { viaMcp: true } });
+        for (const [extra, label] of [[{ run_id: "r1" }, "run_id"], [{ cursor: { v: 1 } }, "cursor"], [{ execution_id: "nx-1" }, "execution_id"],
+            [{ kv_revision: 2 }, "kv_revision"], [{ agent_versions: true }, "agent_versions"], [{ definition_revision: 1 }, "definition_revision"],
+            [{ step_input: { state: "s" } }, "step_input"]]) {
+            calls.length = 0;
+            const res = await read({ session_id: SOURCE, rerun_plan: { mode: "run_again" }, ...extra });
+            assert.equal(res.isError, true, label);
+            assert.equal(body(res).code, "WORKFLOW_READ_INVALID", label);
+            assert.equal(body(res).status, 400);
+            assert.match(body(res).error, new RegExp(label));
+            assert.deepEqual(calls, [], `${label}: refused before the read`);
+        }
+        calls.length = 0;
+        const withOutput = await read({ session_id: SOURCE, rerun_plan: { mode: "supply", outcome: "ok", output: { fqdn: "a.db" } } });
+        assert.equal(body(withOutput).code, "WORKFLOW_READ_INVALID", "a plan never takes a supplied output (M6)");
+        assert.deepEqual(calls, []);
+        // A plan read's refusal keeps its details.
+        const gone = Object.assign(new Error("Workflow wf-src-2 was cleaned up. Only its result is kept. Use Run again."),
+            { code: "RERUN_SOURCE_GONE", status: 409, details: { workflowId: SOURCE, outcome: "failed" } });
+        const refused = await toolsWith({ mgmt: { readWorkflow: async () => { throw gone; } } }).get("read_workflow")({ session_id: SOURCE, rerun_plan: {} });
+        assert.deepEqual(body(refused), { error: gone.message, session_id: SOURCE, code: "RERUN_SOURCE_GONE", status: 409, details: { workflowId: SOURCE, outcome: "failed" } });
+    }
+
+    // (h) M1: a web-mode portal that does not advertise workflows.rerun (no advert, one without rerun, or a bootstrap that could not
+    //     be read) fails closed with 501 WORKFLOW_API_UNAVAILABLE: no update-package, no start, no plan read.
+    for (const [advert, label] of [[null, "no workflows advert (or a failed /bootstrap)"], [{ enabled: true }, "{ enabled: true }"],
+        [{ enabled: true, validate: true, card: true, skills: true }, "rerun absent"], [{ ...RERUN_ADVERT, rerun: false }, "rerun: false"]]) {
+        const { mgmt, calls } = rerunMgmt();
+        const tools = toolsWith({ webMode: true, workflowCommands: true, ...(advert ? { workflowsAdvert: advert } : {}), mgmt });
+        const start = await tools.get("workflow_definition")({
+            operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: SOURCE }, update: true, key: "k-skew",
+        });
+        assert.equal(start.isError, true, label);
+        assert.equal(body(start).code, "WORKFLOW_API_UNAVAILABLE", label);
+        assert.equal(body(start).status, 501);
+        const plan = await tools.get("read_workflow")({ session_id: SOURCE, rerun_plan: {} });
+        assert.equal(body(plan).code, "WORKFLOW_API_UNAVAILABLE", label);
+        assert.equal(body(plan).status, 501);
+        assert.deepEqual(calls, [], `${label}: 0 calls to update-package, start or the read`);
+    }
+    {
+        const { mgmt, calls } = rerunMgmt();
+        const tools = toolsWith({ webMode: true, workflowCommands: true, workflowsAdvert: RERUN_ADVERT, mgmt });
+        const started = body(await tools.get("workflow_definition")({ operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: SOURCE }, key: "k-web" }));
+        assert.equal(started.workflowId, "wf-3");
+        assert.equal(calls.at(-1)[2].viaMcp, true);
+        assert.equal(body(await tools.get("read_workflow")({ session_id: SOURCE, rerun_plan: {} })).rerunPlan.allowed, false);
+    }
+
+    // (f) The skill and the descriptions name the re-run surface.
+    {
+        const specs = new Map();
+        registerWorkflowTools({ registerTool: (name, spec) => { specs.set(name, spec); } }, { workflowCommands: true, workflowTestMode: false, mgmt: {} });
+        assert.match(specs.get("read_workflow_skill").inputSchema.name.description, /'workflow-rerun'/);
+        assert.match(specs.get("read_workflow").description, /rerun_plan/);
+        for (const code of ["RERUN_SOURCE_ACTIVE", "RERUN_SOURCE_GONE", "RERUN_VISIT_NOT_FOUND", "RERUN_APPROVAL_REUSED", "RERUN_INCOMPATIBLE"]) {
+            assert.match(specs.get("read_workflow").description, new RegExp(code));
+        }
+        assert.ok(specs.get("read_workflow").inputSchema.rerun_plan, "read_workflow takes rerun_plan");
+        const wd = specs.get("workflow_definition");
+        assert.ok(wd.inputSchema.rerun_from, "workflow_definition takes rerun_from");
+        assert.match(wd.description, /rerun_from/);
+        assert.match(wd.description, /workflow-rerun/);
+        assert.match(wd.inputSchema.rerun_from.description, /omit inputs and workspace/i);
+        assert.match(wd.inputSchema.revision.description, /rerun_from.*source Workflow's revision/i);
+        assert.match(wd.inputSchema.workspace.description, /omit with rerun_from/i);
+        const skill = body(await toolsWith({ mgmt: { readWorkflowSkills: async (opts) => ({ name: opts.name, description: "d", content: "# Re-run" }) } })
+            .get("read_workflow_skill")({ name: "workflow-rerun" }));
+        assert.equal(skill.name, "workflow-rerun");
+        assert.match(skill.note, /rerun_from/);
+        assert.match(skill.note, /rerun_plan/);
+        assert.match(skill.note, /workflow-rerun/);
+    }
+}
+
+console.log("✅ Phase 3 I7 MCP re-run (rerun_from, rerun_plan, viaMcp, M1 skew) unit suite passed");

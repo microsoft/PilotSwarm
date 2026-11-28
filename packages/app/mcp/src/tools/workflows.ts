@@ -14,8 +14,14 @@ const WORKFLOW_MCP_GAP_WORKAROUND =
 const WORKFLOW_SKILL_MCP_NOTE =
     "This skill is written for agents inside a PilotSwarm session. Over MCP: load_skill(name) is read_workflow_skill { name }; "
     + "definitions are workflow_definition with your own operation_id; runs are read_workflow / update_workflow (pause, resume, stop, cancel, set_vars); "
+    + "a re-run from a step (workflow-rerun) is workflow_definition start with rerun_from (omit inputs and workspace), and its plan is read_workflow rerun_plan; "
+    + "over MCP a re-run never reuses an answered approval; "
     + "test, recover, send_workflow_input, respond_session_request and child_workflows are not available, and nothing notifies you: poll read_workflow. "
     + WORKFLOW_MCP_GAP_WORKAROUND;
+
+const RERUN_FROM_KEYS = ["workflow_id", "execution_id", "mode", "result", "note"];
+const RERUN_PLAN_KEYS = ["execution_id", "mode", "revision", "outcome"];
+const READ_SELECTORS = ["run_id", "cursor", "execution_id", "limit", "kv_revision", "kv_key", "agent_versions", "definition_revision", "step_input"] as const;
 
 const PERSON_START_TOOL_BINDING_WARNING = {
     severity: "warning" as const,
@@ -37,6 +43,64 @@ function isOlderPortalWithoutPhase4Definitions(ctx: ServerContext): boolean {
     if (!ctx.webMode) return false;
     if (!ctx.workflowsAdvert || typeof ctx.workflowsAdvert !== "object") return true;
     return !ctx.workflowsAdvert.validate || !ctx.workflowsAdvert.card;
+}
+
+/**
+ * Phase 3 I7 (M1): a web-mode portal that does not advertise workflows.rerun (or whose /bootstrap could not be read) predates
+ * re-run from a step; it would ignore rerun_from and start from step 1, so rerun_from and rerun_plan fail closed.
+ */
+function rerunUnavailable(ctx: ServerContext, session_id: string): ToolResult | null {
+    if (!ctx.webMode || ctx.workflowsAdvert?.rerun === true) return null;
+    return errorResult(
+        "This deployment is older than this MCP server and cannot re-run a Workflow from a step (workflows.rerun is not advertised); upgrade the portal.",
+        { code: "WORKFLOW_API_UNAVAILABLE", status: 501, session_id },
+    );
+}
+
+/**
+ * Phase 3 I7: start's rerun_from as Start takes it (rerunFrom). A re-run takes its source's inputs and workspace and repeats no
+ * other Workflow, so those arguments (and any other rerun_from field) are refused before anything is read or attached.
+ */
+function rerunFromArg(args: Record<string, unknown>)
+    : { workflowId: string; executionId?: string; mode?: "run_again" | "continue" | "supply"; result?: unknown; note?: unknown } {
+    const from = args.rerun_from;
+    const refused = (message: string) => Object.assign(new Error(message), { code: "RERUN_ARGUMENT_REFUSED", status: 400 });
+    if (!from || typeof from !== "object" || Array.isArray(from)) throw refused("rerun_from must be { workflow_id, execution_id?, mode?, result?, note? }.");
+    const value = from as Record<string, unknown>;
+    const extra = Object.keys(value).filter(key => !RERUN_FROM_KEYS.includes(key));
+    if (extra.length) throw refused(`rerun_from takes ${RERUN_FROM_KEYS.join(", ")}; leave out ${extra.join(", ")}.`);
+    if (typeof value.workflow_id !== "string" || !value.workflow_id.trim()) throw refused("rerun_from.workflow_id must name an ended Workflow.");
+    const inputs = args.inputs;
+    if (inputs !== undefined && !(inputs && typeof inputs === "object" && Object.keys(inputs).length === 0)) {
+        throw refused("A re-run takes the source Workflow's inputs: omit inputs with rerun_from.");
+    }
+    if (args.workspace !== undefined) throw refused("A re-run keeps the source Workflow's workspace: omit workspace with rerun_from.");
+    if (args.run_again_of !== undefined) throw refused("rerun_from cannot be combined with run_again_of.");
+    return {
+        workflowId: value.workflow_id,
+        ...(value.execution_id !== undefined ? { executionId: value.execution_id as string } : {}),
+        ...(value.mode !== undefined ? { mode: value.mode as "run_again" | "continue" | "supply" } : {}),
+        ...(value.result !== undefined ? { result: value.result } : {}),
+        ...(value.note !== undefined ? { note: value.note } : {}),
+    };
+}
+
+/** The session definition an ended Workflow was started from, which must be `ownerSessionId`'s (M4a). */
+async function rerunSourceDefinition(ctx: ServerContext, ownerSessionId: string, workflowId: string): Promise<string> {
+    const read: any = await ctx.mgmt.readWorkflow(workflowId, { limit: 1 });
+    const fail = (code: string, status: number, message: string) => Object.assign(new Error(message), { code, status });
+    if (read?.deleted === true) {
+        throw Object.assign(fail("RERUN_SOURCE_GONE", 409, `Workflow ${workflowId} was cleaned up. Only its result is kept. Use Run again.`),
+            { details: { workflowId, outcome: read.run?.outcome ?? null } });
+    }
+    const source = read?.definition?.source;
+    if (typeof source?.definitionId !== "string") {
+        throw fail("RERUN_NOT_A_WORKFLOW", 422, `Workflow ${workflowId} was not started from a saved Workflow Definition, so it cannot be re-run from a step.`);
+    }
+    if (source.ownerSessionId !== ownerSessionId) {
+        throw fail("WORKFLOW_NOT_FOUND", 404, `Workflow ${workflowId} was not started from a Workflow Definition of this session.`);
+    }
+    return source.definitionId;
 }
 
 function irScriptsCallTools(ir: ReturnType<typeof compileWorkflow>["ir"]): boolean {
@@ -93,9 +157,12 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "oldest first; rows still open are listed apart, however old (openExecutions, openInbox, openOutbox"
                 + `${testMode ? ", run.test.openInterceptions" : ""}). run.pages gives each section's nextCursor: give it back as cursor (a JSON object; limit may `
                 + "go with it) for that section's next, older page; null means none is older. execution_id, kv_revision, agent_versions, "
-                + "definition_revision and step_input are separate reads: each argument says what it returns. Refusals carry their code: "
+                + "definition_revision, step_input and rerun_plan are separate reads: each argument says what it returns. A re-run's steps show "
+                + "visit.reused and visit.supplied, its run run.rerunOf, and the source view.reruns. Refusals carry their code: "
                 + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, DEFINITION_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID, "
-                + "and WORKFLOW_STORE_UNAVAILABLE (with its reason) when the store cannot be reached or has no room now.",
+                + "WORKFLOW_STORE_UNAVAILABLE (with its reason) when the store cannot be reached or has no room now, and for rerun_plan "
+                + "RERUN_SOURCE_ACTIVE, RERUN_SOURCE_GONE, RERUN_NOT_A_WORKFLOW, RERUN_VISIT_REQUIRED, RERUN_VISIT_NOT_FOUND, RERUN_VISIT_NOT_ALLOWED, "
+                + "RERUN_SUPPLY_NOT_ALLOWED, RERUN_SUPPLIED_RESULT_INVALID, RERUN_INCOMPATIBLE, RERUN_TOO_LARGE and RERUN_APPROVAL_REUSED.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to read"),
                 run_id: z.string().optional().describe("A run of the workflow; default the live run"),
@@ -109,9 +176,42 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 definition_revision: z.number().int().optional().describe("Alone: a revision of the definition, 1 to the current one: its YAML as saved and formatted"),
                 step_input: z.record(z.string(), z.unknown()).optional()
                     .describe("{ state, input? }, alone: an agent step's input fields in the current draft; with input, the YAML that mapping proposes"),
+                rerun_plan: z.object({
+                    execution_id: z.string().optional().describe("The visit to re-run from; omit to let the plan pick the failed step"),
+                    mode: z.enum(["run_again", "continue", "supply"]).optional(),
+                    revision: z.number().int().positive().optional().describe("Default the source Workflow's revision"),
+                    outcome: z.string().optional().describe("supply: the outcome to check; never an output"),
+                }).passthrough().optional()
+                    .describe("Alone, on an ended Workflow: what workflow_definition start with rerun_from would do now (reused steps, the first "
+                        + "step that runs, revision fit, allowed). Changes nothing. Call read_workflow_skill { name: 'workflow-rerun' } first"),
             },
         },
-        withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit, kv_revision, kv_key, agent_versions, definition_revision, step_input }) => {
+        withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit, kv_revision, kv_key, agent_versions, definition_revision, step_input, rerun_plan }) => {
+            if (rerun_plan !== undefined) {
+                const given = { run_id, cursor, execution_id, limit, kv_revision, kv_key, agent_versions, definition_revision, step_input };
+                const other = READ_SELECTORS.filter(key => given[key] !== undefined);
+                const extra = Object.keys(rerun_plan).filter(key => !RERUN_PLAN_KEYS.includes(key));
+                if (other.length || extra.length) {
+                    return errorResult(other.length
+                        ? `A re-run plan is a read of its own; leave out ${other.join(", ")}.`
+                        : `rerun_plan takes ${RERUN_PLAN_KEYS.join(", ")}; leave out ${extra.join(", ")} (only start takes a supplied output).`,
+                    { code: "WORKFLOW_READ_INVALID", status: 400, session_id });
+                }
+                const unavailable = rerunUnavailable(ctx, session_id);
+                if (unavailable) return unavailable;
+                try {
+                    // OQ5: an MCP caller never reuses an answered approval, so the plan says allowed: false for one.
+                    return jsonResult(await ctx.mgmt.readWorkflow(session_id, { rerunPlan: {
+                        ...(rerun_plan.execution_id !== undefined ? { executionId: rerun_plan.execution_id } : {}),
+                        ...(rerun_plan.mode !== undefined ? { mode: rerun_plan.mode } : {}),
+                        ...(rerun_plan.revision !== undefined ? { revision: rerun_plan.revision } : {}),
+                        ...(rerun_plan.outcome !== undefined ? { outcome: rerun_plan.outcome } : {}),
+                        viaMcp: true,
+                    } }));
+                } catch (err: unknown) {
+                    return refusal(err, session_id);
+                }
+            }
             try {
                 return jsonResult(await ctx.mgmt.readWorkflow(session_id, {
                     ...(run_id !== undefined ? { runId: run_id } : {}),
@@ -212,7 +312,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             inputSchema: {
                 name: z.string().min(1).max(128).optional().describe(
                     "Workflow skill name (e.g. 'workflow-authoring', 'workflow-reference', 'workflow-tools', 'workflow-patterns', "
-                    + "'workflow-decision', 'workflow-carry', 'workflow-polling', 'workflow-schedules', 'workflow-approval', 'workflow-long-agent'). "
+                    + "'workflow-decision', 'workflow-carry', 'workflow-polling', 'workflow-schedules', 'workflow-approval', 'workflow-long-agent', "
+                    + "'workflow-rerun' to re-run an ended Workflow from a step). "
                     + "Omit to list all Workflow skills packaged with this deployment.",
                 ),
             },
@@ -327,6 +428,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "All other operations act on owner_session_id (create a top-level session with create_session). "
                 + "Pass key (preferred) or operation_id on start; pass a fresh operation_id on save, delete, and copy (reuse unchanged only to retry). "
                 + "On a fresh 0-turn owner_session_id, pass workspace: 'none' on start (or send one turn first to capture default folders). "
+                + "To go on from a step of an ended Workflow, start with rerun_from (name and definition_id may be omitted; omit inputs and workspace, "
+                + "even on a 0-turn session); read read_workflow_skill { name: 'workflow-rerun' } first. "
                 + WORKFLOW_MCP_GAP_WORKAROUND,
             inputSchema: {
                 operation: z.enum(["list", "read", "save", "start", "delete", "copy", "card", "validate"])
@@ -338,7 +441,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 definition_id: z.string().optional()
                     .describe("Definition ID returned by list/read/save"),
                 revision: z.number().int().positive().optional()
-                    .describe("Revision number (read: default newest; start: default newest valid; copy: default newest)"),
+                    .describe("Revision number (read: default newest; start: default newest valid, with rerun_from the source Workflow's revision; copy: default newest)"),
                 expected_revision: z.number().int().positive().optional()
                     .describe("save over an existing definition: the current revision you read (omit on first save of a new name)"),
                 yaml: z.string().max(262144).optional()
@@ -352,7 +455,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 notify_on_completion: z.boolean().optional()
                     .describe("start: notify owner_session_id when the Workflow ends (default true)"),
                 workspace: z.union([z.record(z.string(), z.unknown()), z.null(), z.literal("none")]).optional()
-                    .describe("start: omit to inherit owner_session_id's workspace and defaults (requires >=1 turn in owner_session_id); pass 'none' on a fresh 0-turn session or when no folders are needed"),
+                    .describe("start: omit to inherit owner_session_id's workspace and defaults (requires >=1 turn in owner_session_id); pass 'none' on a fresh 0-turn session or when no folders are needed; omit with rerun_from (a re-run keeps its source's)"),
                 agent_models: z.record(z.string(), z.unknown()).optional()
                     .describe("start: map of agent state id -> { model: 'provider:model', reasoningEffort?, contextTier? }"),
                 decision_models: z.record(z.string(), z.unknown()).optional()
@@ -361,6 +464,17 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     .describe("start: when starting a '<package>/<name>' definition already attached to owner_session_id, update to the package's newer active version first"),
                 key: z.string().min(1).max(128).optional()
                     .describe("start (preferred): exact session-scoped idempotency key; reuse unchanged on retry, use a new key for another run"),
+                rerun_from: z.object({
+                    workflow_id: z.string().describe("The ended Workflow to re-run"),
+                    execution_id: z.string().optional().describe("The visit to re-run from; omit to re-run from the failed step"),
+                    mode: z.enum(["run_again", "continue", "supply"]).optional()
+                        .describe("run_again: run the step again; continue: keep the step's result and go on; supply: give a script or agent step's result"),
+                    result: z.object({ outcome: z.string(), output: z.unknown().optional() }).optional()
+                        .describe("supply: the step's result, checked in the external system"),
+                    note: z.string().max(2000).optional().describe("supply only: the evidence you checked"),
+                }).passthrough().optional()
+                    .describe("start: re-run an ended Workflow from a step, reusing the steps before it. Omit inputs and workspace; the "
+                        + "revision defaults to the source Workflow's. Over MCP a re-run never reuses an answered approval (403 RERUN_APPROVAL_REUSED)"),
                 include_deleted: z.boolean().optional()
                     .describe("list: include deleted definitions (default false)"),
                 operation_id: z.string().min(1).max(256).optional()
@@ -390,6 +504,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 include_deleted,
                 operation_id,
                 originating_session_id,
+                rerun_from,
             } = args;
 
             if (operation === "validate") {
@@ -411,6 +526,18 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             const originatingSessionId = ctx.originatingSessionId ?? originating_session_id;
             const mutOpts = originatingSessionId !== undefined ? { originatingSessionId } : {};
             const isMutation = operation === "save" || operation === "start" || operation === "delete" || operation === "copy";
+
+            // Phase 3 I7: a re-run's arguments are checked, and an older portal refused (M1), before anything is read or changed.
+            let rerunFrom: ReturnType<typeof rerunFromArg> | null = null;
+            if (operation === "start" && rerun_from !== undefined) {
+                try {
+                    rerunFrom = rerunFromArg(args);
+                } catch (err: unknown) {
+                    return refusal(err, owner_session_id);
+                }
+                const unavailable = rerunUnavailable(ctx, owner_session_id);
+                if (unavailable) return unavailable;
+            }
 
             if (isMutation && isOlderPortalWithoutPhase4Definitions(ctx)) {
                 if (originatingSessionId !== undefined) {
@@ -535,12 +662,15 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                         { code: "WORKFLOW_COMMAND_INVALID", status: 400, session_id: owner_session_id },
                     );
                 }
-                if (!definition_id && !name) {
+                if (!definition_id && !name && !rerunFrom) {
                     return errorResult("start needs name or definition_id.", { code: "WORKFLOW_COMMAND_INVALID", status: 400, session_id: owner_session_id });
                 }
 
                 const opId = operation_id ?? `key:${key}`;
                 let startRevision = revision;
+                // M4a/M4b: a re-run that names no definition starts the one its Workflow was started from, before update attaches a newer version.
+                const startDefinitionId = definition_id ?? (rerunFrom && !name
+                    ? await rerunSourceDefinition(ctx, owner_session_id, rerunFrom.workflowId) : undefined);
 
                 if (update === true) {
                     if (run_again_of) {
@@ -552,7 +682,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     let target: any = null;
                     try {
                         target = await ctx.mgmt.readSessionWorkflowDefinition(owner_session_id, {
-                            ...(definition_id !== undefined ? { definitionId: definition_id } : {}),
+                            ...(startDefinitionId !== undefined ? { definitionId: startDefinitionId } : {}),
                             ...(name !== undefined ? { name } : {}),
                         });
                     } catch (err: any) {
@@ -573,7 +703,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     const updated: any = await ctx.mgmt.updateSessionWorkflowPackage(
                         owner_session_id,
                         {
-                            ...(definition_id !== undefined ? { definitionId: definition_id } : {}),
+                            ...(startDefinitionId !== undefined ? { definitionId: startDefinitionId } : {}),
                             ...(name !== undefined ? { name } : {}),
                             operationId: updateOperationIdFor(opId, key),
                         },
@@ -587,11 +717,11 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 const started: any = await ctx.mgmt.startSessionWorkflowDefinition(
                     owner_session_id,
                     {
-                        ...(definition_id !== undefined ? { definitionId: definition_id } : {}),
+                        ...(startDefinitionId !== undefined ? { definitionId: startDefinitionId } : {}),
                         ...(name !== undefined ? { name } : {}),
                         ...(startRevision !== undefined ? { revision: startRevision } : {}),
                         ...(run_again_of !== undefined ? { runAgainOf: run_again_of } : {}),
-                        ...(inputs !== undefined ? { inputs } : {}),
+                        ...(inputs !== undefined && !rerunFrom ? { inputs } : {}),
                         ...(vars !== undefined ? { vars } : {}),
                         ...(notify_on_completion !== undefined ? { notifyParent: notify_on_completion } : {}),
                         ...(workspace !== undefined ? { workspace: workspace as any } : {}),
@@ -599,11 +729,15 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                         ...(decision_models !== undefined ? { decisionModels: decision_models } : {}),
                         ...(key !== undefined ? { key } : {}),
                         operationId: opId,
+                        // OQ5: an MCP caller never reuses an answered approval (only a re-run sends it; an older portal takes no such field).
+                        ...(rerunFrom ? { rerunFrom, viaMcp: true } : {}),
                     },
                     mutOpts,
                 );
 
-                const callsTools = await startedRevisionCallsTools(ctx, owner_session_id, started?.definitionId, started?.revision);
+                // A re-run that inherited its source's tool grant (OQ1) is not a person's Start without one.
+                const callsTools = started?.rerun?.grant !== "inherited"
+                    && await startedRevisionCallsTools(ctx, owner_session_id, started?.definitionId, started?.revision);
                 const existingWarnings = Array.isArray(started?.warnings) ? started.warnings : [];
                 const alreadyWarned = existingWarnings.some((w: any) => w?.code === PERSON_START_TOOL_BINDING_WARNING.code);
                 const warnings = callsTools && !alreadyWarned
