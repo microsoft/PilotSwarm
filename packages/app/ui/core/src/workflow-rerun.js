@@ -259,13 +259,25 @@ export function workflowRerunDraftChange(draft, patch, { mint = randomUuid, plan
 }
 
 /**
- * Whether Start may be pressed now: { ok, reason }. Not while the plan is refused for this reader or its revision does not
+ * The choice a plan read answers, as one key: the visit, the mode, the revision and, in supply only, the outcome (none, or
+ * "", is a choice of its own). Equal keys ask for the same plan. Pure.
+ */
+export function workflowRerunSelectionKey({ executionId = null, mode = null, revision = null, outcome = null } = {}) {
+    return JSON.stringify([text(executionId), MODES.has(mode) ? mode : null, Number.isSafeInteger(revision) && revision > 0 ? revision : null,
+        mode === "supply" ? text(outcome) : null]);
+}
+
+/**
+ * Whether Start may be pressed now: { ok, reason }. `previewed`, when given, is the workflowRerunSelectionKey of the last
+ * plan read that succeeded: not until it is the draft's own choice, so Start never sends a choice whose plan was not read
+ * (a read still on its way, or one that failed). Not while the plan is refused for this reader or its revision does not
  * fit; in supply, not before an outcome is chosen, the plan's preview of it is valid, the output checks, and the Why is
  * filled (at most 2,000 characters). Pure.
  */
-export function workflowRerunCanStart(draft, plan) {
+export function workflowRerunCanStart(draft, plan, { previewed } = {}) {
     const no = reason => ({ ok: false, reason });
     if (!isRecord(plan) || !isRecord(draft)) return no("Reading the plan…");
+    if (previewed !== undefined && previewed !== workflowRerunSelectionKey({ ...draft, executionId: plan.from?.executionId })) return no("Reading the plan…");
     if (plan.allowed === false) return no(text(plan.blockedReason) ?? "This Start would be refused.");
     if (plan.revision?.fits === false) {
         const first = Array.isArray(plan.revision.problems) ? plan.revision.problems[0] : null;

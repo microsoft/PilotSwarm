@@ -7,6 +7,8 @@
 //     Start off while Why is blank, Start's 422 problems inline, the same operation id for a repeat (N5) and a new one once the
 //     output is edited, never an output or a note in a plan read's query (M6), then #3 shows its reused steps (✓ Reused), its
 //     supplied step (✎ Supplied), the Log's supplied line, the timeline's hatched band and the Node panel's Reason;
+//   - H1: Start waits for the plan of the choice shown: a plan read that fails keeps it off and sends nothing until Try again
+//     reads that choice; plan reads answered out of order drop the late answer;
 //   - the keyboard (Tab stays in the sheet, Escape closes it), the phone sheet's 16 px fields and 44 px targets, the reused
 //     and supplied words at 4.5:1 in a dark and a light theme, and no page or console error.
 // Selector: npx playwright test test/e2e/workflow-rerun.spec.mjs (from packages/app/web, after build).
@@ -47,6 +49,8 @@ const BAD_ID = "rg-pg1";
 const OBJECT_ID = "0f1e2d3c-aaaa";
 const WHY = "Server pg1 finished provisioning in Azure after the timeout.";
 const REV4_WARNING = "Revision 4 changes configure; it runs as revision 4 defines it.";
+const PLAN_FAILED = "The plan could not be read just now.";
+const BAD_GATEWAY = "console: Failed to load resource: the server responded with a status of 502 (Bad Gateway)";
 
 async function shot(page, name) {
     if (!SHOTS) return;
@@ -96,7 +100,8 @@ function planFor(query) {
  * provision timed out, both on revision 3) and the routes, each recorded: plan reads (`plans`: their raw URLs and queries) and
  * Starts (`starts`). Start refuses a supplied resourceId that is not an ARM id with 422 RERUN_SUPPLIED_RESULT_INVALID and
  * its problems, and otherwise starts #3 (W3), a re-run that reused validate and plan and was supplied provision.
- * `rerunDone`: #3 is there from the start. `holdStart`: a promise each Start's answer waits for.
+ * `rerunDone`: #3 is there from the start. `holdStart`: a promise each Start's answer waits for. `planFault`: a function of a
+ * plan read's query giving what its answer waits for (`wait`, a promise) and whether it then fails with 502 (`fail`).
  */
 async function routeRerun(page, { rerunDone = false } = {}) {
     const revision = (number, actor) => ({ definitionId: "def-pc", revision: number, valid: true, semver: `1.${number - 1}.0`, yamlSha256: `y${number}`,
@@ -116,7 +121,7 @@ async function routeRerun(page, { rerunDone = false } = {}) {
             { sessionId: W2, title: "Workflow: provision-cluster", status: "failed", sessionKind: "workflow", parentSessionId: AGENT_ID,
                 createdAt: now - 300_000, updatedAt: now - 280_000 },
         ],
-        plans: [], starts: [], receipts: new Map(), supplied: null, holdStart: null,
+        plans: [], starts: [], receipts: new Map(), supplied: null, holdStart: null, planFault: null,
     };
     const start = (supplied) => {
         state.supplied = supplied;
@@ -250,6 +255,9 @@ async function routeRerun(page, { rerunDone = false } = {}) {
                 if (rerunPlan !== null) {
                     const query = JSON.parse(rerunPlan);
                     state.plans.push({ url: req.url(), query });
+                    const fault = state.planFault?.(query) ?? null;
+                    if (fault?.wait) await fault.wait;
+                    if (fault?.fail) return refuse(502, "UPSTREAM_UNAVAILABLE", PLAN_FAILED);
                     return answer({ ...models[item.sessionId](), rerunPlan: planFor(query) });
                 }
                 return answer(models[item.sessionId]());
@@ -601,6 +609,133 @@ for (const [label, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
         expect(errors).toEqual(Array(2).fill("console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"));
     });
 }
+
+/**
+ * The sheet of #2's failure banner, open on Run this step again with its plan read: { state, sheet, start, failure (the
+ * failed read's alert), failed (it with Try again), retry }.
+ */
+async function openFailureSheet(page) {
+    const state = await routeRerun(page);
+    const main = await openWorkflow(page, 2);
+    await main.locator('[data-action="rerun-from-failure"]').click();
+    const sheet = sheetOf(page);
+    await expect(sheet.locator('[data-field="rerun-from"]')).toHaveText("provision · visit 1");
+    await expect(sheet.getByRole("radio", { name: "Run this step again", exact: true })).toBeChecked();
+    const start = sheet.locator('[data-action="rerun-start"]');
+    await expect(start).toBeEnabled();
+    const failed = sheet.locator('[data-field="rerun-read-error"]');
+    await expect(failed).toHaveCount(0);
+    return { state, sheet, start, failure: sheet.getByRole("alert").filter({ hasText: PLAN_FAILED }), failed,
+        retry: failed.locator('[data-action="rerun-retry"]') };
+}
+
+test("H1: a plan read that fails keeps Start off and sends nothing; Try again reads the plan of the choice shown, and Start sends that", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    const errors = watchErrors(page);
+    const { state, sheet, start, failure, failed, retry } = await openFailureSheet(page);
+
+    // Keep this step's result: its plan read fails. Run this step again's plan does not let Start go, even pressed.
+    state.planFault = () => ({ fail: true });
+    const keep = sheet.getByRole("radio", { name: "Keep this step's result and go on", exact: true });
+    await keep.check();
+    const kept = { executionId: "nx-provision-1", mode: "continue", revision: 3 };
+    await expect.poll(() => state.plans.at(-1).query).toEqual(kept);
+    await expect(failure).toBeVisible();
+    await expect(start).toBeDisabled();
+    await expect(start).toHaveAttribute("title", "The plan for this choice could not be read. Try again.");
+    await expect(keep).toBeChecked();
+    await start.click({ force: true });
+    // Try again while the server still fails: the same choice is read again, and Start stays off.
+    const reads = state.plans.length;
+    await retry.click();
+    await expect.poll(() => state.plans.length).toBe(reads + 1);
+    expect(state.plans.at(-1).query).toEqual(kept);
+    await expect(retry).not.toHaveAttribute("aria-disabled", "true");
+    await expect(failed.getByRole("alert")).toHaveText(PLAN_FAILED);
+    await expect(start).toBeDisabled();
+    await expect(keep).toBeChecked();
+    expect(state.starts).toEqual([]);
+
+    // The server answers again: Try again reads Keep this step's result, and Start starts exactly that.
+    state.planFault = null;
+    await retry.click();
+    await expect(failed).toHaveCount(0);
+    expect(state.plans.at(-1).query).toEqual(kept);
+    await expect(sheet.locator('[data-field="rerun-effect"]')).toHaveText("Keeps provision · visit 1's result.");
+    await expect(start).toBeEnabled();
+    expect(state.starts).toEqual([]);
+    await start.click();
+    await expect(sheet).toHaveCount(0);
+    expect(state.starts).toEqual([{ definitionId: "def-pc", revision: 3, operationId: state.starts[0].operationId,
+        rerunFrom: { workflowId: W2, executionId: "nx-provision-1", mode: "continue" } }]);
+    expect(errors).toEqual([BAD_GATEWAY, BAD_GATEWAY]);
+});
+
+test("H1: plan reads answered out of order: the late answer is dropped, and never stands in for a newer read that failed", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    const errors = watchErrors(page);
+    const { state, sheet, start, failure, failed, retry } = await openFailureSheet(page);
+    const warnings = sheet.locator('[data-field="rerun-warnings"]');
+    const revisions = sheet.locator('[data-field="rerun-revision"]');
+    const three = revisions.getByRole("radio", { name: /^3\s/ });
+    const four = revisions.getByRole("radio", { name: /^4\s/ });
+    const keep = sheet.getByRole("radio", { name: "Keep this step's result and go on", exact: true });
+    const held = () => { let release; const wait = new Promise((resolve) => { release = resolve; }); return { wait, release }; };
+    // The browser has the answer to the plan read `match` picks, and has had time to use it.
+    const answered = async (match, release) => {
+        const response = page.waitForResponse((item) => {
+            const raw = new URL(item.url()).searchParams.get("rerunPlan");
+            return raw !== null && match(JSON.parse(raw));
+        });
+        release();
+        await response;
+        await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+    };
+
+    // Revision 4's read is slow; revision 3's, asked after it, comes back first. Revision 4's late answer is dropped.
+    const slow = held();
+    state.planFault = (query) => (query.revision === 4 ? { wait: slow.wait } : null);
+    await four.check();
+    await expect.poll(() => state.plans.at(-1).query).toEqual({ executionId: "nx-provision-1", mode: "run_again", revision: 4 });
+    await expect(start).toBeDisabled();
+    await three.check();
+    await expect.poll(() => state.plans.at(-1).query).toEqual({ executionId: "nx-provision-1", mode: "run_again", revision: 3 });
+    await expect(start).toBeEnabled();
+    await answered((query) => query.revision === 4, slow.release);
+    await expect(three).toBeChecked();
+    await expect(warnings).toHaveCount(0);
+    await expect(start).toBeEnabled();
+
+    // Revision 4's read is slow again, and Keep this step's result, asked after it, fails: the late answer does not let Start go.
+    const slower = held();
+    state.planFault = (query) => (query.mode === "continue" ? { fail: true } : query.revision === 4 ? { wait: slower.wait } : null);
+    await four.check();
+    await expect.poll(() => state.plans.at(-1).query).toEqual({ executionId: "nx-provision-1", mode: "run_again", revision: 4 });
+    await keep.check();
+    const kept = { executionId: "nx-provision-1", mode: "continue", revision: 4 };
+    await expect.poll(() => state.plans.at(-1).query).toEqual(kept);
+    await expect(failure).toBeVisible();
+    await expect(start).toBeDisabled();
+    await answered((query) => query.revision === 4 && query.mode === "run_again", slower.release);
+    await expect(start).toBeDisabled();
+    await expect(warnings).toHaveCount(0);
+    await expect(four).toBeChecked();
+    await expect(keep).toBeChecked();
+    expect(state.starts).toEqual([]);
+
+    // Try again reads Keep this step's result on revision 4, whose warning shows; Start sends that.
+    state.planFault = null;
+    await retry.click();
+    await expect(failed).toHaveCount(0);
+    await expect(warnings).toHaveText(REV4_WARNING);
+    expect(state.plans.at(-1).query).toEqual(kept);
+    await expect(start).toBeEnabled();
+    await start.click();
+    await expect(sheet).toHaveCount(0);
+    expect(state.starts).toEqual([{ definitionId: "def-pc", revision: 4, operationId: state.starts[0].operationId,
+        rerunFrom: { workflowId: W2, executionId: "nx-provision-1", mode: "continue" } }]);
+    expect(errors).toEqual([BAD_GATEWAY]);
+});
 
 test("the keyboard: Tab stays in the sheet, Escape closes it and gives focus back", async ({ page }) => {
     await page.setViewportSize(DESKTOP);

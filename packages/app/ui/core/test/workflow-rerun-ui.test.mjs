@@ -20,8 +20,8 @@ import { readFile } from "node:fs/promises";
 import {
     WORKFLOW_RERUN_TIPS, workflowRerunButtonState, workflowRerunCanStart, workflowRerunChip, workflowRerunDraft, workflowRerunDraftChange,
     workflowRerunDraftOutput, workflowRerunLogRows, workflowRerunNumbers, workflowRerunOutputCheck, workflowRerunOutputSkeleton,
-    workflowRerunPlanQuery, workflowRerunReruns, workflowRerunSheet, workflowRerunStartProblems, workflowRerunStartRequest, workflowRerunSupplyFields,
-    workflowRerunTimeline,
+    workflowRerunPlanQuery, workflowRerunReruns, workflowRerunSelectionKey, workflowRerunSheet, workflowRerunStartProblems, workflowRerunStartRequest,
+    workflowRerunSupplyFields, workflowRerunTimeline,
 } from "../src/workflow-rerun.js";
 import { PilotSwarmUiController, WORKFLOW_EVENT_TYPES, appReducer, createInitialState, createStore, describeWorkflowEvent, formatWorkflowEventText }
     from "../src/index.js";
@@ -326,6 +326,43 @@ test("Start needs an outcome, an output that checks, and a non-blank Why of at m
     const never = plan({ modesAvailable: ["continue"], mode: "continue", supplyContract: null });
     assert.equal(workflowRerunSheet(never, { draft: workflowRerunDraft(never, { mint }), sourceNumber: 2, nextNumber: 3, supplyNever: true }).supplyNote,
         "This step sets supply: never.");
+});
+
+test("H1: Start waits for a plan read for the draft's own visit, mode, revision and (in supply) outcome; an older plan never stands in", () => {
+    const key = selection => workflowRerunSelectionKey({ executionId: "nx-provision-1", revision: 3, ...selection });
+    // The outcome is part of the choice in supply only; none and "" are the same choice, and not any outcome.
+    assert.equal(key({ mode: "continue", outcome: "provisioned" }), key({ mode: "continue" }));
+    assert.equal(key({ mode: "supply", outcome: "" }), key({ mode: "supply", outcome: null }));
+    for (const other of [key({ mode: "run_again" }), key({ mode: "continue", revision: 4 }), key({ mode: "continue", executionId: "nx-plan-1" })]) {
+        assert.notEqual(other, key({ mode: "continue" }));
+    }
+    assert.notEqual(key({ mode: "supply", outcome: "provisioned" }), key({ mode: "supply", outcome: "failed" }));
+    assert.notEqual(key({ mode: "supply", outcome: "provisioned" }), key({ mode: "supply" }));
+
+    // A good plan for Keep this step's result: Start may go.
+    const kept = plan({ mode: "continue", supply: null });
+    const open = workflowRerunDraft(kept, { mint });
+    assert.deepEqual(workflowRerunCanStart(open, kept, { previewed: key({ mode: "continue" }) }), { ok: true, reason: null });
+    // No plan read yet, or a new mode or revision whose read is on its way or failed: that plan does not let Start go.
+    assert.deepEqual(workflowRerunCanStart(open, kept, { previewed: null }), { ok: false, reason: "Reading the plan…" });
+    for (const patch of [{ mode: "run_again" }, { revision: 4 }]) {
+        assert.deepEqual(workflowRerunCanStart(workflowRerunDraftChange(open, patch, { mint, plan: kept }), kept, { previewed: key({ mode: "continue" }) }),
+            { ok: false, reason: "Reading the plan…" }, JSON.stringify(patch));
+    }
+
+    // Supply: the plan read for 'provisioned' does not let Start send 'failed', or a cleared outcome.
+    const p = plan({ supply: { outcome: "provisioned", valid: true, next: { stateId: "configure", visit: 1 }, problems: [] } });
+    let ready = workflowRerunDraftChange(workflowRerunDraft(p, { mint }), { outcome: "provisioned" }, { mint, plan: p });
+    ready = workflowRerunDraftChange(ready, { values: { resourceId: "/subscriptions/s/pg1", objectId: "9f4e" }, note: "pg1 exists." }, { mint, plan: p });
+    const shown = key({ mode: "supply", outcome: "provisioned" });
+    assert.deepEqual(workflowRerunCanStart(ready, p, { previewed: shown }), { ok: true, reason: null });
+    for (const outcome of ["failed", null, ""]) {
+        assert.equal(workflowRerunCanStart(workflowRerunDraftChange(ready, { outcome }, { mint, plan: p }), p, { previewed: shown }).ok, false, String(outcome));
+    }
+    // Once the plan for 'failed' is read, its own preview decides.
+    const failed = plan({ supply: { outcome: "failed", valid: false, next: null, problems: [{ code: "no_route", message: "No route from provision for outcome 'failed'." }] } });
+    assert.deepEqual(workflowRerunCanStart(workflowRerunDraftChange(ready, { outcome: "failed" }, { mint, plan: failed }), failed,
+        { previewed: key({ mode: "supply", outcome: "failed" }) }), { ok: false, reason: "No route from provision for outcome 'failed'." });
 });
 
 // ─── 8. Reused and supplied in the Log, timeline, graph and Node panel ──────────────────────────────────────────────

@@ -44,7 +44,8 @@ import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
 import {
     workflowRerunButtonState, workflowRerunCanStart, workflowRerunChip, workflowRerunDraft, workflowRerunDraftChange, workflowRerunDraftOutput,
-    workflowRerunLogRows, workflowRerunReruns, workflowRerunSheet, workflowRerunStartRequest, workflowRerunSupplyFields, workflowRerunTimeline,
+    workflowRerunLogRows, workflowRerunReruns, workflowRerunSelectionKey, workflowRerunSheet, workflowRerunStartRequest, workflowRerunSupplyFields,
+    workflowRerunTimeline,
 } from "../../core/src/workflow-rerun.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { DecisionQuestionSection, NodeCodeSections } from "./workflow-code.js";
@@ -1686,15 +1687,20 @@ function RerunOutputField({ id, field, value, onChange, disabled }) {
  * Phase 3 I7 (design §7.2): "Re-run from here…", the confirm sheet of a re-run of ended Workflow `sourceWorkflowId`
  * (#`sourceNumber`) from one of its visits (`executionId`; null: the server picks it), in `mode` (null: the server's
  * default). A desktop dialog, or on a phone a bottom sheet. It reads the plan on open (the source revision preselected),
- * again when the mode, revision or outcome changes (the outcome only, never the output: M6), and starts #`nextNumber` with
- * the sheet's own operation id, new whenever what it asks changes (N5). The supply editor checks the output's syntax, size
- * and depth here (R2-S4); Start's 422 problems show under it. `plan` gives the first plan instead of reading it.
+ * again when the mode, revision or outcome changes, a cleared outcome too (the outcome only, never the output: M6), and
+ * starts #`nextNumber` with the sheet's own operation id, new whenever what it asks changes (N5). Start waits for the plan
+ * read for the sheet's own choice: while it is on its way, or after it failed (with Try again), Start stays off. The supply
+ * editor checks the output's syntax, size and depth here (R2-S4); Start's 422 problems show under it. `plan` gives the
+ * first plan instead of reading it.
  */
 export function RerunDialog({ controller, ownerId, definitionId = null, name, sourceWorkflowId, sourceNumber = null, nextNumber = null,
     sourceStartedAt = null, executionId = null, mode = null, locked = false, phone = false, plan: givenPlan = null, onClose, onStarted }) {
     const id = `wf-rerun-${React.useId().replace(/:/g, "")}`;
     const [plan, setPlan] = React.useState(givenPlan);
     const [draft, setDraft] = React.useState(() => (givenPlan ? workflowRerunDraft(givenPlan) : null));
+    // The choice the plan shown was read for (workflowRerunSelectionKey).
+    const [previewed, setPreviewed] = React.useState(() => (givenPlan && draft
+        ? workflowRerunSelectionKey({ ...draft, executionId: givenPlan.from?.executionId }) : null));
     const [reading, setReading] = React.useState(!givenPlan);
     const [readError, setReadError] = React.useState(null);
     const [startError, setStartError] = React.useState(null);
@@ -1717,7 +1723,9 @@ export function RerunDialog({ controller, ownerId, definitionId = null, name, so
         if (!result.ok) { setReadError(result.message); return; }
         setReadError(null);
         setPlan(result.plan);
-        if (first) setDraft(workflowRerunDraft(result.plan));
+        const opened = first ? workflowRerunDraft(result.plan) : null;
+        if (opened) setDraft(opened);
+        setPreviewed(workflowRerunSelectionKey(opened ? { ...opened, executionId: result.plan.from?.executionId } : query));
     };
     React.useEffect(() => { if (!givenPlan) read({ executionId, mode }, { first: true }); }, []);
     const change = patch => {
@@ -1726,12 +1734,14 @@ export function RerunDialog({ controller, ownerId, definitionId = null, name, so
         setStartError(null);
     };
     const reread = patch => read({ executionId: plan.from.executionId, mode: draft.mode, revision: draft.revision, outcome: draft.outcome, ...patch });
+    const retry = () => { if (!reading) reread({}); };
     const sheet = plan && draft ? workflowRerunSheet(plan, { draft, name, sourceNumber, nextNumber, sourceStartedAt, locked, supplyNever }) : null;
     const fields = plan ? workflowRerunSupplyFields(plan.supplyContract?.resolvedOutputSchema) : null;
     const supplying = Boolean(sheet && draft.mode === "supply" && plan.supplyContract);
     const output = supplying ? workflowRerunDraftOutput(draft, plan) : null;
     const shownProblems = [...(touched && output && !output.ok ? output.problems : []), ...problems];
-    const can = workflowRerunCanStart(draft, plan);
+    const can = workflowRerunCanStart(draft, plan, { previewed });
+    const ready = Boolean(sheet) && !reading && !readError && can.ok;
     const editOutput = patch => { setTouched(true); change(patch); };
     const toJson = () => editOutput({ view: "json", outputText: output?.ok ? JSON.stringify(output.value, null, 2) : JSON.stringify(draft.values ?? {}, null, 2) });
     const toFields = () => {
@@ -1743,7 +1753,7 @@ export function RerunDialog({ controller, ownerId, definitionId = null, name, so
         editOutput({ view: "fields", values });
     };
     const start = async () => {
-        if (busy || reading || !can.ok) return;
+        if (busy || !ready) return;
         setBusy(true);
         const result = await controller.startWorkflowRerun(ownerId, workflowRerunStartRequest(draft, { plan, definitionId }));
         setBusy(false);
@@ -1761,7 +1771,8 @@ export function RerunDialog({ controller, ownerId, definitionId = null, name, so
         sheet?.blocked
             ? h("p", { key: "blocked", className: "ps-wf-line is-error", role: "alert", "data-field": "rerun-blocked" }, sheet.blocked)
             : h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-action": "rerun-start",
-                disabled: !sheet || reading || !can.ok, "aria-disabled": busy || undefined, title: can.ok ? undefined : can.reason ?? undefined, onClick: start },
+                disabled: !ready, "aria-disabled": busy || undefined,
+                title: readError ? "The plan for this choice could not be read. Try again." : can.ok ? undefined : can.reason ?? undefined, onClick: start },
             busy ? "Starting…" : sheet?.start ?? "Start"),
     ];
     return h(Dialog, { title: sheet?.title ?? `Re-run ${name} from here`, onClose, className: `is-rerun${phone ? " is-sheet" : ""}`, footer },
@@ -1792,7 +1803,7 @@ export function RerunDialog({ controller, ownerId, definitionId = null, name, so
                         onChange: event => {
                             const outcome = event.target.value || null;
                             change({ outcome });
-                            if (outcome) reread({ mode: "supply", outcome });
+                            reread({ mode: "supply", outcome });
                         } },
                     h("option", { value: "" }, "Choose an outcome…"),
                     sheet.outcomes.map(option => h("option", { key: option.value, value: option.value }, option.label)))),
@@ -1833,7 +1844,11 @@ export function RerunDialog({ controller, ownerId, definitionId = null, name, so
                 sheet.reused.carried ? h("p", { "data-field": "rerun-carried" }, sheet.reused.carried) : null),
             h("p", { className: "ps-wf-muted", "data-field": "rerun-undo" },
                 `Cannot be undone: ${sourceNumber ? `#${sourceNumber}` : "the Workflow"} stays as it is, and what its steps did stays done.`),
-            readError ? h("p", { className: "ps-wf-line is-error", role: "alert" }, readError) : null,
+            readError ? h("div", { className: "ps-wf-field", "data-field": "rerun-read-error" },
+                h("p", { className: "ps-wf-line is-error", role: "alert" }, readError),
+                h("div", { className: "ps-wf-field-actions" },
+                    h("button", { type: "button", className: "ps-mini-button", "data-action": "rerun-retry", "aria-disabled": reading || undefined,
+                        onClick: retry }, "Try again"))) : null,
             startError ? h("p", { className: "ps-wf-line is-error", role: "alert", "data-field": "rerun-start-error" }, startError) : null));
 }
 
