@@ -9,23 +9,37 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { SessionManager } from "../../dist/session-manager.js";
+import { writeTurnSentinel } from "../../dist/snapshot-protocol.js";
 import { checkWorkspaceForSpawn, workspaceReleaseReason } from "../../dist/workspace.js";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 
 const WORKSPACE = { schema: 1, root: "a", folder: "repo-x" };
 const ATTACH = { root: "a", rootPath: "/ws/a", path: "/ws/a/repo-x", realPath: "/ws/a/repo-x", revision: 3, rootSessionId: "root-1", turnIndex: 7 };
 
-function fixture(t, { tasks = [], stubborn = false, release, cancelAnswer, liveStatus } = {}) {
+/** A legacy (unversioned) session store that records every write. */
+function recordingStore() {
+    const writes = [];
+    return {
+        writes,
+        exists: async () => false,
+        hydrate: async () => {},
+        delete: async () => {},
+        checkpoint: async (sessionId) => { writes.push(`checkpoint:${sessionId}`); },
+        dehydrate: async (sessionId) => { writes.push(`dehydrate:${sessionId}`); },
+    };
+}
+
+function fixture(t, { tasks = [], stubborn = false, release, cancelAnswer, liveStatus, store = null } = {}) {
     const home = mkdtempSync(join(tmpdir(), "ps-ws-release-"));
     const order = [];
     const releases = [];
     let current = tasks.map((task) => ({ ...task }));
-    const manager = new SessionManager(undefined, null, {}, home);
+    const manager = new SessionManager(undefined, store, {}, home);
     manager.setFactStore({
         readFacts: async () => ({ count: 0, facts: [] }),
         storeFact: async () => ({ stored: true }),
@@ -69,7 +83,7 @@ function fixture(t, { tasks = [], stubborn = false, release, cancelAnswer, liveS
         for (const id of [...manager.sessions.keys()]) await manager.dropWarmSession(id);
         rmSync(home, { recursive: true, force: true });
     });
-    return { manager, order, releases, handles };
+    return { manager, order, releases, handles, home };
 }
 
 const open = (h, id = "s1", config = { workspace: WORKSPACE, workspaceAttach: ATTACH }) =>
@@ -160,6 +174,81 @@ test("the eviction sweep releases a workspace session before it evicts it", asyn
     await h.manager.sweepIdleSessions(1_000);
     assert.deepEqual(h.releases.map((r) => [r.sessionId, r.workerNodeId, r.reason]), [["s1", "worker-own-id", "evicted"]]);
     assert.equal(h.manager.get("s1"), null);
+});
+
+// A runTurn attempt whose activity lock was lost runs again. Its body may return before the worker's shutdown releases
+// workspaces or its shutdown sweep runs, so the run-turn lock alone does not keep the session: during the drain the cut
+// mark does, so the next worker sees this one as a dead holder.
+test("while the worker drains, a cut session is neither released nor swept", async (t) => {
+    const store = recordingStore();
+    const h = fixture(t, { store });
+    await open(h, "s1");
+    await open(h, "s2");
+    h.manager.markTurnCut("s2", h.manager.currentGeneration());
+    h.manager.beginDrain();
+    assert.equal(await h.manager.releaseIdleWorkspaces({ reason: "worker_shutdown", workerNodeId: "worker-a" }), 1);
+    h.manager.sessionLastTouchedAt.set("s1", Date.now());
+    h.manager.sessionLastTouchedAt.set("s2", Date.now() - 60_000);
+    assert.equal(await h.manager.sweepIdleSessions(1_000), 0);
+    assert.deepEqual(h.releases.map((r) => r.sessionId), ["s1"]);
+    assert.notEqual(h.manager.get("s2"), null);
+    assert.equal(existsSync(join(h.home, "s2")), true);
+    assert.deepEqual(store.writes, []);
+
+    h.manager.clearTurnCut("s2");
+    assert.equal(await h.manager.releaseIdleWorkspaces({ reason: "worker_shutdown", workerNodeId: "worker-a" }), 1);
+    assert.deepEqual(h.releases.map((r) => r.sessionId), ["s1", "s2"]);
+});
+
+// Review MF-1 (#382): a cut that is never retried here (the retry ran elsewhere, or the session was cancelled or deleted)
+// must not hold its shells, handle and dir until the worker restarts. On a live worker the sweep reclaims it, without
+// writing its unsaved files to the store.
+test("on a live worker the sweep reclaims a cut session without publishing it, then clears the mark", async (t) => {
+    const store = recordingStore();
+    const h = fixture(t, { store, tasks: [{ id: "sh-1", type: "shell", status: "running" }] });
+    await open(h, "s2");
+    h.manager.markTurnCut("s2", h.manager.currentGeneration());
+    h.manager.sessionLastTouchedAt.set("s2", Date.now() - 60_000);
+    assert.equal(await h.manager.sweepIdleSessions(1_000), 1);
+    assert.deepEqual(h.order, ["list", "cancel:sh-1", "list", "disconnect", "release"]);
+    assert.deepEqual(h.releases.map((r) => [r.sessionId, r.reason]), [["s2", "evicted"]]);
+    assert.equal(h.manager.get("s2"), null);
+    assert.equal(existsSync(join(h.home, "s2")), false, "the cut attempt's dir is deleted");
+    assert.deepEqual(store.writes, [], "nothing is published");
+    assert.equal(h.manager.isTurnCut("s2"), false);
+});
+
+// Reviews MF-1/MF-2 (#382): no legacy path writes a turn that never committed over the store's last commit.
+test("dehydrate, checkpoint and the sweep never publish a dir with a dirty turn sentinel", async (t) => {
+    const store = recordingStore();
+    const h = fixture(t, { store });
+    await open(h, "plain", { workingDirectory: "/home/app" });
+    writeTurnSentinel(join(h.home, "plain"), "k2");
+    assert.deepEqual(await h.manager.checkpoint("plain"), { unpublished: "dirty_turn" });
+    assert.deepEqual(await h.manager.dehydrate("plain", "idle"), { unpublished: "dirty_turn" });
+    assert.equal(h.manager.get("plain"), null, "the warm handle is dropped");
+    assert.equal(existsSync(join(h.home, "plain")), true, "the dir is kept for the next turn's preamble");
+    h.manager.sessionLastTouchedAt.set("plain", Date.now() - 60_000);
+    assert.equal(await h.manager.sweepIdleSessions(1_000), 1);
+    assert.equal(existsSync(join(h.home, "plain")), false);
+    assert.deepEqual(store.writes, []);
+});
+
+test("dehydrate and checkpoint never publish a cut session's files; a session that ends clears its mark", async (t) => {
+    const store = recordingStore();
+    const h = fixture(t, { store });
+    await open(h, "plain", { workingDirectory: "/home/app" });
+    h.manager.markTurnCut("plain", h.manager.currentGeneration());
+    assert.deepEqual(await h.manager.checkpoint("plain"), { unpublished: "turn_cut" });
+    assert.deepEqual(await h.manager.dehydrate("plain", "idle"), { unpublished: "turn_cut" });
+    assert.deepEqual(store.writes, []);
+    assert.equal(h.manager.isTurnCut("plain"), true);
+
+    // Review SF-1 (#382): a terminal cancel or delete is never retried; ending the session ends its mark.
+    await h.manager.destroySession("plain");
+    assert.equal(h.manager.isTurnCut("plain"), false);
+    await h.manager.checkpoint("plain");
+    assert.deepEqual(store.writes, ["checkpoint:plain"]);
 });
 
 test("a shell the CLI will not cancel (after an abort) is killed with every process below it", { skip: process.platform === "win32" && "process-tree cleanup uses Unix process groups" }, async (t) => {

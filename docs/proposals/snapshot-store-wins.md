@@ -31,10 +31,12 @@ The whole protocol:
 1. **Warm fast path** — local marker matches the store's
    `(version, content hash)` → keep the warm session. Anything else (mismatch,
    dirty sentinel, no local) → hydrate from store.
-2. **Turn idempotency** — a re-dispatched turn (drain / lock-steal / crash
-   retry) that finds its own `turnKey` in the store adopts the stored result
-   and never re-runs the body. This fires on every deploy; without it, drains
-   double-run turns.
+2. **Turn idempotency** — a re-dispatched turn (crash retry, lost commit
+   response) that finds its own `turnKey` in the store adopts the stored result
+   and never re-runs the body. A drain or a lost lock cancels the attempt: it
+   commits nothing, a stored `"cancelled"` result is never adopted, and the
+   re-dispatch runs the body again. Tool side effects may repeat, as after a
+   worker crash.
 3. **One-shot conditional publish** — commit writes `base+1` conditioned on the
    **ETag captured by the preamble's probe** (the same read that established
    `base`). One HEAD per turn, one conditional PUT. Any commit landing anywhere
@@ -165,12 +167,16 @@ three windows remain:
   conflicts, errors, retries — and the retry's preamble hits the fence. The
   session burned a full turn (side effects included) *and* bricked.
 
-And the skip cannot be widened: worker **drain** and **lock-steal** also
-classify as `"cancelled"`, and those commits are *required* — their re-dispatch
-reuses the same turnKey and depends on `alreadyCommitted` idempotency to avoid
-double-running the body. The activity cannot distinguish stop-cancelled from
-drain-cancelled from where it stands. **Classification is a proxy for
-abandonment, and the proxy lies.**
+Skipping `"cancelled"` results as well closes only the first window. A worker
+**drain** or **lock-steal** also yields `"cancelled"`, and that stored result
+is not the turn's answer: adopting it would end the turn without running it
+and drop the prompt. So a drain commits nothing (#367), `runTurnCommit` skips
+every other `"cancelled"` result (`snapshot_unpublished{cancelled}`), and
+recovery never adopts a stored `"cancelled"` result. The re-dispatch runs the
+body again, so tool side effects may repeat, as after a worker crash. The
+completed loser and the late landing remain: the activity still cannot tell an
+abandoned turn from a finished one where it stands. **Classification is a
+proxy for abandonment, and the proxy lies.**
 
 ### 3.2 The three jobs of the version check
 
@@ -395,7 +401,8 @@ Abandoned turn vs. live next turn (any interleaving — one rule):
 | Stop's abandoned turn races the next turn | next turn fences → **session bricked** (the incident) | exactly one publishes; the other worker goes stale and rehydrates. If the zombie won, **the model forgets one turn's conversation** (CMS transcript intact, facts unaffected) — recorded by `snapshot_unpublished` + `snapshot_lineage_jump` |
 | Genuine split-brain / foreign writer | loud fence, manual reconcile | store is authoritative; disagreeing workers rehydrate. Divergence bounded to one unpublished turn, visible in the event trail |
 | Operator restores an older snapshot | store-behind re-base at next preamble | same lane as any mismatch: workers rehydrate the restored state (`snapshot_regressed` recorded). A same-version content swap is also caught — marker sha ≠ store sha |
-| Drain / lock-steal / crash retry / lost PUT response | idempotent via turnKey | **identical** (preamble adopt) |
+| Crash retry / lost PUT response | idempotent via turnKey | **identical** (preamble adopt) |
+| Drain / lock-steal | commits `"cancelled"`; the re-dispatch adopts it and drops the prompt | commits nothing; the re-dispatch runs the turn from the last commit (tool side effects may repeat, as after a crash) |
 | Crash mid-turn (torn dir) | sentinel → re-hydrate | **identical** |
 | User stops a turn | discard if classified `"stopped"`, else brick risk | discard if classified `"stopped"` or if it loses the publish race; kept (visibly, harmlessly) only if it wins |
 
@@ -438,9 +445,11 @@ runs*:
    (marker sha ≠ store sha — rule-breaking restore) forces hydrate; marker
    missing; sentinel dirty → all hydrate from store.
 3. **Idempotency:** re-dispatched turn (same turnKey) adopts stored result;
-   body not re-run. Covers drain, lock-steal, crash retry, and
-   lost-PUT-response (fault-inject `store.commit.after-write` failure →
-   duroxide retry → preamble adopt; no double publish).
+   body not re-run. Covers crash retry and lost-PUT-response (fault-inject
+   `store.commit.after-write` failure → duroxide retry → preamble adopt; no
+   double publish). A cancelled attempt (drain, lock-steal) commits nothing,
+   so its re-dispatch runs the body again; a stored `"cancelled"` result is
+   never adopted.
 4. **Give-up:** any commit landing between a turn's preamble and its PUT —
    store moves mid-body, and concurrent PUTs under fault injection
    (`store.commit.before-write`, both orders) — → 412, turn returns
@@ -485,15 +494,16 @@ runs*:
 | turnKey | deterministic per-turn GUID; equality with the store's `psturnkey` means "this turn already committed — adopt, don't re-run" |
 | store-wins | the protocol: exact `(version, sha)` local match is warm; every other state rehydrates; publishes are one-shot, conditioned on the preamble's ETag |
 | give up / unpublished | a commit whose `If-Match(preamble ETag)` failed — someone committed since this turn's base was read. It writes nothing, stays sentinel-dirty, emits `snapshot_unpublished`, and the next turn rehydrates |
-| `snapshot_unpublished { reason }` | CMS event for every non-published turn snapshot: `stopped` (intentional discard), `superseded` (lost the publish race) or `transport_loss` (the turn's Copilot runtime exited or its connection closed, so its local state is not committed; issue #329). The loss signal |
+| `snapshot_unpublished { reason }` | CMS event for every turn snapshot that is not published: `stopped` (intentional discard), `cancelled` (the activity was cancelled; only a lost lock runs the turn again), `superseded` (lost the publish race), `transport_loss` (the Copilot runtime exited or its connection closed; issue #329) or `foreign_cancelled_winner` (an older build's cancelled attempt of the same turn committed first). A legacy dehydrate or checkpoint that refuses to publish emits it too (`turn_cut`, `dirty_turn`). The loss signal |
 | `snapshot_regressed` | CMS event: preamble saw the store at a *lower* version than the local marker (restore or data loss). Hydration proceeds regardless |
 | `snapshot_lineage_jump` | CMS event (orchestration side): an adopted version ≠ mirror+1 — someone else published in the gap. Adoption proceeds regardless |
 
 ## Appendix B — alternatives considered
 
-1. **Widen the classification skip** (add `"cancelled"`): breaks drain and
-   lock-steal, whose `"cancelled"` commits are required for same-turnKey
-   idempotency. Not completable — see §3.1.
+1. **Widen the classification skip** (add `"cancelled"`): adopted, because a
+   committed cancelled attempt dropped its turn's prompt (§3.1). The price is
+   a re-run body, as after a crash. It closes only the cancelled-loser window,
+   so it does not replace the publish check.
 2. **Await the race loser and adopt its version:** duroxide's `ctx.race`
    consumes both futures; re-yielding the loser's descriptor re-schedules the
    activity (verified by probe, 2026-04-24). No "await the remaining branch"

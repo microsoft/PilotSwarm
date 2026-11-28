@@ -79,7 +79,10 @@ describe("actual runTurn metric wiring", () => {
     });
 
     it.each([false, true])("records thrown partial usage once, cancelled=%s", async cancelled => {
-        const h = makeRunTurnHarness({ cancelled: () => cancelled, turn: async opts => {
+        // The cancellation lands while the model runs: a cancellation read before the send starts no run (review SF-3, #382).
+        let cancelledNow = false;
+        const h = makeRunTurnHarness({ cancelled: () => cancelledNow, turn: async opts => {
+            cancelledNow = cancelled;
             opts.onEvent({ eventType: "assistant.usage", data: { inputTokens: 17, outputTokens: 2 } });
             throw new Error("test failure");
         } });

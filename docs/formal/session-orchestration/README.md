@@ -46,6 +46,8 @@ continue-as-new. Models and batches below name the paths of the commit they were
 | Batches so4b, so5, so5b (2026-11-08) | The late-cancel give-back fixes in 1.0.83 (`CarriedGiveBack`): so4b found three gaps, so5 and so5b check their fixes; so5b, 48 cases at `bb162ed8` (`packages/sdk/src` identical at `8aaf5435` on v0.8.10): 48 of 48 as expected |
 | Batch rl1 (2026-11-23 at `936bd2a2`; re-run 2026-11-24 at `261ea6c7`, then at `f4ef5cd8` on main `1f6af957`) | 15 cases of `RuntimeLoss` (issue #329: the Copilot runtime child dies during a turn or between turns): 15 of 15 as expected (3 PASS, 12 expected violations); the fix holds, and the four defects of main (`45a01a81`; the same paths at `ac86a39e`) are reproduced; no orchestration change |
 | Batch rl2 (2026-11-24, `dd1029c6`; re-run at `0b338528` on main `1f6af957`) | 8 more cases of `RuntimeLoss` for review M1 of #376 (the store's head before the turn, the eviction sweep and the legacy publish guard): 23 of 23 as expected with rl1; the sweep that published a lost first turn's dirty dir is reproduced on the code before the guard and holds with it |
+| Batch tc2 (2026-11-24, `63024c6c`) | `TurnCut` (a turn cut by a drain, a lost activity lock or a terminal cancel), with the review of #382; it replaced tc1 (`f9b958c1`): 26 of 26 as expected (5 PASS, 21 expected violations) |
+| Both fixes at `e8301e9e` (2026-11-25: #382 with #376 and main 0.8.19) | every case of the folder: 233 of 233 as expected (89 PASS, 144 expected violations), 0 PARTIAL, 0 VOID |
 
 1.0.83 (`src/orchestration/`, the durable Workflow intake) is the latest
 version: new sessions start at it, and every continue-as-new targets it. 1.0.82
@@ -90,6 +92,7 @@ by `RehydrationNotice` and `SnapshotWarmDrop`, bound to `e76a6133`
 | `ForcedRefresh.tla` | A turn that ends with a forced continue-as-new (turning Workflows on in a session, `use_package`, loading or unloading an agent, a failed model switch) keeps everything the session holds, an intake write that is due included | 6 (including 3 faults) |
 | `WorkerShutdown.tla` | Every worker: graceful shutdown under one deadline (drain, workspace release, release sweep, close). As written, each step is started even after the deadline, with a zero budget, and only its wait is abandoned, so later steps can overlap a still-running one and the close can cut a legacy upload; the sweep deletes only marked (committed) sessions' local copies and dehydrates unmarked legacy ones | 11 (including 2 faults, 1 comparison and 4 witnesses) |
 | `RuntimeLoss.tla` | Issue #329: the Copilot runtime child behind a pooled client dies during a turn or between turns. The turn settles at the child's exit, not at the inactivity watchdog; the lost turn's local dir is not committed and its turn sentinel stays dirty, so the retry hydrates the last commit; the dead warm session and the dead client are dropped, so the retry starts a fresh runtime, on this worker or on another one; the turn commits when there are fewer deaths than attempts. Batch rl2 adds the store's head before the turn (none, legacy or versioned), the eviction sweep and the legacy publish paths (dehydrate and checkpoint) with the guard that refuses to publish a dir whose turn sentinel is dirty | 23 (including 4 faults, 7 comparisons and 5 witnesses) |
+| `TurnCut.tla` | A runTurn attempt cut by a drain, a lost activity lock or a terminal cancel, and its retry under the same turnKey on any worker. The cut attempt is never saved; the retry never adopts a saved cancelled result (from an earlier release either) and runs from the last commit; a graceful shutdown keeps a cut session's workspace and dir; no legacy dehydrate, checkpoint or sweep publishes the cut files; a live worker reclaims a cut session whose retry ran elsewhere; a session that ends clears its mark. Modes: v0.6.0-0.8.15, 0.8.16/0.8.17, the branch before its review, and upgrades from either release | 26 (including 11 faults, 6 comparisons, 5 witnesses) |
 
 ## 2. The code these models are bound to
 
@@ -148,9 +151,20 @@ bringing in #405, whose model-step continuation races the same runtime-exit guar
 |---|---|
 | `RuntimeLoss` (rl2) | `session-manager.ts` `sweepIdleSessions` 2209 (a locked or cut session is skipped 2224-2225; the committed marker 2252-2255 and the versioned probe 2262-2267 delete a cache; the guard deletes a dirty dir 2268-2273; otherwise the legacy dehydrate 2274-2277), `_legacyPublishBlocker` 3866, `_dehydrateUnlocked` 3870 (the guard 3889-3904), `checkpoint` 4418 (the guard 4425-4429); `session-proxy.ts` `snapshot_unpublished { reason: "dirty_turn" }` 6015-6038; `session-store.ts` the versioned fences of `dehydrate` 898-907 and `checkpoint` 964-971; the rl1 paths at their `0b338528` lines |
 
+Bound to `e8301e9e` (`CORRESPONDENCE-e8301e9e-rltc.md`): the #382 branch with #376 and main `b79be29d` (0.8.19), so
+`RuntimeLoss` and `TurnCut` are checked in one head. The file also records the five places where the two fixes meet.
+`RuntimeLoss`'s mode `"main"` stays bound to `ac86a39e`. `TurnCut`'s other modes keep their tc2 bindings
+(`CORRESPONDENCE-63024c6c-tc2.md`): `"main"` is `ac86a39e` (0.8.17; 0.8.18 changes no modelled code), and `"head"`, the
+branch before its review, is `f9b958c1` (`CORRESPONDENCE-f9b958c1-tc1.md`).
+
+| Module | Code at `e8301e9e` (`packages/sdk/src/`) |
+|---|---|
+| `RuntimeLoss` | `session-manager.ts` `ensureClient` 1776, `_startClient` 1865-1900, `_evictClient` 1903, `_onRuntimeLost` 1917, `ensureClientForKey` 2039, `sweepIdleSessions` 2212 (the cut skip only while draining 2231; the committed marker 2260-2263 and the versioned probe 2264-2275 delete a cache; the guard deletes a dirty dir 2276-2282; otherwise the legacy dehydrate 2283-2287), the warm-session drop 3575-3586, `_legacyPublishBlocker` 3878-3881, `_dehydrateUnlocked` 3883 (the guard 3897-3919), `checkpoint` 4436 (the guard 4441-4447); `managed-session.ts` the exit race 4708-4716 and its catch 5085-5101; `session-proxy.ts` the transport-loss drop 5299-5309, `runBody` 5575-5603, `snapshot_unpublished` 5652-5700 and 6113-6139; `session-lifecycle.ts` `runTurnPreamble` 275-374 and `runTurnCommit` 403 (the transport-loss skip 463-475) |
+| `TurnCut` | `session-lifecycle.ts` `runTurnCommit` 440-452 (the cancelled skip), `recoverAlreadyCommitted` 199-231 and `commitTurnSnapshot` 481-533 (`foreign_cancelled_winner` 512-533); `session-proxy.ts` `latchCancelled` 4465-4469 and `lockCut` 4473-4480, `clearTurnCut` 2177 and 2200 (after the preamble), the drain cut 1789-1794 and 5579-5582, `turnSaved` 5645-5651; `session-manager.ts` `markTurnCut`/`clearTurnCut`/`isTurnCut`/`_drainKeepsCut` 4514-4539, `_legacyPublishBlocker` 3878-3881, the sweep's drain skip 2231 and 2238 and its clears 2256 and 2294, `releaseIdleWorkspaces` 4340, `destroySession` 4366; `worker.ts` 1232, 1357, 1425 and 1445 |
+
 ## 3. Case taxonomy and expected results
 
-`cases.tsv` lists all 207 cases with their module; `cases.json` gives each case
+`cases.tsv` lists all 233 cases with their module; `cases.json` gives each case
 its `mode`, expected result, `meaning`, constants, invariants and properties.
 `expected` is `PASS`, or `safety` or `liveness` when a violation is expected.
 
@@ -188,6 +202,17 @@ The 8 `RuntimeLoss` cases of batch rl2 use the same modes. `comparison.rl-pr-*` 
 review M1's guard (`deb02556`, before the rebase `ce74d928`; meaning `code-before-fix`) and must fail; the `rl.*` holds and the `wit.rl-*`
 witnesses run with the store's head set to none (a first turn), legacy or versioned, and the sweep and the legacy
 publish paths turned on.
+
+The 26 `TurnCut` cases are batch tc2's, which replaced tc1's 15. `tc.*` are the fix (`impl`, PASS), alone and as
+worker B of an upgrade from 0.8.16/0.8.17 (`upgrade-main`) or v0.6.0-0.8.15 (`upgrade-old`). `comparison.tc-main*`
+model 0.8.17: a lost lock drops the turn, and a shutdown keeps a drain-cut session but not one cut by a lost lock
+before it. `comparison.tc-head*` model the branch before its review (`f9b958c1`): a legacy sweep publishes the cut
+files once the retry's failed probe cleared the mark, a live worker never releases a cut session whose retry ran
+elsewhere, and a destroyed session keeps its mark and dir. The eleven `fault.tc-*` each remove one protection and must
+fail. The five `wit.tc-*` witnesses reach: the cut body returning before the shutdown's release; the upgrade residual
+(after 0.8.17 saved the cancelled attempt, the retry on the fix runs the turn on top of it, or leaves it in the store);
+an ordinary lost-lock cut; a shutdown after a lost-lock cut; and the live reclaim of a cut session. tc1's
+`wit.tc-lingering-mark` is retired (`cases-retired.json`): the live sweep now reclaims that copy.
 
 ## 4. Results
 
@@ -430,6 +455,49 @@ swept), the blob store's own steps (it keeps the same versioned fences as the fi
 list apart from the first turn. Other sessions on the killed runtime's client and a capture after the parent's
 runtime died are covered by `runtime-loss.test.js` and `orchestration-composition-rebuild.test.js`, not by the
 model.
+
+### Batch tc2 (2026-11-24): a turn whose activity lock was lost
+
+0.8.16 (#367) stopped saving a turn cut by the worker's drain. A turn whose lock was lost outside a drain was still
+saved as `cancelled`, and its retry adopted that result, so the orchestration ended the turn without running it. The
+fix never saves a cancelled attempt, never adopts a stored cancelled result, and marks the session cut until its retry
+starts on this worker. The review of #382 added: a publish guard (`_legacyPublishBlocker`: a dirty turn sentinel or
+the cut mark) on the legacy dehydrate, the checkpoint and the sweep (MF-1, MF-2); a sweep that skips a cut session
+only while the worker drains, so a live worker reclaims it; a shutdown that begins after a lost-lock cut keeps the
+session (SF-6); the mark cleared on destroy (SF-1) and only after the retry's preamble resolved the session; and
+`foreign_cancelled_winner` when an older build's cancelled commit beats the retry (SF-2). `A1Cancel` and `SdBegin` are
+not fair (review C-5), so `Prop_TurnRuns` asks only that a cut that happened leads to the retry running the turn.
+
+Run (TLC 2.19, `-workers 2 -Xmx2g`, 300 s per case, every case under 10 s): 26 of 26 as expected. 5 PASS (`tc.safety`
+and `tc.live`, 632 distinct states each, `tc.live` with `Prop_TurnRuns`, `Prop_LiveRelease` and `Prop_EndReclaims`
+under the stated fairness; `tc.upgrade-main` 862; `tc.upgrade-old` 1,006; `comparison.tc-main-release` 842). 17
+expected safety violations (`comparison.tc-main` `Inv_TurnNotDropped`; `comparison.tc-main-late-shutdown`
+`Inv_ShutdownKeepsCut`; `comparison.tc-head` `Inv_NoCutPublish`; nine faults on their rules; the five witnesses on
+their `W_*` predicates). 4 expected liveness violations (`comparison.tc-head-live` and `fault.tc-sweep-skip-undrained`
+`Prop_LiveRelease`; `comparison.tc-head-end` and `fault.tc-no-destroy-clear` `Prop_EndReclaims`). 0 unexpected,
+0 PARTIAL, 0 VOID. Every counterexample was read and fails for its intended reason.
+
+Bounds: one session, one turn, one cut attempt and one retry; `Init` chooses a first or later turn, with or without
+the lifecycle protocol, cut by a drain, a lost lock or a terminal cancel; full state space. Not covered: an attempt
+that completes before its cancel lands, and the body's sends after a cancel (both unit-tested); a second retry and
+the retry count; a retry on A beside B's, or a shutdown during it; a retry on A, or a terminal cancel, without the
+lifecycle protocol; a worker restart or an in-process stop and start; the dehydrate and checkpoint activities apart
+from the sweep, whose publish rule they share.
+
+### Both fixes at `e8301e9e` (2026-11-25)
+
+`e8301e9e` holds `RuntimeLoss` (#376) and `TurnCut`, with main 0.8.19. No model or case changed.
+`CORRESPONDENCE-e8301e9e-rltc.md` binds every rl2 and tc2 row to this head and records the five places where the fixes
+meet; in each, a RuntimeLoss scenario reduces to rl2's binding and a TurnCut scenario to tc2's.
+
+Run of the whole folder (TLC 2.19, tla2tools v1.7.4, Java 21, `-workers 2 -Xmx2g`, 300 s per case, the longest case
+7 s): SANY accepted all 21 modules; 233 of 233 as expected. 89 PASS, 134 expected safety and 10 expected liveness
+violations, each on the rule its case names; 0 unexpected, 0 PARTIAL, 0 VOID. `RuntimeLoss` and `TurnCut` give rl2's
+and tc2's results, with the same PASS state counts (for example `rl.first-turn-safety` 754, `tc.upgrade-old` 1,006).
+
+Not covered, beyond rl2's and tc2's lists: an attempt that both loses its Copilot runtime and is cut (no model has
+both events; the code skips its commit as cut, after dropping the dead warm handle). A release cut from main before
+#382 lands, 0.8.19 included, is not a mode of `TurnCut`.
 
 ## 5. How to run
 

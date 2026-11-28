@@ -1,0 +1,32 @@
+[
+ {
+  "id": "wit.tc-lingering-mark",
+  "module": "TurnCut",
+  "config": "wit.tc-lingering-mark.cfg",
+  "mode": "impl",
+  "meaning": "witness",
+  "spec": "Spec",
+  "expected": "safety",
+  "invariants": [
+   "W_NoLingeringMark"
+  ],
+  "properties": [],
+  "deadlock": true,
+  "note": "Reachable with the fix: after a lost lock whose retry ran on B, A keeps the cut mark and its local copy of the session until it restarts or the session returns. The documented cost.",
+  "batch": "tc1",
+  "tlc": {
+   "comment": "wit.tc-lingering-mark (tc1; expected safety): Reachable with the fix: after a lost lock whose retry ran on B, A keeps the cut mark and its local copy of the session until it restarts or the session returns. The documented cost.",
+   "spec": "Spec",
+   "constants": {
+    "Mode": "\"fix\"",
+    "Fault": "\"none\""
+   },
+   "invariants": [
+    "W_NoLingeringMark"
+   ],
+   "properties": [],
+   "deadlock": true
+  },
+  "retired": "Batch tc2 (review MF-1, #382): the live eviction sweep now reclaims a cut session after its retry went to B, so A no longer keeps the mark and its local copy; wit.tc-live-reclaim records the reclaim instead."
+ }
+]

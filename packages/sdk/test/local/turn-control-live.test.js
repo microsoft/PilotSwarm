@@ -627,3 +627,42 @@ describe("turn control: an ended turn's loop cannot touch the next turn", () => 
         expect(turnB.value.type).toBe("completed");
     });
 });
+
+// Review SF-3 (#382): the runTurn activity passes its cancellation (a lost lock or a terminal cancel) as mayStillSend. The
+// poll that aborts a cancelled turn runs once; a cancellation read before a run exists, or after the poll ran, must still
+// stop every send.
+describe("turn control: a cancelled activity sends nothing (mayStillSend)", () => {
+    it("a run whose activity can no longer send ends cancelled without the initial send", async () => {
+        const { managed, fake, binding } = setup();
+        const result = await managed.runTurn("work", { turnIndex: 4, turnControl: binding, mayStillSend: () => false });
+        expect(result.type).toBe("cancelled");
+        expect(fake.sent).toEqual([]);
+        expect(binding.port.gate()).toBe("closed");
+    });
+
+    it("a steer is refused once the activity was cancelled, though the gate is open", async () => {
+        let mayStillSend = true;
+        const { managed, fake, binding, opened } = setup();
+        const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding, mayStillSend: () => mayStillSend });
+        await opened;
+        expect(binding.port.gate()).toBe("open");
+        mayStillSend = false;
+        await expect(binding.port.sendSteer("late guidance", () => {})).rejects.toThrow(/steer gate is not open/);
+        expect(steersSent(fake)).toEqual([]);
+        expect(fake.sent.map((m) => m.prompt)).toEqual(["work"]);
+        fake._emit("session.idle");
+        await turn;
+    });
+
+    it("no corrective prompt once the activity was cancelled", async () => {
+        let mayStillSend = true;
+        const { managed, fake, binding, opened } = setup();
+        const turn = managed.runTurn("work", { turnIndex: 4, turnControl: binding, requiredTool: "wait", mayStillSend: () => mayStillSend });
+        await opened;
+        mayStillSend = false;
+        fake._emit("session.idle");                            // the first run ends without the required tool
+        for (let i = 0; i < 20 && fake.sent.length < 2; i++) await flush();
+        expect(fake.sent).toHaveLength(1);
+        await turn;
+    });
+});

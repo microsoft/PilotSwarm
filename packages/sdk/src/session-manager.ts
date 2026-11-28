@@ -1135,7 +1135,10 @@ export class SessionManager {
     private generation = 0;
     /** The generation whose drain has begun, or -1. */
     private drainingGeneration = -1;
-    /** Sessions whose turn a shutdown or drain cut, with that turn's generation: not released or evicted in that generation. */
+    /**
+     * Sessions whose turn a drain or a lost activity lock cut, with that turn's generation. See markTurnCut for what the
+     * mark does and clearTurnCut for when it ends.
+     */
     private cutTurns = new Map<string, number>();
     private workflowBindingRecords = new Map<string, { recordSessionId: string; read: Promise<Record<string, unknown> | null> }>();
     private workflowSnapshots = new Map<string, {
@@ -2222,16 +2225,20 @@ export class SessionManager {
         let reclaimed = 0;
         for (const sessionId of candidates) {
             if (this.sessionLocks.has(sessionId)) continue; // busy — never race a turn
-            if (this.isTurnCut(sessionId)) continue; // a cut turn: the next worker must see this worker as a dead holder
             const sessionDir = path.join(this.sessionStateDir, sessionId);
             const lastTouched = this.sessionLastTouchedAt.get(sessionId);
             if (lastTouched == null || now - lastTouched < evictAfterMs) continue;
+            if (this._drainKeepsCut(sessionId)) continue;
 
             try {
                 await this._withSessionLock(sessionId, "eviction", async () => {
-                    // Re-check under the lock — a turn may have landed.
+                    // Re-check under the lock — a turn may have landed, or the drain may have begun.
                     const touched = this.sessionLastTouchedAt.get(sessionId);
                     if (touched != null && Date.now() - touched < evictAfterMs) return;
+                    if (this._drainKeepsCut(sessionId)) return;
+                    // Review MF-1 (#382): on a live worker a cut session is reclaimed like any other idle session: its
+                    // workspace is released (which cancels its background shells), its handle destroyed and its dir
+                    // deleted below, never published (_legacyPublishBlocker). Its mark is cleared only after that cleanup.
                     const dirExists = fs.existsSync(sessionDir);
                     const committedMarker = dirExists ? readSnapshotMarker(sessionDir) : null;
                     const existing = this.sessions.get(sessionId);
@@ -2246,6 +2253,7 @@ export class SessionManager {
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
                         this._forgetTurnState(sessionId);
+                        this.clearTurnCut(sessionId);
                         reclaimed++;
                         return;
                     }
@@ -2266,9 +2274,10 @@ export class SessionManager {
                             fs.rmSync(sessionDir, { recursive: true, force: true });
                             emitSessionManagerTrace(sessionId, `evicted (store versioned at v${versioned.version}); stale unmarked cache reclaimed`);
                         } else if (this._legacyPublishBlocker(sessionId)) {
-                            // Review M1 (#376): the dir holds a turn that never committed (a dirty turn sentinel), for
-                            // example a first turn whose runtime died. It is not the only copy of anything: the store
-                            // keeps the last commit (or nothing), so the dir is deleted, never archived over it.
+                            // Reviews MF-1/MF-2 (#382), M1 (#376): the dir holds a turn that never committed (a dirty turn
+                            // sentinel, for example a cut first turn whose retry's probe failed) or a cut turn's attempt.
+                            // It is not the only copy of anything: the store keeps the last commit (or nothing), so the
+                            // dir is deleted, never archived over it.
                             fs.rmSync(sessionDir, { recursive: true, force: true });
                             emitSessionManagerTrace(sessionId, "evicted a dirty uncommitted turn dir; the store keeps its last commit", { level: "warn" });
                         } else {
@@ -2282,6 +2291,7 @@ export class SessionManager {
                     this.sessionLastTouchedAt.delete(sessionId);
                     this.sessionClientKeys.delete(sessionId);
                     this._forgetTurnState(sessionId);
+                    this.clearTurnCut(sessionId);
                     reclaimed++;
                 });
             } catch (error: unknown) {
@@ -3857,14 +3867,17 @@ export class SessionManager {
     }
 
     /**
-     * Review M1 (#376): why the legacy paths (dehydrate, the safety checkpoint, the eviction sweep) must not write
-     * this session's local files to the store, or null when they may. A dirty turn sentinel means the files hold a
-     * turn that never committed: its runtime died, or it was cut. Publishing them would put a torn conversation over
-     * the last commit (or create one where nothing was committed). A versioned commit is never refused here: it
-     * clears the sentinel itself. Called under the session lock, before any archive is built.
+     * Reviews M1 (#376) and MF-1/MF-2 (#382): why the legacy paths (dehydrate, the safety checkpoint, the eviction
+     * sweep) must not write this session's local files to the store, or null when they may. A dirty turn sentinel
+     * means the files hold a turn that never committed: its runtime died, or it was cut. A cut mark (markTurnCut)
+     * means a cut attempt of a turn that runs again; sentinels are written only for lifecycle turns, so the mark
+     * blocks on its own. Publishing either would put a torn conversation over the last commit (or create one where
+     * nothing was committed). A versioned commit is never refused here: it clears the sentinel itself. Called under
+     * the session lock, before any archive is built.
      */
-    private _legacyPublishBlocker(sessionId: string): "dirty_turn" | null {
-        return readTurnSentinel(path.join(this.sessionStateDir, sessionId)) ? "dirty_turn" : null;
+    private _legacyPublishBlocker(sessionId: string): "dirty_turn" | "turn_cut" | null {
+        if (readTurnSentinel(path.join(this.sessionStateDir, sessionId))) return "dirty_turn";
+        return this.isTurnCut(sessionId) ? "turn_cut" : null;
     }
 
     private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; onCheckpointFallback?: () => void }): Promise<{ unpublished: string } | void> {
@@ -3881,11 +3894,13 @@ export class SessionManager {
 
         emitSessionManagerTrace(sessionId, `dehydrate start reason=${reason}`, { trace });
 
-        // Review M1 (#376): files holding an uncommitted turn are not published, neither by the safety checkpoint nor
-        // by the archive below. The last committed snapshot (or none) stays authoritative. The warm handle is dropped
-        // with a bounded wait (its runtime may be gone) and the local dir is kept: the next turn's lifecycle preamble
-        // discards the uncommitted turn, and the eviction sweep deletes the dir if no turn comes. This is not an error:
-        // the caller gets `{ unpublished }` and reports it as an unpublished snapshot, as after the lost turn itself.
+        // Reviews M1 (#376) and MF-1/MF-2 (#382): files holding an uncommitted or cut turn are not published, neither
+        // by the safety checkpoint nor by the archive below. The last committed snapshot (or none) stays authoritative.
+        // The warm handle is dropped with a bounded wait (its runtime may be gone; a workspace session's background
+        // shells are cancelled) and the local dir is kept: the next turn's lifecycle preamble discards the uncommitted
+        // turn, and the eviction sweep deletes the dir if no turn comes. The cut mark stays until that cleanup. This is
+        // not an error: the caller gets `{ unpublished }` and reports it as an unpublished snapshot, as after the lost
+        // or cut turn itself, so the orchestration goes on as after a dehydrate.
         const publishBlocker = this.sessionStore ? this._legacyPublishBlocker(sessionId) : null;
         if (publishBlocker) {
             await this.invalidateWarmSession(sessionId, { lockHeld: true, destroyDeadlineMs: UNPUBLISHED_DESTROY_DEADLINE_MS })
@@ -4321,7 +4336,7 @@ export class SessionManager {
         return [...all.values()];
     }
 
-    /** Session workspaces: release every idle workspace session held here (graceful shutdown). Busy sessions are skipped. */
+    /** Session workspaces: release every idle workspace session held here (graceful shutdown). Busy sessions are skipped, and so are sessions whose cut turn runs again (markTurnCut). */
     async releaseIdleWorkspaces(opts: { reason: string; workerNodeId: string; deadlineMs?: number }): Promise<number> {
         // In parallel: one frozen CLI must not stop the others (review R9).
         // Each release has its own deadline, so this ends within about one.
@@ -4330,7 +4345,7 @@ export class SessionManager {
             ...this.workspaceHeld.keys(),
         ]);
         const results = await Promise.all([...ids]
-            .filter((sessionId) => !this.sessionLocks.has(sessionId) && !this.isTurnCut(sessionId))
+            .filter((sessionId) => !this.sessionLocks.has(sessionId) && !this._drainKeepsCut(sessionId))
             .map((sessionId) => this.releaseWorkspace(sessionId, opts).catch(() => null)));
         return results.filter((result) => result?.released).length;
     }
@@ -4346,6 +4361,9 @@ export class SessionManager {
             this.sessionApplicationTools.delete(sessionId);
             this.clientSessionConfigs.delete(sessionId);
             this._forgetTurnState(sessionId);
+            // Review SF-1 (#382): the session has ended (a terminal complete, cancel or delete); a cut mark set by its
+            // last attempt has nothing left to protect. Cleared after the cleanup above.
+            this.clearTurnCut(sessionId);
         }
     }
 
@@ -4420,8 +4438,8 @@ export class SessionManager {
             return this._withSessionLock(sessionId, "checkpoint", () => this.checkpoint(sessionId, { lockHeld: true }));
         }
         if (this.sessionStore) {
-            // Review M1 (#376): a checkpoint of files that hold an uncommitted turn is not written; the store keeps
-            // its last commit.
+            // Reviews M1 (#376) and MF-1/MF-2 (#382): a checkpoint of files that hold an uncommitted or cut turn is not
+            // written; the store keeps its last commit.
             const publishBlocker = this._legacyPublishBlocker(sessionId);
             if (publishBlocker) {
                 emitSessionManagerTrace(sessionId, `checkpoint did not publish (${publishBlocker}): the local files hold an uncommitted turn`, { level: "warn" });
@@ -4486,15 +4504,38 @@ export class SessionManager {
     }
 
     /**
-     * A turn of this session was cut by a shutdown or drain: its workspace stays held and the session is not evicted here, so
-     * the next worker sees this one as a dead holder. A late attempt of an older generation changes nothing in this one.
+     * A turn of this session was cut, by a shutdown or drain or by a lost activity lock, and runs again. No legacy
+     * path publishes the cut attempt's local files while the mark is set (_legacyPublishBlocker). During this worker's
+     * drain the session's workspace stays held and the session is not evicted, so the next worker sees this one as a
+     * dead holder (_drainKeepsCut). On a live worker the eviction sweep reclaims it like any idle session: it releases
+     * the workspace, drops the handle, deletes the dir unpublished and only then clears the mark (review MF-1). A
+     * terminal destroy clears it too. A late attempt of an older generation changes nothing in this one.
      */
     markTurnCut(sessionId: string, generation: number): void {
         if (generation === this.generation) this.cutTurns.set(sessionId, generation);
     }
 
+    /**
+     * A later runTurn attempt of the session here resolved it from the store (or, without the lifecycle protocol,
+     * started), its commit published, the sweep reclaimed it or the session ended: an earlier attempt's cut mark is
+     * done. A cut of a later attempt marks it again.
+     */
+    clearTurnCut(sessionId: string): void {
+        this.cutTurns.delete(sessionId);
+    }
+
     private isTurnCut(sessionId: string): boolean {
         return this.cutTurns.get(sessionId) === this.generation;
+    }
+
+    /**
+     * A cut session that this worker's drain keeps (review MF-1): not evicted, its workspace not cleanly released, so
+     * the next worker sees this one as a dead holder. On a live worker nothing keeps it.
+     */
+    private _drainKeepsCut(sessionId: string): boolean {
+        if (!this.isDraining(this.generation) || !this.isTurnCut(sessionId)) return false;
+        emitSessionManagerTrace(sessionId, "not released here: its turn was cut and runs again, and this worker is draining");
+        return true;
     }
 
     /** Final worker cleanup, after the durable runtime has drained. */

@@ -4,6 +4,44 @@
 
 **Upgrade: deploy the workers.** No migration and no orchestration version.
 
+### A turn whose activity lock was lost runs again
+
+Since v0.6.0, a turn with snapshots on whose activity lock was lost outside a
+drain was saved with the result `cancelled`. Its retry, on any worker, took
+that as the finished turn and ended without running it, so the prompt was
+dropped. (0.8.16 fixed this for a drain, #367.) Now a cancelled attempt is
+never saved (`session.snapshot_unpublished { reason: "cancelled" }`), and a
+saved `cancelled` result is never adopted: the retry runs the turn from the
+last saved snapshot.
+
+- **Dropped prompts are not recovered.** To find one, look in the session's
+  duroxide history for a `runTurn` that completed with `cancelled` (traced as
+  `[session] turn cancelled`) for a turn nobody stopped, cancelled or deleted.
+- **Side effects may repeat.** If the lock is lost after tools ran, the
+  retry may repeat their side effects, as after a worker crash.
+- **The activity checks for a cancel before every send.** After a lost lock,
+  a cancel or a delete, it starts no model run, sends no steer or corrective
+  prompt, and does not reset the stored session state.
+- **A cut session's local files are never published.** The worker treats the
+  session as cut until a retry here has loaded it from the store. A graceful
+  shutdown neither releases its workspace nor reclaims its local copy. On a
+  running worker, the eviction sweep reclaims it without publishing it: it
+  cancels the session's background tasks, releases its workspace and deletes
+  the local copy. A legacy dehydrate or checkpoint (orchestration before
+  1.0.57) never publishes a cut session or an unfinished turn's files
+  (`session.snapshot_unpublished`); the store keeps its last commit. The mark
+  clears when such a retry (or, without snapshots, any retry) starts here,
+  when the session is cancelled or deleted, or when the sweep reclaims it. It
+  stays if the retry's store read fails.
+- **The `cancelled` message promises a retry only for a lost lock.** The
+  activity cannot tell a lost lock from a cancel or delete.
+- **Upgrades: stop every worker first.** If an older worker commits a
+  `cancelled` attempt of the same turn first, this release returns its own
+  result unpublished (`session.snapshot_unpublished { reason:
+  "foreign_cancelled_winner" }`) and does not mark its turn controls or
+  carried steers consumed. A retry that finds such a commit runs on top of it,
+  so the model may see the partial attempt and then the same prompt again.
+
 ### Decision cleanups
 
 - For an unanswered yes-or-no Decision call, a Workflow test report now
