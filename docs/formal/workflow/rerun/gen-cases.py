@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1 + supply, batch rr4).
+"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1 + supply + generated inbox, batch rr5).
 The .cfg files are generated from these by run-tlc.sh / check-packet.sh (../../tlc_cases.py)."""
 import json
 import os as _os
@@ -8,7 +8,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import tlc_cases  # docs/formal/tlc_cases.py
 
-BATCH = "rr4"
+BATCH = "rr5"
 M = "WorkflowRerun"
 
 
@@ -49,6 +49,9 @@ def c(
     copy_keeps_deadline=False,
     diverge_inserts=False,
     carry_late_message=False,
+    carry_drops_dropped_reader=False,
+    carry_drops_equal_cut=False,
+    carry_keeps_expired_at_cut=False,
     lock_new_before_owner=False,
     supply_never=False,
     supplied_outcome="again",
@@ -103,6 +106,9 @@ def c(
         CopyKeepsDeadline=copy_keeps_deadline,
         DivergeInserts=diverge_inserts,
         CarryLateMessage=carry_late_message,
+        CarryDropsDroppedReader=carry_drops_dropped_reader,
+        CarryDropsEqualCut=carry_drops_equal_cut,
+        CarryKeepsExpiredAtCut=carry_keeps_expired_at_cut,
         LockNewBeforeOwner=lock_new_before_owner,
         SupplyNever=supply_never,
         SuppliedOutcome=q(supplied_outcome),
@@ -155,6 +161,7 @@ ALL_SAFE_INVS = [
     "Inv_StepLimit",
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
+    "Inv_InboxCarryExact",
     "Inv_TakeOnce",
 ]
 SAFE_PROPS = ["Prop_NoAdmissionAfterTerminal", "Prop_SweepRequiresLockAndNoRun"]
@@ -258,7 +265,7 @@ CASES = [
         SAFE_PROPS,
         "PASS",
         True,
-        "Carried waiting inbox message + reused spawn notice copied (consumed m0 & late m2 excluded); total wait anchor resets.",
+        "Generated #2 inbox (m1, m2 + reused spawn notice, every accept/expire/reader shape: 1,728 inboxes): #3 carries exactly the messages a fresh run at the cut would see; total wait anchor resets.",
     ),
     (
         "rr.design-gen2",
@@ -473,7 +480,7 @@ CASES = [
         STRONG_LIVE_PROPS,
         "PASS",
         True,
-        "Strong liveness (carried inbox): reaches resumedAtCut, takes carried message, and terminates.",
+        "Strong liveness (generated #2 inbox, 1,728 inboxes incl. an empty carry): reaches resumedAtCut, takes a carried or new message, and terminates.",
     ),
     (
         "rr.live-gen2",
@@ -629,6 +636,39 @@ CASES = [
         "VIOLATION:Wit_NoCarriedTake",
         True,
         "Witness 12: a new receive visit takes a carried inbox message.",
+    ),
+    (
+        "wit.rr-no-carry-at-cut",
+        "witness",
+        "Spec",
+        c(source_kind="inbox"),
+        ["Wit_NoCarryAtCut"],
+        [],
+        "VIOLATION:Wit_NoCarryAtCut",
+        True,
+        "Task 6a-TLA+ witness: a message accepted exactly at the cut is carried, taken by #3's new receive, and the run completes.",
+    ),
+    (
+        "wit.rr-no-carry-dropped-reader",
+        "witness",
+        "Spec",
+        c(source_kind="inbox"),
+        ["Wit_NoCarryDroppedReader"],
+        [],
+        "VIOLATION:Wit_NoCarryDroppedReader",
+        True,
+        "Task 6a-TLA+ witness: a waiting message read by #2's dropped receive is carried, taken by #3's new receive, and the run completes.",
+    ),
+    (
+        "wit.rr-no-expired-at-cut-left",
+        "witness",
+        "Spec",
+        c(source_kind="inbox"),
+        ["Wit_NoExpiredAtCutLeft"],
+        [],
+        "VIOLATION:Wit_NoExpiredAtCutLeft",
+        True,
+        "Task 6a-TLA+ witness: an admitted re-run leaves behind an unconsumed message that expires exactly at the cut.",
     ),
     (
         "wit.rr-no-pinned-resume",
@@ -816,7 +856,40 @@ CASES = [
         [],
         "VIOLATION:Inv_CarriedWereWaiting",
         True,
-        "Fault 14: inbox carry copies a message that arrived after the cut (m2).",
+        "Fault 14: inbox carry copies a message that arrived after the cut, ignoring accepted_at/expires_at.",
+    ),
+    (
+        "rr-df-inbox-drops-dropped-reader",
+        "fault",
+        "Spec",
+        c(source_kind="inbox", carry_drops_dropped_reader=True),
+        ["Inv_InboxCarryExact"],
+        [],
+        "VIOLATION:Inv_InboxCarryExact",
+        True,
+        "Task 6a-TLA+ fault (old filter, consumed_by IS NULL): drops a waiting message that #2's dropped receive had read.",
+    ),
+    (
+        "rr-df-inbox-drops-equal-cut",
+        "fault",
+        "Spec",
+        c(source_kind="inbox", carry_drops_equal_cut=True),
+        ["Inv_InboxCarryExact"],
+        [],
+        "VIOLATION:Inv_InboxCarryExact",
+        True,
+        "Task 6a-TLA+ fault (old filter, accepted_at < cut): treats a message accepted exactly at the cut as late.",
+    ),
+    (
+        "rr-df-inbox-keeps-expired-at-cut",
+        "fault",
+        "Spec",
+        c(source_kind="inbox", carry_keeps_expired_at_cut=True),
+        ["Inv_InboxCarryExact"],
+        [],
+        "VIOLATION:Inv_InboxCarryExact",
+        True,
+        "Task 6a-TLA+ fault (expires_at >= cut): carries a message that expires exactly at the cut.",
     ),
     (
         "rr-df-lock-new-before-owner",

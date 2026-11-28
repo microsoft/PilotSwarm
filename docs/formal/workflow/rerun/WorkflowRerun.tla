@@ -31,7 +31,8 @@
 (*     supply: never, declared outcomes, non-blank note, never executes    *)
 (*     effect or agent session), G-R1 auto-pick cut-back over top-level    *)
 (*     and lane spawns (Inv_AutoPickNoCancelledReuse) + G-R2 async old-    *)
-(*     child wind-down, carried inbox filtering & TTL expiry, quiescence   *)
+(*     child wind-down, exact carried inbox filtering over a generated     *)
+(*     source inbox (Inv_InboxCarryExact) & TTL expiry, quiescence         *)
 (*     safety (Inv_QuiescentNoLive) and liveness (Live_Quiesces).          *)
 (*                                                                         *)
 (* Lock waits are modeled as disabled actions so any lock cycle surfaces   *)
@@ -72,6 +73,9 @@ CONSTANTS
     CopyKeepsDeadline,   \* fault: copied receive visit keeps source total deadline
     DivergeInserts,      \* fault: cut guard inserts pending row before failing
     CarryLateMessage,    \* fault: inbox carry copies post-cut message
+    CarryDropsDroppedReader, \* fault (old filter): carries only unconsumed rows, dropping ones a dropped visit read
+    CarryDropsEqualCut,  \* fault (old filter): treats accepted_at = cut as late (accepted_at < cut)
+    CarryKeepsExpiredAtCut, \* fault: treats expires_at = cut as unexpired (expires_at >= cut)
     LockNewBeforeOwner,  \* fault: copy locks #2/#3 before owner (deadlocks OwnerEnded)
     \* ---- Unit 3A-Supply additions (supply mode, G-R1, R2-M1 observable Sweeper-vs-admission race, quiescence) ----
     SupplyNever,                  \* TRUE = chosen step sets supply: never on S or T
@@ -106,7 +110,7 @@ ASSUME {StartVars, InputHashMismatch, AllowDeleters, AllowOwnerEnd, AllowClaimCr
         AllowRetry, AllowCan, FitCheck, Guard, CheckInputHash, CheckCopyCoord, PlanBudget,
         FlatOrigin, AtomicCopy, ApprovalGate, StartsDecided, CopyKeepsIds, OrdinalsRestart,
         DropsCatchAll, NoSourceLock, RepickOnResume, CopyKeepsDeadline, DivergeInserts,
-        CarryLateMessage, LockNewBeforeOwner,
+        CarryLateMessage, CarryDropsDroppedReader, CarryDropsEqualCut, CarryKeepsExpiredAtCut, LockNewBeforeOwner,
         SupplyNever, SupplyNotePresent, AllowRetrySupplyChange, AutoPicked, ReqModeContinue, AllowResumeAfterCrash,
         AllowShellSweeper, AllowPostSweepStart, AllowSupplyOnForbiddenStep, StartsSupplied,
         AllowUndeclaredSupplyOutcome, IgnoreSupplyNever, IgnoreMissingSupplyNote,
@@ -180,15 +184,31 @@ Gr1EarliestIdx ==
 
 Gr1Active == (Gr1EarliestIdx > 0)
 
-\* Inbox message model (m0 consumed by reused visit, m1 waiting at cut, m2 late post-cut, m_child WorkflowEnded@1 for reused spawn)
-InboxMsgs == {"m0", "m1", "m2", "m_child"}
+\* Generated inbox of source #2 (Task 6a-TLA+). Abstract instants: 1 = before the cut, 2 = exactly at the cut (CutTime),
+\* 3 = after the cut, 4 = later. A message has a shape [accept, expire, reader] with expire > accept: accept is accepted_at,
+\* expire is expires_at (CutTime = expires exactly at the cut), reader is the #2 visit that consumed it (consumed_by):
+\* NoNode (unconsumed), KeptReader (#2's receive R1, which the inbox re-run reuses) or DroppedReader (#2's receive R2 at
+\* the cut, which the re-run runs again). SourceKind "inbox" enumerates every shape of two ordinary messages (m1, m2) and
+\* of the reused spawn's WorkflowEnded@1 notice (m_child): 12^3 = 1,728 inboxes. SourceKind "spawn" keeps one fixed
+\* waiting message; every other kind has an empty inbox.
 CutTime == 2
-MsgAcceptedAt(m) == CASE m = "m0" -> 1 [] m = "m1" -> 1 [] m = "m2" -> 3 [] m = "m_child" -> 3
-MsgConsumedByReused(m) == (m = "m0")
-MsgIsReusedSpawnNotice(m) == (m = "m_child")
-EligibleCarry(m) ==
-    ~MsgConsumedByReused(m) /\ (MsgAcceptedAt(m) <= CutTime \/ MsgIsReusedSpawnNotice(m))
-WaitingAtCut == {m \in InboxMsgs : EligibleCarry(m)}
+MsgTimes == {1, 2, 3}
+ExpireTimes == {CutTime, 4}
+KeptReader == RNode(1)
+DroppedReader == RNode(2)
+Readers == {NoNode, KeptReader, DroppedReader}
+MsgShapes == {s \in [accept: MsgTimes, expire: ExpireTimes, reader: Readers] : s.expire > s.accept}
+OrdMsgs ==
+    CASE SourceKind = "inbox" -> {"m1", "m2"}
+      [] SourceKind = "spawn" -> {"m1"}
+      [] OTHER                -> {}
+NoticeMsgs == IF SourceKind = "inbox" THEN {"m_child"} ELSE {}
+InboxMsgs == OrdMsgs \cup NoticeMsgs
+FixedWaiting == [accept |-> 1, expire |-> 4, reader |-> NoNode]
+SrcInboxProfiles ==
+    IF SourceKind = "inbox"
+      THEN [InboxMsgs -> MsgShapes]
+      ELSE {[m \in InboxMsgs |-> FixedWaiting]}
 
 Active == {"admitted", "running", "paused"}
 Terminal == {"completed", "failed", "cancelled", "stopped"}
@@ -436,7 +456,8 @@ VARIABLES
     downstreamReadSupplied, \* witness tracker: downstream step read supplied output
     events,             \* event counters for Inv_EventsOnce
 
-    \* Carried inbox state for #3
+    \* Source #2 inbox (fixed per behavior, chosen in Init) and carried inbox state for #3
+    srcInbox,              \* [InboxMsgs -> MsgShapes]: #2's inbox rows (never written)
     carriedInbox,          \* subset of InboxMsgs copied into #3
     unexpiredCarriedInbox, \* carried messages not yet consumed or expired by TTL
     inboxTaken,            \* [InboxMsgs -> 0..2]
@@ -476,7 +497,7 @@ shellVars == <<claimShellState, sessionVersion, sweeperSnapVersion, claimGraceEl
 runVars == <<runStatus, failCode, nState, nPred, nRoute, nWinner, nOutcome, nResultKind, nOrigin, nDeadline,
              reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
              copyHitMismatch, downstreamReadSupplied, events>>
-inboxVars == <<carriedInbox, unexpiredCarriedInbox, inboxTaken>>
+inboxVars == <<srcInbox, carriedInbox, unexpiredCarriedInbox, inboxTaken>>
 ctrlVars == <<pc, curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
               retriedInPassOver, canInPassOver>>
 effCmdVars == <<eff, agentSession, oldChildStatus, newSpawnChildStatus, q, pauseUsed, stopRequested, cancelSent>>
@@ -530,6 +551,7 @@ TypeOK ==
     /\ events.started \in 0..2 /\ events.ended \in 0..2
     /\ events.stateStarted \in [AllNodes -> 0..2]
     /\ events.stateCompleted \in [AllNodes -> 0..2]
+    /\ srcInbox \in SrcInboxProfiles
     /\ carriedInbox \subseteq InboxMsgs
     /\ unexpiredCarriedInbox \subseteq InboxMsgs
     /\ inboxTaken \in [InboxMsgs -> 0..2]
@@ -604,6 +626,7 @@ Init ==
     /\ events = [started |-> 0, ended |-> 0,
                  stateStarted |-> [x \in AllNodes |-> 0],
                  stateCompleted |-> [x \in AllNodes |-> 0]]
+    /\ srcInbox \in SrcInboxProfiles
     /\ carriedInbox = {}
     /\ unexpiredCarriedInbox = {}
     /\ inboxTaken = [m \in InboxMsgs |-> 0]
@@ -648,14 +671,30 @@ CopyOriginOf(x) ==
 CopyDeadlineOf(x) ==
     IF CopyKeepsDeadline /\ x = RNode(1) THEN "source" ELSE "none"
 
+\* Design §5.4: exactly the #2 messages a fresh run started at the cut would still see. An ordinary message accepted at
+\* or before the cut and unexpired at it (accept <= CutTime < expire), or the reused spawn's WorkflowEnded@1 notice
+\* whatever its times; in both cases not consumed by a #2 visit that #3 keeps. Kept visits are the reused visits (lanes
+\* included) and the supplied visit V' (store.ts rerunKeptSourceIds); a message read only by a dropped visit is carried.
+KeptSourceVisits == ExpectedReused \cup ExpectedSupplied
+EligibleCarry(m) ==
+    /\ srcInbox[m].reader \notin KeptSourceVisits
+    /\ \/ (srcInbox[m].accept <= CutTime /\ srcInbox[m].expire > CutTime)
+       \/ m \in NoticeMsgs
+EligibleCarrySet == {m \in InboxMsgs : EligibleCarry(m)}
+WaitingAtCut == EligibleCarrySet
+
+\* store.ts copyRerunInboxIn (and summarizeRerunCarriedInbox) WHERE clause over #2's rows:
+\*   (consumed_by IS NULL OR NOT consumed_by = ANY(keptSourceIds))
+\*   AND ((accepted_at <= cut AND expires_at > cut) OR (contract = WorkflowEnded@1 AND sender = ANY(reusedSpawnChildIds)))
+\* Faults encode wrong filters: CarryLateMessage drops the time test, CarryDropsDroppedReader keeps only unconsumed rows
+\* (consumed_by IS NULL), CarryDropsEqualCut uses accepted_at < cut, CarryKeepsExpiredAtCut uses expires_at >= cut.
+CodeNotConsumedByKept(m) ==
+    IF CarryDropsDroppedReader THEN srcInbox[m].reader = NoNode ELSE srcInbox[m].reader \notin KeptSourceVisits
+CodeWaitingAtCut(m) ==
+    /\ IF CarryDropsEqualCut THEN srcInbox[m].accept < CutTime ELSE srcInbox[m].accept <= CutTime
+    /\ IF CarryKeepsExpiredAtCut THEN srcInbox[m].expire >= CutTime ELSE srcInbox[m].expire > CutTime
 TargetInbox ==
-    IF SourceKind = "inbox"
-      THEN IF CarryLateMessage
-             THEN {m \in InboxMsgs : ~MsgConsumedByReused(m)}
-             ELSE {m \in InboxMsgs : EligibleCarry(m)}
-    ELSE IF SourceKind = "spawn"
-      THEN {"m1"}
-    ELSE {}
+    {m \in InboxMsgs : CodeNotConsumedByKept(m) /\ (CarryLateMessage \/ CodeWaitingAtCut(m) \/ m \in NoticeMsgs)}
 
 RefusalShellState ==
     IF SkipImmediateRefusalCleanup THEN "live_unadmitted" ELSE "soft_deleted"
@@ -962,7 +1001,7 @@ CopyCommit ==
                            sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
                            failCode, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
                            firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events,
-                           inboxTaken, curNode, curPred, curRoute, curPending, curCaught, curSteps,
+                           srcInbox, inboxTaken, curNode, curPred, curRoute, curPending, curCaught, curSteps,
                            planMaxSteps, actRes, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
 CopyFinishPartial ==
@@ -1000,7 +1039,7 @@ CopyFinishPartial ==
     /\ UNCHANGED <<lockVars, sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                    copySawSrcLive, copiedFromLive, pinnedResumed, shellVars,
                    runStatus, failCode, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
-                   firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events, inboxTaken,
+                   firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events, srcInbox, inboxTaken,
                    curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
@@ -1285,7 +1324,8 @@ AdmitExec ==
                          /\ unexpiredCarriedInbox' = unexpiredCarriedInbox \ {m}
                  ELSE UNCHANGED <<inboxTaken, unexpiredCarriedInbox>>
             /\ actRes' = st
-            /\ UNCHANGED <<runStatus, failCode, reusedSet, suppliedSet, copyHitMismatch, downstreamReadSupplied, carriedInbox>>
+            /\ UNCHANGED <<runStatus, failCode, reusedSet, suppliedSet, copyHitMismatch, downstreamReadSupplied, srcInbox,
+                           carriedInbox>>
     /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, pc, curNode, curPred, curRoute, curPending, curCaught,
                    curSteps, planMaxSteps, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
@@ -1476,7 +1516,7 @@ ExpireCarriedInbox ==
     /\ (pc = "done" \/ runStatus \in Terminal \/ startPhase \in Refused)
     /\ \E m \in unexpiredCarriedInbox :
          unexpiredCarriedInbox' = unexpiredCarriedInbox \ {m}
-    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, carriedInbox, inboxTaken,
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, runVars, srcInbox, carriedInbox, inboxTaken,
                    ctrlVars, effCmdVars, delVars>>
 
 PauseRun ==
@@ -1709,6 +1749,11 @@ Inv_TotalFromFirstNew ==
 Inv_CarriedWereWaiting ==
     \A m \in carriedInbox : EligibleCarry(m)
 
+\* Exact carry (Design §5.4): once admitted, #3 carries exactly the messages a fresh run at the cut would still see,
+\* no more (Inv_CarriedWereWaiting) and no fewer (a message accepted exactly at the cut, or read only by a dropped visit).
+Inv_InboxCarryExact ==
+    (startPhase = "admitted") => (carriedInbox = EligibleCarrySet)
+
 Inv_TakeOnce ==
     \A m \in InboxMsgs : inboxTaken[m] <= 1
 
@@ -1801,5 +1846,19 @@ Wit_NoLeakQuiescence ==
 Wit_NoLateRetryAfterSweep ==
     ~(pinnedResumed /\ everSweptShell /\ startPhase = "refused_workflow_deleted"
       /\ runStatus = "none" /\ claimShellState = "soft_deleted")
+
+\* Task 6a-TLA+ generated-inbox witnesses: the exact-carry boundaries are reached, not vacuous.
+\* A message accepted exactly at the cut is carried, taken by #3's new receive, and the run completes.
+Wit_NoCarryAtCut ==
+    ~(\E m \in OrdMsgs : srcInbox[m].accept = CutTime /\ m \in carriedInbox /\ inboxTaken[m] = 1 /\ runStatus = "completed")
+
+\* A waiting message that #2's dropped receive had read is carried, taken by #3's new receive, and the run completes.
+Wit_NoCarryDroppedReader ==
+    ~(\E m \in OrdMsgs : srcInbox[m].reader = DroppedReader /\ m \in carriedInbox /\ inboxTaken[m] = 1 /\ runStatus = "completed")
+
+\* An unconsumed message accepted before the cut that expires exactly at it is left behind by an admitted re-run.
+Wit_NoExpiredAtCutLeft ==
+    ~(startPhase = "admitted" /\ \E m \in OrdMsgs : srcInbox[m].accept < CutTime /\ srcInbox[m].expire = CutTime
+                                                     /\ srcInbox[m].reader = NoNode /\ m \notin carriedInbox)
 
 =============================================================================

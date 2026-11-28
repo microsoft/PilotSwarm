@@ -922,8 +922,25 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 await seedNoteAt(srcP, 1, `${cutSql} - interval '400 microseconds'`, `${cutSql} + interval '1 hour'`);
                 await seedNoteAt(srcP, 2, `${cutSql} - interval '10 seconds'`, `${cutSql} - interval '500 microseconds'`);
                 await seedNoteAt(srcP, 3, `${cutSql} + interval '100 microseconds'`, `${cutSql} + interval '1 hour'`);
+                // Exact-cut boundaries (Inv_InboxCarryExact: accepted_at <= cut < expires_at): note 4 accepted at the cut
+                // microsecond itself is carried, note 5 one microsecond later is not; note 6 expiring at the cut microsecond
+                // is not carried, note 7 expiring one microsecond later is.
+                await seedNoteAt(srcP, 4, cutSql, `${cutSql} + interval '1 hour'`);
+                await seedNoteAt(srcP, 5, `${cutSql} + interval '1 microsecond'`, `${cutSql} + interval '1 hour'`);
+                await seedNoteAt(srcP, 6, `${cutSql} - interval '10 seconds'`, cutSql);
+                await seedNoteAt(srcP, 7, `${cutSql} - interval '10 seconds'`, `${cutSql} + interval '1 microsecond'`);
+                const { rows: edges } = await pool.query(
+                    `SELECT (payload::jsonb->>'n')::int AS n, to_char(accepted_at AT TIME ZONE 'UTC', 'US') AS acc,
+                            to_char(expires_at AT TIME ZONE 'UTC', 'US') AS exp
+                       FROM ${s}.workflow_inbox WHERE run_id = $1 AND contract = 'Note@1' ORDER BY seq`,
+                    [srcP.runId],
+                );
+                const edgeOf = n => edges.find(r => r.n === n);
+                expect([edgeOf(4).acc, edgeOf(5).acc, edgeOf(6).exp, edgeOf(7).exp].map(us => us.slice(-3))).toEqual(["900", "901", "900", "901"]);
                 const rP = await start(srcP, "d-i1-microsecond-cut", { executionId: srcP.ids["step2#1"], mode: "run_again" });
-                expect(await carriedNotes(rP.runId)).toEqual([1]);
+                expect(await carriedNotes(rP.runId)).toEqual([1, 4, 7]);
+                expect(await h.store.summarizeRerunCarriedInbox(srcP.runId, { enteredAtOf: srcP.ids["step2#1"] }, [], [srcP.ids["step1#1"]]))
+                    .toEqual({ count: 3, contracts: ["Note@1"] });
 
                 // D-I2 + D-M1: first (receive, kept) consumed note 1; second (receive) consumed note 2; note 3 waited unconsumed.
                 // Notes 4 and 5 were accepted before and after second's entry, both before the source run finished.

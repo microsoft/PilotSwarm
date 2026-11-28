@@ -4,7 +4,29 @@
 
 ## Relation to `WorkflowRun.tla`
 
-`WorkflowRerun.tla` **restates** (rather than `INSTANCE`s) the unchanged `1.3.0` controller loop (`AdmitExec`/`AdmitRecord`, `CollectExec`/`CollectRecord`, `FinishExec`/`FinishFailExec`, `PollCommand`, `CancelTx`) of `../WorkflowRun.tla` so it can begin from an atomically copied prefix of completed visits (`reusedSet`) and couple that loop with the two-step Start claim/admission transaction, lock-ordered deleter races, compatibility and cut-guard checks (both `run_again` and `continue`, same-IR input/carry byte check, and copied-coordinate divergence), plan budget subtraction, approval consent gating, carried inbox filtering, receive `wait.totalSeconds` reset, and two-generation `COALESCE` origin flattening.
+`WorkflowRerun.tla` **restates** (rather than `INSTANCE`s) the unchanged `1.3.0` controller loop (`AdmitExec`/`AdmitRecord`, `CollectExec`/`CollectRecord`, `FinishExec`/`FinishFailExec`, `PollCommand`, `CancelTx`) of `../WorkflowRun.tla` so it can begin from an atomically copied prefix of completed visits (`reusedSet`) and couple that loop with the two-step Start claim/admission transaction, lock-ordered deleter races, compatibility and cut-guard checks (both `run_again` and `continue`, same-IR input/carry byte check, and copied-coordinate divergence), plan budget subtraction, approval consent gating, exact carried inbox filtering over a generated source inbox, receive `wait.totalSeconds` reset, and two-generation `COALESCE` origin flattening.
+
+## Carried inbox: generated source inbox and exact carry (Task 6a)
+
+The model no longer uses a fixed set of hand-picked messages. For `SourceKind = "inbox"`, `Init` chooses #2's inbox `srcInbox` from every combination of shapes of two ordinary messages (`m1`, `m2`) and of the reused spawn's `WorkflowEnded@1` notice (`m_child`): 12 shapes each, 1,728 inboxes. A shape is `[accept, expire, reader]` with `expire > accept`, on abstract instants `1` (before the cut), `2` (`CutTime`, exactly at the cut), `3` (after the cut) and `4` (later):
+
+- `accept` (`accepted_at`) is before, at, or after the cut;
+- `expire` (`expires_at`) is exactly at the cut or after it;
+- `reader` (`consumed_by`) is `NoNode` (unconsumed), `KeptReader` (#2's receive `R1`, which the re-run reuses) or `DroppedReader` (#2's receive `R2` at the cut, which the re-run runs again).
+
+`SourceKind = "spawn"` keeps one fixed waiting message, and every other kind has an empty inbox, so only the inbox cases grow.
+
+`EligibleCarry(m)` is the design rule (Design §5.4): the messages a fresh run started at the cut would still see. An ordinary message is eligible when `accept <= CutTime < expire`. The reused spawn's notice is eligible whatever its times. In both cases the message must not be consumed by a #2 visit that #3 keeps: `KeptSourceVisits = ExpectedReused \cup ExpectedSupplied` (reused visits including lanes, and the supplied visit `V'`). `TargetInbox` is the code's filter, written separately so that faults can change it. `Inv_InboxCarryExact` requires `carriedInbox = EligibleCarrySet` once admitted. `Inv_CarriedWereWaiting` (`carriedInbox \subseteq EligibleCarrySet`) alone cannot catch a filter that carries too little. Unconsumed carried messages still expire by restarted TTL after #3 finishes (`ExpireCarriedInbox`, unchanged).
+
+| Model | `store.ts` at `dfcb2965a` (`copyRerunInboxIn`; `summarizeRerunCarriedInbox` uses the same predicate) |
+|---|---|
+| `srcInbox[m].reader \notin KeptSourceVisits` | `(consumed_by IS NULL OR NOT (consumed_by = ANY(keptSourceIds)))`, `keptSourceIds = rerunKeptSourceIds(rerun)` = `mapped` source IDs (reused, lanes included) + `supplied.sourceExecutionId` |
+| `accept <= CutTime` | `accepted_at <= cut` (inclusive: a message accepted exactly at the cut microsecond is carried) |
+| `expire > CutTime` | `expires_at > cut` (strict: a message expiring exactly at the cut microsecond is not carried) |
+| `m \in NoticeMsgs` (times ignored) | `OR (contract = 'WorkflowEnded@1' AND sender_session_id = ANY(reusedSpawnChildIds))` |
+| `CutTime` | `resolveRerunInboxCut`: `entered_at` of the chosen visit (`run_again`) or of the first dropped top-level visit, else the source run's `finished_at`, read as exact microsecond UTC text (never through a JavaScript `Date`) |
+
+Code-level evidence for the exact microsecond boundaries: `workflow-rerun-start.test.js` ("cuts the carried inbox at the exact microsecond (D-I1)…") seeds a cut at `…000900` and checks accepted at `…000900` (carried) and `…000901` (not carried), and expiring at `…000900` (not carried) and `…000901` (carried), through both `copyRerunInboxIn` and `summarizeRerunCarriedInbox`.
 
 ## Model-to-code map
 
@@ -39,12 +61,19 @@
 - **Specification-level restatements (checked structurally here; code-level mechanism evidence lives in Unit 3B integration tests):**
   - `Inv_SourceUntouched`: models zero writes to `#2`'s rows; code-level ID separation (`nodeExecutionIdFor(newRunId, ...)`) and source-row immutability are verified by Unit 3A `workflow-rerun-plan.test.mjs` and Unit 3B `workflow-rerun-store.test.js`.
   - `Inv_OriginRan`: models `COALESCE` flattening over static `SrcReusedFrom`; multi-generation SQL `COALESCE` provenance is verified by Unit 3A `flattenRerunOrigin` tests and Unit 3B `workflow-rerun-store.test.js`.
-  - `Inv_CarriedWereWaiting`: models the `accepted_at <= cutTime \/ WorkflowEnded@1` filter over a static inbox; SQL timestamp/consumption/TTL selection (`copyRerunInboxIn`) is verified by Unit 3B `workflow-rerun-store.test.js`.
+  - `Inv_CarriedWereWaiting` and `Inv_InboxCarryExact`: check the carry filter over every generated source inbox (see "Carried inbox" above); SQL timestamp/consumption/TTL selection (`copyRerunInboxIn`, `summarizeRerunCarriedInbox`) and its exact microsecond boundaries are verified by Unit 3B `workflow-rerun-store.test.js` and `workflow-rerun-start.test.js`.
   - `Inv_PinnedChoice`: models `rerunPin` preservation across claim crash; JSON pin persistence and `replaySessionStart` recovery are verified by Unit 3B `workflow-rerun-start.test.js` (Task 4d).
   - `Inv_NoConsentReuse`: models owner-only gating past answered approvals; `(owner_provider, owner_subject)` matching, owner-change refusal, and fail-closed missing-approval checks are verified by Unit 3B `workflow-rerun-start.test.js` (Task 4d).
   - `Inv_AutoPickNoCancelledReuse`: models G-R1's scan/lift/earliest-index specification over `CandSpawnTop \cup CandSpawnLanes` and the `ReqModeContinue` scope (`AutoPicked /\ ~ReqModeContinue`); full algorithmic multi-spawn/multi-lane scanning and explicit-`continue` warning behavior are verified by `workflow-rerun-plan.test.mjs` (Unit 3A-Supply) and `workflow-rerun-store.test.js` / `workflow-rerun-leak-census.test.js` (Unit 3B).
 
-## What is checked (batch `rr4`, 94 cases, `CHECK_DEADLOCK TRUE` on all cases)
+## What is checked (batch `rr5`, 100 cases, `CHECK_DEADLOCK TRUE` on all cases)
+
+Batch `rr5` is batch `rr4` with the generated source inbox, `Inv_InboxCarryExact` in every design safety case, 3 new witnesses and 3 new faults (Task 6a):
+
+- **Witnesses:** `wit.rr-no-carry-at-cut` (a message accepted exactly at the cut is carried, taken by #3's new receive, and the run completes), `wit.rr-no-carry-dropped-reader` (the same for a waiting message that #2's dropped receive had read), `wit.rr-no-expired-at-cut-left` (an admitted re-run leaves behind an unconsumed message that expires exactly at the cut).
+- **Faults, each caught only by `Inv_InboxCarryExact` (the filter carries too little or too much):** `rr-df-inbox-drops-dropped-reader` (old filter `consumed_by IS NULL`), `rr-df-inbox-drops-equal-cut` (old filter `accepted_at < cut`), `rr-df-inbox-keeps-expired-at-cut` (`expires_at >= cut`).
+
+The `rr4` cases are unchanged:
 
 - **44 design cases** (26 safety + 18 liveness):
   - 27 baseline `rr3` cases (15 safety + 12 liveness) plus 17 Unit `3A-Supply` cases covering `Mode = "supply"` (`rr.design-supply-loop`, `rr.design-supply-first` with `0` reused visits, `rr.design-supply-to-terminal`, `rr.design-supply-diverge` [`S2f`], `rr.design-supply-refused-approval`, `rr.design-supply-refused-never`), `G-R1` top-level & parallel-lane spawn cut-back plus explicit-`continue` opt-out (`rr.design-gr1-top-spawn`, `rr.design-gr1-lane-spawn`, `rr.design-gr1-explicit-continue`), the `R2-M1` observable Sweeper-vs-admission & late-retry race (`rr.design-sweeper-admission-race` and `rr.design-sweeper-admission-owner-race` combining `AllowOwnerEnd` + `AllowShellSweeper`, zero `startPhase` oracle guards, `AdvanceClaimGrace` in any pre-admission phase, `SweeperReadBareShell` + `SweeperCollectClaimShell` under `newLock`, `CopyLockStep2` refusing `refused_workflow_deleted` under `newLock`), plus `Inv_AdmittedNotSwept`, `Prop_SweepRequiresLockAndNoRun`, `Inv_QuiescentNoLive`, and `Live_Quiesces == <>Quiescent` across 6 new liveness cases.
@@ -53,10 +82,10 @@
 
 Generate cases with `python3 gen-cases.py`, verify packet integrity with `./check-packet.sh`, and run TLC with `TLA_TOOLS=<dir> ./run-tlc.sh`.
 
-## Results (batch `rr4`, TLC 2.19, `CHECK_DEADLOCK TRUE` on all 94 cases)
+## Results (batch `rr5`, TLC 2.19, JDK 21, `CHECK_DEADLOCK TRUE` on all 100 cases)
 
-- **Design safety & liveness (44 cases):** 44/44 PASS (largest: `rr.design-loop-run-again` and `rr.live-run-again`, 2,732,288 generated / 757,316 distinct states, 39 s safety / 220 s liveness; largest new supply case: `rr.design-supply-loop`, 1,185,985 generated / 333,662 distinct states, 19 s; `rr.design-gr1-top-spawn`: 44,892 distinct states, 4 s; `rr.design-gr1-lane-spawn`: 17,172 distinct states, 3 s; `rr.design-gr1-explicit-continue`: 1,467 distinct states, 1 s; `rr.design-sweeper-admission-race`: 11,376 distinct states, 3 s; `rr.design-sweeper-admission-owner-race`: 3,265 distinct states, 1 s; 0 errors, 0 deadlocks).
-- **Non-vacuity witnesses (21 cases):** 21/21 VIOLATED as expected (exit 12).
-- **Deliberate faults (29 cases):** 29/29 VIOLATED / DEADLOCK as expected (28 invariant violations exit 12; `rr-df-lock-new-before-owner` TLC deadlock exit 11).
-- **Total:** 94/94 matched expected, zero timeouts, 394 s total elapsed.
+- **Design safety & liveness (44 cases):** 44/44 PASS (largest: `rr.design-loop-run-again` and `rr.live-run-again`, 2,732,288 generated / 757,316 distinct states, 43 s safety / 231 s liveness; generated inbox: `rr.design-inbox`, 1,035,648 generated / 553,152 distinct states, 27 s, was 313 distinct states with the fixed inbox; `rr.live-inbox`, 42,240 generated / 38,784 distinct states, 10 s; 0 errors, 0 deadlocks).
+- **Non-vacuity witnesses (24 cases):** 24/24 VIOLATED as expected (exit 12), including the 3 new inbox witnesses.
+- **Deliberate faults (32 cases):** 32/32 VIOLATED / DEADLOCK as expected (31 invariant violations exit 12; `rr-df-lock-new-before-owner` TLC deadlock exit 11). First counterexamples of the new faults: `rr-df-inbox-drops-dropped-reader` drops the reused spawn's notice that #2's dropped receive `R2` had read; `rr-df-inbox-drops-equal-cut` drops an unread message accepted at `CutTime`; `rr-df-inbox-keeps-expired-at-cut` carries two unread messages that expire at `CutTime`.
+- **Total:** 100/100 matched expected, zero timeouts, 457 s total elapsed.
 

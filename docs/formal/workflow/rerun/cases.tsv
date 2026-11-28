@@ -37,6 +37,9 @@ wit.rr-no-source-gone	wit.rr-no-source-gone.cfg	WorkflowRerun
 wit.rr-no-delete-after-copy	wit.rr-no-delete-after-copy.cfg	WorkflowRerun
 wit.rr-no-approval-refusal	wit.rr-no-approval-refusal.cfg	WorkflowRerun
 wit.rr-no-carried-take	wit.rr-no-carried-take.cfg	WorkflowRerun
+wit.rr-no-carry-at-cut	wit.rr-no-carry-at-cut.cfg	WorkflowRerun
+wit.rr-no-carry-dropped-reader	wit.rr-no-carry-dropped-reader.cfg	WorkflowRerun
+wit.rr-no-expired-at-cut-left	wit.rr-no-expired-at-cut-left.cfg	WorkflowRerun
 wit.rr-no-pinned-resume	wit.rr-no-pinned-resume.cfg	WorkflowRerun
 wit.rr-no-copy-coord-diverge	wit.rr-no-copy-coord-diverge.cfg	WorkflowRerun
 wit.rr-no-hash-diverge	wit.rr-no-hash-diverge.cfg	WorkflowRerun
@@ -54,6 +57,9 @@ rr-df-agent-reuses-approval	rr-df-agent-reuses-approval.cfg	WorkflowRerun
 rr-df-copy-keeps-deadline	rr-df-copy-keeps-deadline.cfg	WorkflowRerun
 rr-df-diverge-inserts	rr-df-diverge-inserts.cfg	WorkflowRerun
 rr-df-carry-late-message	rr-df-carry-late-message.cfg	WorkflowRerun
+rr-df-inbox-drops-dropped-reader	rr-df-inbox-drops-dropped-reader.cfg	WorkflowRerun
+rr-df-inbox-drops-equal-cut	rr-df-inbox-drops-equal-cut.cfg	WorkflowRerun
+rr-df-inbox-keeps-expired-at-cut	rr-df-inbox-keeps-expired-at-cut.cfg	WorkflowRerun
 rr-df-lock-new-before-owner	rr-df-lock-new-before-owner.cfg	WorkflowRerun
 rr-df-copy-hit-ignores-pred	rr-df-copy-hit-ignores-pred.cfg	WorkflowRerun
 rr-df-ignores-input-hash	rr-df-ignores-input-hash.cfg	WorkflowRerun
