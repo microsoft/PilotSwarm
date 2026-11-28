@@ -31,6 +31,21 @@ function pgPoolConfig(connectionString) {
     };
 }
 
+const FOUR_STEP_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: rerun-store-wf, version: "1.0.0" }
+limits: { maxNodeExecutions: 50 }
+initial: a
+states:
+  a: { type: script, source: 'await setResult("ok", {});', transition: { next: { ok: b } } }
+  b: { type: script, source: 'await setResult("ok", {});', transition: { next: { ok: c } } }
+  c: { type: script, source: 'await setResult("ok", {});', transition: { next: { ok: d } } }
+  d: { type: script, source: 'await setResult("ok", {});', transition: { next: { ok: done, failure: failed } } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
 const SIMPLE_YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow
@@ -205,9 +220,8 @@ describe("Task 4a: WorkflowStore rerun keys, bare-shell lock re-check, atomic co
                 expect(kSpawn.spawnChildCancelledBySourceEnd, "R2-S5: COALESCE(reused_from_run_id, run_id) detects parent-end:<run1>").toBe(true);
                 expect(kSpawn.spawnChildHasNotice).toBe(false);
 
-                // R2-S6: summarizeRerunCarriedInbox returns { count, contracts } without reading bodies (M-3C: the kept source
-                // visits are explicit; here those of a run_again of step2).
-                const carried = await store.summarizeRerunCarriedInbox(src.runId, new Date(), [], [kStep1.nodeExecutionId, kSpawn.nodeExecutionId]);
+                // R2-S6: summarizeRerunCarriedInbox returns { count, contracts } without reading bodies.
+                const carried = await store.summarizeRerunCarriedInbox(src.runId, new Date(), []);
                 expect(carried).toEqual({ count: 1, contracts: ["HumanNote@1"] });
 
                 // Dropped previews clip to 300 chars
@@ -688,7 +702,6 @@ describe("Task 4b: KV revisions 1..R (+ vars R+1), copyRerunInboxIn (TTL restart
             try {
                 const src = await seedEndedSourceWorkflow(client);
                 const srcKeys = await store.listRerunKeys(src.runId);
-                const step1Key = srcKeys.find(k => k.nodeId === "step1");
                 const step2Key = srcKeys.find(k => k.nodeId === "step2");
                 const reusedChild = randomUUID();
                 const reusedChildExpired = randomUUID();
@@ -740,8 +753,86 @@ describe("Task 4b: KV revisions 1..R (+ vars R+1), copyRerunInboxIn (TTL restart
                     ["WorkflowEnded@1", reusedChildExpired],
                 ]);
                 expect(await store.summarizeRerunCarriedInbox(src.runId, { enteredAtOf: step2Key.nodeExecutionId },
-                    [reusedChild, reusedChildExpired], [step1Key.nodeExecutionId]))
+                    [reusedChild, reusedChildExpired]))
                     .toEqual({ count: 3, contracts: ["Note@1", "WorkflowEnded@1"] });
+            } finally {
+                await pool.end();
+            }
+        });
+    });
+
+    it("carries only unread messages: a message or a reused child's end notice that any step read, a dropped one included, is not carried", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const store = client._catalog.workflowStore();
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            try {
+                // A run_again of c keeps a and b and drops c and d; the cut is c's entry. Every message below arrived before the cut
+                // and is unexpired at it. Three ordinary notes: one unread, one read by the kept a, one read by the dropped c. Three
+                // end notices of reused spawn children, read the same three ways (by the kept b and by the dropped d).
+                const src = await seedEndedSourceWorkflow(client, {
+                    yaml: FOUR_STEP_YAML,
+                    visits: [
+                        { nodeId: "a", ordinal: 1, nodeType: "script", outcome: "ok", resultKind: "business", output: {} },
+                        { nodeId: "b", ordinal: 1, nodeType: "script", arrivalRoute: "ok", outcome: "ok", resultKind: "business", output: {} },
+                        { nodeId: "c", ordinal: 1, nodeType: "script", arrivalRoute: "ok", outcome: "ok", resultKind: "business", output: {} },
+                        { nodeId: "d", ordinal: 1, nodeType: "script", arrivalRoute: "ok", outcome: "execution_failed", resultKind: "runtime_error", error: { code: "execution_failed", message: "boom" } },
+                    ],
+                });
+                const srcKeys = await store.listRerunKeys(src.runId);
+                const keyOf = id => srcKeys.find(k => k.nodeId === id).nodeExecutionId;
+                const cutKey = srcKeys.find(k => k.nodeId === "c");
+                const [childUnread, childReadByKept, childReadByDropped] = [randomUUID(), randomUUID(), randomUUID()];
+                const cut = `(SELECT entered_at FROM ${s}.workflow_node_executions WHERE node_execution_id = $5)`;
+                const seed = (name, contract, sender, consumedBy) => pool.query(
+                    `INSERT INTO ${s}.workflow_inbox (message_id, workflow_session_id, run_id, sender_session_id, operation_id, contract,
+                        correlation, payload, request_sha256, accepted_at, expires_at, consumed_by, consumed_at)
+                     VALUES ($1, $2, $3, $4, $6, $7, 'null', $8, $6, ${cut} - interval '10 seconds', ${cut} + interval '1 hour',
+                             $9::text, CASE WHEN $9::text IS NULL THEN NULL ELSE ${cut} - interval '5 seconds' END)`,
+                    [`msg-${randomUUID()}`, src.wfId, src.runId, sender, cutKey.nodeExecutionId, `op-${name}-${randomUUID()}`, contract,
+                        canonicalJson({ name }), consumedBy]);
+                await seed("note-unread", "Note@1", src.ownerId, null);
+                await seed("note-read-by-kept", "Note@1", src.ownerId, keyOf("a"));
+                await seed("note-read-by-dropped", "Note@1", src.ownerId, keyOf("c"));
+                await seed("notice-unread", "WorkflowEnded@1", childUnread, null);
+                await seed("notice-read-by-kept", "WorkflowEnded@1", childReadByKept, keyOf("b"));
+                await seed("notice-read-by-dropped", "WorkflowEnded@1", childReadByDropped, keyOf("d"));
+                const reusedSpawnChildIds = [childUnread, childReadByKept, childReadByDropped];
+
+                const part = partitionRerunVisits(srcKeys, cutKey.nodeExecutionId, "run_again");
+                const wf3Id = randomUUID();
+                const run3Id = randomUUID();
+                const mapped = mapRerunExecutions(run3Id, part.reused);
+                await client._catalog.createWorkflowSession(wf3Id, { parentSessionId: src.ownerId, title: "rerun-unread-only" });
+                await store.createDefinition({
+                    workflowSessionId: wf3Id, parentSessionId: src.ownerId, notifyParent: true,
+                    yaml: FOUR_STEP_YAML, compiled: src.compiled, actor: ACTOR,
+                    operationId: `rerun-unread-only-${wf3Id}`, requestSha256: sha256Hex(`rerun-unread-only-${wf3Id}`),
+                    publish: true,
+                    start: { runId: run3Id, mode: "live", inputsText: "{}", kvText: "{}", controllerInstanceId: `session-${wf3Id}`, controllerVersion: "1.3.0", testAgentMode: null },
+                    title: "rerun-unread-only",
+                    rerun: {
+                        sourceWorkflowSessionId: src.wfId, sourceRunId: src.runId,
+                        fromExecutionId: cutKey.nodeExecutionId, mode: "run_again",
+                        resume: buildRerunResume({
+                            mode: "run_again", chosen: cutKey, mappedPredecessorId: mapped.at(-1).newId,
+                            cutKvRevision: 1, sourceRevision: 1, sourceIrSha256: src.compiled.irSha256, targetIrSha256: src.compiled.irSha256,
+                        }),
+                        actor: ACTOR, mapped, unwalkedCount: 0, supplied: null, cutKvRevision: 1,
+                        inboxCutAt: { enteredAtOf: cutKey.nodeExecutionId },
+                        reusedSpawnChildIds,
+                        approvalOwnerCheck: null,
+                    },
+                });
+                const { rows: copied } = await pool.query(
+                    `SELECT contract, sender_session_id, payload::jsonb->>'name' AS name, consumed_by FROM ${s}.workflow_inbox
+                      WHERE run_id = $1 ORDER BY seq`, [run3Id]);
+                expect(copied.map(r => [r.contract, r.sender_session_id, r.name, r.consumed_by])).toEqual([
+                    ["Note@1", src.ownerId, "note-unread", null],
+                    ["WorkflowEnded@1", childUnread, "notice-unread", null],
+                ]);
+                expect(await store.summarizeRerunCarriedInbox(src.runId, { enteredAtOf: cutKey.nodeExecutionId }, reusedSpawnChildIds))
+                    .toEqual({ count: 2, contracts: ["Note@1", "WorkflowEnded@1"] });
             } finally {
                 await pool.end();
             }

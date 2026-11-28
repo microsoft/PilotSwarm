@@ -752,14 +752,6 @@ function isoUtc(column: string): string {
     return `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 }
 
-/**
- * The source visits a re-run keeps (Design §5.4): its reused visits, lane visits included, and the visit a supplied result
- * replaces. A message one of them consumed stays consumed; a message consumed only by a dropped visit is carried again.
- */
-export function rerunKeptSourceIds(rerun: Pick<RerunAdmissionSpec, "mapped" | "supplied">): string[] {
-    return [...rerun.mapped.map(m => m.source.nodeExecutionId), ...(rerun.supplied ? [rerun.supplied.sourceExecutionId] : [])];
-}
-
 /** The inbox columns inboxFrom reads, with exact times. */
 const INBOX_COLUMNS = `message_id, seq, workflow_session_id, run_id, sender_session_id, operation_id, contract, correlation, payload, consumed_by,
     ${isoUtc("accepted_at")} AS accepted_at_iso, ${isoUtc("expires_at")} AS expires_at_iso, ${isoUtc("consumed_at")} AS consumed_at_iso`;
@@ -3072,16 +3064,12 @@ export class WorkflowStore {
 
     /**
      * R2-S6: count and distinct contract names of inbox messages that a re-run will carry into #3,
-     * using the exact predicate of copyRerunInboxIn without reading message payload bodies. `keptSourceIds` are the source
-     * visits the re-run keeps (reused, including lane visits, and a supplied visit): a message one of them consumed is not
-     * carried; one consumed only by a dropped visit is (Design §5.4). It has no default: `[]` is right only when the re-run
-     * keeps no source visit.
+     * using the exact predicate of copyRerunInboxIn without reading message payload bodies.
      */
     async summarizeRerunCarriedInbox(
         runId: string,
         cut: RerunInboxCut,
         reusedSpawnChildIds: readonly string[],
-        keptSourceIds: readonly string[],
         client?: PoolClient,
     ): Promise<{ count: number; contracts: string[] }> {
         const runner = client ?? this.pool;
@@ -3090,14 +3078,14 @@ export class WorkflowStore {
             `SELECT contract, COUNT(*)::int AS cnt
                FROM ${this.t.inbox}
               WHERE run_id = $1
-                AND (consumed_by IS NULL OR NOT (consumed_by = ANY($5::text[])))
+                AND consumed_by IS NULL
                 AND (
                     (contract <> $3 AND COALESCE(origin_accepted_at, accepted_at) <= $2::timestamptz AND expires_at > $2::timestamptz)
                     OR (contract = $3 AND sender_session_id = ANY($4::text[]))
                 )
               GROUP BY contract
               ORDER BY contract ASC`,
-            [runId, cutAt, WORKFLOW_ENDED_CONTRACT, [...reusedSpawnChildIds], [...keptSourceIds]],
+            [runId, cutAt, WORKFLOW_ENDED_CONTRACT, [...reusedSpawnChildIds]],
         );
         let count = 0;
         const contracts: string[] = [];
@@ -3362,11 +3350,11 @@ export class WorkflowStore {
     /**
      * Copies eligible waiting inbox messages + the WorkflowEnded@1 notices of reused spawn children from source run #2 into
      * #3 in seq ASC order with fresh message_id / operation_id and restarted TTL (`now() + (expires_at - accepted_at)`).
-     * A waiting message is an ordinary one (never a WorkflowEnded@1 notice: review I-INBOX) accepted by the cut and unexpired
-     * at it, and not consumed by a source visit #3 keeps (Design §5.4, review D-I2): one consumed only by a dropped visit
-     * waits again for that visit's re-run. A carried row keeps its first acceptance time in origin_accepted_at (review
-     * RR-1): copied visits keep their entry times, so a later re-run that cuts inside this run's copied prefix compares
-     * that time, not the copy's, with the cut.
+     * Only unread messages are carried (Design §5.4): a message any step read stays with #2, so a re-run that starts before
+     * the step that read it waits for a new one. A waiting message is an ordinary one (never a WorkflowEnded@1 notice:
+     * review I-INBOX) accepted by the cut and unexpired at it. A carried row keeps its first acceptance time in
+     * origin_accepted_at (review RR-1): copied visits keep their entry times, so a later re-run that cuts inside this run's
+     * copied prefix compares that time, not the copy's, with the cut.
      */
     private async copyRerunInboxIn(client: PoolClient, newWorkflowSessionId: string, newRunId: string, rerun: RerunAdmissionSpec): Promise<void> {
         const cutAt = await this.resolveRerunInboxCut(client, rerun.sourceRunId, rerun.inboxCutAt);
@@ -3382,16 +3370,13 @@ export class WorkflowStore {
                 COALESCE(s.origin_accepted_at, s.accepted_at)
                FROM ${this.t.inbox} s
               WHERE s.run_id = $3
-                AND (s.consumed_by IS NULL OR NOT (s.consumed_by = ANY($7::text[])))
+                AND s.consumed_by IS NULL
                 AND (
                     (s.contract <> $5 AND COALESCE(s.origin_accepted_at, s.accepted_at) <= $4::timestamptz AND s.expires_at > $4::timestamptz)
                     OR (s.contract = $5 AND s.sender_session_id = ANY($6::text[]))
                 )
               ORDER BY s.seq ASC`,
-            [
-                newWorkflowSessionId, newRunId, rerun.sourceRunId, cutAt,
-                WORKFLOW_ENDED_CONTRACT, [...rerun.reusedSpawnChildIds], rerunKeptSourceIds(rerun),
-            ],
+            [newWorkflowSessionId, newRunId, rerun.sourceRunId, cutAt, WORKFLOW_ENDED_CONTRACT, [...rerun.reusedSpawnChildIds]],
         );
     }
 

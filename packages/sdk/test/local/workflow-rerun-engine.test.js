@@ -1341,6 +1341,106 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
         });
     });
 
+    it("re-run from a receive that read a message waits for a new message and completes when one is sent", { timeout: testTime.ms(180_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = liveHost(client);
+            const ownerSessionId = randomUUID();
+            await h.catalog.createSession(ownerSessionId, { owner: OWNER });
+            const saved = await saveSessionWorkflowDefinition(h, {
+                ownerSessionId,
+                name: "rerun-receive-inbox",
+                yaml: RECEIVE_AFTER_CUT_YAML,
+                expected: null,
+                actor: OWNER_ACTOR,
+                operationId: `save-rcv-new-${randomUUID()}`,
+            });
+            const defId = saved.receipt.definitionId;
+
+            // Ended run #2: step1 succeeded, then wait_msg received Notice@1 "old-hello" (the message is read by wait_msg).
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            let srcWfId;
+            let waitId;
+            try {
+                const deferH = {
+                    ...h,
+                    duroxideClient: Object.assign(Object.create(client.duroxideClient), { startOrchestrationVersioned: async () => {} }),
+                };
+                const started = await startSessionWorkflowDefinition(deferH, {
+                    ownerSessionId,
+                    definition: { definitionId: defId },
+                    inputs: {},
+                    actor: OWNER_ACTOR,
+                    owner: OWNER,
+                    operationId: `seed-rcv-new-r2-${randomUUID()}`,
+                });
+                srcWfId = started.workflowId;
+                const srcRunId = started.runId;
+                const s1 = nodeExecutionIdFor(srcRunId, "root", "step1", 1);
+                waitId = nodeExecutionIdFor(srcRunId, "root", "wait_msg", 1);
+                const t1 = new Date(Date.now() - 20_000).toISOString();
+                const t2 = new Date(Date.now() - 10_000).toISOString();
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_node_executions (
+                        node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                        input, input_sha256, state, outcome, result_kind, output, error, winner,
+                        effect_attempts, entered_at, completed_at, kv_revision, deadline_at
+                     ) VALUES
+                     ($1,$2,'root',NULL,'step1',1,'script',NULL,'{}',$3,'completed','ok','business','{"ok":true}',NULL,'effect',1,$4::timestamptz,$4::timestamptz,1,NULL),
+                     ($5,$2,'root',$1,'wait_msg',1,'messaging','ok','{"ok":true}',$6,'completed','received','business','{"msg":"old-hello"}',NULL,'message',1,$7::timestamptz,$7::timestamptz,1,NULL)`,
+                    [s1, srcRunId, sha256Hex("{}"), t1, waitId, sha256Hex('{"ok":true}'), t2],
+                );
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_inbox (
+                        message_id, workflow_session_id, run_id, sender_session_id, operation_id, request_sha256,
+                        contract, correlation, payload, accepted_at, expires_at, consumed_by, consumed_at
+                     ) VALUES ($1,$2,$3,$4,'op-old-hello',$5,'Notice@1','{}','{"msg":"old-hello"}',$6::timestamptz,now() + interval '1 hour',$7,$8::timestamptz)`,
+                    [randomUUID(), srcWfId, srcRunId, ownerSessionId, sha256Hex("op-old-hello"), new Date(Date.now() - 25_000).toISOString(), waitId, t2],
+                );
+                await pool.query(`UPDATE ${s}.workflow_runs SET status = 'failed', finished_at = now() WHERE run_id = $1`, [srcRunId]);
+            } finally {
+                await pool.end();
+            }
+
+            // Re-run #3 from wait_msg (run_again): the message wait_msg read in #2 is not carried, so wait_msg waits.
+            const r3Start = await startSessionWorkflowDefinition(h, {
+                ownerSessionId,
+                definition: { definitionId: defId },
+                inputs: {},
+                actor: OWNER_ACTOR,
+                owner: OWNER,
+                operationId: `start-rcv-new-r3-${randomUUID()}`,
+                rerunFrom: { workflowId: srcWfId, executionId: waitId, mode: "run_again" },
+            });
+            const r3WaitId = nodeExecutionIdFor(r3Start.runId, "root", "wait_msg", 1);
+            const admitBy = Date.now() + 15_000;
+            let r3Wait = null;
+            while (Date.now() < admitBy) {
+                r3Wait = await h.store.readNodeExecution(r3WaitId);
+                if (r3Wait && r3Wait.state === "pending") break;
+                await new Promise(r => setTimeout(r, 80));
+            }
+            expect(r3Wait?.state).toBe("pending");
+            expect((await h.store.listOpenInbox(r3Start.runId, 20)).rows).toEqual([]);
+            await new Promise(r => setTimeout(r, 1_500));
+            expect((await h.store.readNodeExecution(r3WaitId))?.state).toBe("pending");
+            expect((await h.store.readRun(r3Start.runId))?.finishedAt ?? null).toBeNull();
+
+            await sendTypedWorkflowInput(h, {
+                workflowSessionId: r3Start.workflowId,
+                senderSessionId: ownerSessionId,
+                runId: r3Start.runId,
+                contract: "Notice@1",
+                payload: { msg: "new-hello" },
+                operationId: `new-hello-${randomUUID()}`,
+            });
+            const r3 = await waitRunTerminal(h.store, r3Start.runId);
+            expect(r3.status).toBe("completed");
+            expect(r3.terminalOutcome).toBe("succeeded");
+            expect((await h.store.readNodeExecution(r3WaitId))?.output).toEqual({ msg: "new-hello" });
+        });
+    });
+
     it("covers Spec §11.2 #7 (continue mode), #4 (maxNodeExecutions exact boundary), #3 (maxVisits carry-over), and #5/#6 (catch-all reused & terminal invalid_output pass-over)", { timeout: testTime.ms(240_000) }, async () => {
         await withCounterFile(async (counter) => {
             await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {

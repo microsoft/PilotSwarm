@@ -917,7 +917,7 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
         });
     });
 
-    it("cuts the carried inbox at the exact microsecond (D-I1), carries messages consumed only by dropped visits (D-I2), and cuts continue at the first dropped root visit (D-M1)", { timeout: testTime.ms(120_000) }, async () => {
+    it("cuts the carried inbox at the exact microsecond (D-I1), carries only unread messages, and cuts continue at the first dropped root visit (D-M1)", { timeout: testTime.ms(120_000) }, async () => {
         await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
             const h = deferHost(client);
             const pool = new pg.Pool(pgPoolConfig(getEnv().store));
@@ -974,11 +974,11 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 expect([edgeOf(4).acc, edgeOf(5).acc, edgeOf(6).exp, edgeOf(7).exp].map(us => us.slice(-3))).toEqual(["900", "901", "900", "901"]);
                 const rP = await start(srcP, "d-i1-microsecond-cut", { executionId: srcP.ids["step2#1"], mode: "run_again" });
                 expect(await carriedNotes(rP.runId)).toEqual([1, 4, 7]);
-                expect(await h.store.summarizeRerunCarriedInbox(srcP.runId, { enteredAtOf: srcP.ids["step2#1"] }, [], [srcP.ids["step1#1"]]))
+                expect(await h.store.summarizeRerunCarriedInbox(srcP.runId, { enteredAtOf: srcP.ids["step2#1"] }, []))
                     .toEqual({ count: 3, contracts: ["Note@1"] });
 
-                // D-I2 + D-M1: first (receive, kept) consumed note 1; second (receive) consumed note 2; note 3 waited unconsumed.
-                // Notes 4 and 5 were accepted before and after second's entry, both before the source run finished.
+                // Unread only + D-M1: first (receive) read note 1; second (receive) read note 2; note 3 waited unread. Notes 4 and 5
+                // were accepted before and after second's entry, both before the source run finished.
                 const srcR = await seedEndedSessionWorkflow(h, {
                     yaml: RECEIVE_CARRY_YAML,
                     visits: [
@@ -996,20 +996,20 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 const runR = await h.store.readRun(srcR.runId);
                 expect(runR.finishedAt.getTime()).toBeGreaterThan(srcR.baseMs + 2_400);
 
-                // run_again of second keeps only first: note 2 (consumed by the dropped second) waits again for second's re-run;
-                // note 1 stays consumed by the kept first. The carried-message preview counts the same messages.
-                const rAgain = await start(srcR, "d-i2-run-again-second", { executionId: srcR.ids["second#1"], mode: "run_again" });
-                expect(await carriedNotes(rAgain.runId)).toEqual([2, 3, 4]);
-                expect(await h.store.summarizeRerunCarriedInbox(srcR.runId, { enteredAtOf: srcR.ids["second#1"] }, [], [srcR.ids["first#1"]]))
-                    .toEqual({ count: 3, contracts: ["Note@1"] });
+                // run_again of second keeps only first. Notes 1 and 2 were read (by the kept first and by the dropped second), so
+                // neither is carried: second's re-run waits for a new message. The carried-message preview counts the same messages.
+                const rAgain = await start(srcR, "unread-run-again-second", { executionId: srcR.ids["second#1"], mode: "run_again" });
+                expect(await carriedNotes(rAgain.runId)).toEqual([3, 4]);
+                expect(await h.store.summarizeRerunCarriedInbox(srcR.runId, { enteredAtOf: srcR.ids["second#1"] }, []))
+                    .toEqual({ count: 2, contracts: ["Note@1"] });
 
                 // continue from first cuts at second's entry (the first dropped root visit), not at the source run's end: note 5,
                 // accepted after second was entered but before the run finished, is not carried.
                 const rContinue = await start(srcR, "d-m1-continue-first", { executionId: srcR.ids["first#1"], mode: "continue" });
                 expect(rContinue.rerun?.mode).toBe("continue");
-                expect(await carriedNotes(rContinue.runId)).toEqual([2, 3, 4]);
-                expect(await h.store.summarizeRerunCarriedInbox(srcR.runId, { sourceRunEnd: true }, [], [srcR.ids["first#1"]]))
-                    .toEqual({ count: 4, contracts: ["Note@1"] });
+                expect(await carriedNotes(rContinue.runId)).toEqual([3, 4]);
+                expect(await h.store.summarizeRerunCarriedInbox(srcR.runId, { sourceRunEnd: true }, []))
+                    .toEqual({ count: 3, contracts: ["Note@1"] });
             } finally {
                 await pool.end();
             }
@@ -1076,7 +1076,7 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 expect(r3Notes.map(r => r.n)).toEqual([1]);
                 expect(r3Notes[0].ttl_left_s).toBeGreaterThan(ttlMs / 1000 - 60);
                 expect(r3Notes[0].ttl_left_s).toBeLessThanOrEqual(ttlMs / 1000);
-                expect(await h.store.summarizeRerunCarriedInbox(r2.runId, { enteredAtOf: copiedStep2.nodeExecutionId }, [], [copiedStep1.nodeExecutionId]))
+                expect(await h.store.summarizeRerunCarriedInbox(r2.runId, { enteredAtOf: copiedStep2.nodeExecutionId }, []))
                     .toEqual({ count: 1, contracts: ["Note@1"] });
 
                 // continue from #2's copied step1 cuts at the first dropped root visit (the copied step2): the same carry.
@@ -1131,7 +1131,7 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 const { rows: notes } = await pool.query(
                     `SELECT payload FROM ${s}.workflow_inbox WHERE run_id = $1 AND contract = 'Note@1' ORDER BY seq`, [rerun.runId]);
                 expect(notes.map(r => JSON.parse(r.payload).n)).toEqual([1]);
-                expect(await h.store.summarizeRerunCarriedInbox(src.runId, { sourceRunEnd: true }, [], [src.ids["step1#1"], src.ids["step2#1"]]))
+                expect(await h.store.summarizeRerunCarriedInbox(src.runId, { sourceRunEnd: true }, []))
                     .toEqual({ count: 1, contracts: ["Note@1"] });
                 const { rows: [times] } = await pool.query(
                     `SELECT i.accepted_at <= r.finished_at AS accepted_before_end
@@ -1216,17 +1216,53 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 }) };
                 const startA = startSessionWorkflowDefinition(refusingHost, rerunOf(srcD, { operationId: "rr4-a", key: keyD }));
                 const settledA = startA.then(() => null, error => error);
-                await aInAdmission;
-                const b = await startSessionWorkflowDefinition(h, rerunOf(srcD, { operationId: "rr4-b", key: keyD }));
-                expect(b.workflowId).toBe(claimedD);
-                expect(b.runId).toBeTruthy();
-                releaseA();
+                // A that settles before it reaches its admission fails the test at once rather than at the test's time limit.
+                const aSettledEarly = settledA.then(error => {
+                    throw new Error(`delivery A settled before its admission: ${error?.message ?? "it succeeded"}`);
+                });
+                aSettledEarly.catch(() => {});
+                let b;
+                try {
+                    await Promise.race([aInAdmission, aSettledEarly]);
+                    b = await startSessionWorkflowDefinition(h, rerunOf(srcD, { operationId: "rr4-b", key: keyD }));
+                    expect(b.workflowId).toBe(claimedD);
+                    expect(b.runId).toBeTruthy();
+                } finally {
+                    releaseA();
+                }
                 const errorA = await settledA;
                 expect(errorA).toBeInstanceOf(WorkflowStoreError);
                 expect(errorA.code).toBe("RERUN_APPROVAL_REUSED");
                 expect((await shellRow(b.workflowId))?.deleted_at).toBeNull();
                 const { rows: runsD } = await pool.query(`SELECT run_id FROM ${s}.workflow_runs WHERE workflow_session_id = $1`, [b.workflowId]);
                 expect(runsD.map(r => r.run_id)).toEqual([b.runId]);
+
+                // (e) The cleanup deletes a still-bare shell only for the request that claimed it: another operation or another
+                // request hash leaves it; the claiming request's own identity deletes it.
+                const srcE = await seedEndedSessionWorkflow(h);
+                let shellE = null;
+                const crashHostE = { ...h, store: Object.assign(Object.create(h.store), {
+                    createDefinition: async (arg) => { shellE = arg.workflowSessionId; throw new Error("simulated crash after claim"); },
+                }) };
+                await expect(startSessionWorkflowDefinition(crashHostE, rerunOf(srcE, { operationId: "rr4-identity", key: `rr4-identity-${randomUUID()}` })))
+                    .rejects.toThrow("simulated crash after claim");
+                const { rows: [claimE] } = await pool.query(
+                    `SELECT creation_config->'workflow'->>'operationId' AS operation_id, creation_config->'workflow'->>'requestSha256' AS request_sha256
+                       FROM ${s}.sessions WHERE session_id = $1`, [shellE]);
+                expect(claimE.operation_id).toBeTruthy();
+                expect(claimE.request_sha256).toBeTruthy();
+                for (const wrong of [
+                    { operationId: `${claimE.operation_id}-other`, requestSha256: claimE.request_sha256 },
+                    { operationId: claimE.operation_id, requestSha256: sha256Hex("another request") },
+                    { operationId: claimE.operation_id, requestSha256: null },
+                ]) {
+                    expect(await h.store.softDeleteRefusedClaimShell({ workflowSessionId: shellE, ...wrong })).toBe(false);
+                    expect((await shellRow(shellE))?.deleted_at).toBeNull();
+                }
+                expect(await h.store.softDeleteRefusedClaimShell({
+                    workflowSessionId: shellE, operationId: claimE.operation_id, requestSha256: claimE.request_sha256,
+                })).toBe(true);
+                expect((await shellRow(shellE))?.deleted_at ?? null).not.toBeNull();
             } finally {
                 await pool.end();
             }
