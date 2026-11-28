@@ -171,8 +171,8 @@ the answer; no later notification. If still running, read again by `test_id`.
 
 ## update_workflow
 
-`workflow_id`, `operation`, `operation_id` (a new one for each change; a
-retry reuses it) and the operation's arguments. It controls a
+`workflow_id`, `operation`, `operation_id` (new for each change; a
+retry reuses it) and the operation's arguments. It controls a Workflow's
 run; to change or start a definition, use `workflow_definition`.
 
 | Operation | Arguments | Effect |
@@ -206,8 +206,8 @@ Follow a run): use it, not `list_sessions`, for a workflow's status.
 
 Each section of a run (step executions, inbox, outbox) holds its newest
 rows, oldest first; open rows are listed apart however old. `limit` sets
-the rows per page (default 200 executions, 50 inputs, 50 sent messages);
-give a section's `run.pages` `nextCursor` back as `cursor` for its next, older page. Separate reads, each alone: `execution_id` (with
+rows per page (default 200 executions, 50 inputs, 50 messages);
+pass a section's `run.pages` `nextCursor` as `cursor` for older rows. Separate reads, each alone: `execution_id` (with
 `run_id`: one step execution's whole input and output or error), `kv_revision`
 (variables at that revision and masked `kv.change` (`by`, `at`) if recorded;
 `kv_key`: one value),
@@ -215,7 +215,7 @@ give a section's `run.pages` `nextCursor` back as `cursor` for its next, older p
 `definition_revision` (one revision's YAML, hash and diagnostics) and
 `step_input` (`{ state, input? }`: an agent step's input fields and where
 each comes from; with `input`, the draft's YAML with only those inputs
-changed). While a run is paused it shows `pausedFrom` and `pauseSettled`. A
+changed). A paused run shows `pausedFrom` and `pauseSettled`. A
 delivered message was accepted, not necessarily read.
 
 ## send_workflow_input
@@ -278,7 +278,7 @@ New Starts freeze each step's tools and package revisions. Later
 selection changes or republishing do not replace the pins.
 Pre-upgrade Starts gain no composition grant. Existing selection bindings
 use named-none/inline-all; named steps lose formerly inherited parent package tools.
-Calls recheck live access; lost packages stop only their own tools. Put required tools in `requiredTools`.
+Calls recheck live access; lost packages stop only their tools. Other packages keep their tools. Put required tools in `requiredTools`.
 
 `spawn_agent` accepts `grant` and `tools`: named default `none`; unnamed
 baseline plus `all`. `grant: none` removes no baseline tools; the inherited ceiling still
