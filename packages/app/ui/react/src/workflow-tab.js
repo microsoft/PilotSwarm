@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useControllerSelector } from "./use-controller-state.js";
 import {
     selectWorkflowViewSnapshotFor, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual, formatSeconds,
-    projectWorkflow, workflowLogEvents, workflowLogWindow, workflowActivity, workflowBranchPickKey, workflowExecutionOfRow,
+    projectWorkflow, workflowLogEvents, workflowLogWindow, workflowActivity, workflowBranchChoice, workflowBranchPickKey, workflowExecutionOfRow,
     workflowReplayBranchIndex, workflowReplayFrames, workflowReplayLabel, workflowSelectionAfterBranchChange,
     workflowSavedDefinitionRevision,
 } from "../../core/src/workflow-view.js";
@@ -38,7 +38,7 @@ import {
     WorkflowAgentLog, WorkflowDiagnostics, WorkflowDraftEditor, WorkflowFailureDetails, WorkflowNoGraph, WorkflowNodeSummary, WorkflowRevisionCompare,
     WorkflowRunCommandNotice, WorkflowVersionCompare,
     WorkflowRunPicker, WorkflowTestAnswer, WorkflowTestClock, WorkflowTestInterceptions, WorkflowTestPanel, WorkflowVariables,
-    WorkflowYamlView,
+    WorkflowYamlView, workflowNodeDetailsVisit,
 } from "./workflow-panels.js";
 import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
@@ -48,6 +48,7 @@ import {
     workflowRerunTimeline,
 } from "../../core/src/workflow-rerun.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
+import { workflowRecordedVisit } from "../../core/src/workflow-visit-io.js";
 import { DecisionQuestionSection, NodeCodeSections } from "./workflow-code.js";
 import { workflowDecisionDefinition } from "../../core/src/workflow-decision.js";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
@@ -876,6 +877,44 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
                     title: workflowTabButtonTip("start-another", { name: definition.name, number: rows.length + 1 }), onClick: onAnother })) : null);
 }
 
+function RunAgainSplit({ start, label, action, visit, state, onRerun }) {
+    const [open, setOpen] = React.useState(false);
+    const split = React.useRef(null);
+    const item = React.useRef(null);
+    const menuId = React.useId();
+    const close = () => {
+        split.current.querySelector('[data-action="run-again-menu"]').focus();
+        setOpen(false);
+    };
+    React.useLayoutEffect(() => { if (open) item.current.focus(); }, [open]);
+    React.useEffect(() => {
+        if (!open) return undefined;
+        const dismiss = event => { if (!split.current.contains(event.target)) setOpen(false); };
+        document.addEventListener("pointerdown", dismiss, true);
+        return () => document.removeEventListener("pointerdown", dismiss, true);
+    }, [open]);
+    return h("div", { className: `ps-wf-run-again${start ? " is-split" : ""}`, ref: split },
+        start,
+        h(WorkflowToolButton, { label: "Re-run options", glyph: "chevron-down", "aria-haspopup": "menu", "aria-expanded": open,
+            "aria-controls": menuId, "data-action": "run-again-menu", onClick: () => setOpen(current => !current),
+            onPointerDown: event => { if (open) event.preventDefault(); },
+            onKeyDown: event => {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); }
+            } }),
+        h("div", { id: menuId, role: "menu", "aria-label": "Re-run options", hidden: !open, className: "ps-steer-hold-menu ps-wf-rerun-menu",
+            onBlur: event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); },
+            onKeyDown: event => {
+                if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
+                if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) event.preventDefault();
+            } },
+            h("button", { ref: item, type: "button", role: "menuitem", tabIndex: -1, className: "ps-steer-hold-item",
+                "data-action": action, "data-execution": visit?.id, "aria-disabled": !state.enabled, title: state.title,
+                "aria-describedby": state.enabled ? undefined : `${menuId}-reason`,
+                onClick: () => { if (state.enabled) { close(); onRerun(visit?.id ?? null, state.mode); } } },
+            h("span", { className: "ps-steer-hold-title" }, label),
+            !state.enabled ? h("span", { id: `${menuId}-reason`, className: "ps-steer-hold-sub", "aria-hidden": true }, state.title) : null)));
+}
+
 /** One Workflow (08): its header, controls by state, its failure first, its graph and its bottom panel. */
 export function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, phone = false, onOpen, nodeStateId = null, displayMode = "normal",
     sessionRevision = null, extraActions = null, rerun = null }) {
@@ -999,6 +1038,9 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const variables = React.useMemo(() => workflowRunVariables(readModel, runCommand), [readModel, runCommand]);
     const notice = workflowRunCommandNotice(runCommand);
     const runId = projection?.runId ?? readModel?.run?.runId ?? null;
+    const [branchPick, setBranchPick] = React.useState(null);
+    const branchKey = workflowBranchPickKey(sessionId, runId, selected);
+    const branchIndex = branchPick?.key === branchKey ? branchPick.index : null;
     const times = workflowRunTimes(events, runId);
     // Stage 2.1b: a Workflow of a session's definition says the definition's revision it runs (its own copy is revision 1).
     const savedRevision = workflowSavedDefinitionRevision(readModel ?? workflowModel)
@@ -1038,10 +1080,20 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const rerunChip = workflowRerunChip(rerunOf, { numberOf, phone });
     const rerunsChip = workflowRerunReruns(readModel?.reruns, { numberOf });
     const frameVisit = frame ? visits.find(item => item?.id === frame.nodeExecutionId) ?? null : null;
-    const frameRerun = rerunnable && frame && !phone ? rerunState(frameVisit, child.nodes.find(node => node.id === frame.stateId) ?? null) : null;
+    const frameNode = frame ? child.nodes.find(node => node.id === frame.stateId) ?? null : null;
+    const frameRerun = rerunnable && frame ? rerunState(frameVisit, frameNode) : null;
     const replayRerun = {
         band: rerunOf ? workflowRerunTimeline(frames, { sourceNumber: typeof numberOf === "function" ? numberOf(rerunOf.workflowId) : null }) : null,
-        button: frameRerun ? { ...frameRerun, open: () => openRerun(frame.nodeExecutionId, frameRerun.mode) } : null,
+        button: frameRerun && !phone ? { ...frameRerun, open: () => openRerun(frame.nodeExecutionId, frameRerun.mode) } : null,
+    };
+    // The graph highlights a default node even before a person selects one.
+    const menuNode = frame ? frameNode : nodes.find(node => node.id === chosen) ?? null;
+    const menuVisit = frame ? frameVisit : rerunnable && menuNode ? workflowNodeDetailsVisit(menuNode, {
+        runId, selection: view.selectedExecution, branch: workflowBranchChoice(menuNode.branches, branchIndex),
+    }) : null;
+    const menuFailure = !frame && !menuNode ? failureRerun : null;
+    const menuState = menuVisit ? (frameRerun ?? rerunState(workflowRecordedVisit(visits, menuVisit), menuNode)) : menuFailure ?? {
+        enabled: false, title: menuNode ? "This node has no recorded visit." : "Select a node on the graph first.",
     };
     const controls = runControls?.controls ?? [];
     const has = operation => controls.find(control => control.operation === operation) ?? null;
@@ -1095,7 +1147,10 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                     disabled: !(stop?.enabled || cancel?.enabled),
                     title: stop?.enabled || cancel?.enabled ? workflowTabButtonTip("stop") : (stop?.title ?? cancel?.title ?? null),
                     onClick: () => setStopping(true) }) : null,
-                extraActions)),
+                rerunnable ? h(RunAgainSplit, { key: sessionId, start: extraActions, visit: menuVisit, state: menuState, onRerun: openRerun,
+                    action: menuFailure ? "run-again-rerun-failure" : "run-again-rerun",
+                    label: menuVisit ? `Re-run from ${frame?.stateId ?? menuNode.id} · visit ${menuVisit.ordinal}…`
+                        : menuFailure ? "Re-run from the failure…" : "Re-run from a node…" }) : extraActions)),
         // Failure first, in plain words; the error as it arrived is folded under it (coordinator 2026-11-06).
         failure ? h("div", { className: `ps-wf-failure${phone && failureOpen ? " is-open" : ""}` },
             // On a phone the line is a button (Enter and Space too) that shows all of it; the status still reads it whole.
@@ -1112,6 +1167,7 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"),
             panel, mobile, side, onPanel: id => setTab({ runPanel: id }) },
             panel === "node" ? h(RunNodePanel, { controller, child: replayed ? { ...child, nodes } : child, selected, replayFrame: replayed ? frame : null,
+                liveBranchIndex: branchIndex, onLiveBranch: index => setBranchPick({ key: branchKey, index }),
                 visits, rerun: nodeRerun, onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
             panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
                 runs: Array.isArray(readModel?.runs) ? readModel.runs : null, selected, scope: logScope, onScope: setLogScope,
@@ -1358,7 +1414,8 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
  * Owner 2026-11-20: its visit's Input and Output follow the timeline: the replayed visit (`replayFrame`) on its own node,
  * else the node's latest visit by then; `visits` (the timeline's, as recorded) give an output recorded after that moment.
  */
-export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null, visits = null, rerun = null }) {
+export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null, visits = null, rerun = null,
+    liveBranchIndex = null, onLiveBranch = null }) {
     const { sessionId, view, projection } = child;
     const sessionName = React.useCallback(id => {
         if (typeof child.sessionName === "function") return child.sessionName(id);
@@ -1368,7 +1425,6 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
     }, [child.sessionName, controller]);
     // OF-S2-8: the script and samples come from the YAML of the revision this Workflow runs, read once, when allowed.
     const code = useWorkflowRevisionYaml(controller, sessionId, view, child.workflowModel ?? child.readModel ?? null, Boolean(selected));
-    const [branchPick, setBranchPick] = React.useState(null);
     // Review S2UI-F5: while a visit is replayed, its step's details show that visit's branch. A branch chosen then holds
     // until the replay moves; the branch chosen for the Workflow as it is now is kept apart.
     const [replayPick, setReplayPick] = React.useState(null);
@@ -1380,7 +1436,7 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
     const replayKey = replayFrame ? JSON.stringify([replayFrame.nodeExecutionId, pickKey]) : null;
     const branchIndex = replayFrame
         ? (replayPick?.key === replayKey ? replayPick.index : workflowReplayBranchIndex(selected, replayFrame))
-        : (branchPick?.key === pickKey ? branchPick.index : null);
+        : liveBranchIndex;
     return h("section", { className: "ps-wf-node", "aria-label": "Node details" },
         h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label}`),
         !replayFrame ? h(WorkflowApprovalDetails, { key: selected.current?.id ?? selected.id, controller, sessionId,
@@ -1402,7 +1458,7 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
             rerun,
             onBranch: index => {
                 if (replayFrame) setReplayPick({ key: replayKey, index });
-                else setBranchPick({ key: pickKey, index });
+                else onLiveBranch?.(index);
                 if (workflowSelectionAfterBranchChange(view.selectedExecution ?? null, selected.id) === null && view.selectedExecution) {
                     controller.selectWorkflowExecution(sessionId, null);
                 }

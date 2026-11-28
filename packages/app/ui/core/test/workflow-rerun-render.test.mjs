@@ -22,7 +22,7 @@ import { workflowVisitIo } from "../src/workflow-visit-io.js";
 import { workflowRerunTimeline } from "../src/workflow-rerun.js";
 import { selectWorkflowTabContext } from "../src/workflow-owner.js";
 import { sessionDefinitionReadKey, sessionDefinitionsModel } from "../src/workflow-session-definitions.js";
-import { ReplayBar, RerunDialog, WorkflowLog } from "../../react/src/workflow-tab.js";
+import { ReplayBar, RerunDialog, WorkflowLog, WorkflowRunView } from "../../react/src/workflow-tab.js";
 import { WorkflowStepCard } from "../../react/src/workflow-graph.js";
 import { WorkflowNodeSummary } from "../../react/src/workflow-panels.js";
 import { WorkflowVisitSection } from "../../react/src/workflow-visit-io.js";
@@ -240,7 +240,7 @@ const DEFINITIONS = sessionDefinitionsModel([{
     ],
 }]);
 
-function tab(workflowId, model, { ownerStatus = "idle" } = {}) {
+function tab(workflowId, model, { ownerStatus = "idle", view = {}, withoutRerun = false } = {}) {
     let state = createInitialState({ mode: "api" });
     const dispatch = action => { state = appReducer(state, action); };
     dispatch({ type: "sessions/loaded", sessions: [
@@ -253,8 +253,12 @@ function tab(workflowId, model, { ownerStatus = "idle" } = {}) {
     dispatch({ type: "ui/sessionDefinitionRead", ownerId: OWNER, key: sessionDefinitionReadKey("def-1", 3), entry: { phase: "ready", value: {
         definition: { definitionId: "def-1", name: "provision-cluster" }, revision: { revision: 3, valid: true, yaml: null, diagnostics: [] },
         graph: { revision: 3, initial: "validate", states: STATES }, viewer: { allowed: true }, personCommands: true } } });
-    dispatch({ type: "ui/workflowView", sessionId: workflowId, view: { readModel: model } });
+    dispatch({ type: "ui/workflowView", sessionId: workflowId, view: { readModel: model, ...view } });
     const controller = { getState: () => state, subscribe: () => () => {}, dispatch };
+    if (withoutRerun) return renderToStaticMarkup(h(WorkflowRunView, {
+        controller, definition: { name: "provision-cluster", workflows: [] }, workflow: { sessionId: workflowId, number: 3 }, tab: {},
+        extraActions: h("button", { "data-action": "run-again-dialog" }, "Run again…"),
+    }));
     return renderToStaticMarkup(h(SessionWorkflowTab, { controller, mobile: false, context: selectWorkflowTabContext(state), definitions: DEFINITIONS }));
 }
 
@@ -272,4 +276,44 @@ test("the header names a re-run's source and a source's re-run; the failure bann
     // The owning session ended: the button is off and says why.
     assert.match(tab("wf-2", failed, { ownerStatus: "completed" }),
         /data-action="rerun-from-failure"[^>]*disabled=""[^>]*title="The session that owns this Workflow has ended\."/);
+});
+
+test("the Run again split control offers the selected visit for an ended run, with the shared refusal for an active run", () => {
+    const view = { selectedNodeId: "provision" };
+    const model = rerunModel();
+    const ended = tab("wf-3", model, { view });
+    assert.match(ended, /data-action="run-again-dialog".*aria-label="Re-run options"[^>]*aria-haspopup="menu"[^>]*data-action="run-again-menu"/s);
+    assert.match(ended, /role="menuitem"[^>]*data-action="run-again-rerun"[^>]*data-execution="nx-provision-1"[^>]*aria-disabled="false"[^>]*>.*?Re-run from provision · visit 1…/s);
+    const active = tab("wf-3", { ...model, run: { ...model.run, status: "running" } }, { view });
+    assert.match(active, /data-action="run-again-rerun"[^>]*aria-disabled="true"[^>]*title="This Workflow is still running\. Stop it first\."/);
+    assert.match(tab("wf-3", model), /data-action="run-again-rerun"[^>]*aria-disabled="true"[^>]*title="Select a node on the graph first\."/);
+});
+
+test("the caret uses the selected visit rather than the newest one", () => {
+    const model = rerunModel();
+    const withLaterVisit = { ...model, run: { ...model.run, nodeExecutions: [...model.run.nodeExecutions,
+        done("provision", 2, "provisioned", { predecessorId: "nx-configure-1", enteredAt: T(7), endedAt: T(8) })] } };
+    const view = { selectedNodeId: "provision" };
+    assert.match(tab("wf-3", withLaterVisit, { view }), /data-action="run-again-rerun"[^>]*data-execution="nx-provision-2"/);
+    const html = tab("wf-3", withLaterVisit, {
+        view: { ...view, selectedExecution: { stateId: "provision", runId: "run-3", executionId: "nx-provision-1" } },
+    });
+    assert.match(html, /data-action="run-again-rerun"[^>]*data-execution="nx-provision-1"[^>]*>.*?Re-run from provision · visit 1…/s);
+});
+
+test("the caret offers failure recovery without a selection and is absent without rerun capability", () => {
+    const model = rerunModel();
+    const failed = { ...model, run: { ...model.run, status: "failed" } };
+    assert.match(tab("wf-2", failed), /data-action="run-again-rerun-failure"[^>]*aria-disabled="false"[^>]*>.*?Re-run from the failure…/s);
+    const unsupported = tab("wf-3", model, { withoutRerun: true });
+    assert.match(unsupported, /data-action="run-again-dialog"/);
+    assert.doesNotMatch(unsupported, /data-action="run-again-menu"/);
+});
+
+test("the Node panel offers Re-run from here before its visit input", () => {
+    const model = rerunModel();
+    const selected = projectWorkflow({ readModel: model, numberOf }).nodes.find(node => node.id === "provision");
+    const html = renderToStaticMarkup(h(WorkflowNodeSummary, { selected, nodes: [selected], select() {}, runId: "run-3",
+        rerun: { stateOf: () => ({ enabled: true, title: "", mode: null }), open() {} } }));
+    assert.match(html, /data-action="rerun-from-node".*data-field="visit-input"/s);
 });

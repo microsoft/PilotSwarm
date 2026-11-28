@@ -468,6 +468,64 @@ test("entry points (phone): the failure banner and the Node panel open a bottom 
     expect(errors).toEqual([]);
 });
 
+test("the header caret opens the right plan for a failure or a selected node", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    const errors = watchErrors(page);
+    const state = await routeRerun(page);
+    const main = await openWorkflow(page, 2);
+    const caret = main.getByRole("button", { name: "Re-run options", exact: true });
+    const sheet = sheetOf(page);
+    const menu = main.getByRole("menu", { name: "Re-run options", exact: true });
+    await main.locator('[data-action="run-again-dialog"]').click();
+    const start = page.getByRole("dialog", { name: "Run provision-cluster again", exact: true });
+    await expect(start).toBeVisible();
+    await expect(menu).toBeHidden();
+    await page.keyboard.press("Escape");
+    await expect(start).toBeHidden();
+    await caret.focus();
+    await caret.press("ArrowDown");
+    const failure = menu.getByRole("menuitem", { name: "Re-run from the failure…", exact: true });
+    await expect(failure).toBeFocused();
+    await failure.press("Escape");
+    await expect(menu).toBeHidden();
+    await expect(caret).toBeFocused();
+    await caret.press("Enter");
+    await failure.press("Enter");
+    await expect.poll(() => state.plans.at(-1)?.query).toEqual({});
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+    await expect(caret).toBeFocused();
+
+    await inspect(main, "provision", false);
+    await caret.click();
+    await menu.getByRole("menuitem", { name: "Re-run from provision · visit 1…", exact: true }).click();
+    await expect.poll(() => state.plans.at(-1)?.query).toEqual({ executionId: "nx-provision-1" });
+    expect(errors).toEqual([]);
+});
+
+test("on a phone the header caret opens the timeline visit in the re-run sheet", async ({ page }) => {
+    await page.setViewportSize(PHONE);
+    const errors = watchErrors(page);
+    const state = await routeRerun(page);
+    const main = await openWorkflow(page, 2);
+    const timeline = main.getByRole("group", { name: "Timeline" });
+    await timeline.locator('[data-action="replay-back"]').click();
+    await expect(timeline).toHaveAttribute("data-mode", "history");
+    const caret = main.getByRole("button", { name: "Re-run options", exact: true });
+    expect((await caret.boundingBox()).width).toBeGreaterThanOrEqual(44);
+    await caret.click();
+    const item = main.getByRole("menuitem", { name: "Re-run from plan · visit 1…", exact: true });
+    const box = await item.boundingBox();
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(PHONE.width);
+    await item.click();
+    await expect.poll(() => state.plans.at(-1)?.query).toEqual({ executionId: "nx-plan-1" });
+    await expect(sheetOf(page)).toHaveClass(/is-sheet/);
+    expect(errors).toEqual([]);
+});
+
 for (const [label, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
     const phone = viewport === PHONE;
     test(`supply end to end (${label}): the supplied result's checks, Start's 422, operation ids (N5), no output in a plan read (M6), and #3 as reused and supplied`, async ({ page }) => {

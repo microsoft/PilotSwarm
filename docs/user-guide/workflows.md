@@ -353,10 +353,12 @@ on from the failed step without doing that work again.
 
 **Steps:**
 
-1. Open the Workflow that failed. Select **Re-run from here…** in its failure
-   line, in the step's Node panel, or (on a desktop) beside the timeline while
-   it shows an earlier step. Or ask the session "re-run it from the failed
-   step".
+1. Open the Workflow that failed. Use the **Re-run options** arrow next to
+   **Run again…**. It offers the visit shown in timeline history, then the
+   selected node's visit, or the failure when no node is selected. You can
+   also select **Re-run from here…** in the failure line, at the top of the
+   Node panel, or beside the timeline on desktop. Or ask the session
+   "re-run it from the failed step".
 2. Choose how the step goes on (**Mode**):
    - **Run this step again:** the step runs again. Use it after a fix or for a
      temporary error.
