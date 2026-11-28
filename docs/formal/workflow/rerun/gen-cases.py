@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1 + supply + generated inbox + fix wave R3) and
-its companion modules RerunStartRaces, RerunPlanGate, RerunPassOver and RerunContinuedSession (Task 6a-TLA+2, batch rr7).
+"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1 + supply + generated inbox + fix wave R3 +
+the unread-only carry) and its companion modules RerunStartRaces, RerunPlanGate, RerunPassOver and RerunContinuedSession
+(Task 6a-TLA+2, batch rr8), after checking that every property is checked and tripped (coverage(); --check runs only that).
 The .cfg files are generated from these by run-tlc.sh / check-packet.sh (../../tlc_cases.py)."""
 import json
 import os as _os
@@ -9,7 +10,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import tlc_cases  # docs/formal/tlc_cases.py
 
-BATCH = "rr7"
+BATCH = "rr8"
 M = "WorkflowRerun"
 
 
@@ -50,7 +51,7 @@ def c(
     copy_keeps_deadline=False,
     diverge_inserts=False,
     carry_late_message=False,
-    carry_drops_dropped_reader=False,
+    carry_read_message=False,
     carry_drops_equal_cut=False,
     carry_keeps_expired_at_cut=False,
     lock_new_before_owner=False,
@@ -82,6 +83,7 @@ def c(
     allow_cleanup_crash=False,
     retry_after_cut=False,
     take_ignores_taken=False,
+    no_new_message=False,
 ):
     return dict(
         SourceKind=q(source_kind),
@@ -116,7 +118,7 @@ def c(
         CopyKeepsDeadline=copy_keeps_deadline,
         DivergeInserts=diverge_inserts,
         CarryLateMessage=carry_late_message,
-        CarryDropsDroppedReader=carry_drops_dropped_reader,
+        CarryReadMessage=carry_read_message,
         CarryDropsEqualCut=carry_drops_equal_cut,
         CarryKeepsExpiredAtCut=carry_keeps_expired_at_cut,
         LockNewBeforeOwner=lock_new_before_owner,
@@ -148,6 +150,7 @@ def c(
         AllowCleanupCrash=allow_cleanup_crash,
         RetryAfterCut=retry_after_cut,
         TakeIgnoresTaken=take_ignores_taken,
+        NoNewMessage=no_new_message,
     )
 
 
@@ -160,7 +163,7 @@ ALL_SAFE_INVS = [
     "Inv_SupplyAllowedStepOnly",
     "Inv_SuppliedOutcomeDeclared",
     "Inv_AutoPickNoCancelledReuse",
-    "Inv_RefusedClaimDeletedAtOnce",
+    "Inv_RefusalCleanupLeavesNoBareShell",
     "Inv_AdmittedNotSwept",
     "Inv_QuiescentNoLive",
     "Inv_ReusedImmutable",
@@ -286,7 +289,18 @@ CASES = [
         SAFE_PROPS,
         "PASS",
         True,
-        "Generated #2 inbox (m1, m2 + reused spawn notice, every accept/expire/reader shape: 1,728 inboxes): #3 carries exactly the messages a fresh run at the cut would see; total wait anchor resets.",
+        "Generated #2 inbox (m1, m2 + reused spawn notice, every accept/expire/reader shape: 1,728 inboxes): #3 carries exactly the unread messages a fresh run at the cut would see; total wait anchor resets.",
+    ),
+    (
+        "rr.design-inbox-no-new-message",
+        "design",
+        "Spec",
+        c(source_kind="inbox", allow_deleters=True, no_new_message=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "Task R5: generated #2 inbox (1,728 inboxes) and nobody sends #3 a new message: a receive with nothing carried to take hits its time limit; the carry stays exact.",
     ),
     (
         "rr.design-inbox-notices",
@@ -537,6 +551,17 @@ CASES = [
         "Strong liveness (generated #2 inbox, 1,728 inboxes incl. an empty carry): reaches resumedAtCut, takes a carried or new message, and terminates.",
     ),
     (
+        "rr.live-inbox-no-new-message",
+        "design",
+        "LiveSpec",
+        c(source_kind="inbox", no_new_message=True),
+        ["TypeOK"],
+        STRONG_LIVE_PROPS,
+        "PASS",
+        True,
+        "Task R5 liveness: with no new message, a receive whose message a dropped visit read waits, hits its time limit and the run still terminates (failed); no liveness property asks it to complete.",
+    ),
+    (
         "rr.live-gen2",
         "design",
         "LiveSpec",
@@ -703,15 +728,37 @@ CASES = [
         "Task 6a-TLA+ witness: a message accepted exactly at the cut is carried, taken by #3's new receive, and the run completes.",
     ),
     (
-        "wit.rr-no-carry-dropped-reader",
+        "wit.rr-no-new-message-after-read",
         "witness",
         "Spec",
         c(source_kind="inbox"),
-        ["Wit_NoCarryDroppedReader"],
+        ["Wit_NoNewMessageAfterRead"],
         [],
-        "VIOLATION:Wit_NoCarryDroppedReader",
+        "VIOLATION:Wit_NoNewMessageAfterRead",
         True,
-        "Task 6a-TLA+ witness: a waiting message read by #2's dropped receive is carried, taken by #3's new receive, and the run completes.",
+        "Task R5 witness: #3 starts before the receive whose message #2 read; that message is not carried, the receive waits, a new message arrives in #3 and the run completes.",
+    ),
+    (
+        "wit.rr-no-read-notice-left",
+        "witness",
+        "Spec",
+        c(source_kind="inbox"),
+        ["Wit_NoReadNoticeLeft"],
+        [],
+        "VIOLATION:Wit_NoReadNoticeLeft",
+        True,
+        "Task R5 witness: a reused spawn child's WorkflowEnded@1 notice that #2's dropped receive read is not carried by an admitted re-run.",
+    ),
+    (
+        "wit.rr-no-receive-timed-out",
+        "witness",
+        "Spec",
+        c(source_kind="inbox", no_new_message=True),
+        ["Wit_NoReceiveTimedOut"],
+        [],
+        "VIOLATION:Wit_NoReceiveTimedOut",
+        True,
+        "Task R5 witness: the receive whose message #2 read gets no new message, hits its time limit, and the run ends failed.",
     ),
     (
         "wit.rr-no-expired-at-cut-left",
@@ -946,15 +993,15 @@ CASES = [
         "Fault 14: inbox carry copies a message that arrived after the cut, ignoring accepted_at/expires_at.",
     ),
     (
-        "rr-df-inbox-drops-dropped-reader",
+        "rr-df-inbox-carries-read-message",
         "fault",
         "Spec",
-        c(source_kind="inbox", carry_drops_dropped_reader=True),
+        c(source_kind="inbox", carry_read_message=True),
         ["Inv_InboxCarryExact"],
         [],
         "VIOLATION:Inv_InboxCarryExact",
         True,
-        "Task 6a-TLA+ fault (old filter, consumed_by IS NULL): drops a waiting message that #2's dropped receive had read. Enables only Inv_InboxCarryExact.",
+        "Task R5 fault (consumed_by IS NULL OR consumed_by is not a kept visit): carries a message that #2's dropped receive read. Enables only Inv_InboxCarryExact.",
     ),
     (
         "rr-df-inbox-drops-equal-cut",
@@ -1536,11 +1583,11 @@ CASES = [
         "fault",
         "Spec",
         c(source_kind="approval", mode="supply", skip_immediate_refusal_cleanup=True),
-        ["Inv_RefusedClaimDeletedAtOnce"],
+        ["Inv_RefusalCleanupLeavesNoBareShell"],
         [],
-        "VIOLATION:Inv_RefusedClaimDeletedAtOnce",
+        "VIOLATION:Inv_RefusalCleanupLeavesNoBareShell",
         True,
-        "Supply fault 9 (S2c): post-claim refusal fails to soft-delete claim shell immediately.",
+        "Supply fault 9 (S2c): a post-claim refusal's own cleanup transaction leaves the claim shell bare.",
     ),
     (
         "rr-df-sweeper-deletes-active-claim",
@@ -1617,7 +1664,7 @@ CASES = [
         "fault",
         "Spec",
         c(source_kind="loop", allow_deleters=True, allow_cleanup_crash=True),
-        ["Inv_RefusedClaimDeletedAtOnce"],
+        ["Inv_RefusalCleanupLeavesNoBareShell"],
         [],
         "DEADLOCK",
         True,
@@ -1653,37 +1700,47 @@ def seqs(*chains):
     return "{" + ", ".join(q("_".join(ch)) for ch in chains) + "}"
 
 
-def rs(starts=("a", "b"), approval_varies=False, allow_crash=False, owner_complete=False, owner_delete=False,
+def rs(starts=("a", "b"), gates=("pass",), allow_crash=False, owner_complete=False, owner_delete=False,
        def_delete=False, source_delete=False, sweeper=False, cleanup_code_filter=False, cleanup_unconditional=False,
-       pair_before_owner=False, def_delete_def_first=False, sweeper_no_recheck=False):
-    return tf(Starts=sset(*starts), ApprovalVaries=approval_varies, AllowCrash=allow_crash,
+       cleanup_ignores_identity=False, claim_ignores_identity=False, pair_before_owner=False, def_delete_def_first=False,
+       sweeper_no_recheck=False):
+    return tf(Starts=sset(*starts), GateChoices=sset(*gates), AllowCrash=allow_crash,
               AllowOwnerComplete=owner_complete, AllowOwnerDelete=owner_delete, AllowDefDelete=def_delete,
               AllowSourceDelete=source_delete, AllowSweeper=sweeper, CleanupCodeFilter=cleanup_code_filter,
-              CleanupUnconditional=cleanup_unconditional, PairBeforeOwner=pair_before_owner,
+              CleanupUnconditional=cleanup_unconditional, CleanupIgnoresIdentity=cleanup_ignores_identity,
+              ClaimIgnoresIdentity=claim_ignores_identity, PairBeforeOwner=pair_before_owner,
               DefDeleteDefFirst=def_delete_def_first, SweeperNoRecheck=sweeper_no_recheck)
 
 
+RP_FAULTS = ["SplitOffByOne", "LanesByIndex", "DroppedOffByOne", "DroppedLanesByIndex", "KvUsesChosenPin",
+             "KvSnapshotBelowCut", "KvRowsBelowCut", "Gr1PicksLatest", "Gr1TopOnly", "Gr1CutsBefore", "Gr1NeverMoves",
+             "Gr1UsesChildStatus", "GateIgnoresMcp", "GateIgnoresProxy", "GateIgnoresDecider", "GateIgnoresOwner",
+             "GateTopLevelOnly", "GateSkipPlan", "GateSkipRecheck", "GateRecheckAsPlan"]
+
+
 def rp(max_top=3, top_kinds=("work",), lane_kinds=("work",), with_bumps=False, auto_pick=False,
-       modes=("run_again", "continue", "supply"), with_gate=False, **faults):
-    names = ["SplitOffByOne", "LanesByIndex", "KvUsesChosenPin", "Gr1PicksLatest", "Gr1TopOnly", "Gr1CutsBefore",
-             "GateIgnoresMcp", "GateIgnoresProxy", "GateIgnoresDecider", "GateIgnoresOwner", "GateTopLevelOnly"]
-    assert set(faults) <= set(names)
+       modes=("run_again", "continue", "supply"), with_gate=False, generations=1, **faults):
+    assert set(faults) <= set(RP_FAULTS)
     return tf(MaxTop=max_top, TopKinds=sset(*top_kinds), LaneKinds=sset(*lane_kinds), WithBumps=with_bumps,
-              AutoPick=auto_pick, Modes=sset(*modes), WithGate=with_gate, **{n: faults.get(n, False) for n in names})
+              AutoPick=auto_pick, Modes=sset(*modes), WithGate=with_gate, Generations=generations,
+              **{n: faults.get(n, False) for n in RP_FAULTS})
 
 
-def rpo(reused=1, chains=(("receive",),), msgs=(), exps=(1, 2, 3), run_limits=(0,), wait_limits=(1,), par_limits=(1,),
-        max_clk=3, max_retries=1, ctrl=False, owner_end=False, stamp_separate_tx=False, take_not_idempotent=False,
-        take_at_expiry=False, copy_keeps_run_deadline=False, deadline_early=False, skip_child_cancel_when=(),
-        skip_agent_end_when=(), no_cleanup_on_owner_end=False, stop_keeps_pending=False):
+def rpo(reused=1, chains=(("receive", "receive"),), msgs=(), late_msgs=(), exps=(1, 2, 3), run_limits=(0,), wait_limits=(1,),
+        par_limits=(1,), max_clk=3, max_retries=1, ctrl=False, owner_end=False, lost_dispatch=False,
+        stamp_separate_tx=False, take_not_idempotent=False, take_at_expiry=False, copy_keeps_run_deadline=False,
+        deadline_early_for=(), take_ignores_end=False, skip_child_cancel_when=(), skip_agent_end_when=(),
+        no_cleanup_on_owner_end=False, stop_keeps_pending=False):
     nums = lambda xs: "{" + ", ".join(str(x) for x in xs) + "}"
-    return tf(Reused=reused, Chains=seqs(*chains), Msgs=sset(*msgs), ExpChoices=nums(exps), RunLimits=nums(run_limits),
+    return tf(Reused=reused, Chains=seqs(*chains), Msgs=sset(*msgs), LateMsgs=sset(*late_msgs), ExpChoices=nums(exps),
+              RunLimits=nums(run_limits),
               WaitLimits=nums(wait_limits), ParLimits=nums(par_limits), MaxClk=max_clk, MaxRetries=max_retries,
-              AllowCtrl=ctrl, AllowOwnerEnd=owner_end, StampSeparateTx=stamp_separate_tx,
+              AllowCtrl=ctrl, AllowOwnerEnd=owner_end, AllowLostDispatch=lost_dispatch, StampSeparateTx=stamp_separate_tx,
               TakeNotIdempotent=take_not_idempotent, TakeAtExpiry=take_at_expiry,
-              CopyKeepsRunDeadline=copy_keeps_run_deadline, DeadlineEarly=deadline_early,
-              SkipChildCancelWhen=sset(*skip_child_cancel_when), SkipAgentEndWhen=sset(*skip_agent_end_when),
-              NoCleanupOnOwnerEnd=no_cleanup_on_owner_end, StopKeepsPending=stop_keeps_pending)
+              CopyKeepsRunDeadline=copy_keeps_run_deadline, DeadlineEarlyFor=sset(*deadline_early_for),
+              TakeIgnoresEnd=take_ignores_end, SkipChildCancelWhen=sset(*skip_child_cancel_when),
+              SkipAgentEndWhen=sset(*skip_agent_end_when), NoCleanupOnOwnerEnd=no_cleanup_on_owner_end,
+              StopKeepsPending=stop_keeps_pending)
 
 
 def rcs(pre_cuts=(0, 1, 2), live=3, session_end=True, loss=True, ran_means_spawned=False, ignore_lost_recap=False,
@@ -1693,19 +1750,22 @@ def rcs(pre_cuts=(0, 1, 2), live=3, session_end=True, loss=True, ran_means_spawn
               RestartWithoutRecap=restart_without_recap, ContinueSourceSession=continue_source_session)
 
 
-RS_INVS = ["Inv_AdmittedNeverDeleted", "Inv_RefusalLeavesNoBareShell"]
-RP_PART = ["Inv_ReusedIsPrefix", "Inv_KvAtCut"]
-RP_GR1 = RP_PART + ["Inv_ReusedSpawnFinished", "Inv_Gr1CutAtBadSpawn"]
-RP_GATE = RP_PART + ["Inv_ReuseNeedsOwnerInPerson"]
-RPO_INVS = ["Inv_TakeOnce", "Inv_NoExpiredTake", "Inv_ResumedIffNew", "Inv_ExpiresNotEarly", "Inv_TimersNotEarly",
-            "Inv_TerminalNoPending", "Inv_EndedNoLiveAgent", "Inv_EndedNoActiveChild"]
-RCS_INVS = ["Inv_NoFalseRecapClaim", "Inv_RecapAvailable", "Inv_SessionIsolation"]
-RPO_RECEIVE = dict(reused=1, chains=(("receive", "receive"),), msgs=("m1", "m2"), exps=(1, 2, 3), run_limits=(0, 4),
-                   wait_limits=(1, 2), max_clk=3, max_retries=2)
+RS_INVS = ["TypeOK", "Inv_AdmittedNeverDeleted", "Inv_RefusalLeavesNoBareShell", "Inv_ShellAdmittedByItsRequest",
+           "Inv_CleanupDeletesOwnClaimOnly"]
+RP_PART = ["TypeOK", "Inv_ReusedIsPrefix", "Inv_KvAtCut", "Inv_ExactPartition", "Inv_KvAdmitted"]
+RP_GR1 = RP_PART + ["Inv_ReusedSpawnFinished", "Inv_Gr1CutAtMinBad"]
+RP_GATE = RP_PART + ["Inv_ReuseNeedsOwnerInPerson", "Inv_PlanRefusesWhatItSees", "Inv_RefusalShellAccounted"]
+RPO_INVS = ["TypeOK", "Inv_TakeOnce", "Inv_NoExpiredTake", "Inv_ResumedIffNew", "Inv_ExpiresNotEarly", "Inv_TimersNotEarly",
+            "Inv_TerminalNoPending", "Inv_EndedNoLiveAgent", "Inv_EndedNoActiveChild", "Inv_EndedNoTake"]
+RCS_INVS = ["TypeOK", "Inv_NoFalseRecapClaim", "Inv_RecapAvailable", "Inv_SessionIsolation"]
+RPO_RECEIVE = dict(reused=1, chains=(("receive", "receive"),), msgs=("m1", "m2"), late_msgs=("m2",), exps=(1, 2, 3), run_limits=(0, 4),
+                   wait_limits=(1, 2), max_clk=3, max_retries=2, ctrl=True, lost_dispatch=True)
 RPO_WORK = dict(reused=2, chains=(("agent", "spawn"), ("parallel", "agent"), ("spawn", "parallel")),
-                run_limits=(0, 1, 2, 3), par_limits=(1, 2), max_clk=3, max_retries=1, ctrl=True, owner_end=True)
+                run_limits=(0, 1, 2, 3), par_limits=(1, 2), max_clk=3, max_retries=1, ctrl=True, owner_end=True,
+                lost_dispatch=True)
 RP_PARTITION = dict(max_top=4, top_kinds=("work", "parallel"), lane_kinds=("work",), with_bumps=True)
 RP_G = dict(max_top=3, top_kinds=("work", "spawn", "parallel"), lane_kinds=("work", "spawn"), auto_pick=True)
+RP_G2 = dict(max_top=3, top_kinds=("work", "spawn", "receive"), lane_kinds=("work",), auto_pick=True, generations=2)
 RP_GATE_C = dict(max_top=3, top_kinds=("work", "approval", "parallel"), lane_kinds=("work", "approval"),
                  modes=("run_again", "continue"), with_gate=True)
 
@@ -1719,35 +1779,76 @@ def w(module, cid, consts, wit):
 COMPANION = [
     # ---- RerunStartRaces (RR-4, RR-10) ----
     ("RerunStartRaces", "rs.design-locks", "design", "Spec",
-     rs(starts=("a", "b", "c"), approval_varies=True, owner_complete=True, owner_delete=True, def_delete=True,
+     rs(starts=("a", "b", "c"), gates=("pass", "admit"), owner_complete=True, owner_delete=True, def_delete=True,
         source_delete=True), RS_INVS, [], "PASS", True,
      "RR-10: two deliveries of one keyed Start and a second re-run of the same source, every session id order, the "
-     "definition delete, the owner completing and deleted, #2 deleted: no lock cycle, no admitted Workflow deleted."),
+     "claim's owner lock on every path, the definition delete, the owner completing (its 0096 child locks) and deleted, "
+     "#2 deleted: no lock cycle, no admitted Workflow deleted."),
     ("RerunStartRaces", "rs.design-refusals-crash", "design", "Spec",
-     rs(approval_varies=True, allow_crash=True, owner_complete=True, def_delete=True, source_delete=True, sweeper=True),
+     rs(gates=("pass", "plan", "admit"), allow_crash=True, owner_complete=True, def_delete=True, source_delete=True,
+        sweeper=True),
      RS_INVS, [], "PASS", True,
-     "RR-4: refusals of every code (owner completed, definition deleted, #2 gone, approval reuse, Workflow deleted), "
-     "fresh and resumed claims, a crash at every transaction boundary, the Sweeper."),
+     "RR-4: refusals of every code (plan gate before the claim, owner ended and definition deleted at their locks, "
+     "#2 gone, the approval re-check, Workflow deleted), receipt replays, fresh and resumed claims, a crash at every "
+     "transaction boundary, the Sweeper."),
+    ("RerunStartRaces", "rs.design-identity", "design", "Spec",
+     rs(starts=("a", "b", "d"), gates=("pass", "admit"), allow_crash=True, owner_complete=True, sweeper=True),
+     RS_INVS, [], "PASS", True,
+     "RR-4: two deliveries of request r1 and another request r2 for the same key (the same target shell), with crashes, "
+     "the owner completing and the Sweeper: r2 is refused at its claim, no shell is admitted or cleaned up by the "
+     "wrong request."),
+    ("RerunStartRaces", "rs.design-sweeper-second-owner-delete", "design", "Spec",
+     rs(starts=("a", "c"), gates=("pass", "admit"), allow_crash=True, owner_delete=True, source_delete=True, sweeper=True),
+     RS_INVS, [], "PASS", True,
+     "RR-4 / RR-10: a second re-run of the same source, a crash, the Sweeper's collection and the owner's deletion "
+     "together."),
+    ("RerunStartRaces", "rs.design-cleanup-identity-behind-claim-check", "design", "Spec",
+     rs(starts=("a", "d"), gates=("pass", "admit"), allow_crash=True, cleanup_ignores_identity=True),
+     RS_INVS, [], "PASS", True,
+     "RR-4: with the claim's identity check, another request never reaches a cleanup of the first request's shell, so the "
+     "cleanup's own identity check is defense in depth (its absence alone changes nothing; see rs-df-cleanup-ignores-identity)."),
     ("RerunStartRaces", "rs.live-no-bare-shell", "design", "LiveSpec",
-     rs(approval_varies=True, allow_crash=True, owner_complete=True, def_delete=True, sweeper=True),
-     [], ["Live_NoBareShellLeft"], "PASS", True,
+     rs(gates=("pass", "plan", "admit"), allow_crash=True, owner_complete=True, def_delete=True, sweeper=True),
+     ["TypeOK"], ["Live_NoBareShellLeft"], "PASS", True,
      "RR-4 liveness: every bare shell is gone in the end (cleanup, admission, or the Sweeper after a crash)."),
-    w("RerunStartRaces", "wit.rs-no-refused-after-other-admitted", rs(approval_varies=True), "Wit_NoRefusedAfterOtherAdmitted"),
+    w("RerunStartRaces", "wit.rs-no-refused-after-other-admitted", rs(gates=("pass", "admit")), "Wit_NoRefusedAfterOtherAdmitted"),
     w("RerunStartRaces", "wit.rs-no-other-code-cleaned", rs(starts=("a",), owner_complete=True, def_delete=True),
       "Wit_NoOtherCodeCleaned"),
     w("RerunStartRaces", "wit.rs-no-resumed-claim-cleaned", rs(allow_crash=True, owner_complete=True),
       "Wit_NoResumedClaimCleaned"),
     w("RerunStartRaces", "wit.rs-no-lost-cleanup-swept", rs(starts=("a",), allow_crash=True, source_delete=True, sweeper=True),
       "Wit_NoLostCleanupSwept"),
+    w("RerunStartRaces", "wit.rs-no-recheck-refusal-cleaned", rs(starts=("a",), gates=("pass", "admit")),
+      "Wit_NoRecheckRefusalCleaned"),
+    w("RerunStartRaces", "wit.rs-no-receipt-replay", rs(), "Wit_NoReceiptReplay"),
+    w("RerunStartRaces", "wit.rs-no-other-request-refused", rs(starts=("a", "d")), "Wit_NoOtherRequestRefused"),
     w("RerunStartRaces", "wit.rs-no-two-reruns-share-source", rs(starts=("a", "c")), "Wit_NoTwoRerunsShareSource"),
     w("RerunStartRaces", "wit.rs-no-admit-source-first", rs(starts=("a",)), "Wit_NoAdmitSourceFirst"),
     w("RerunStartRaces", "wit.rs-no-admit-shell-first", rs(starts=("a",)), "Wit_NoAdmitShellFirst"),
     w("RerunStartRaces", "wit.rs-no-deleters-committed", rs(starts=("a", "c"), def_delete=True, owner_delete=True),
       "Wit_NoDeletersCommitted"),
-    ("RerunStartRaces", "rs-df-cleanup-unconditional", "fault", "Spec", rs(approval_varies=True, cleanup_unconditional=True),
+    w("RerunStartRaces", "wit.rs-no-owner-complete-after-admission", rs(starts=("a", "c"), owner_complete=True),
+      "Wit_NoOwnerCompleteAfterAdmission"),
+    w("RerunStartRaces", "wit.rs-no-sweep-and-owner-delete",
+      rs(starts=("a", "c"), allow_crash=True, owner_delete=True, sweeper=True), "Wit_NoSweepAndOwnerDelete"),
+    ("RerunStartRaces", "rs-df-cleanup-unconditional", "fault", "Spec", rs(gates=("pass", "admit"), cleanup_unconditional=True),
      ["Inv_AdmittedNeverDeleted"], [], "VIOLATION:Inv_AdmittedNeverDeleted", True,
      "RR-4 (c) fault (the code before RR-4): the refused delivery's cleanup soft-deletes with no re-check, after the other "
      "delivery admitted the Workflow."),
+    ("RerunStartRaces", "rs-df-claim-ignores-identity", "fault", "Spec",
+     rs(starts=("a", "d"), gates=("pass", "admit"), claim_ignores_identity=True),
+     ["Inv_ShellAdmittedByItsRequest"], [], "VIOLATION:Inv_ShellAdmittedByItsRequest", True,
+     "RR-4 fault: the claim does not compare the stored operationId / requestSha256 (no WORKFLOW_EXISTS); another request "
+     "for the same key is admitted into the first request's shell."),
+    ("RerunStartRaces", "rs-df-cleanup-ignores-identity", "fault", "Spec",
+     rs(starts=("a", "d"), gates=("pass", "admit"), claim_ignores_identity=True, cleanup_ignores_identity=True),
+     ["Inv_CleanupDeletesOwnClaimOnly"], [], "VIOLATION:Inv_CleanupDeletesOwnClaimOnly", True,
+     "RR-4 fault: the cleanup does not compare the claim's operationId / requestSha256; once another request reaches an "
+     "admission on the first request's shell (the claim check also absent), its refusal deletes that bare shell."),
+    ("RerunStartRaces", "rs-df-second-pair-before-owner-complete", "fault", "Spec",
+     rs(starts=("a", "c"), owner_complete=True, pair_before_owner=True), RS_INVS, [], "DEADLOCK", True,
+     "RR-10 fault: the second re-run locks #2 and its shell before the owner row; the owner's completion holds the owner "
+     "and its 0096 trigger waits for that shell: a lock cycle."),
     ("RerunStartRaces", "rs-df-cleanup-code-filter", "fault", "Spec",
      rs(allow_crash=True, owner_complete=True, def_delete=True, cleanup_code_filter=True),
      ["Inv_RefusalLeavesNoBareShell"], [], "VIOLATION:Inv_RefusalLeavesNoBareShell", True,
@@ -1769,29 +1870,57 @@ COMPANION = [
     # ---- RerunPlanGate (RR-6, RR-8, RR-7 / MA-1) ----
     ("RerunPlanGate", "rp.design-partition-kv", "design", "Spec", rp(**RP_PARTITION), RP_PART, [], "PASS", True,
      "RR-6: every history of up to 4 top-level visits with one parallel step, KV writes anywhere, every chosen visit and "
-     "mode: the reused / dropped / supplied split and the copied KV ceiling match the design."),
+     "mode: the reused / dropped / supplied split the admission commits, the copied KV ceiling, the admitted KV snapshot "
+     "(revision R exactly, each revision a distinct value) and the copied revision rows 1..R match the design."),
     ("RerunPlanGate", "rp.design-gr1", "design", "Spec", rp(**RP_G), RP_GR1, [], "PASS", True,
-     "RR-8: up to 3 top-level visits with spawns at the top and in lanes, every child state, children ending between the "
-     "plan and the admission, every auto-pick candidate and requested mode."),
+     "RR-8: up to 3 top-level visits with spawns at the top and in lanes, every child evidence (its own state, the "
+     "parent-end operation, the notice row), children ending and notices arriving between the plan and the admission, "
+     "every auto-pick candidate and requested mode: the cut is the earliest bad candidate as the plan read the flags."),
+    ("RerunPlanGate", "rp.design-gr1-gen2", "design", "Spec", rp(**RP_G2), RP_GR1, [], "PASS", True,
+     "RR-8 (second generation): #2 reused a spawn and a later receive from #1, whose receive read the child's notice, so "
+     "#2's inbox has no notice row: the automatic pick on #2 cuts back to that spawn."),
     ("RerunPlanGate", "rp.design-gate", "design", "Spec", rp(**RP_GATE_C), RP_GATE, [], "PASS", True,
      "RR-7 / MA-1: reused approvals at the top and in lanes, every caller channel (person, system, agent proxy, MCP), "
-     "starter and decider."),
+     "starter and recorded decider (or none), a provenance change between the plan and the admission: the plan's gate "
+     "refuses before the claim, the admission's re-check after it."),
     w("RerunPlanGate", "wit.rp-no-continue-at-parallel", rp(**RP_PARTITION), "Wit_NoContinueAtParallel"),
     w("RerunPlanGate", "wit.rp-no-supply-kv", rp(**RP_PARTITION), "Wit_NoSupplyKv"),
+    w("RerunPlanGate", "wit.rp-no-run-again-kv-before", rp(**RP_PARTITION), "Wit_NoRunAgainKvBefore"),
+    w("RerunPlanGate", "wit.rp-no-kv-cut-between-revisions", rp(**RP_PARTITION), "Wit_NoKvCutBetweenRevisions"),
+    w("RerunPlanGate", "wit.rp-no-dropped-lanes", rp(**RP_PARTITION), "Wit_NoDroppedLanes"),
     w("RerunPlanGate", "wit.rp-no-good-reused-bad-cut", rp(**RP_G), "Wit_NoGoodReusedBadCut"),
     w("RerunPlanGate", "wit.rp-no-two-bad-spawns", rp(**RP_G), "Wit_NoTwoBadSpawns"),
     w("RerunPlanGate", "wit.rp-no-lane-lift", rp(**RP_G), "Wit_NoLaneLift"),
     w("RerunPlanGate", "wit.rp-no-stale-flag", rp(**RP_G), "Wit_NoStaleFlag"),
+    w("RerunPlanGate", "wit.rp-no-notice-after-completion", rp(**RP_G), "Wit_NoNoticeAfterCompletion"),
+    w("RerunPlanGate", "wit.rp-no-late-notice", rp(**RP_G), "Wit_NoLateNotice"),
+    w("RerunPlanGate", "wit.rp-no-kept-receive-cut-back", rp(**RP_G2), "Wit_NoKeptReceiveCutBack"),
     w("RerunPlanGate", "wit.rp-no-lane-approval-reused", rp(**RP_GATE_C), "Wit_NoLaneApprovalReused"),
     w("RerunPlanGate", "wit.rp-no-mcp-refusal", rp(**RP_GATE_C), "Wit_NoMcpRefusal"),
+    w("RerunPlanGate", "wit.rp-no-missing-provenance-refused", rp(**RP_GATE_C), "Wit_NoMissingProvenanceRefused"),
+    w("RerunPlanGate", "wit.rp-no-recheck-refusal", rp(**RP_GATE_C), "Wit_NoRecheckRefusal"),
     ("RerunPlanGate", "rp-df-split-off-by-one", "fault", "Spec", rp(**RP_PARTITION, SplitOffByOne=True),
      ["Inv_ReusedIsPrefix"], [], "VIOLATION:Inv_ReusedIsPrefix", True, "RR-6 fault: continue reuses only the visits before the chosen one."),
     ("RerunPlanGate", "rp-df-lanes-by-index", "fault", "Spec", rp(**RP_PARTITION, LanesByIndex=True),
      ["Inv_ReusedIsPrefix"], [], "VIOLATION:Inv_ReusedIsPrefix", True,
      "RR-6 fault: a lane is reused only when its parallel step is before the chosen visit (continue at the parallel drops them)."),
+    ("RerunPlanGate", "rp-df-dropped-off-by-one", "fault", "Spec", rp(**RP_PARTITION, DroppedOffByOne=True),
+     ["Inv_ExactPartition"], [], "VIOLATION:Inv_ExactPartition", True,
+     "RR-6 fault: continue also drops the chosen visit (droppedSplit = chosenIndex): it is both reused and dropped."),
+    ("RerunPlanGate", "rp-df-dropped-lanes-by-index", "fault", "Spec", rp(**RP_PARTITION, DroppedLanesByIndex=True),
+     ["Inv_ExactPartition"], [], "VIOLATION:Inv_ExactPartition", True,
+     "RR-6 fault: a lane is dropped only when its parallel is after the chosen visit (run_again at the parallel keeps "
+     "its lanes in neither set)."),
     ("RerunPlanGate", "rp-df-kv-uses-chosen-pin", "fault", "Spec", rp(**RP_PARTITION, KvUsesChosenPin=True),
      ["Inv_KvAtCut"], [], "VIOLATION:Inv_KvAtCut", True,
      "RR-6 fault: the copied KV ceiling is the chosen visit's pin (misses a write before the next visit in continue / supply)."),
+    ("RerunPlanGate", "rp-df-kv-snapshot-below-cut", "fault", "Spec", rp(**RP_PARTITION, KvSnapshotBelowCut=True),
+     ["Inv_KvAdmitted"], [], "VIOLATION:Inv_KvAdmitted", True,
+     "RR-6 fault: the run's KV snapshot is selected with revision < R (store.ts insertRun), so #3 starts from the "
+     "revision before the cut's."),
+    ("RerunPlanGate", "rp-df-kv-rows-below-cut", "fault", "Spec", rp(**RP_PARTITION, KvRowsBelowCut=True),
+     ["Inv_KvAdmitted"], [], "VIOLATION:Inv_KvAdmitted", True,
+     "RR-6 fault: the KV revision rows are copied with revision < R, so revision R is missing from #3's history."),
     ("RerunPlanGate", "rp-df-gr1-picks-latest", "fault", "Spec", rp(**RP_G, Gr1PicksLatest=True),
      ["Inv_ReusedSpawnFinished"], [], "VIOLATION:Inv_ReusedSpawnFinished", True,
      "RR-8 fault: G-R1 cuts back to the latest bad spawn and reuses an earlier one."),
@@ -1799,33 +1928,61 @@ COMPANION = [
      ["Inv_ReusedSpawnFinished"], [], "VIOLATION:Inv_ReusedSpawnFinished", True,
      "RR-8 fault: G-R1 scans only top-level spawns and reuses a bad lane spawn."),
     ("RerunPlanGate", "rp-df-gr1-cuts-before", "fault", "Spec", rp(**RP_G, Gr1CutsBefore=True),
-     ["Inv_Gr1CutAtBadSpawn"], [], "VIOLATION:Inv_Gr1CutAtBadSpawn", True,
+     ["Inv_Gr1CutAtMinBad"], [], "VIOLATION:Inv_Gr1CutAtMinBad", True,
      "RR-8 fault: G-R1 cuts one visit before the earliest bad spawn (runs a finished visit again)."),
+    ("RerunPlanGate", "rp-df-gr1-never-moves", "fault", "Spec", rp(**RP_G, Gr1NeverMoves=True),
+     ["Inv_Gr1CutAtMinBad"], [], "VIOLATION:Inv_Gr1CutAtMinBad", True,
+     "RR-8 fault: G-R1 never moves the cut (a bad candidate stays reused)."),
+    ("RerunPlanGate", "rp-df-gr1-uses-child-status", "fault", "Spec", rp(**RP_G, Gr1UsesChildStatus=True),
+     ["Inv_Gr1CutAtMinBad"], [], "VIOLATION:Inv_Gr1CutAtMinBad", True,
+     "RR-8 fault: G-R1 reads the child's own state: a completed child whose notice has not arrived is reused."),
+    ("RerunPlanGate", "rp-df-gr1-uses-child-status-gen2", "fault", "Spec", rp(**RP_G2, Gr1UsesChildStatus=True),
+     ["Inv_Gr1CutAtMinBad"], [], "VIOLATION:Inv_Gr1CutAtMinBad", True,
+     "RR-8 fault (second generation): reading the child's own state, the automatic pick on #2 reuses a spawn whose notice "
+     "#1's kept receive read, though #2 has no notice row."),
+    ("RerunPlanGate", "rp-df-gate-top-level-only", "fault", "Spec", rp(**RP_GATE_C, GateTopLevelOnly=True),
+     ["Inv_PlanRefusesWhatItSees"], [], "VIOLATION:Inv_PlanRefusesWhatItSees", True,
+     "RR-7 / MA-1 fault: the plan's gate looks only at top-level approvals; a reused lane approval another person answered "
+     "passes the plan and is refused only by the admission's re-check, after the claim."),
+    ("RerunPlanGate", "rp-df-gate-recheck-as-plan", "fault", "Spec", rp(**RP_GATE_C, GateRecheckAsPlan=True),
+     ["Inv_RefusalShellAccounted"], [], "VIOLATION:Inv_RefusalShellAccounted", True,
+     "RR-7 / MA-1 fault: the admission's re-check refusal is treated as a plan refusal: the claim's shell is left with no "
+     "cleanup owed."),
 ] + [
     ("RerunPlanGate", f"rp-df-gate-{slug}", "fault", "Spec", rp(**RP_GATE_C, **{fault: True}),
      ["Inv_ReuseNeedsOwnerInPerson"], [], "VIOLATION:Inv_ReuseNeedsOwnerInPerson", True, f"RR-7 / MA-1 fault: {words}.")
     for slug, fault, words in [
         ("ignores-mcp", "GateIgnoresMcp", "the owner reuses an answered approval over MCP"),
         ("ignores-proxy", "GateIgnoresProxy", "an agent session (originatingSessionId) reuses an answered approval for its owner"),
-        ("ignores-decider", "GateIgnoresDecider", "the owner reuses an approval another person answered"),
-        ("ignores-owner", "GateIgnoresOwner", "a person who does not own the session reuses an approval"),
-        ("top-level-only", "GateTopLevelOnly", "an approval inside a reused lane is not checked"),
+        ("ignores-decider", "GateIgnoresDecider", "neither gate compares deciders: the owner reuses an approval another person answered"),
+        ("ignores-owner", "GateIgnoresOwner", "a person who does not own the session reuses an approval they answered"),
+        ("skip-plan", "GateSkipPlan", "no plan gate: a person who does not own the session reuses an approval they answered "
+                                      "(the admission's re-check compares deciders only)"),
+        ("skip-recheck", "GateSkipRecheck", "no admission re-check: an approval's provenance changed after the plan and is reused"),
     ]
 ] + [
     # ---- RerunPassOver (RR-3, RR-5, RR-9, RR-11) ----
     ("RerunPassOver", "rpo.design-receive", "design", "Spec", rpo(**RPO_RECEIVE), RPO_INVS, [], "PASS", True,
-     "RR-3, RR-9, RR-11: two receives after a copied visit, two carried messages with every restarted expiry, a slow "
-     "dispatch, two lost enterNode results anywhere, wait deadlines and the run deadline at every boundary."),
+     "RR-3, RR-5, RR-9, RR-11: two receives after a copied visit, two messages with every restarted expiry (one carried, "
+     "the other carried or sent after the admission), a lost and recovered dispatch, two lost enterNode results anywhere, cancel / stop / pause racing the receives, wait "
+     "deadlines and the run deadline at every boundary (the read-only expired answer, then expireRun)."),
     ("RerunPassOver", "rpo.design-work-timers", "design", "Spec", rpo(**RPO_WORK), RPO_INVS, [], "PASS", True,
-     "RR-5, RR-11: agent, spawn and parallel steps after two copied visits, cancel / stop / pause and the owner's "
-     "deletion, run deadlines (including during the pass-over) and parallel limits at every boundary."),
-    ("RerunPassOver", "rpo.live-cleanup", "design", "LiveSpec", rpo(**RPO_WORK), [], ["Live_EndedQuiesces"], "PASS", True,
-     "RR-5 liveness: every ended run's agent sessions and children are closed, for every end kind."),
+     "RR-5, RR-11: agent, spawn and parallel steps after two copied visits, a lost and recovered dispatch, cancel / stop "
+     "/ pause and the owner's deletion, run deadlines (during the pass-over, while paused, before the dispatch) and "
+     "parallel limits at every boundary."),
+    ("RerunPassOver", "rpo.live-cleanup", "design", "LiveSpec", rpo(**RPO_WORK), ["TypeOK"], ["Live_EndedQuiesces"], "PASS",
+     True, "RR-5 liveness: every ended run's agent sessions and children are closed, for every end kind."),
     w("RerunPassOver", "wit.rpo-no-expired-before-receive", rpo(**RPO_RECEIVE), "Wit_NoExpiredBeforeReceive"),
     w("RerunPassOver", "wit.rpo-no-take-at-last-instant", rpo(**RPO_RECEIVE), "Wit_NoTakeAtLastInstant"),
+    w("RerunPassOver", "wit.rpo-no-take-of-late-message", rpo(**RPO_RECEIVE), "Wit_NoTakeOfLateMessage"),
     w("RerunPassOver", "wit.rpo-no-retry-after-cut", rpo(**RPO_RECEIVE), "Wit_NoRetryAfterCut"),
     w("RerunPassOver", "wit.rpo-no-expire-in-pass-over", rpo(**RPO_WORK), "Wit_NoExpireInPassOver"),
-    w("RerunPassOver", "wit.rpo-no-timer-at-deadline", rpo(**RPO_RECEIVE), "Wit_NoTimerAtDeadline"),
+    w("RerunPassOver", "wit.rpo-no-wait-timer-at-deadline", rpo(**RPO_RECEIVE), "Wit_NoWaitTimerAtDeadline"),
+    w("RerunPassOver", "wit.rpo-no-parallel-timer-at-deadline", rpo(**RPO_WORK), "Wit_NoParallelTimerAtDeadline"),
+    w("RerunPassOver", "wit.rpo-no-paused-expiry", rpo(**RPO_WORK), "Wit_NoPausedExpiry"),
+    w("RerunPassOver", "wit.rpo-no-end-between-expired-and-expire", rpo(**RPO_WORK), "Wit_NoEndBetweenExpiredAndExpire"),
+    w("RerunPassOver", "wit.rpo-no-recovered-dispatch", rpo(**RPO_RECEIVE), "Wit_NoRecoveredDispatch"),
+    w("RerunPassOver", "wit.rpo-no-end-before-dispatch", rpo(**RPO_WORK), "Wit_NoEndBeforeDispatch"),
     w("RerunPassOver", "wit.rpo-no-cleanup-after-stop", rpo(**RPO_WORK), "Wit_NoCleanupAfterStop"),
     w("RerunPassOver", "wit.rpo-no-cleanup-after-owner-end", rpo(**RPO_WORK), "Wit_NoCleanupAfterOwnerEnd"),
     ("RerunPassOver", "rpo-df-stamp-separate-tx", "fault", "Spec", rpo(**RPO_RECEIVE, stamp_separate_tx=True),
@@ -1840,9 +1997,19 @@ COMPANION = [
     ("RerunPassOver", "rpo-df-copy-keeps-run-deadline", "fault", "Spec", rpo(**RPO_WORK, copy_keeps_run_deadline=True),
      ["Inv_ExpiresNotEarly"], [], "VIOLATION:Inv_ExpiresNotEarly", True,
      "RR-11 fault: #3 keeps #2's (past) run deadline and expires during the pass-over."),
-    ("RerunPassOver", "rpo-df-deadline-early", "fault", "Spec", rpo(**RPO_RECEIVE, deadline_early=True),
+    ("RerunPassOver", "rpo-df-wait-deadline-early", "fault", "Spec", rpo(**RPO_RECEIVE, deadline_early_for=("receive",)),
      ["Inv_TimersNotEarly"], [], "VIOLATION:Inv_TimersNotEarly", True,
-     "RR-11 fault: a wait deadline fires one tick before deadline_at (deadline_at < now + 1)."),
+     "RR-11 fault: a receive's wait deadline fires one tick before deadline_at (deadline_at < now + 1)."),
+    ("RerunPassOver", "rpo-df-parallel-deadline-early", "fault", "Spec", rpo(**RPO_WORK, deadline_early_for=("parallel",)),
+     ["Inv_TimersNotEarly"], [], "VIOLATION:Inv_TimersNotEarly", True,
+     "RR-11 fault: a parallel step's time limit fires one tick before deadline_at."),
+    ("RerunPassOver", "rpo-df-run-deadline-early", "fault", "Spec", rpo(**RPO_WORK, deadline_early_for=("run",)),
+     ["Inv_ExpiresNotEarly"], [], "VIOLATION:Inv_ExpiresNotEarly", True,
+     "RR-11 fault: the run deadline is due one tick early, in enterNode's expired answer and in expireRun."),
+    ("RerunPassOver", "rpo-df-take-ignores-end", "fault", "Spec", rpo(**RPO_RECEIVE, take_ignores_end=True),
+     ["Inv_EndedNoTake"], [], "VIOLATION:Inv_EndedNoTake", True,
+     "RR-5 fault (no terminal fence): a message delivered to a waiting receive after the run's end transaction (a cancel, "
+     "a stop, the deadline) is still taken."),
     ("RerunPassOver", "rpo-df-skip-child-cancel-on-stop", "fault", "Spec", rpo(**RPO_WORK, skip_child_cancel_when=("stopped",)),
      ["Inv_EndedNoActiveChild"], [], "VIOLATION:Inv_EndedNoActiveChild", True,
      "RR-5 fault: a stopped run's end activities leave its active child running."),
@@ -1889,9 +2056,90 @@ def cfg(cid, spec, consts, invs, props, deadlock, note, expected):
     return "\n".join(lines) + "\n"
 
 
+# Properties no fault case trips, each with its reason (README "Coverage"). Every other Inv_ / Prop_ / Live_ definition
+# of a module must be the target of at least one fault case; every definition (TypeOK included) must be checked by at
+# least one design case; every Wit_ definition must be the target of a witness case. coverage() enforces all three and
+# also refuses an exemption that a fault case does trip, so this list stays exact.
+_GRANDFATHERED = "WorkflowRerun property from before batch rr7, outside the audit's hole IDs: checked in every design case, no mutant targets it"
+FAULT_EXEMPT = {
+    ("*", "TypeOK"): "structural typing of every variable: checked in the design cases, never fault-injected",
+    ("WorkflowRerun", "Inv_SuppliedSingleton"): _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_ReusedImmutable"): _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_ValidNeverDiverges"): _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_VisitLimit"): _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_TerminalNoPending"): _GRANDFATHERED,
+    ("WorkflowRerun", "Prop_NoAdmissionAfterTerminal"): _GRANDFATHERED,
+    ("WorkflowRerun", "Prop_SweepRequiresLockAndNoRun"):
+        "its mutant (SweeperSkipsNewLockOrRecheck) is caught first by Inv_AdmittedNotSwept (rr-df-sweeper-deletes-active-claim)",
+    ("WorkflowRerun", "Inv_EventsOnce"): "member of CoreSafety; " + _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_AdmissionOrder"): "member of CoreSafety; " + _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_CatchAllAfterUnhandled"): "member of CoreSafety; " + _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_CancelWinner"): "member of CoreSafety; " + _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_CompletedHasTerminal"): "member of CoreSafety; " + _GRANDFATHERED,
+    ("WorkflowRerun", "Inv_NeverRouteCancelled"): "member of CoreSafety; " + _GRANDFATHERED,
+    ("WorkflowRerun", "Live_ReachesCut"): _GRANDFATHERED,
+    ("WorkflowRerun", "Live_Terminates"): _GRANDFATHERED,
+    ("WorkflowRerun", "Live_ReachesCutOnly"): _GRANDFATHERED,
+    ("WorkflowRerun", "Live_DivergesCleanly"): _GRANDFATHERED,
+    ("WorkflowRerun", "Live_Quiesces"):
+        "its mutant (a lost refusal cleanup with no Sweeper, rr-df-refusal-cleanup-lost-no-sweeper) is caught first as a "
+        "TLC deadlock",
+}
+
+
+def coverage(every):
+    """The config-to-invariant coverage check (I3): fails the generation on any gap."""
+    import re
+    problems, report = [], []
+    for module in sorted({case[0] for case in every}):
+        text = open(f"{module}.tla").read()
+        names = re.findall(r"^(TypeOK|CoreSafety|Inv_\w+|Prop_\w+|Live_\w+|Wit_\w+)\s*==", text, re.M)
+        bundles = {}
+        for bundle in re.finditer(r"^(CoreSafety)\s*==\n((?:[ \t]+.*\n)+)", text, re.M):
+            bundles[bundle.group(1)] = set(re.findall(r"\b(Inv_\w+)\b", bundle.group(2)))
+        cases = [case for case in every if case[0] == module]
+        checked = set()
+        for case in cases:
+            if case[2] == "design":
+                for name in list(case[5]) + list(case[6]):
+                    checked.add(name)
+                    checked |= bundles.get(name, set())
+        target = lambda group: {case[7].split(":", 1)[1] for case in cases
+                                if case[2] == group and case[7].startswith("VIOLATION:")}
+        tripped, witnessed = target("fault"), target("witness")
+        props = [n for n in names if not n.startswith("Wit_")]
+        wits = [n for n in names if n.startswith("Wit_")]
+        exempt = {n for (m, n) in FAULT_EXEMPT if m in (module, "*")}
+        for n in props:
+            if n not in checked:
+                problems.append(f"{module}: {n} is checked by no design case")
+            if n in bundles:
+                continue
+            if n not in tripped and n not in exempt:
+                problems.append(f"{module}: {n} is tripped by no fault case and is not in FAULT_EXEMPT")
+            if n in tripped and (module, n) in FAULT_EXEMPT:
+                problems.append(f"{module}: {n} is in FAULT_EXEMPT but {sorted(c[1] for c in cases if c[7] == 'VIOLATION:' + n)} trip it")
+        for n in wits:
+            if n not in witnessed:
+                problems.append(f"{module}: {n} is the target of no witness case")
+        for n in (tripped | witnessed) - set(names):
+            problems.append(f"{module}: a case targets {n}, which the module does not define")
+        report.append(f"{module}: {len(props)} properties, {len(wits)} witnesses; "
+                      f"{len([n for n in props if n in tripped])} fault-tripped, "
+                      f"{len([n for n in props if n not in tripped and n not in bundles])} exempt")
+    return problems, report
+
+
 def main():
     rows, meta, texts = [], [], []
     every = [(M,) + case for case in CASES] + COMPANION
+    problems, report = coverage(every)
+    print("\n".join(report))
+    if problems:
+        print("\n".join(problems))
+        raise SystemExit("coverage check failed")
+    if "--check" in _sys.argv[1:]:
+        return
     for module, cid, group, spec, consts, invs, props, expected, deadlock, note in every:
         name = f"{cid}.cfg"
         texts.append(cfg(cid, spec, consts, invs, props, deadlock, note, expected))

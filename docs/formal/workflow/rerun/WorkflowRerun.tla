@@ -77,7 +77,7 @@ CONSTANTS
     CopyKeepsDeadline,   \* fault: copied receive visit keeps source total deadline
     DivergeInserts,      \* fault: cut guard inserts pending row before failing
     CarryLateMessage,    \* fault: inbox carry copies post-cut message
-    CarryDropsDroppedReader, \* fault (old filter): carries only unconsumed rows, dropping ones a dropped visit read
+    CarryReadMessage,    \* fault: also carries a message a dropped visit read (consumed_by not a kept visit)
     CarryDropsEqualCut,  \* fault (old filter): treats accepted_at = cut as late (accepted_at < cut)
     CarryKeepsExpiredAtCut, \* fault: treats expires_at = cut as unexpired (expires_at >= cut)
     LockNewBeforeOwner,  \* fault: copy locks #2/#3 before owner (deadlocks OwnerEnded)
@@ -111,7 +111,9 @@ CONSTANTS
     \* ---- Task 6a-TLA+2 additions (RR-4, RR-9) ----
     AllowCleanupCrash,            \* RR-4: a crash between a refusal and its cleanup transaction loses the cleanup
     RetryAfterCut,                \* RR-9: an enterNode result is lost and re-run after the cut too (not only in the pass-over)
-    TakeIgnoresTaken              \* fault (RR-9): a re-run enterNode of a receive that took a carried message takes it again
+    TakeIgnoresTaken,             \* fault (RR-9): a re-run enterNode of a receive that took a carried message takes it again
+    \* ---- Task R5 (owner ruling, 27 Nov 22:35 PST) ----
+    NoNewMessage                  \* TRUE = nobody sends #3 a new message: a receive with nothing to take hits its time limit
 
 ASSUME SourceKind \in {"loop", "catchall", "parallel", "approval", "inbox", "supply_first", "spawn", "spawn_lane"}
 ASSUME Mode \in {"run_again", "continue", "supply"}
@@ -125,13 +127,13 @@ ASSUME {StartVars, InputHashMismatch, AllowDeleters, AllowOwnerEnd, AllowClaimCr
         AllowRetry, AllowCan, FitCheck, Guard, CheckInputHash, CheckCopyCoord, PlanBudget,
         FlatOrigin, AtomicCopy, ApprovalGate, StartsDecided, CopyKeepsIds, OrdinalsRestart,
         DropsCatchAll, NoSourceLock, RepickOnResume, CopyKeepsDeadline, DivergeInserts,
-        CarryLateMessage, CarryDropsDroppedReader, CarryDropsEqualCut, CarryKeepsExpiredAtCut, LockNewBeforeOwner,
+        CarryLateMessage, CarryReadMessage, CarryDropsEqualCut, CarryKeepsExpiredAtCut, LockNewBeforeOwner,
         SupplyNever, SupplyNotePresent, AllowRetrySupplyChange, AutoPicked, ReqModeContinue, AllowResumeAfterCrash,
         AllowShellSweeper, AllowPostSweepStart, AllowSupplyOnForbiddenStep, StartsSupplied,
         AllowUndeclaredSupplyOutcome, IgnoreSupplyNever, IgnoreMissingSupplyNote,
         RepickSuppliedOnRetry, SkipGr1CutBack, SkipParentEndCancel, SkipImmediateRefusalCleanup,
         SweeperSkipsNewLockOrRecheck, StrayNotice, CarryNoticeByTime, CutVisitCopied, CarryComparesCopyTime,
-        SourceEndRace, AllowCleanupCrash, RetryAfterCut, TakeIgnoresTaken} \subseteq BOOLEAN
+        SourceEndRace, AllowCleanupCrash, RetryAfterCut, TakeIgnoresTaken, NoNewMessage} \subseteq BOOLEAN
 ASSUME EndClock \in {"begin", "locked"}
 ASSUME (StrayNotice \/ CutVisitCopied \/ SourceEndRace) => SourceKind = "inbox"
 ASSUME CutVisitCopied => (Generations = 2 /\ ~StrayNotice)
@@ -208,7 +210,7 @@ Gr1Active == (Gr1EarliestIdx > 0)
 \* 3 = after the cut, 4 = later. A message has a shape [accept, expire, reader] with expire > accept: accept is the time it
 \* was first accepted, as a place in the history the cut is taken in (accepted_at of a row accepted into #2), expire is
 \* expires_at (CutTime = expires exactly at the cut), reader is the #2 visit that consumed it (consumed_by): NoNode
-\* (unconsumed), KeptReader (#2's receive R1, which the inbox re-run reuses) or DroppedReader (a #2 visit the re-run drops,
+\* (unread), KeptReader (#2's receive R1, which the inbox re-run reuses) or DroppedReader (a #2 visit the re-run drops,
 \* such as #2's receive R2 at the cut, which the re-run runs again). SourceKind "inbox" enumerates every shape of two
 \* ordinary messages (m1, m2) and of the reused spawn's WorkflowEnded@1 notice (m_child): 12^3 = 1,728 inboxes. With
 \* StrayNotice (review I-INBOX), m2 is replaced by m_stray, the WorkflowEnded@1 notice of a child whose spawn #3 does not
@@ -427,7 +429,7 @@ NewWorkOutcomes(x) ==
                        ELSE IF Mode = "supply" THEN {"ok"}
                        ELSE {"again", "ok", "error"}
       [] x[1] = "H"  -> {"ok"}
-      [] x[1] = "R"  -> {"msg"}
+      [] x[1] = "R"  -> IF NoNewMessage THEN {"elapsed"} ELSE {"msg"}
       [] x = SPNode  -> {"started"}
       [] x = PNode   -> {"ok"}
       [] OTHER -> {"ok"}
@@ -554,7 +556,7 @@ vars == <<lockVars, sessionVars, startVars, shellVars, runVars, inboxVars, ctrlV
 -----------------------------------------------------------------------------
 (* Type invariant                                                          *)
 
-Outcomes == {"none", "again", "ok", "error", "approved", "msg", "exhausted", "cancelled", "succeeded", "started", "undeclared"}
+Outcomes == {"none", "again", "ok", "error", "approved", "msg", "elapsed", "exhausted", "cancelled", "succeeded", "started", "undeclared"}
 Routes == {"none", "initial", "again", "ok", "error", "approved", "msg", "exhausted", "catchAll", "branch", "started", "undeclared"}
 SuppliedPinDomain == [outcome: Outcomes, payloadVer: 0..2]
 
@@ -583,7 +585,7 @@ TypeOK ==
     /\ nState \in [AllNodes -> {"absent", "pending", "completed"}]
     /\ nPred \in [AllNodes -> AllNodes \cup {NoNode}]
     /\ nRoute \in [AllNodes -> Routes]
-    /\ nWinner \in [AllNodes -> {"none", "reused", "supplied", "effect", "cancel", "controller", "delete"}]
+    /\ nWinner \in [AllNodes -> {"none", "reused", "supplied", "effect", "timer", "cancel", "controller", "delete"}]
     /\ nOutcome \in [AllNodes -> Outcomes]
     /\ nResultKind \in [AllNodes -> {"none", "business", "runtime_error"}]
     /\ nOrigin \in [AllNodes -> {"none", "wf1", "wf2", "wf3"}]
@@ -725,18 +727,18 @@ CopyOriginOf(x) ==
 CopyDeadlineOf(x) ==
     IF CopyKeepsDeadline /\ x = RNode(1) THEN "source" ELSE "none"
 
-\* Design §5.4: exactly the #2 messages a fresh run started at the cut would still see, read from the history the cut is
-\* taken in (a message's first acceptance and its expiry; never #2's stored copy times). An ordinary message accepted at or
-\* before the cut and unexpired at it (accept <= CutTime < expire), or a WorkflowEnded@1 notice of a reused spawn child
-\* whatever its times, but never the notice of a child whose spawn #3 does not reuse (review I-INBOX); in every case not
-\* consumed by a #2 visit that #3 keeps. Kept visits are the reused visits (lanes included) and the supplied visit V'
-\* (store.ts rerunKeptSourceIds); a message read only by a dropped visit is carried. With SourceEndRace the cut is #2's
-\* end, and m_late waited at it exactly when #2 accepted it, that is, while #2 was active (event order, not timestamps).
+\* Design §5.4 (owner ruling, 27 Nov 22:35 PST): the #2 messages that no #2 visit read and that a fresh run started at the
+\* cut would still see, read from the history the cut is taken in (a message's first acceptance and its expiry; never #2's
+\* stored copy times). An unread ordinary message accepted at or before the cut and unexpired at it (accept <= CutTime <
+\* expire), or an unread WorkflowEnded@1 notice of a reused spawn child whatever its times, but never the notice of a child
+\* whose spawn #3 does not reuse (review I-INBOX). A message any visit read (kept, supplied or dropped) is never carried:
+\* a re-run that starts before the visit that read it waits for a new message. With SourceEndRace the cut is #2's end,
+\* and m_late waited at it exactly when #2 accepted it, that is, while #2 was active (event order, not timestamps).
 KeptSourceVisits == ExpectedReused \cup ExpectedSupplied
 MsgPresent(m) == ~SourceEndRace \/ accPc = "done"
 EligibleCarry(m) ==
     /\ MsgPresent(m)
-    /\ srcInbox[m].reader \notin KeptSourceVisits
+    /\ srcInbox[m].reader = NoNode
     /\ \/ (m \in OrdMsgs /\ (SourceEndRace \/ (srcInbox[m].accept <= CutTime /\ srcInbox[m].expire > CutTime)))
        \/ m \in ReusedNoticeMsgs
 EligibleCarrySet == {m \in InboxMsgs : EligibleCarry(m)}
@@ -753,22 +755,23 @@ CodeCutAt == IF SourceEndRace THEN srcEndAt ELSE CutTime
 CodeAcceptAt(m) == IF StoredOriginAt(m) # 0 /\ ~CarryComparesCopyTime THEN StoredOriginAt(m) ELSE StoredAcceptedAt(m)
 
 \* store.ts copyRerunInboxIn (and summarizeRerunCarriedInbox) WHERE clause over #2's rows:
-\*   (consumed_by IS NULL OR NOT consumed_by = ANY(keptSourceIds))
+\*   consumed_by IS NULL
 \*   AND ((contract <> WorkflowEnded@1 AND COALESCE(origin_accepted_at, accepted_at) <= cut AND expires_at > cut)
 \*        OR (contract = WorkflowEnded@1 AND sender = ANY(reusedSpawnChildIds)))
-\* Faults encode wrong filters: CarryLateMessage drops the time test, CarryDropsDroppedReader keeps only unconsumed rows
-\* (consumed_by IS NULL), CarryDropsEqualCut models the old loss of a message accepted exactly at the cut as
-\* accepted_at < cut, CarryKeepsExpiredAtCut uses expires_at >= cut, CarryNoticeByTime drops only the time arm's contract
-\* discriminator (I-INBOX), and CarryComparesCopyTime compares accepted_at instead of COALESCE(origin_accepted_at,
-\* accepted_at) (RR-1, the code before origin_accepted_at).
-CodeNotConsumedByKept(m) ==
-    IF CarryDropsDroppedReader THEN srcInbox[m].reader = NoNode ELSE srcInbox[m].reader \notin KeptSourceVisits
+\* Faults encode wrong filters: CarryLateMessage drops the time test, CarryReadMessage also carries a row a dropped visit
+\* read (consumed_by IS NULL OR consumed_by is not a kept visit: reused, lanes included, or the supplied visit V'),
+\* CarryDropsEqualCut models the old loss of a message accepted exactly at the cut as accepted_at < cut,
+\* CarryKeepsExpiredAtCut uses expires_at >= cut, CarryNoticeByTime drops only the time arm's contract discriminator
+\* (I-INBOX), and CarryComparesCopyTime compares accepted_at instead of COALESCE(origin_accepted_at, accepted_at) (RR-1,
+\* the code before origin_accepted_at).
+CodeUnread(m) ==
+    IF CarryReadMessage THEN srcInbox[m].reader \notin KeptSourceVisits ELSE srcInbox[m].reader = NoNode
 CodeWaitingAtCut(m) ==
     /\ IF CarryDropsEqualCut THEN CodeAcceptAt(m) < CodeCutAt ELSE CodeAcceptAt(m) <= CodeCutAt
     /\ IF CarryKeepsExpiredAtCut THEN StoredExpiresAt(m) >= CodeCutAt ELSE StoredExpiresAt(m) > CodeCutAt
 CodeTimeArm(m) == (m \notin NoticeMsgs \/ CarryNoticeByTime) /\ CodeWaitingAtCut(m)
 TargetInbox ==
-    {m \in InboxMsgs : MsgPresent(m) /\ CodeNotConsumedByKept(m)
+    {m \in InboxMsgs : MsgPresent(m) /\ CodeUnread(m)
                        /\ (CarryLateMessage \/ CodeTimeArm(m) \/ m \in ReusedNoticeMsgs)}
 
 \* RR-4: a refusal rolls the admission transaction back and changes nothing: the claim shell is left as it is, and its
@@ -1648,7 +1651,7 @@ EffFinish(x) ==
     /\ \E o \in NewWorkOutcomes(x) :
          IF nState[x] = "pending" /\ runStatus \in Active
            THEN /\ nState' = [nState EXCEPT ![x] = "completed"]
-                /\ nWinner' = [nWinner EXCEPT ![x] = "effect"]
+                /\ nWinner' = [nWinner EXCEPT ![x] = IF o = "elapsed" THEN "timer" ELSE "effect"]
                 /\ nOutcome' = [nOutcome EXCEPT ![x] = o]
                 /\ nResultKind' = [nResultKind EXCEPT ![x] = IF o = "error" THEN "runtime_error" ELSE "business"]
                 /\ events' = [events EXCEPT !.stateCompleted[x] = @ + 1]
@@ -1819,8 +1822,8 @@ Inv_AutoPickNoCancelledReuse ==
         \A x \in reusedSet : ~IsCancelledOrNoticelessSpawn(x)
 
 \* RR-4: once a refusal's own cleanup transaction ran, the claim shell is not left bare (the refusal step itself changes
-\* nothing; a cleanup lost in a crash is the Sweeper's: Live_Quiesces).
-Inv_RefusedClaimDeletedAtOnce ==
+\* nothing, so nothing is deleted at the refusal; a cleanup lost in a crash is the Sweeper's: Live_Quiesces).
+Inv_RefusalCleanupLeavesNoBareShell ==
     (startPhase \in Refused /\ refusalCleanup = "done") => (claimShellState # "live_unadmitted")
 
 \* R2-M1 safety invariant: a run is never admitted onto a swept shell, and an admitted shell is never swept
@@ -1918,8 +1921,9 @@ Inv_TotalFromFirstNew ==
 Inv_CarriedWereWaiting ==
     \A m \in carriedInbox : EligibleCarry(m)
 
-\* Exact carry (Design §5.4): once admitted, #3 carries exactly the messages a fresh run at the cut would still see,
-\* no more (Inv_CarriedWereWaiting) and no fewer (a message accepted exactly at the cut, or read only by a dropped visit).
+\* Exact carry (Design §5.4): once admitted, #3 carries exactly the unread messages a fresh run at the cut would still see,
+\* no more (Inv_CarriedWereWaiting; a message any visit read, a dropped one included) and no fewer (an unread message
+\* accepted exactly at the cut).
 Inv_InboxCarryExact ==
     (startPhase = "admitted") => (carriedInbox = EligibleCarrySet)
 
@@ -2038,9 +2042,23 @@ Wit_NoLateRetryAfterSweep ==
 Wit_NoCarryAtCut ==
     ~(\E m \in OrdMsgs : srcInbox[m].accept = CutTime /\ m \in carriedInbox /\ inboxTaken[m] = 1 /\ runStatus = "completed")
 
-\* A waiting message that #2's dropped receive had read is carried, taken by #3's new receive, and the run completes.
-Wit_NoCarryDroppedReader ==
-    ~(\E m \in OrdMsgs : srcInbox[m].reader = DroppedReader /\ m \in carriedInbox /\ inboxTaken[m] = 1 /\ runStatus = "completed")
+\* Task R5: #3 starts before R2, the receive whose message #2 read. That message is not carried, R2 waits (pending) for a
+\* new one, a new message arrives in #3 (R2's effect, winner effect, outcome msg) and the run completes.
+Wit_NoNewMessageAfterRead ==
+    ~(/\ \E m \in OrdMsgs : srcInbox[m].reader = DroppedReader /\ m \notin carriedInbox
+      /\ RNode(2) \in newVisits /\ eff[RNode(2)] = "done" /\ nWinner[RNode(2)] = "effect" /\ nOutcome[RNode(2)] = "msg"
+      /\ runStatus = "completed")
+
+\* Task R5: the reused spawn child's WorkflowEnded@1 notice, read by #2's dropped receive R2, is not carried by an admitted
+\* re-run (R2 runs again and waits for a new message).
+Wit_NoReadNoticeLeft ==
+    ~(startPhase = "admitted" /\ \E m \in ReusedNoticeMsgs : srcInbox[m].reader = DroppedReader /\ m \notin carriedInbox)
+
+\* Task R5 (NoNewMessage): #3 starts before R2, R2's old message is not carried, nobody sends a new one, and R2 hits its
+\* time limit: the run ends failed. No liveness property asks this run to complete.
+Wit_NoReceiveTimedOut ==
+    ~(/\ \E m \in OrdMsgs : srcInbox[m].reader = DroppedReader /\ m \notin carriedInbox
+      /\ nWinner[RNode(2)] = "timer" /\ nOutcome[RNode(2)] = "elapsed" /\ runStatus = "failed")
 
 \* An unconsumed message accepted before the cut that expires exactly at it is left behind by an admitted re-run.
 Wit_NoExpiredAtCutLeft ==

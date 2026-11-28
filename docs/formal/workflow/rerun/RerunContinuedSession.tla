@@ -29,6 +29,12 @@
 (* was lost (recapLostCycle). At the turn, the session reads the cycles   *)
 (* lost before it (store.ts readAgentCyclesLostBefore) and carries the    *)
 (* summary again when the cycle it points to was lost.                    *)
+(*                                                                         *)
+(* Assumption (CS-6 scope): one bit, lost[j], stands for both the loss of *)
+(* a cycle's conversation and its successful recording. The loss event is *)
+(* a best-effort write (session-proxy.ts); a loss whose recording fails is*)
+(* outside this model (audit CS-5), so these properties do not establish  *)
+(* the recap under a failed store write.                                  *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -60,7 +66,7 @@ VARIABLES
     queued,     \* [Cycles -> BOOLEAN]: the spawn was recorded (the prompt is in the session's queue)
     turn,       \* [Cycles -> "none" | "ran" | "dropped"]
     winner,     \* [Cycles -> "none" | "agent" | "controller"]
-    lost,       \* [Cycles -> BOOLEAN]: the conversation of this cycle was lost after its report (recorded)
+    lost,       \* [Cycles -> BOOLEAN]: the conversation of this cycle was lost after its report, and the loss recorded
     ended,      \* [Sessions -> BOOLEAN]: the session ended on its own
     nextSess,   \* the next new session id
     reCarried,  \* [Cycles -> BOOLEAN]: at its turn, the summary was carried again (the cycle it points to was lost)
@@ -186,7 +192,12 @@ Spec == Init /\ [][Next]_vars
 
 TypeOK ==
     /\ K \in PreCuts /\ cur \in 0..Live /\ nextSess \in 2..(Live + 2)
+    /\ st \in [Cycles -> {"none", "admitted", "queued", "refused", "decided"}]
     /\ sessOf \in [Cycles -> Sessions] /\ pointsTo \in [Cycles -> 0..Live]
+    /\ carries \in [Cycles -> BOOLEAN] /\ queued \in [Cycles -> BOOLEAN] /\ lost \in [Cycles -> BOOLEAN]
+    /\ turn \in [Cycles -> {"none", "ran", "dropped"}] /\ winner \in [Cycles -> {"none", "agent", "controller"}]
+    /\ ended \in [Sessions -> BOOLEAN] /\ reCarried \in [Cycles -> BOOLEAN]
+    /\ falseClaim \in BOOLEAN /\ noRecap \in BOOLEAN
 
 \* CS-6: no turn runs under a claim that the pre-cut summary is in an earlier cycle's prompt above when it is not (that
 \* cycle's turn did not run, its conversation was lost, or its prompt did not carry the summary).
@@ -198,10 +209,11 @@ Inv_RecapAvailable == ~noRecap
 Inv_SessionIsolation == \A j \in Cycles : st[j] # "none" => sessOf[j] # SourceSession
 
 \* Witnesses (each expected violated).
-\* The audit's trace: the first live cycle was queued and timed out before its turn ran; the next cycle of the same
-\* session carries the summary itself and its turn runs.
+\* The audit's trace: the first live cycle was queued and timed out before its turn ran (its turn never ran: dropped); the
+\* next cycle of the same session carries the summary itself and its turn runs.
 Wit_NoTimedOutThenCarried ==
-    ~(K > 0 /\ queued[1] /\ winner[1] = "controller" /\ Live >= 2 /\ sessOf[2] = sessOf[1] /\ carries[2] /\ turn[2] = "ran")
+    ~(K > 0 /\ queued[1] /\ winner[1] = "controller" /\ turn[1] = "dropped" /\ Live >= 2 /\ sessOf[2] = sessOf[1]
+      /\ carries[2] /\ turn[2] = "ran")
 \* A cycle points to an earlier cycle of its session that reported, and that pointer is true at its turn.
 Wit_NoPointerHonoured == ~(\E j \in Cycles : pointsTo[j] > 0 /\ turn[j] = "ran" /\ InConversation(pointsTo[j]))
 \* The cycle a later prompt points to is lost before that later turn; the turn note carries the summary again.
