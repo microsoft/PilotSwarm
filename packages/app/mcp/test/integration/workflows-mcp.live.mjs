@@ -519,6 +519,10 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
                     approval_id: pending.approvalId, context_sha256: pending.contextSha256, decision: "approved" } },
             }));
             assert.equal(receipt?.decision, "approved", `${modeLabel}: ${JSON.stringify(receipt)}`);
+            // The receipt every surface returns (approvalReceiptView): a person, never the provider or subject; no session named.
+            assert.equal(receipt.decidedBy?.by, "a person", `${modeLabel}: ${JSON.stringify(receipt)}`);
+            assert.doesNotMatch(JSON.stringify(receipt), /"(provider|subject)"/, `${modeLabel}: ${JSON.stringify(receipt)}`);
+            assert.equal(receipt.viaSessionId, null, `${modeLabel}: ${JSON.stringify(receipt)}`);
             let gatedView = null;
             for (const until = Date.now() + 60_000; Date.now() < until;) {
                 gatedView = parse(await client.callTool({ name: "read_workflow", arguments: { session_id: gated.workflowId } }));

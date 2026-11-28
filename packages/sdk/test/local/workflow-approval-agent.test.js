@@ -199,6 +199,40 @@ describe("workflow approval answered by the controlling session", () => {
         }
     });
 
+    it("the session's receipt and a person's receipt have one masked shape", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const h = await harness(env);
+        const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
+            factsSchema: env.factsSchema, workflowCommands: {} });
+        await mgmt.start();
+        try {
+            const s = await openApproval(h, { build: "1.2.3" }, TWO_GATES);
+            const { ok, ...agent } = await s.update(answer(s, "approved", "agent-first"));
+            expect(ok).toBe(true);
+            const confirmId = nodeExecutionIdFor(s.runId, "root", "confirm", 1);
+            const confirm = await until(async () => {
+                const read = (await h.store.approvals.readMany([confirmId])).get(confirmId);
+                return read?.status === "pending" ? read : null;
+            }, "the second approval to open");
+            const second = { ...s, approvalId: confirmId, contextSha256: confirm.contextSha256 };
+            const person = await mgmt.updateWorkflow(s.workflowId, answer(second, "approved", "person-second"), { principal: OWNER });
+            expect(Object.keys(person).sort()).toEqual(Object.keys(agent).sort());
+            expect(agent.decidedBy).toEqual({ by: "a person" });
+            expect(person.decidedBy).toEqual(agent.decidedBy);
+            expect(agent.viaSessionId).toBe(s.parentId);
+            expect(person.viaSessionId).toBeNull();
+            for (const receipt of [agent, person]) {
+                expect(JSON.stringify(receipt)).not.toContain(OWNER.subject);
+                expect(JSON.stringify(receipt)).not.toMatch(/"(provider|subject)"/);
+            }
+            const run = await finished(h, s.runId);
+            expect(run).toMatchObject({ terminalNodeId: "release", terminalOutcome: "succeeded" });
+        } finally {
+            await mgmt.stop();
+            await h.stop();
+        }
+    });
+
     it("answered rejected with a reason routes rejected", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
