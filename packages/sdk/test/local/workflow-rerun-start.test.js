@@ -1269,3 +1269,137 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
         });
     });
 });
+
+describe("B1: an inherited tool grant on a retried re-run Start (bare-claim recovery and admitted replay)", () => {
+    const TOOL_CAPS = { revision: 1, selections: [{ sourceId: "pkg:demo", sourceRef: "pkg:demo", tools: ["read_facts"], mcpServers: [] }] };
+
+    /** An ended TOOL_SCRIPT_YAML source whose owner-started binding a direct owner re-run inherits. */
+    async function seedInheritedToolSource(h) {
+        const ownerSessionId = randomUUID();
+        return seedEndedSessionWorkflow(h, { ownerSessionId, yaml: TOOL_SCRIPT_YAML, ownerCapabilities: TOOL_CAPS, binding: makeToolBinding(ownerSessionId) });
+    }
+
+    /** A re-run Start that names no binding, so it inherits the source's. */
+    const rerunOf = (src, extra) => ({
+        ownerSessionId: src.ownerSessionId, definition: { definitionId: src.definitionId }, inputs: {}, actor: OWNER_ACTOR, owner: OWNER,
+        rerunFrom: { workflowId: src.workflowId, executionId: src.ids["step2#1"], mode: "run_again" }, ...extra,
+    });
+
+    function storeQueries() {
+        const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+        const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+        return {
+            pool,
+            async rows(workflowSessionId) {
+                const { rows: [session] } = await pool.query(`SELECT deleted_at FROM ${s}.sessions WHERE session_id = $1`, [workflowSessionId]);
+                const { rows: [counts] } = await pool.query(
+                    `SELECT (SELECT count(*)::int FROM ${s}.workflow_definitions WHERE workflow_session_id = $1) AS defs,
+                            (SELECT count(*)::int FROM ${s}.workflow_runs WHERE workflow_session_id = $1) AS runs`, [workflowSessionId]);
+                return { deleted: session ? session.deleted_at !== null : null, defs: counts.defs, runs: counts.runs };
+            },
+            async claimGrant(workflowSessionId) {
+                const { rows: [row] } = await pool.query(
+                    `SELECT creation_config->'workflow'->'rerunPin'->>'grant' AS grant,
+                            creation_config->'workflowToolBinding'->'tools' AS tools
+                       FROM ${s}.sessions WHERE session_id = $1`, [workflowSessionId]);
+                return row ?? null;
+            },
+        };
+    }
+
+    /** A Start that claims its Workflow, then crashes before its admission: the bare claim keeps the inherited grant. */
+    async function crashAfterClaim(h, q, request) {
+        let shell = null;
+        const crashHost = { ...h, store: Object.assign(Object.create(h.store), {
+            createDefinition: async (arg) => { shell = arg.workflowSessionId; throw new Error("simulated crash after claim"); },
+        }) };
+        await expect(startSessionWorkflowDefinition(crashHost, request)).rejects.toThrow("simulated crash after claim");
+        expect(shell).toBeTruthy();
+        expect(await q.rows(shell)).toEqual({ deleted: false, defs: 0, runs: 0 });
+        const claim = await q.claimGrant(shell);
+        expect(claim.grant).toBe("inherited");
+        expect(claim.tools).toEqual([{ name: "read_facts", schemaHash: "h-rf" }]);
+        return shell;
+    }
+
+    it("refuses a keyed bare-claim retry after the owner removed the inherited capability (409) and removes the bare claim", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const q = storeQueries();
+            try {
+                const src = await seedInheritedToolSource(h);
+                const key = `b1-revoked-${randomUUID()}`;
+                const shell = await crashAfterClaim(h, q, rerunOf(src, { operationId: "b1-revoked-1", key }));
+                await h.catalog.saveSessionCapabilities(src.ownerSessionId, 1, { revision: 2, selections: [] });
+                await expectCode(startSessionWorkflowDefinition(h, rerunOf(src, { operationId: "b1-revoked-2", key })), "WORKFLOW_TOOLS_UNAVAILABLE");
+                expect(await q.rows(shell)).toEqual({ deleted: true, defs: 0, runs: 0 });
+                // The key's claim is gone: a later retry of it is told so, and admits nothing.
+                await expectCode(startSessionWorkflowDefinition(h, rerunOf(src, { operationId: "b1-revoked-3", key })), "WORKFLOW_DELETED");
+                expect(await q.rows(shell)).toEqual({ deleted: true, defs: 0, runs: 0 });
+            } finally {
+                await q.pool.end();
+            }
+        });
+    });
+
+    it("refuses a keyed bare-claim retry proxied through an agent session (409) and removes the bare claim", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const q = storeQueries();
+            try {
+                const src = await seedInheritedToolSource(h);
+                const key = `b1-proxied-${randomUUID()}`;
+                const shell = await crashAfterClaim(h, q, rerunOf(src, { operationId: "b1-proxied-1", key }));
+                await expectCode(startSessionWorkflowDefinition(h, rerunOf(src, {
+                    operationId: "b1-proxied-2", key, originatingSessionId: "agent-proxy-b1",
+                })), "WORKFLOW_TOOLS_UNAVAILABLE");
+                expect(await q.rows(shell)).toEqual({ deleted: true, defs: 0, runs: 0 });
+            } finally {
+                await q.pool.end();
+            }
+        });
+    });
+
+    it("recovers an operation-id-only bare claim with its inherited grant when the retry names no binding and the owner policy is unchanged", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const q = storeQueries();
+            try {
+                const src = await seedInheritedToolSource(h);
+                const shell = await crashAfterClaim(h, q, rerunOf(src, { operationId: "b1-opid-recover" }));
+                const recovered = await startSessionWorkflowDefinition(h, rerunOf(src, { operationId: "b1-opid-recover" }));
+                expect(recovered.workflowId).toBe(shell);
+                expect(recovered.replayed).toBe(false);
+                expect(recovered.runId).toBeTruthy();
+                expect(recovered.rerun?.grant).toBe("inherited");
+                expect(await q.rows(shell)).toEqual({ deleted: false, defs: 1, runs: 1 });
+                expect((await q.claimGrant(shell)).tools).toEqual([{ name: "read_facts", schemaHash: "h-rf" }]);
+            } finally {
+                await q.pool.end();
+            }
+        });
+    });
+
+    it("replays an admitted operation-id-only inherited-grant re-run from its receipt after the source is deleted and the owner policy changed", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const q = storeQueries();
+            try {
+                const src = await seedInheritedToolSource(h);
+                const first = await startSessionWorkflowDefinition(h, rerunOf(src, { operationId: "b1-opid-replay" }));
+                expect(first.replayed).toBe(false);
+                expect(first.rerun?.grant).toBe("inherited");
+                await h.catalog.softDeleteSession(src.workflowId);
+                await h.catalog.saveSessionCapabilities(src.ownerSessionId, 1, { revision: 2, selections: [] });
+                const replay = await startSessionWorkflowDefinition(h, rerunOf(src, { operationId: "b1-opid-replay" }));
+                expect(replay.replayed).toBe(true);
+                expect(replay.workflowId).toBe(first.workflowId);
+                expect(replay.runId).toBe(first.runId);
+                expect(replay.rerun?.grant).toBe("inherited");
+                expect(await q.rows(first.workflowId)).toEqual({ deleted: false, defs: 1, runs: 1 });
+            } finally {
+                await q.pool.end();
+            }
+        });
+    });
+});

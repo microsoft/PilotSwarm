@@ -527,45 +527,52 @@ async function resolveRerunToolBinding(host: WorkflowHost, request: Parameters<t
     }
     const needsGrant = workflowToolDiagnostics(targetIr, null, true, {}).some(d =>
         d.code === "WORKFLOW_TOOL_NOT_GRANTED" || d.code === "WORKFLOW_TOOLS_DYNAMIC" || d.code === "WORKFLOW_TOOLS_UNCHECKED");
-    // OQ1 narrow 5-condition owner tool-grant inheritance:
-    const deny = (why: string): { binding: null; inherited: false; sourceWorkspace: WorkflowWorkspace | null } => {
+    const refusal = await inheritedGrantRefusal(host, request, sourceBinding);
+    if (refusal) {
         if (needsGrant) {
             throw new WorkflowStoreError("WORKFLOW_TOOLS_UNAVAILABLE",
-                `${defName} cannot inherit the source Workflow's tool grant (${why}). Nothing was started.`);
+                `${defName} cannot inherit the source Workflow's tool grant (${refusal}). Nothing was started.`);
         }
         return { binding: null, inherited: false, sourceWorkspace };
-    };
-    if (request.actor.kind !== "user") return deny("only the owning person may inherit a tool grant");
-    if (request.originatingSessionId != null) return deny("proxied agent calls cannot inherit a tool grant");
+    }
+    const { agentStepBindings: _dropOldSnapshots, ...cleanSourceBinding } = sourceBinding;
+    return { binding: { ...cleanSourceBinding, agentStepTools: "selections" as const }, inherited: true, sourceWorkspace };
+}
+
+/**
+ * OQ1 narrow 5-condition owner tool-grant inheritance: why this caller may not use `binding` as an inherited grant now, or
+ * null when it may. Fresh Start checks the source Workflow's binding; recovery of a bare claim checks the grant its claim
+ * pinned (B1), so both apply the same rules to the caller and the owning session's current policy.
+ */
+async function inheritedGrantRefusal(host: WorkflowHost, request: Parameters<typeof startSessionWorkflowDefinition>[1],
+    binding: WorkflowToolBinding): Promise<string | null> {
+    if (request.actor.kind !== "user") return "only the owning person may inherit a tool grant";
+    if (request.originatingSessionId != null) return "proxied agent calls cannot inherit a tool grant";
     const ownerSession = await host.catalog.getSession(request.ownerSessionId);
-    if (!ownerSession || ownerSession.deletedAt || ownerSession.isSystem) return deny("the owning session is not live");
+    if (!ownerSession || ownerSession.deletedAt || ownerSession.isSystem) return "the owning session is not live";
     if (!ownerSession.owner || ownerSession.owner.provider !== request.actor.provider || ownerSession.owner.subject !== request.actor.subject) {
-        return deny("the caller is not the owning session's owner");
+        return "the caller is not the owning session's owner";
     }
-    if (sourceBinding.owner.provider !== request.actor.provider || sourceBinding.owner.subject !== request.actor.subject) {
-        return deny("the source binding belongs to another owner");
+    if (binding.owner.provider !== request.actor.provider || binding.owner.subject !== request.actor.subject) {
+        return "the source binding belongs to another owner";
     }
-    if (sourceBinding.parentSessionId !== request.ownerSessionId) {
-        return deny("spawned-child bindings cannot be inherited");
-    }
-    if (sourceBinding.inMemory !== undefined) {
-        return deny("in-memory worker tool bindings cannot be inherited");
-    }
+    if (binding.parentSessionId !== request.ownerSessionId) return "spawned-child bindings cannot be inherited";
+    if (binding.inMemory !== undefined) return "in-memory worker tool bindings cannot be inherited";
     const [ownerCaps, ownerCreation] = await Promise.all([
         host.catalog.getSessionCapabilities ? host.catalog.getSessionCapabilities(request.ownerSessionId) : Promise.resolve(EMPTY_CAPABILITY_STATE),
         host.catalog.getSessionCreationConfig ? host.catalog.getSessionCreationConfig(request.ownerSessionId) : Promise.resolve(null),
     ]);
-    if (!capabilitiesCoverSelections(ownerCaps, sourceBinding.capabilities.selections)) {
-        return deny("the owning session's capability selections no longer cover the source grant");
+    if (!capabilitiesCoverSelections(ownerCaps, binding.capabilities.selections)) {
+        return "the owning session's capability selections no longer cover the source grant";
     }
     if (isJsonObject(ownerCreation)) {
         const ceiling = Array.isArray(ownerCreation.toolCeiling)
             ? ownerCreation.toolCeiling.filter((x): x is string => typeof x === "string") : null;
         if (ceiling !== null) {
             const allowed = new Set(ceiling);
-            for (const tool of sourceBinding.tools) {
+            for (const tool of binding.tools) {
                 if (!allowed.has(tool.name) && !allowed.has(`custom:${tool.name}`)) {
-                    return deny(`tool '${tool.name}' is outside the owning session's tool ceiling`);
+                    return `tool '${tool.name}' is outside the owning session's tool ceiling`;
                 }
             }
         }
@@ -573,15 +580,12 @@ async function resolveRerunToolBinding(host: WorkflowHost, request: Parameters<t
             ? ownerCreation.excludedTools.filter((x): x is string => typeof x === "string") : null;
         if (excluded !== null) {
             const blocked = new Set(excluded);
-            for (const tool of sourceBinding.tools) {
-                if (blocked.has(tool.name)) {
-                    return deny(`tool '${tool.name}' is now excluded on the owning session`);
-                }
+            for (const tool of binding.tools) {
+                if (blocked.has(tool.name)) return `tool '${tool.name}' is now excluded on the owning session`;
             }
         }
     }
-    const { agentStepBindings: _dropOldSnapshots, ...cleanSourceBinding } = sourceBinding;
-    return { binding: { ...cleanSourceBinding, agentStepTools: "selections" as const }, inherited: true, sourceWorkspace };
+    return null;
 }
 
 /**
@@ -728,7 +732,28 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
     // answered from what it made, and its grant is only compared.
     const creation = await host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? null;
     const recordedBinding = readWorkflowToolBinding(creation?.workflowToolBinding);
-    const captured = request.key !== undefined ? recordedBinding : await startToolBinding(request.binding, resumedIr, pinned.name);
+    // B1: a re-run that inherited its grant carries the pinned grant again on a retry that names none (a keyed retry always
+    // does). A stored Workflow is answered from its receipt; a bare claim has admitted nothing, so its pinned grant must pass
+    // the fresh-Start inheritance rules again, for this caller and the owner's current policy, or the claim is refused.
+    const inheritedGrant = prior.rerunPin?.grant === "inherited"
+        && (request.key !== undefined || request.binding === undefined || request.binding === null);
+    if (inheritedGrant && resumedClaim) {
+        const refusal = recordedBinding ? await inheritedGrantRefusal(host, request, recordedBinding) : "the claim recorded no tool grant";
+        if (refusal) {
+            const marker = isJsonObject(creation) && isJsonObject(creation.workflow) ? creation.workflow : null;
+            if (marker && marker.operationId === createOpId) {
+                try {
+                    await host.store.softDeleteRefusedClaimShell({ workflowSessionId, operationId: createOpId,
+                        requestSha256: typeof marker.requestSha256 === "string" ? marker.requestSha256 : null });
+                } catch {
+                    // The refusal is the answer; a shell this could not remove is collected by the Sweeper after its grace period.
+                }
+            }
+            throw new WorkflowStoreError("WORKFLOW_TOOLS_UNAVAILABLE",
+                `${pinned.name} cannot inherit the source Workflow's tool grant (${refusal}). Nothing was started.`);
+        }
+    }
+    const captured = request.key !== undefined || inheritedGrant ? recordedBinding : await startToolBinding(request.binding, resumedIr, pinned.name);
     const binding = captured ? { ...captured,
         ...(recordedBinding ? { config: {
             ...captured.config,
