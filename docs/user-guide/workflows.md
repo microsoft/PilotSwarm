@@ -353,22 +353,27 @@ on from the failed step without doing that work again.
 
 **Steps:**
 
-1. Open the Workflow that failed. On the failed step, select **Re-run from
-   here…**, or ask the session "re-run it from the failed step".
-2. Choose how the step goes on:
-   - **Run again:** the step runs again. Use it after a fix or for a
+1. Open the Workflow that failed. Select **Re-run from here…** in its failure
+   line, in the step's Node panel, or (on a desktop) beside the timeline while
+   it shows an earlier step. Or ask the session "re-run it from the failed
+   step".
+2. Choose how the step goes on (**Mode**):
+   - **Run this step again:** the step runs again. Use it after a fix or for a
      temporary error.
-   - **Continue:** the step keeps its result and the next step runs.
-   - **Supply:** the step does not run; you give its result. Use it when the
+   - **Keep this step's result and go on:** the step keeps its result and the
+     next step runs.
+   - **Supply this step's result and go on:** the step does not run; you give
+     its result. Choose its **Outcome**, fill its **Output** (field by field,
+     or as JSON), and write what you checked in **Why**. Use it when the
      external work finished but the step did not report it, for example a
-     server that was created before a script timed out. Write what you checked
-     in **Why**. Supply only values you checked; never guess an id.
+     server that was created before a script timed out. Supply only values you
+     checked; never guess an id.
 3. Check the revision. The re-run uses the revision of the Workflow that
    failed. After you fix the definition, choose the newer revision when the
    sheet says it fits.
-4. Select **Start**. A new Workflow starts. The steps before the chosen step
-   show as **Reused** (or **Supplied**) and do not run again. The Workflow that
-   failed does not change.
+4. Select **Start #N**. A new Workflow starts. The steps before the chosen
+   step show as **Reused** (or **✎ Supplied**) and do not run again. The
+   Workflow that failed does not change.
 
 **What just happened:** the new Workflow took the inputs and workspace of the
 one that failed, its variables as they were at the chosen step, and its count

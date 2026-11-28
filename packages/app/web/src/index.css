@@ -14360,3 +14360,102 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   position: absolute;
   inset: -4px;
 }
+
+/* Phase 3 I7: Re-run from here… (design §7). The confirm sheet scrolls between its pinned title and its Cancel | Start; on a
+   phone it is a full-height bottom sheet whose fields are 16 px (no zoom on focus) and whose targets are 44 px. A supplied
+   visit's accent is each theme's own --ps-wf-supplied (4.5:1 on a card, its panel and the tab); a reused one is muted.
+   The timeline's hatched band runs to where the re-run starts, the supplied visit marked on it. */
+.ps-wf-dialog.is-rerun .ps-wf-dialog-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.ps-wf-rerun-group { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.ps-wf-rerun-group > legend { margin-bottom: 4px; padding: 0; }
+.ps-wf-rerun-group > small { color: var(--ps-muted); }
+.ps-wf-rerun-supply { display: grid; gap: 10px; padding: 10px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-sm); }
+.ps-wf-rerun-output-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ps-wf-rerun-toggle { display: inline-flex; align-items: baseline; gap: 4px; color: var(--ps-muted); }
+.ps-wf-rerun-toggle .ps-link-button[aria-pressed="true"] { color: var(--ps-foreground); font-weight: 600; text-decoration: none; }
+.ps-wf-rerun-schema > summary,
+.ps-wf-rerun-reused > summary { color: var(--ps-muted); cursor: pointer; }
+.ps-wf-rerun-schema > pre { max-height: 12em; margin: 6px 0 0; overflow: auto; font-size: 0.9em; }
+.ps-wf-rerun-reused ul,
+.ps-wf-rerun-warnings,
+.ps-wf-rerun-problems { display: grid; gap: 2px; margin: 0; padding-left: 1.2em; overflow-wrap: anywhere; }
+.ps-wf-rerun-reused p { margin: 4px 0 0; }
+.ps-wf-rerun-problems { color: var(--ps-wf-danger-text, var(--ps-danger)); }
+.ps-wf-rerun-warnings { color: var(--ps-muted); }
+.ps-wf-line.is-supplied { color: var(--ps-wf-supplied, #ffa657); }
+.ps-wf-dialog.is-rerun .ps-wf-dialog-foot { justify-content: flex-end; }
+.ps-wf-dialog.is-rerun .ps-wf-dialog-foot .ps-wf-line.is-error { flex: 1 1 16em; margin: 0; padding: 0; }
+.ps-modal.ps-wf-dialog.is-rerun.is-sheet {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 100svh;
+  max-height: 100svh;
+  padding: 0 0 env(safe-area-inset-bottom, 0px);
+  border-radius: var(--ps-radius-md) var(--ps-radius-md) 0 0;
+}
+.ps-wf-dialog.is-rerun.is-sheet .ps-wf-dialog-body { padding: 12px 16px; }
+.ps-wf-dialog.is-rerun.is-sheet .ps-wf-dialog-foot { padding: 8px 16px 12px; border-top: 1px solid var(--ps-border); }
+.ps-wf-dialog.is-rerun.is-sheet input,
+.ps-wf-dialog.is-rerun.is-sheet select,
+.ps-wf-dialog.is-rerun.is-sheet textarea { font-size: 16px; }
+.ps-wf-dialog.is-rerun.is-sheet button,
+.ps-wf-dialog.is-rerun.is-sheet select,
+.ps-wf-dialog.is-rerun.is-sheet input[type="text"],
+.ps-wf-dialog.is-rerun.is-sheet .ps-wf-choice,
+.ps-wf-dialog.is-rerun.is-sheet summary { min-height: 44px; }
+.ps-wf-dialog.is-rerun.is-sheet .ps-wf-choice,
+.ps-wf-dialog.is-rerun.is-sheet summary { box-sizing: border-box; align-items: center; padding: 10px 0; }
+.ps-wf-dialog.is-rerun.is-sheet .ps-wf-choice input[type="radio"] { width: 20px; height: 20px; margin: 0; }
+.ps-wf-rerun-chip {
+  flex: none;
+  max-width: 100%;
+  padding: 1px 8px;
+  overflow: hidden;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  color: var(--ps-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-wf-rerun-chip.is-supplied { border-color: var(--ps-wf-supplied, #ffa657); color: var(--ps-wf-supplied, #ffa657); }
+button.ps-wf-rerun-chip:disabled { opacity: 1; cursor: default; }
+.ps-wf-failure .ps-wf-rerun-button { margin: 0 10px 8px; }
+.ps-wf-summary .ps-wf-rerun-button { justify-self: start; }
+.ps-wf-tab.is-phone .ps-wf-rerun-button,
+.ps-wf-tab.is-phone .ps-wf-rerun-chip { min-height: 44px; }
+.ps-workflow-node[data-reused="true"] .ps-workflow-node-meta.is-state { color: var(--ps-wf-meta, var(--ps-muted)); }
+.ps-workflow-node[data-reused="true"] .ps-workflow-node-meta.is-state .ps-workflow-node-mark { color: var(--ps-wf-meta, var(--ps-muted)); }
+.ps-workflow-node[data-supplied="true"] { border-style: dashed; border-color: var(--ps-wf-supplied, #ffa657); }
+.ps-workflow-node-meta.is-state[data-state-mark="supplied"] { color: var(--ps-wf-supplied, #ffa657); }
+.ps-workflow-node-meta.is-state[data-state-mark="supplied"] .ps-workflow-node-mark { color: var(--ps-wf-supplied, #ffa657); }
+.ps-wf-provenance { display: grid; gap: 4px; padding: 6px 8px; border-left: 3px solid var(--ps-wf-meta, var(--ps-muted)); overflow-wrap: anywhere; }
+.ps-wf-provenance.is-supplied { border-left-color: var(--ps-wf-supplied, #ffa657); }
+.ps-wf-provenance.is-supplied .ps-wf-provenance-head { color: var(--ps-wf-supplied, #ffa657); font-weight: 600; }
+.ps-wf-reason { padding: 6px 8px; border-radius: var(--ps-radius-sm); background: var(--ps-surface); color: var(--ps-foreground); }
+.ps-wf-log li.ps-wf-log-fold { display: block; }
+.ps-wf-log-fold > details > summary { color: var(--ps-muted); cursor: pointer; }
+.ps-wf-log-fold > details > summary > time { margin-right: 8px; }
+.ps-wf-log-fold > details > .ps-wf-log { margin: 4px 0 0 1.5em; color: var(--ps-muted); }
+.ps-wf-replay > .ps-wf-replay-track { position: relative; display: flex; flex: 1 1 140px; align-items: center; min-width: 100px; }
+.ps-wf-replay-track > .ps-wf-replay-range { position: relative; flex: 1 1 auto; min-width: 0; }
+.ps-wf-replay-band {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  height: 10px;
+  transform: translateY(-50%);
+  border: 1px solid var(--ps-wf-meta, var(--ps-muted));
+  border-radius: 3px;
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--ps-wf-meta, var(--ps-muted)) 40%, transparent) 0 3px, transparent 3px 7px);
+  pointer-events: none;
+}
+.ps-wf-replay-supplied,
+.ps-wf-replay-start { position: absolute; top: 50%; transform: translate(-50%, -50%); background: var(--ps-wf-supplied, #ffa657); pointer-events: none; }
+.ps-wf-replay-supplied { width: 10px; height: 10px; border-radius: 50%; }
+.ps-wf-replay-start { width: 2px; height: 18px; margin-left: 8px; }
+@media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  .ps-wf-replay > .ps-wf-replay-track { flex: 1 1 60px; min-width: 60px; }
+}

@@ -29,10 +29,13 @@ function mix(from, to, share) {
 /** The names of the colours themeWorkflowColors gives (each the CSS variable --ps-wf-<name>). */
 export const WORKFLOW_COLOR_NAMES = Object.freeze(["ground", "edge", "edge-text", "node-border", "selected", "meta", "dim-text", "dim-icon",
     "icon-script", "icon-agent", "icon-wait", "icon-request", "icon-message", "icon-decision", "icon-spawn", "icon-other", "mark-done", "mark-running", "mark-failed", "mark-canceled",
-    "start", "end-succeeded", "end-blocked", "end-failed", "end-cancelled", "danger-text", "lit"]);
+    "start", "end-succeeded", "end-blocked", "end-failed", "end-cancelled", "danger-text", "lit", "supplied"]);
 
 /** Owner 2026-11-09 (the timeline): the lit trail's own amber, where a theme's yellow is not seen on its canvas. */
 export const WORKFLOW_LIT_COLOR = "#f5b942";
+
+/** Phase 3 I7 (design §7.1): a supplied visit's accent (✎ Supplied), where a theme's own amber is not read on its card. */
+export const WORKFLOW_SUPPLIED_COLOR = "#ffa657";
 
 /** The node icons' own colours, as the viewer drew them in every theme before (the kind of each node at a glance). */
 export const WORKFLOW_ICON_COLORS = Object.freeze({ script: "#60a5fa", agent: "#a78bfa", wait: "#f59e0b", request: "#fb923c", message: "#22d3ee",
@@ -112,5 +115,7 @@ export function themeWorkflowColors(theme) {
         // Owner 2026-11-09 (the timeline): the last four transitions and the current step's ring, on the canvas (3:1 at full
         // strength; its fainter steps are extra cues, said in words by the Node panel and the Log).
         "lit": seenColor([tui.yellow, WORKFLOW_LIT_COLOR], canvas, WORKFLOW_PART_MIN_CONTRAST, text),
+        // Phase 3 I7: a supplied visit's badge, edge and words (graph card, Node panel, Log, the re-run sheet): text at 4.5:1.
+        "supplied": seenColor([WORKFLOW_SUPPLIED_COLOR, tui.yellow], [card, surface, background], WORKFLOW_TEXT_MIN_CONTRAST, text),
     };
 }

@@ -30,11 +30,29 @@ function Whole({ whole, label, field }) {
 }
 
 /**
+ * Phase 3 I7 (design §7.2): where a re-run's visit came from: reused ("Reused from #2 · ran … · took …") or supplied ("✎
+ * Supplied in #3 (did not run) · by … · …", its Reason callout and the visit it replaced), with Open in #2 (`onOpen`, a
+ * Workflow id) unless that Workflow was cleaned up.
+ */
+function VisitProvenance({ provenance, onOpen }) {
+    const supplied = provenance.kind === "supplied";
+    return h("div", { className: `ps-wf-provenance is-${provenance.kind}`, "data-provenance": provenance.kind, "data-field": "visit-provenance" },
+        h("p", { className: "ps-wf-provenance-head", style: { margin: 0 } }, provenance.head),
+        supplied && provenance.reason ? h("p", { className: "ps-wf-reason", "data-field": "supplied-reason", style: { margin: 0 } },
+            h("strong", null, "Reason"), " ", h("span", null, provenance.reason)) : null,
+        provenance.origin || (provenance.open && onOpen && provenance.workflowId) ? h("p", { className: "ps-wf-muted", style: { margin: 0 } },
+            provenance.origin ? h("span", null, provenance.origin) : null,
+            provenance.origin && provenance.open && onOpen && provenance.workflowId ? " · " : null,
+            provenance.open && onOpen && provenance.workflowId ? h("button", { type: "button", className: "ps-link-button", "data-action": "open-rerun-origin",
+                "data-session": provenance.workflowId, onClick: () => onOpen(provenance.workflowId) }, provenance.open) : null) : null);
+}
+
+/**
  * One visit's section in the Node panel (workflowVisitIo's model, `io`). `result`: its Output block is the node's result
  * (data-fact "result"), as the Result block was. `runId`, `executionValues` and `onReadWholeValue` read and show the
- * visit's whole values.
+ * visit's whole values. `onOpenOrigin` opens the Workflow a re-run's reused or supplied visit came from.
  */
-export function WorkflowVisitSection({ io, result = true, runId = null, executionValues = null, onReadWholeValue = null }) {
+export function WorkflowVisitSection({ io, result = true, runId = null, executionValues = null, onReadWholeValue = null, onOpenOrigin = null }) {
     const entry = runId ? workflowExecutionValue(executionValues, runId, io.id) : null;
     const output = io.output;
     const canRead = Boolean(onReadWholeValue && runId);
@@ -46,6 +64,7 @@ export function WorkflowVisitSection({ io, result = true, runId = null, executio
         "data-execution": io.id, disabled: loading, onClick: read }, label);
     return h("section", { className: "ps-wf-visit", "aria-label": "Visit", "data-visit": io.id, "data-ordinal": io.ordinal ?? undefined, style: GRID },
         h("p", { className: "ps-wf-visit-head", "data-field": "visit-head", style: { margin: 0, fontWeight: 600, overflowWrap: "anywhere" } }, io.header),
+        io.provenance ? h(VisitProvenance, { provenance: io.provenance, onOpen: onOpenOrigin }) : null,
         h("div", { className: "ps-wf-result", "data-field": "visit-input" },
             h("h3", null, WORKFLOW_VISIT_WORDS.input),
             io.input ? h(CodeBlock, { text: io.input.text, language: "auto" })
