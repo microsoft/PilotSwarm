@@ -66,13 +66,16 @@ const row = (stateId, ordinal, extra = {}) => ({ nodeExecutionId: `nx-${stateId}
     resultKind: "business", winner: "controller", attempts: 0, kvRevision: 1, ...extra });
 
 /** The re-run plan a server would give for `query` (rerun.ts › previewRerun's shape), from #2's visit it names. */
-function planFor(query) {
+function planFor(query, decision = false) {
     const executionId = query.executionId ?? "nx-provision-1";
     const stateId = VISITS[executionId];
     const mode = query.mode ?? (executionId === "nx-provision-1" ? "run_again" : "continue");
     const target = query.revision ?? 3;
     const before = ORDER.slice(0, ORDER.indexOf(executionId)).map((id) => VISITS[id]);
-    const supplyContract = stateId === "provision" ? { outcomes: ["provisioned", "failed"], outputSchemaName: null, resolvedOutputSchema: SCHEMA,
+    const supplyContract = stateId === "provision" && decision ? {
+        outcomes: ["engineering", "uncertain"], outcomeOnly: true, outputSchemaName: null, resolvedOutputSchema: null,
+        nextByOutcome: { engineering: { stateId: "configure", visit: 1 }, uncertain: { stateId: "failed", visit: 1 } },
+    } : stateId === "provision" ? { outcomes: ["provisioned", "failed"], outputSchemaName: null, resolvedOutputSchema: SCHEMA,
         maxOutputBytes: 262_144, nextByOutcome: { provisioned: { stateId: "configure", visit: 1 }, failed: null } } : null;
     const outcome = mode === "supply" ? query.outcome ?? null : null;
     const next = outcome ? supplyContract?.nextByOutcome[outcome] ?? null : null;
@@ -103,7 +106,7 @@ function planFor(query) {
  * `rerunDone`: #3 is there from the start. `holdStart`: a promise each Start's answer waits for. `planFault`: a function of a
  * plan read's query giving what its answer waits for (`wait`, a promise) and whether it then fails with 502 (`fail`).
  */
-async function routeRerun(page, { rerunDone = false } = {}) {
+async function routeRerun(page, { rerunDone = false, decision = false } = {}) {
     const revision = (number, actor) => ({ definitionId: "def-pc", revision: number, valid: true, semver: `1.${number - 1}.0`, yamlSha256: `y${number}`,
         irSha256: `ir${number}`, basedOn: number > 1 ? number - 1 : null, actor, imported: false, createdAt: iso(-800_000 + number * 60_000), errorCount: 0 });
     const state = {
@@ -131,7 +134,10 @@ async function routeRerun(page, { rerunDone = false } = {}) {
             createdAt: now - 100_000, updatedAt: now - 90_000 });
     };
     if (rerunDone) start({ outcome: "provisioned", output: { resourceId: GOOD_ID, objectId: OBJECT_ID }, note: WHY });
-    const graph = { revision: 3, initial: "validate", states: STATES };
+    const graph = { revision: 3, initial: "validate", states: decision ? STATES.map(state => state.id === "provision"
+        ? { id: state.id, type: "decision", question: { type: "choice", instructions: "Who owns this?", criteria: { engineering: "Engineering" } },
+            next: { engineering: "configure", uncertain: "failed" } }
+        : state) : STATES };
     const base = (id) => ({
         workflowId: id,
         definition: { state: "published", semver: "1.2.0", currentRevision: 1, publishedRevision: 1, publishedDefinitionHash: `h-${id}` },
@@ -153,7 +159,7 @@ async function routeRerun(page, { rerunDone = false } = {}) {
                     row("validate", 1, { enteredAt: at(1, t2), endedAt: at(2, t2), outputPreview: '{"ok":true}' }),
                     row("plan", 1, { predecessorId: "nx-validate-1", enteredAt: at(3, t2), endedAt: at(5, t2), outputPreview: '{"sku":"D4s"}' }),
                     row("provision", 1, { predecessorId: "nx-plan-1", enteredAt: at(6, t2), endedAt: at(306, t2), outcome: "timed_out",
-                        resultKind: "runtime_error", winner: "effect",
+                        ...(decision ? { outcome: "uncertain", resultKind: "business" } : { resultKind: "runtime_error" }), winner: "effect",
                         errorPreview: JSON.stringify({ code: "timed_out", message: "provision timed out after 300 s." }) }),
                 ],
                 inbox: [], outbox: [] },
@@ -237,7 +243,7 @@ async function routeRerun(page, { rerunDone = false } = {}) {
             if (state.holdStart) await state.holdStart;
             if (state.receipts.has(body.operationId)) return answer({ ...state.receipts.get(body.operationId), replayed: true });
             const rerunFrom = body.rerunFrom ?? {};
-            if (rerunFrom.mode === "supply" && !String(rerunFrom.result?.output?.resourceId ?? "").startsWith("/subscriptions/")) {
+            if (!decision && rerunFrom.mode === "supply" && !String(rerunFrom.result?.output?.resourceId ?? "").startsWith("/subscriptions/")) {
                 return refuse(422, "RERUN_SUPPLIED_RESULT_INVALID", "The supplied output does not match provision's outputSchema.",
                     { problems: [{ path: "/output/resourceId", message: "must match pattern \"^/subscriptions/\"" }] });
             }
@@ -258,7 +264,7 @@ async function routeRerun(page, { rerunDone = false } = {}) {
                     const fault = state.planFault?.(query) ?? null;
                     if (fault?.wait) await fault.wait;
                     if (fault?.fail) return refuse(502, "UPSTREAM_UNAVAILABLE", PLAN_FAILED);
-                    return answer({ ...models[item.sessionId](), rerunPlan: planFor(query) });
+                    return answer({ ...models[item.sessionId](), rerunPlan: planFor(query, decision) });
                 }
                 return answer(models[item.sessionId]());
             }
@@ -468,6 +474,64 @@ test("entry points (phone): the failure banner and the Node panel open a bottom 
     expect(errors).toEqual([]);
 });
 
+test("the header caret opens the right plan for a failure or a selected node", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    const errors = watchErrors(page);
+    const state = await routeRerun(page);
+    const main = await openWorkflow(page, 2);
+    const caret = main.getByRole("button", { name: "Re-run options", exact: true });
+    const sheet = sheetOf(page);
+    const menu = main.getByRole("menu", { name: "Re-run options", exact: true });
+    await main.locator('[data-action="run-again-dialog"]').click();
+    const start = page.getByRole("dialog", { name: "Run provision-cluster again", exact: true });
+    await expect(start).toBeVisible();
+    await expect(menu).toBeHidden();
+    await page.keyboard.press("Escape");
+    await expect(start).toBeHidden();
+    await caret.focus();
+    await caret.press("ArrowDown");
+    const failure = menu.getByRole("menuitem", { name: "Re-run from the failure…", exact: true });
+    await expect(failure).toBeFocused();
+    await failure.press("Escape");
+    await expect(menu).toBeHidden();
+    await expect(caret).toBeFocused();
+    await caret.press("Enter");
+    await failure.press("Enter");
+    await expect.poll(() => state.plans.at(-1)?.query).toEqual({});
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+    await expect(caret).toBeFocused();
+
+    await inspect(main, "provision", false);
+    await caret.click();
+    await menu.getByRole("menuitem", { name: "Re-run from provision · visit 1…", exact: true }).click();
+    await expect.poll(() => state.plans.at(-1)?.query).toEqual({ executionId: "nx-provision-1" });
+    expect(errors).toEqual([]);
+});
+
+test("on a phone the header caret opens the timeline visit in the re-run sheet", async ({ page }) => {
+    await page.setViewportSize(PHONE);
+    const errors = watchErrors(page);
+    const state = await routeRerun(page);
+    const main = await openWorkflow(page, 2);
+    const timeline = main.getByRole("group", { name: "Timeline" });
+    await timeline.locator('[data-action="replay-back"]').click();
+    await expect(timeline).toHaveAttribute("data-mode", "history");
+    const caret = main.getByRole("button", { name: "Re-run options", exact: true });
+    expect((await caret.boundingBox()).width).toBeGreaterThanOrEqual(44);
+    await caret.click();
+    const item = main.getByRole("menuitem", { name: "Re-run from plan · visit 1…", exact: true });
+    const box = await item.boundingBox();
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(PHONE.width);
+    await item.click();
+    await expect.poll(() => state.plans.at(-1)?.query).toEqual({ executionId: "nx-plan-1" });
+    await expect(sheetOf(page)).toHaveClass(/is-sheet/);
+    expect(errors).toEqual([]);
+});
+
 for (const [label, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
     const phone = viewport === PHONE;
     test(`supply end to end (${label}): the supplied result's checks, Start's 422, operation ids (N5), no output in a plan read (M6), and #3 as reused and supplied`, async ({ page }) => {
@@ -607,6 +671,29 @@ for (const [label, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
         await expect(line).toHaveAttribute("data-level", "warning");
         // The browser logs each refused Start's 422 response itself; nothing else.
         expect(errors).toEqual(Array(2).fill("console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"));
+    });
+
+    test(`${label}: decision supply uses the plan outcomes and Why, with no output field or payload`, async ({ page }) => {
+        const errors = watchErrors(page);
+        await page.setViewportSize(viewport);
+        const state = await routeRerun(page, { decision: true });
+        const main = await openWorkflow(page, 2);
+        await main.locator('[data-action="rerun-from-failure"]').click();
+        const sheet = sheetOf(page);
+        await sheet.getByRole("radio", { name: "Supply this step's result and go on", exact: true }).check();
+        const outcome = sheet.getByLabel("Outcome *");
+        const start = sheet.locator('[data-action="rerun-start"]');
+        await expect(outcome.locator("option")).toHaveText(["Choose an outcome…", "engineering → configure · visit 1", "uncertain → failed · visit 1"]);
+        await expect(sheet.locator('[data-field="rerun-output"]')).toHaveCount(0);
+        await expect(start).toBeDisabled();
+        await outcome.selectOption("engineering");
+        await expect.poll(() => state.plans.at(-1).query.outcome).toBe("engineering");
+        await expect(start).toBeDisabled();
+        await sheet.getByLabel("Why *").fill("Engineering confirmed ownership.");
+        await start.click();
+        await expect.poll(() => state.starts[0]?.rerunFrom).toEqual({ workflowId: W2, executionId: "nx-provision-1", mode: "supply",
+            result: { outcome: "engineering" }, note: "Engineering confirmed ownership." });
+        expect(errors).toEqual([]);
     });
 }
 

@@ -77,6 +77,7 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
     workflows: () => glyph(h("path", { d: "M9 6h11" }), h("path", { d: "M9 12h11" }), h("path", { d: "M9 18h11" }),
         h("path", { d: "M4.5 6h.01" }), h("path", { d: "M4.5 12h.01" }), h("path", { d: "M4.5 18h.01" })),
     "start-another": () => glyph(h("path", { d: "M20 12a8 8 0 1 1-2.3-5.7" }), h("path", { d: "M20 4v4h-4" }), h("path", { d: "M10 9l5 3-5 3z" })),
+    "chevron-down": () => glyph(h("path", { d: "m7 10 5 5 5-5" })),
     yaml: () => glyph(h("path", { d: "M8 7l-5 5 5 5" }), h("path", { d: "M16 7l5 5-5 5" }), h("path", { d: "M14 4l-4 16" })),
     compare: () => glyph(h("rect", { x: "3", y: "4", width: "7", height: "16", rx: "1" }), h("rect", { x: "14", y: "4", width: "7", height: "16", rx: "1" }),
         h("path", { d: "M5.5 9h2" }), h("path", { d: "M16.5 9h2" }), h("path", { d: "M16.5 13h2" })),

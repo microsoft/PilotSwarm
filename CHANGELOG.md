@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Workflow re-run:** Choose a different outcome for a completed decision
+  step and give a reason. The re-run follows that route without calling the
+  Decision model again.
+
 **Upgrade: stop every worker, deploy, then start them. Do not roll the
 workers.** No CMS migration, and no session orchestration or Workflow
 controller version change. Why: a child Workflow's `WorkflowEnded@1` notice to

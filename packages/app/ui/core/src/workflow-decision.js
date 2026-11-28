@@ -126,14 +126,19 @@ export function reconcileWorkflowDecisionOverrideSelection(models, previous = nu
 }
 
 /** Keep only the semantic provider-independent Decision result, from raw output or a server-side structured summary. */
-export function workflowDecisionOutputSummary(raw) {
+export function workflowDecisionOutputSummary(raw, supplied = false) {
     let value = raw;
     if (typeof value === "string") {
         try { value = JSON.parse(value); } catch { return null; }
     }
-    if (!isRecord(value) || !["choice", "noul", "score"].includes(value.questionType)) return null;
-    const model = nonBlank(value.model) ?? nonBlank(value?.model?.qualified);
+    if (!isRecord(value)) return null;
     const outcome = nonBlank(value.outcome);
+    if (supplied && value.supplied === true) {
+        const text = nonBlank(value.text);
+        return outcome && text ? { supplied: true, outcome, text } : null;
+    }
+    if (!["choice", "noul", "score"].includes(value.questionType)) return null;
+    const model = nonBlank(value.model) ?? nonBlank(value?.model?.qualified);
     const truncated = value.truncated === true;
     if (!outcome || !model) return null;
 
@@ -298,20 +303,20 @@ function modelOf(node, output) {
  */
 export function workflowDecisionSummary(node, execution = node?.current ?? null) {
     const structured = execution?.decisionSummary === undefined ? null
-        : workflowDecisionOutputSummary(execution.decisionSummary);
+        : workflowDecisionOutputSummary(execution.decisionSummary, isRecord(execution.supplied));
     const output = structured ?? workflowDecisionOutputSummary(execution?.outputPreview);
     const failure = !output && execution?.resultKind === "runtime_error" ? decisionErrorSummary(execution) : null;
     const completedBusiness = !output && !failure && (execution?.status === "completed" || execution?.state === "completed")
         && execution?.resultKind === "business";
     const needsWholeValue = Boolean(output?.truncated || completedBusiness);
     const questionType = output?.questionType ?? nonBlank(node?.question?.type);
-    const threshold = output ? output.threshold : finiteProbability(node?.confidence?.minimumProbability)
+    const threshold = output ? output.threshold ?? null : finiteProbability(node?.confidence?.minimumProbability)
         ? node.confidence.minimumProbability : null;
     const outcome = output
         ? output.outcome === "uncertain" ? "Uncertain" : output.outcome
         : failure ? "Failure" : completedBusiness ? "Completed" : "Not run";
-    const model = modelOf(node, output);
-    const inference = execution?.decisionInference ?? execution?.inference ?? execution ?? null;
+    const model = output?.supplied ? null : modelOf(node, output);
+    const inference = output?.supplied ? null : execution?.decisionInference ?? execution?.inference ?? execution ?? null;
     const warning = workflowDecisionInferenceWarning(inference);
     const latency = workflowDecisionLatencyText(workflowDecisionInferenceEvidence(inference)?.latencyMs ?? NaN);
     const confidence = output?.confidence === null || output?.confidence === undefined ? null
@@ -321,7 +326,9 @@ export function workflowDecisionSummary(node, execution = node?.current ?? null)
     const levelText = output?.levels?.length
         ? output.levels.map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · ") : null;
     let text;
-    if (output?.questionType === "choice") {
+    if (output?.supplied) {
+        text = output.text;
+    } else if (output?.questionType === "choice") {
         text = `${outcome} · selected ${output.selection} · ${confidence} confidence`
             + `${threshold === null ? "" : ` · threshold ${workflowDecisionPercentage(threshold)}`}`
             + (probabilityText ? ` · ${probabilityText}` : "");
@@ -343,7 +350,7 @@ export function workflowDecisionSummary(node, execution = node?.current ?? null)
         questionType,
         model,
         threshold,
-        uncertain: output ? output.uncertain : null,
+        uncertain: output?.uncertain ?? null,
         outcome,
         failure: failure?.code ?? null,
         confidence,
@@ -355,6 +362,7 @@ export function workflowDecisionSummary(node, execution = node?.current ?? null)
         truncated: needsWholeValue,
         needsWholeValue,
         text,
+        ...(output?.supplied ? { supplied: true } : {}),
     };
 }
 

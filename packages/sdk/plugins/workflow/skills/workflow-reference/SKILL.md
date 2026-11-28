@@ -62,7 +62,7 @@ Nonterminals take `maxVisits` (1–10,000; forbids business outcome `exhausted`)
 visit N+1 skips carry/input/effect and ends at entry with `exhausted` (route
 required) and incoming value as output.
 Nonterminals except approval take `carry`: load `workflow-carry`.
-Script and agent take `supply: never`: re-runs cannot supply it.
+Script and agent take `supply: never`. So does decision.
 
 ### approval
 
@@ -171,7 +171,7 @@ Provider probabilities are finite in `0..1`. Choice needs exactly the declared
 option keys, `noul` exactly raw `true`/`false`, score exactly level indexes
 `0..n-1`; a supplied legend must match the labels in order.
 
-Exact semantic outputs (`qualified` is the effective `provider:model`):
+Output (`qualified`: `provider:model`):
 
 | Type | Output |
 |---|---|
@@ -179,8 +179,8 @@ Exact semantic outputs (`qualified` is the effective `provider:model`):
 | `noul` | `{ questionType: "noul", outcome: "yes" \| "no" \| "uncertain", selection: "yes" \| "no", confidence, probability, probabilities: { yes, no }, policy: { minimumProbability: number \| null, uncertain }, model: { qualified } }` |
 | `score` | `{ questionType: "score", outcome: "scored", score, levels: [{ label, probability }], model: { qualified } }` |
 
-Transport IDs/status/timing/usage/hashes/raw bodies never enter output;
-scripts and agents get the semantic result unchanged.
+A supplied decision has its outcome and selection; its model fields are null.
+Decision output excludes transport metadata and raw bodies.
 
 The Cluster Decision Default is a hard gate, not a fallback: without an
 eligible default Save marks the revision invalid and fresh Start refuses with

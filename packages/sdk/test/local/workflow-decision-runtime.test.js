@@ -53,9 +53,11 @@ import pg from "pg";
 import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
+import { workflowDefinitionFromTool } from "../../src/workflow/definition-tool.ts";
 import { canonicalJson } from "../../src/workflow/json.ts";
 import { createWorkflow } from "../../src/workflow/service.ts";
-import { updateWorkflowFromTool } from "../../src/workflow/tools.ts";
+import { readWorkflowRerunPlan, saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
+import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/agent-node-service.ts";
 import {
     registerWorkflow, WORKFLOW_ACTIVITIES, WORKFLOW_CONTROLLER_NAME, WORKFLOW_CONTROLLER_VERSION, workflowEffectInstanceId,
@@ -440,6 +442,75 @@ async function finished(h, runId) {
 const unknownUsage = usage => usage !== undefined && (usage.tokensInput ?? null) === null && (usage.tokensOutput ?? null) === null;
 
 describe("workflow decision states: effect execution, attempts and the terminal compare-and-swap", () => {
+    it("supplies a new decision outcome without inference and resolves downstream bindings to null model fields", { timeout: TIMEOUT }, async () => {
+        const fake = fakeDecisionHost();
+        fake.scenario.answer = () => ({
+            answer: choice("billing", { engineering: 0.3, billing: 0.4, support: 0.3 }),
+        });
+        const h = await harness(getEnv(), { decisionNodes: fake.decisionNodes });
+        try {
+            const ownerSessionId = randomUUID();
+            const owner = { provider: "entra", subject: "rerun-decision-owner" };
+            const actor = { kind: "user", ...owner };
+            await h.catalog.createSession(ownerSessionId, { owner });
+            const yaml = CHOICE_YAML.replace(
+                'to_engineering: { type: terminal, outcome: succeeded, output: "${input}" }',
+                'to_engineering: { type: terminal, outcome: succeeded, output: { confidence: "${input.confidence}", probabilities: "${states.route.output.probabilities}", decision: "${input}" } }',
+            );
+            const { receipt: { definitionId } } = await saveSessionWorkflowDefinition(h.host, {
+                ownerSessionId, name: "decision-route", yaml, expected: null, actor, operationId: randomUUID(),
+            });
+            const start = args => startSessionWorkflowDefinition(h.host, {
+                ownerSessionId, definition: { definitionId }, owner, actor, operationId: randomUUID(), ...args,
+            });
+            const source = await start({ workspace: "none", inputs: { ticket: TICKET } });
+            expect(await finished(h, source.runId)).toMatchObject({ terminalNodeId: "ask_person" });
+            expect(fake.requests).toHaveLength(1);
+            const executionId = nodeExecutionIdFor(source.runId, "root", "route", 1);
+            const { rerunPlan } = await readWorkflowRerunPlan(h.host, source.workflowId, {
+                executionId, mode: "supply", outcome: "engineering",
+            }, { actor });
+            expect(rerunPlan.supplyContract).toMatchObject({
+                outcomes: ["engineering", "billing", "support", "uncertain"], outcomeOnly: true, outputSchemaName: null, resolvedOutputSchema: null,
+            });
+            expect(rerunPlan.supply).toMatchObject({ valid: true, next: { stateId: "to_engineering", visit: 1 } });
+            const toolPlan = JSON.parse(await readWorkflowFromTool({
+                workflow_id: source.workflowId, rerun_plan: { execution_id: executionId, mode: "supply", outcome: "engineering" },
+            }, { host: h.host, callerSessionId: ownerSessionId }));
+            expect(toolPlan, JSON.stringify(toolPlan)).toMatchObject({
+                ok: true, rerunPlan: { supplyContract: rerunPlan.supplyContract, supply: rerunPlan.supply },
+            });
+            const note = "The engineering team confirmed they own this ticket.";
+            const rerunFrom = { workflow_id: source.workflowId, execution_id: executionId, mode: "supply", result: { outcome: "engineering" }, note };
+            const supply = async (from = rerunFrom, key = "decision-supply") => JSON.parse(await workflowDefinitionFromTool({
+                operation: "start", rerun_from: from, key, notify_on_completion: false,
+            }, { host: h.host, callerSessionId: ownerSessionId, owner, toolCallId: randomUUID(), binding: async () => null }));
+            expect(await supply({ ...rerunFrom, result: { outcome: "engineering", output: null } }, "bad-decision-supply")).toMatchObject({
+                ok: false, error: { code: "RERUN_SUPPLIED_RESULT_INVALID" },
+            });
+            const rerun = await supply();
+            expect(rerun, JSON.stringify(rerun)).toMatchObject({ ok: true, replayed: false });
+            const output = { questionType: "choice", outcome: "engineering", selection: "engineering",
+                confidence: null, probabilities: null, policy: null, model: null };
+            const ended = await finished(h, rerun.runId);
+            expect(ended).toMatchObject({ status: "completed", terminalNodeId: "to_engineering",
+                terminalOutput: { confidence: null, probabilities: null, decision: output } });
+            const visit = await h.store.readNodeExecution(nodeExecutionIdFor(rerun.runId, "root", "route", 1));
+            expect(visit).toMatchObject({ outcome: "engineering", suppliedFromExecutionId: executionId, suppliedNote: note });
+            expect(visit.output).toEqual(output);
+            expect(await supply()).toMatchObject({ ok: true, replayed: true, workflowId: rerun.workflowId });
+            expect(await start({ key: "decision-supply", notifyParent: false, rerunFrom: {
+                workflowId: source.workflowId, executionId, mode: "supply", result: { outcome: "engineering", output: undefined }, note,
+            } })).toMatchObject({ replayed: true, workflowId: rerun.workflowId });
+            expect(await supply({ ...rerunFrom, result: { outcome: "billing" } })).toMatchObject({
+                ok: false, error: { code: "OPERATION_CONFLICT" },
+            });
+            expect(fake.requests).toHaveLength(1);
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("routes from the stored semantic result of one provider call with the run's model, its budget gate and one ledger row", { timeout: TIMEOUT }, async () => {
         expect(WORKFLOW_ACTIVITIES.runDecision).toBe("workflow.runDecision");
         const fake = fakeDecisionHost();

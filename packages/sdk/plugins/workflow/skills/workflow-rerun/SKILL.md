@@ -19,7 +19,7 @@ again). If the person says "from scratch", do not re-run from a step.
 |---|---|---|
 | `run_again` | Runs again (on the revision you start). | The step failed or threw, and a retry or a fix can make it pass. |
 | `continue` | Keeps its result; the step after it runs. | The step finished with a valid result, but the run stopped after it (a route that changed, `limit_exceeded`, a stop). |
-| `supply` | Does not run. You give its result. | External work finished, but the step timed out or failed before it reported (for example, a server was created). |
+| `supply` | Does not run. You give its result. | External work finished but the step did not report, or you want a different decision route. |
 
 ## How to re-run
 
@@ -99,14 +99,18 @@ What fit means (C1 to C10):
 
 ## Supply a step's result
 
-- Only a top-level `script` or `agent` step. Never an approval, wait,
-  decision, spawn, messaging or `parallel` step, and never a step inside a
-  lane.
+- Only a completed top-level `script`, `agent` or `decision` step. Never
+  an approval, wait, spawn, messaging or `parallel` step, or a step in a lane.
 - A step with `supply: never` (on the source or the target revision) is
   refused. Authors set it on steps whose result must come from real work.
 - `result: { outcome, output? }`: `outcome` must be a declared business
   outcome of the step with a route; `output` must match the step's
   `outputSchema` and be at most 256 KiB (and at most 64 levels deep).
+- Decision supply takes only the outcome. Use a choice label, `yes`/`no`
+  for `noul`, `scored` for a score, or `uncertain` if routed. Never `error`.
+  Omit `output`. The step uses that route without asking the model.
+  A supplied decision has its outcome and selection; its model fields are null.
+  Selection is null for uncertain and is not a field of score output.
 - `note` is required: 1 to 2,000 characters.
 - **Supply only values you checked in the external system; never invent ids; put the evidence in `note`.**
   If the check finds nothing (no server was created), do not supply: use
@@ -115,9 +119,9 @@ What fit means (C1 to C10):
   `operation_id`, pass the exact same `outcome`, `output` and `note`. A
   change refuses `409 OPERATION_CONFLICT`; a new attempt needs a new key.
 - Read the plan with `mode: "supply"`, `execution_id` and `outcome`:
-  `plan.supplyContract` shows the outcomes, the output schema and
-  `maxOutputBytes`; `plan.supply` shows whether the outcome is valid and
-  which step comes next.
+  `plan.supplyContract` lists the outcomes. `supplyContract.outcomeOnly`
+  is `true` for a decision, with no output schema or `maxOutputBytes`.
+  `plan.supply` shows whether the outcome is valid and which step comes next.
 - The supplied visit is recorded as supplied (who, why, when). It never shows
   as run.
 

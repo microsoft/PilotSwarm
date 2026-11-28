@@ -351,6 +351,7 @@ export interface WorkflowIRDecision extends WorkflowIRCarrying {
     inputSchema: string | null;
     question: WorkflowIRDecisionQuestion;
     confidence?: { minimumProbability: number };
+    supply?: "never";
     /** The literal provider deadline; dynamic timeouts are refused at compile time. */
     timeoutSeconds: number;
     /** Business labels from the question, optional `uncertain`, and runtime routes. */
@@ -1274,7 +1275,7 @@ export function validateDecisionQuestion(value: unknown, path = "question"): { q
     return question !== null && errors.length === 0 ? { question, errors: [] } : { question: null, errors: errors.length ? errors : [`${path} is not a valid Decision question.`] };
 }
 
-function decisionBusinessRoutes(question: WorkflowIRDecisionQuestion, uncertain: boolean): string[] {
+export function decisionBusinessRoutes(question: WorkflowIRDecisionQuestion, uncertain: boolean): string[] {
     if (question.type === "choice") return [...Object.keys(question.criteria), ...(uncertain ? ["uncertain"] : [])];
     if (question.type === "noul") return ["yes", "no", ...(uncertain ? ["uncertain"] : [])];
     return ["scored"];
@@ -1297,7 +1298,10 @@ function checkDecisionRoutes(question: WorkflowIRDecisionQuestion, uncertain: bo
 function compileDecision(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector,
     hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRDecision | null {
     const path = `states.${id}`;
-    checkKeys(raw, ["type", "description", "input", "inputSchema", "question", "confidence", "timeoutSeconds", "transition"], path, diagnostics);
+    checkKeys(raw, ["type", "description", "input", "inputSchema", "question", "confidence", "timeoutSeconds", "transition", "supply"], path, diagnostics);
+    if (raw.supply !== undefined && raw.supply !== "never") {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.supply`, "supply must be 'never' or omitted.");
+    }
     const hasInput = Object.hasOwn(raw, "input");
     const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
     const inputSchema = schemaField(raw.inputSchema, `node.${id}.input`, `${path}.inputSchema`, schemas, diagnostics);
@@ -1342,6 +1346,7 @@ function compileDecision(id: string, raw: Record<string, unknown>, nodeIds: Read
         id, type: "decision", description: optionalText(raw.description, `${path}.description`, diagnostics),
         hasInput, input, inputSchema, question,
         ...(confidence !== undefined ? { confidence } : {}),
+        ...(raw.supply === "never" ? { supply: "never" as const } : {}),
         timeoutSeconds, next,
     };
 }
@@ -3018,7 +3023,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             };
         } else if (node.type === "decision") {
             const allowed = new Set(["id", "type", "description", "hasInput", "input", "inputSchema", "question", "confidence", "timeoutSeconds",
-                "next", "notes", "routeNotes", "carry", "maxVisits"]);
+                "next", "notes", "routeNotes", "carry", "maxVisits", "supply"]);
             const question = isStoredDecisionQuestion(node.question) ? node.question : null;
             const rawConfidence = node.confidence;
             const confidenceValid = rawConfidence === undefined || (isJsonObject(rawConfidence) && Object.keys(rawConfidence).length === 1
@@ -3028,6 +3033,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && Object.hasOwn(node, "input") && (node.hasInput ? isStoredDecisionInput(node.input, `states.${id}.input`) : node.input === null)
                 && nullableString(node.inputSchema) && (node.inputSchema === null || Object.hasOwn(schemaDefs, node.inputSchema)) && confidenceValid
                 && !(question.type === "score" && rawConfidence !== undefined)
+                && (node.supply === undefined || node.supply === "never")
                 && typeof node.timeoutSeconds === "number" && Number.isSafeInteger(node.timeoutSeconds)
                 && node.timeoutSeconds >= 1 && node.timeoutSeconds <= DECISION_MAX_TIMEOUT_SECONDS
                 && stringMap(node.next) && Object.values(node.next).every(target => Object.hasOwn(storedNodes, target))
@@ -3037,6 +3043,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 id, type: "decision", description: node.description, hasInput: node.hasInput, input: node.input,
                 inputSchema: node.inputSchema, question: copyDecisionQuestion(question),
                 ...(rawConfidence !== undefined ? { confidence: { minimumProbability: (rawConfidence as { minimumProbability: number }).minimumProbability } } : {}),
+                ...(node.supply === "never" ? { supply: "never" as const } : {}),
                 timeoutSeconds: node.timeoutSeconds, next: node.next,
             };
         } else if (node.type === "spawn") {

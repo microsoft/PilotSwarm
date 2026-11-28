@@ -79,6 +79,7 @@ rr-df-ignores-input-hash	rr-df-ignores-input-hash.cfg	WorkflowRerun
 rr-df-continue-no-guard	rr-df-continue-no-guard.cfg	WorkflowRerun
 rr.design-supply-loop	rr.design-supply-loop.cfg	WorkflowRerun
 rr.design-supply-first	rr.design-supply-first.cfg	WorkflowRerun
+rr.design-supply-decision	rr.design-supply-decision.cfg	WorkflowRerun
 rr.design-supply-to-terminal	rr.design-supply-to-terminal.cfg	WorkflowRerun
 rr.design-supply-diverge	rr.design-supply-diverge.cfg	WorkflowRerun
 rr.design-supply-refused-approval	rr.design-supply-refused-approval.cfg	WorkflowRerun
@@ -97,6 +98,7 @@ rr.live-sweeper-admission-race	rr.live-sweeper-admission-race.cfg	WorkflowRerun
 wit.rr-no-supply-downstream-read	wit.rr-no-supply-downstream-read.cfg	WorkflowRerun
 wit.rr-no-supply-first-visit	wit.rr-no-supply-first-visit.cfg	WorkflowRerun
 wit.rr-no-supply-to-terminal	wit.rr-no-supply-to-terminal.cfg	WorkflowRerun
+wit.rr-no-supplied-decision-route	wit.rr-no-supplied-decision-route.cfg	WorkflowRerun
 wit.rr-no-supply-refused-step-type	wit.rr-no-supply-refused-step-type.cfg	WorkflowRerun
 wit.rr-no-leak-quiescence	wit.rr-no-leak-quiescence.cfg	WorkflowRerun
 wit.rr-no-late-retry-after-sweep	wit.rr-no-late-retry-after-sweep.cfg	WorkflowRerun

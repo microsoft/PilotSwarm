@@ -34,7 +34,7 @@ import {
 } from "./store.js";
 import {
     buildRerunPlan, buildRerunResume, buildRerunWarnings, checkRerunCompatibility, mapRerunExecutions, mapRerunSuppliedExecution, partitionRerunVisits,
-    pickRerunTarget, rerunCutKvRevision, validateRerunSupply, WORKFLOW_RERUN_MAX_COPY_BYTES, type WorkflowRerunMode, type WorkflowRerunProblem,
+    pickRerunTarget, rerunCutKvRevision, suppliedDecisionOutput, validateRerunSupply, WORKFLOW_RERUN_MAX_COPY_BYTES, type WorkflowRerunMode, type WorkflowRerunProblem,
 } from "./rerun.js";
 import {
     effectiveChildLevel, sessionInsideWorkflow, SESSION_MAX_NESTING_LEVEL, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED,
@@ -437,7 +437,7 @@ function parseRerunClaimPin(value: unknown): RerunClaimPin | null {
         || !Number.isSafeInteger(value.revision) || !Number.isSafeInteger(value.reusedCount)) {
         return null;
     }
-    const sup = isJsonObject(value.supplied)
+    const sup: RerunClaimPin["supplied"] = isJsonObject(value.supplied)
         && typeof value.supplied.outcome === "string"
         && typeof value.supplied.outputSha256 === "string"
         && typeof value.supplied.noteSha256 === "string"
@@ -447,6 +447,8 @@ function parseRerunClaimPin(value: unknown): RerunClaimPin | null {
             outputSha256: value.supplied.outputSha256,
             noteSha256: value.supplied.noteSha256,
             note: value.supplied.note,
+            ...(value.supplied.decisionQuestionType === "choice" || value.supplied.decisionQuestionType === "noul" || value.supplied.decisionQuestionType === "score"
+                ? { decisionQuestionType: value.supplied.decisionQuestionType } : {}),
         }
         : undefined;
     return {
@@ -512,6 +514,13 @@ function validateRerunStartArguments(request: Parameters<typeof startSessionWork
     return rf;
 }
 
+function rerunSupplyReplayOutput(pin: RerunClaimPin, result: JsonObject): string {
+    const supplied = pin.supplied;
+    return canonicalJson(supplied?.decisionQuestionType
+        ? suppliedDecisionOutput(supplied.decisionQuestionType, supplied.outcome)
+        : result.output ?? null);
+}
+
 function sameRerunPinRequest(pin: RerunClaimPin, rf: SessionStartRerunFrom | null | undefined): boolean {
     if (!rf) return false;
     if (rf.workflowId !== pin.sourceWorkflowId) return false;
@@ -519,9 +528,11 @@ function sameRerunPinRequest(pin: RerunClaimPin, rf: SessionStartRerunFrom | nul
     if (rf.mode != null && rf.mode !== pin.mode) return false;
     if (pin.mode === "supply") {
         if (!pin.supplied || !isJsonObject(rf.result) || typeof rf.result.outcome !== "string" || typeof rf.note !== "string") return false;
-        const outVal = rf.result.output === undefined ? null : rf.result.output as JsonValue;
         if (rf.result.outcome !== pin.supplied.outcome) return false;
-        if (sha256Hex(canonicalJson(outVal)) !== pin.supplied.outputSha256) return false;
+        const result = rf.result;
+        if (pin.supplied.decisionQuestionType
+            && Object.keys(result).some(key => key !== "outcome" && !(key === "output" && result.output === undefined))) return false;
+        if (sha256Hex(rerunSupplyReplayOutput(pin, rf.result)) !== pin.supplied.outputSha256) return false;
         if (sha256Hex(rf.note.trim()) !== pin.supplied.noteSha256) return false;
     }
     return true;
@@ -721,7 +732,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
                     newPredecessorId: null,
                     sourceExecutionId: prior.rerunPin.fromExecutionId,
                     outcome: String(rf.result.outcome),
-                    outputText: canonicalJson(rf.result.output === undefined ? null : rf.result.output as JsonValue),
+                    outputText: rerunSupplyReplayOutput(prior.rerunPin, rf.result),
                     note: String(rf.note ?? "").trim(),
                     at: new Date(),
                 }
@@ -1107,6 +1118,7 @@ async function prepareRerunStart(
         reusedSpawnChildIds,
         approvalOwnerCheck: reusedApprovals.length > 0 ? directOwner : null,
     };
+    const suppliedNode = targetIr.nodes[picked.chosen.nodeId];
     const rerunPin: RerunClaimPin = {
         sourceWorkflowId: rf.workflowId,
         sourceRunId: sourceRun.runId,
@@ -1120,6 +1132,7 @@ async function prepareRerunStart(
                 outputSha256: sha256Hex(suppliedSpec.outputText),
                 noteSha256: sha256Hex(suppliedSpec.note),
                 note: suppliedSpec.note,
+                ...(suppliedNode?.type === "decision" ? { decisionQuestionType: suppliedNode.question.type } : {}),
             },
         } : {}),
     };

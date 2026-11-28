@@ -544,6 +544,13 @@ export function WorkflowAgentLog({ log, failed = null, onMore = null, nodeId = n
             : null);
 }
 
+export function workflowNodeDetailsVisit(node, { runId, selection, branch, replay } = {}) {
+    const current = branch ? branch.execution : node.current ?? null;
+    const chosen = !replay && selection ? workflowShownExecution(node, runId, selection, branch) : null;
+    return workflowDetailsVisit(node, { current: chosen?.chosen && chosen.execution ? chosen.execution : current,
+        frame: replay?.frame ?? null, picked: replay?.picked === true });
+}
+
 /**
  * A Workflow's Node panel (Workflow Simplified; owner feedback 2026-11-06, finding 7): one view, no tabs inside the tab.
  * What the node does in one sentence; Now and Runs in one line each; its last result as readable text (Read the whole
@@ -569,9 +576,7 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
     const summary = workflowNodeSummary(selected, { execution: current, ...(branch ? { ended: branch.ended ?? null } : {}) });
     const fact = (label, value, extra = {}) => value ? h("div", { className: "ps-wf-fact", key: label, ...extra, title: extra.title ?? undefined },
         h("span", null, label), h("strong", null, value)) : null;
-    const chosen = !replay && selection ? workflowShownExecution(selected, runId, selection, branch) : null;
-    const visit = workflowDetailsVisit(selected, { current: chosen?.chosen && chosen.execution ? chosen.execution : current,
-        frame: replay?.frame ?? null, picked: replay?.picked === true });
+    const visit = workflowNodeDetailsVisit(selected, { runId, selection, branch, replay });
     const visitReceive = selected.kind === "receive"
         ? workflowNodeSummary(selected, { execution: visit ?? current, sessionName }).receive : null;
     const io = visit ? workflowVisitIo(selected, visit, { recorded: workflowRecordedVisit(visits, visit), atMs: replay?.frame?.atMs ?? null,
@@ -585,6 +590,8 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
     const canRead = Boolean(result?.truncated && onReadWholeValue && runId && result.executionId);
     const known = id => nodes.some(node => node.id === id);
     return h("div", { className: "ps-wf-summary" },
+        rerunState ? h("button", { type: "button", className: "ps-mini-button ps-wf-rerun-button", "data-action": "rerun-from-node", "data-execution": visit.id,
+            disabled: !rerunState.enabled, title: rerunState.title, onClick: () => rerun.open(visit.id, rerunState.mode) }, "Re-run from here…") : null,
         summary.what ? h("p", { className: "ps-wf-what", "data-node-what": "true" }, summary.what) : null,
         summary.notes ? h("section", { className: "ps-workflow-notes", "aria-label": "Notes" },
             h("h3", null, "Notes"), h("div", null, summary.notes)) : null,
@@ -627,8 +634,6 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
             summary.decision?.latency ? fact("Latency", summary.decision.latency, { "data-fact": "decision-latency" }) : null),
         summary.decision?.warning ? h("p", { className: "ps-wf-muted", role: "status", "data-field": "decision-warning" }, summary.decision.warning) : null,
         io ? h(WorkflowVisitSection, { key: io.id, io, result: !result, runId, executionValues, onReadWholeValue, onOpenOrigin: openSession }) : null,
-        rerunState ? h("button", { type: "button", className: "ps-mini-button ps-wf-rerun-button", "data-action": "rerun-from-node", "data-execution": visit.id,
-            disabled: !rerunState.enabled, title: rerunState.title, onClick: () => rerun.open(visit.id, rerunState.mode) }, "Re-run from here…") : null,
         result ? h("div", { className: `ps-wf-result${result.error ? " is-error" : ""}`, "data-fact": "result" },
             h("h3", null, result.label),
             h(CodeBlock, { text: result.text, language: "auto" }),
@@ -709,7 +714,7 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
                 decision.model ? property("Model", decision.model) : null,
                 decision.questionType ? property("Question", decision.questionType === "noul" ? "Yes or no" : decision.questionType) : null,
                 decision.threshold !== null ? property("Threshold", workflowDecisionPercentage(decision.threshold)) : null,
-                property("Decision outcome", decision.outcome),
+                property("Decision outcome", decision.supplied ? decision.text : decision.outcome),
                 decision.uncertain !== null ? property("Uncertain", decision.uncertain ? "Yes" : "No") : null,
                 decision.confidence ? property("Confidence", decision.confidence) : null,
                 decision.probabilities.length ? property("Probabilities", decision.probabilities

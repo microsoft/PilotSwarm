@@ -35,6 +35,7 @@ takes the same `question` and returns the same answer, in `decision`.
 | `inputSchema` | Optional. |
 | `question` | Required: `type`, `instructions` (static text: what to judge, and how) and `criteria` (optional for `noul`). |
 | `confidence` | Optional `{ minimumProbability: <0 to 1> }`; not for `score`. |
+| `supply` | Optional `never` to refuse a supplied outcome when re-running from this step. |
 | `timeoutSeconds` | Optional literal integer 1 to 86,400; default 30. |
 
 | `question.type` | `criteria` | Routes you must give |
