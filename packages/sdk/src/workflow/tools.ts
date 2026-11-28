@@ -25,12 +25,15 @@ import { workflowErrorWords } from "./error-words.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels } from "./agent-models.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_TEST_NOTICE, WORKFLOW_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import { resolveWorkflowTestMode } from "./test-mode-switch.js";
+import { resolveEffectiveSpawnOwner } from "../cms.js";
+import { parseApprovalCommand } from "./approval.js";
 import {
     advanceWorkflowTest,
     controlWorkflowRun,
     inspectWorkflowController,
     previewWorkflowAgentVersions,
     recoverWorkflowRun,
+    respondWorkflowApproval,
     respondWorkflowTest,
     sendTypedWorkflowInput,
     startWorkflowTest,
@@ -69,15 +72,17 @@ import {
 
 /**
  * update_workflow's operations, declared once (design 04): the definition commands, the run commands, recover (the
- * parent agent's only; a person's adapter refuses it), and the milestone operations (stop, then the test operations;
- * declared on a turn of session orchestration 1.0.83). The tool's operation enums, a person's lists (human-commands.ts), the
- * dispatch below and its refusals are made from these.
+ * parent agent's only; a person's adapter refuses it), the milestone operations (stop, then the test operations;
+ * declared on a turn of session orchestration 1.0.83), and approval_respond (a controlling session answers for the
+ * owner, as the owner's own command does; declared on a 1.0.83 turn). The tool's operation enums, a person's lists
+ * (human-commands.ts), the dispatch below and its refusals are made from these.
  */
 export const UPDATE_WORKFLOW_OPERATIONS = {
     definition: ["replace_definition", "publish", "publish_and_start", "start"],
     run: ["set_vars", "pause", "resume", "cancel"],
     agent: ["recover"],
     milestone: ["stop", "test", "test_respond", "test_advance"],
+    approval: ["approval_respond"],
 } as const;
 
 /** Operations as a sentence names them: "a, b or c". */
@@ -95,7 +100,8 @@ export function operationWords(operations: readonly string[]): string {
 function updateWorkflowDescription(options: { stop: boolean; test: boolean }): string {
     return "Control one of your Workflows, or a child Workflow below one (started by its spawn steps, at any depth): workflow_id, operation, and a new operation_id for each change (a retry reuses it). "
         + "pause, resume, cancel; "
-        + (options.stop ? "stop (grace_seconds 0 to 3600, default 60: nothing new starts, started work may finish, then the run ends stopped); " : "")
+        + (options.stop ? "stop (grace_seconds 0 to 3600, default 60: nothing new starts, started work may finish); "
+            + "approval_respond answers an approval for its owner; " : "")
         + "set_vars (set, delete, and expected_kv_revision from read_workflow: one atomic change to the run's variables); recover (when "
         + "read_workflow shows needsRecovery). "
         + (options.test ? "test, test_respond and test_advance run and answer a draft's test run (call load_skill with name workflow-testing). " : "")
@@ -148,28 +154,33 @@ export const READ_WORKFLOW_TOOL_SPEC = {
 /** The operations update_workflow declares only on a 1.0.83 turn (a workflow request turn); its handler always takes them. */
 export const UPDATE_WORKFLOW_MILESTONE_OPERATIONS = UPDATE_WORKFLOW_OPERATIONS.milestone;
 
-/** update_workflow on a 1.0.83 turn while workflow test mode is off (spec 16, E1/O2): stop, and no test operation. */
+/** update_workflow on a 1.0.83 turn while workflow test mode is off (spec 16, E1/O2): stop and approval_respond, and no test operation. */
 export const UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
     description: updateWorkflowDescription({ stop: true, test: false }),
     parameters: {
         type: "object",
         properties: {
             ...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties,
-            operation: { type: "string", enum: [...UPDATE_WORKFLOW_DECLARED_OPERATIONS, "stop"] },
+            operation: { type: "string", enum: [...UPDATE_WORKFLOW_DECLARED_OPERATIONS, "stop", ...UPDATE_WORKFLOW_OPERATIONS.approval] },
             grace_seconds: { type: "integer" },
+            // approval_respond: read_workflow's approvals (the workflow-tools skill).
+            approval_id: { type: "string" },
+            context_sha256: { type: "string" },
+            decision: { type: "string", enum: ["approved", "rejected"] },
         },
         required: ["workflow_id", "operation", "operation_id"],
     },
 } as const;
 
-/** update_workflow on a 1.0.83 turn with workflow test mode on: stop and the test operations (the workflow-testing skill). */
+/** update_workflow on a 1.0.83 turn with workflow test mode on: stop, approval_respond and the test operations (the workflow-testing skill). */
 export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
     description: updateWorkflowDescription({ stop: true, test: true }),
     parameters: {
         type: "object",
         properties: {
             ...UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC.parameters.properties,
-            operation: { type: "string", enum: [...UPDATE_WORKFLOW_DECLARED_OPERATIONS, ...UPDATE_WORKFLOW_MILESTONE_OPERATIONS] },
+            operation: { type: "string", enum: [...UPDATE_WORKFLOW_DECLARED_OPERATIONS, ...UPDATE_WORKFLOW_MILESTONE_OPERATIONS,
+                ...UPDATE_WORKFLOW_OPERATIONS.approval] },
             // test: the draft's revision and hash (read_workflow), its inputs and initial variables (the workflow-testing skill).
             expected_revision: { type: "integer" },
             definition_hash: { type: "string" },
@@ -684,9 +695,27 @@ export async function runUpdateWorkflowCommand(args: Record<string, unknown>, ho
     return receiptJson(stored.receipt, stored.replayed);
 }
 
+/**
+ * update_workflow operation approval_respond: a session that controls the Workflow answers its approval for the owner. It
+ * answers as its own session's owner, so approvals.respond() applies the owner's checks unchanged (only the Workflow's and
+ * the approval's pinned owner answers; the first committed answer wins); the receipt names the session (viaSessionId).
+ */
+async function approvalFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
+    const workflowSessionId = requiredString(args, "workflow_id");
+    await authorizeRunControl(context.host, workflowSessionId, context.callerSessionId, optionalString(args, "run_id"));
+    const owner = await resolveEffectiveSpawnOwner(id => context.host.catalog.getSession(id), context.callerSessionId);
+    const actor: WorkflowActor = owner ? { kind: "user", provider: owner.provider, subject: owner.subject }
+        : { kind: "agent", sessionId: context.callerSessionId };
+    const { decidedBy, ...receipt } = await respondWorkflowApproval(context.host, workflowSessionId, parseApprovalCommand(args), actor, context.callerSessionId);
+    // A session sees the owner as pause and resume show a person (runControlView): never the provider or subject.
+    const name = isJsonObject(decidedBy) && typeof decidedBy.displayName === "string" && decidedBy.displayName ? decidedBy.displayName : null;
+    return payload({ ok: true, ...receipt, decidedBy: { by: "a person", ...(name ? { name } : {}) } });
+}
+
 export async function updateWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
+        if (args.operation === "approval_respond") return await approvalFromTool(args, context);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
         // I2: a run command (pause, resume, stop, cancel, set_vars) is control, which every session above the Workflow has; the
         // definition and test operations stay with its parent.
@@ -1981,6 +2010,23 @@ export function runControlView(control: WorkflowRunControl, callerSessionId: str
     return { operation: control.operation, ...by, at: control.at.toISOString(), ...(control.reason ? { reason: control.reason } : {}) };
 }
 
+/**
+ * The approvals a read shows and whether each takes an answer now (approval_respond). Every read says it the same way: the
+ * agent's read_workflow (approvals) and a person's read (personCommands.approvals); the portal also checks its viewer.
+ */
+export function workflowApprovalAnswers(view: Record<string, unknown>): JsonValue[] {
+    const run = isJsonObject(view.run) ? view.run : null;
+    if (run === null || typeof run.runId !== "string") return [];
+    const answers = new Map<string, JsonValue>();
+    for (const execution of [...(Array.isArray(run.nodeExecutions) ? run.nodeExecutions : []), ...(Array.isArray(run.openExecutions) ? run.openExecutions : [])]) {
+        if (!isJsonObject(execution) || !isJsonObject(execution.approval) || typeof execution.approval.approvalId !== "string") continue;
+        const open = execution.approval.status === "pending";
+        answers.set(execution.approval.approvalId, { approvalId: execution.approval.approvalId, runId: run.runId, mayAnswer: open,
+            reason: open ? null : "This approval no longer accepts a new answer." });
+    }
+    return [...answers.values()];
+}
+
 export async function readWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
@@ -2009,7 +2055,8 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
             const controller = await inspectWorkflowController(context.host, shown);
             view.run = { ...view.run, controller: { status: controller.status, error: controller.error, needsRecovery: controller.needsRecovery } };
         }
-        return payload({ ok: true, ...view });
+        const approvals = workflowApprovalAnswers(view);
+        return payload({ ok: true, ...view, ...(approvals.length > 0 ? { approvals } : {}) });
     } catch (error) {
         return errorPayload(error);
     }

@@ -180,7 +180,7 @@ import { createFactTools } from "./facts-tools.js";
 import { workflowAgentToolOffer } from "./workflow/agent-tools.js";
 import { COPILOT_NATIVE_TOOL_NAMES } from "./reserved-tool-names.js";
 import { NATIVE_EXCLUDED_TOOLS } from "./native-subagents.js";
-import { readWorkflowModel, retainedWorkflowReadModel, workflowExclusiveRead } from "./workflow/tools.js";
+import { readWorkflowModel, retainedWorkflowReadModel, workflowApprovalAnswers, workflowExclusiveRead } from "./workflow/tools.js";
 import { WORKFLOW_RERUN_READ_STATUS, workflowReadStatus } from "./workflow/read-pages.js";
 import { PilotSwarmClient, type PilotSwarmSession } from "./client.js";
 import { loadSkillsSync } from "./skills.js";
@@ -2251,16 +2251,8 @@ export class PilotSwarmManagementClient {
         const personCommands = await workflowCommandsForPerson(store, sessionId,
             { runId: shown, draftRevision, published: definition?.state === "published",
                 testMode: resolveWorkflowTestMode(enabled.testMode) });
-        const visibleRun = isJsonObject(view.run) ? view.run : null;
-        const approvalExecutions = visibleRun === null ? [] : [...(Array.isArray(visibleRun.nodeExecutions) ? visibleRun.nodeExecutions : []),
-            ...(Array.isArray(visibleRun.openExecutions) ? visibleRun.openExecutions : [])];
-        const approvals = new Map<string, JsonValue>();
-        for (const execution of approvalExecutions) {
-            if (!isJsonObject(execution) || !isJsonObject(execution.approval) || typeof execution.approval.approvalId !== "string") continue;
-            approvals.set(execution.approval.approvalId, { approvalId: execution.approval.approvalId, runId: shown,
-                mayAnswer: false, reason: "Answer directly as the pinned Workflow owner in the portal." });
-        }
-        return { ...view, personCommands: { ...personCommands, ...(approvals.size > 0 ? { approvals: [...approvals.values()] } : {}) } };
+        const approvals = workflowApprovalAnswers(view);
+        return { ...view, personCommands: { ...personCommands, ...(approvals.length > 0 ? { approvals } : {}) } };
     }
 
     /**
@@ -2270,8 +2262,8 @@ export class PilotSwarmManagementClient {
      * WORKFLOW_COMMANDS_UNAVAILABLE, 501, and nothing changes. The command is
      * the update_workflow tool's: `operation`, `operation_id` and the
      * operation's arguments (replace_definition, publish, publish_and_start,
-     * start, set_vars, pause, resume, cancel; stop, and the test operations
-     * while workflow test mode is on), run by the same implementation
+     * start, set_vars, pause, resume, cancel, approval_respond; stop, and the
+     * test operations while workflow test mode is on), run by the same implementation
      * (human-commands.ts). Authorization is the caller's (the portal gates
      * the session before this runs; the direct client is trusted), and its
      * actor is `options.principal` (a user) or, without one, this client as

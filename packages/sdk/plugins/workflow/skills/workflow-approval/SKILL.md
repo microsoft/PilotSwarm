@@ -1,14 +1,16 @@
 ---
 name: workflow-approval
-description: Owner-only approval state fields, frozen context, identity, deadlines, audit and person-only answers.
+description: Owner approval state fields, frozen context, identity, deadlines, audit, and answers from any surface or the controlling session.
 ---
 
 # Workflow owner approval
 
-An owner-only decision, answered directly in the portal. This is not a request
-to an agent session. Available to new runs at controller 1.1.0; existing 1.0.0
-runs keep their original behavior. An agent may author this state but cannot
-answer it.
+An owner decision. The owner answers it in the portal, over MCP or the API, or
+the session that controls the Workflow answers it for the owner with
+`update_workflow` `approval_respond`; it gets an `approval` notice when the
+visit opens. The first answer wins. Available to new runs at controller 1.1.0;
+existing 1.0.0 runs keep their original behavior. An agent may author this
+state and answer it for the owner.
 
 | Field | Rule |
 |---|---|
@@ -36,11 +38,11 @@ states:
   hold: { type: terminal, outcome: failed }
 ```
 
-The owner reads the full frozen question and context, the pinned owner and
-the effective deadline before answering. Rejection needs a nonblank reason
+Read the full frozen question and context, the pinned owner and the
+effective deadline before answering. Rejection needs a nonblank reason
 of at most 2,000 characters; an approval reason is optional. No reader,
-shared writer, nonowner admin, system or agent can consent. Both the pinned
-owner and current owner must match the person answering. An ownerless
+shared writer, nonowner admin or system can consent. A session answers as its
+own owner: both the pinned owner and current owner must match that person. An ownerless
 Workflow or one started inside an agent step fails `forbidden`.
 
 The deadline is the earlier of admission plus `timeoutSeconds` and the run's
@@ -56,8 +58,11 @@ the normal error routes. Decisions and exact-retry receipts are saved
 atomically with the node result and audit event. Consent grants no additional
 permission to Azure, Git, ADO or any other downstream operation.
 
-The person-only API answers an exact visit (`approval_id`, the node execution
-id) with its exact `context_sha256`. The host stamps identity. It commits
-the result, audit, receipt and event atomically; an exact authorized retry
-returns the original acceptance even after the run ends. Never forward a
-person's approval through MCP or an agent tool. Use the portal to answer.
+Every surface sends the same `approval_respond` (`run_id`, `approval_id`, the
+node execution id, its exact `context_sha256`, `decision` `approved` or
+`rejected`, `reason`, `operation_id`) to the same check. The host stamps
+identity; an answer through a session records `viaSessionId` in the receipt.
+A session sees `decidedBy` as `{ by: "a person", name }`, as for pause.
+It commits the result, audit, receipt and event atomically; an exact
+authorized retry returns the original receipt even after the run ends. A
+later answer fails `APPROVAL_CLOSED`; a late one, `APPROVAL_EXPIRED`.

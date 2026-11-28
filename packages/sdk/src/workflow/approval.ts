@@ -117,9 +117,11 @@ export class WorkflowApprovalStore {
                 outcome: "timed_out", resultKind: "runtime_error", error: envelope } }], update: { touch: true } });
     }
 
-    async respond(workflowSessionId: string, command: ApprovalCommand, actor: WorkflowActor): Promise<{ [key: string]: JsonValue }> {
+    /** viaSessionId: the session that answered for the owner (its update_workflow), kept in the receipt only. */
+    async respond(workflowSessionId: string, command: ApprovalCommand, actor: WorkflowActor, viaSessionId: string | null = null)
+        : Promise<{ [key: string]: JsonValue }> {
         if (actor.kind !== "user") throw new WorkflowStoreError("FORBIDDEN", "Only the owner can answer this approval.");
-        const requestSha256 = jsonSha256({ ...command, actor });
+        const requestSha256 = jsonSha256(viaSessionId === null ? { ...command, actor } : { ...command, actor, viaSessionId });
         const accepted = await this.context.transaction(async client => {
             const { rows: sessions } = await client.query(`SELECT deleted_at FROM ${this.t.sessions} WHERE session_id=$1 FOR NO KEY UPDATE`, [workflowSessionId]);
             if (!sessions[0] || sessions[0].deleted_at !== null) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", "This Workflow is deleted or unavailable.");
@@ -162,7 +164,7 @@ export class WorkflowApprovalStore {
             const decidedBy = { provider: actor.provider, subject: actor.subject, displayName: owner.displayName };
             const output = { decision: command.decision, reason: command.reason, decidedAt: at, decidedBy, contextSha256: command.contextSha256 };
             const receipt = { workflowSessionId, runId: command.runId, approvalId: command.approvalId, operation: "approval_respond",
-                ...output, replayed: false };
+                ...output, viaSessionId, replayed: false };
             await client.query(`UPDATE ${this.t.nodes} SET state='completed', outcome=$2, result_kind='business', output=$3, error=NULL,
                 winner='approval_owner', completed_at=$4::timestamptz WHERE node_execution_id=$1 AND state='pending'`,
                 [command.approvalId, command.decision, canonicalJson(output), at]);

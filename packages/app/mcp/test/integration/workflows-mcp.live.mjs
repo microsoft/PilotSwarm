@@ -464,7 +464,8 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
         assert.equal(del2.replayed, true);
         assert.equal(del2.definitionId, del1.definitionId);
 
-        // 9. approval_respond refused over MCP (not advertised in schema; handler also keeps 403 FORBIDDEN)
+        // 9. a malformed approval_respond is refused over MCP (the command schema needs run_id, context_sha256, operation_id and
+        //    decision approved or rejected); a well-formed one goes to the person's command, as on every surface.
         const appRes = await client.callTool({
             name: "update_workflow",
             arguments: {
@@ -472,7 +473,58 @@ async function runModeFlow(modeLabel, stdioOpts, publishPkg, cleanupPkg) {
                 command: { operation: "approval_respond", approval_id: "a1", decision: "approve" },
             },
         });
-        assert.equal(appRes.isError, true, `${modeLabel}: approval_respond must be refused over MCP`);
+        assert.equal(appRes.isError, true, `${modeLabel}: a malformed approval_respond must be refused over MCP`);
+
+        // 9b. The owner approves over MCP and the run continues on the approved route (web mode: the no-auth person owns the run).
+        if (modeLabel === "web") {
+            const gateYaml = [
+                "apiVersion: pilotswarm.dev/v1",
+                "kind: Workflow",
+                'metadata: { name: mcp-gate, version: "1.0.0" }',
+                "initial: gate",
+                "states:",
+                "  gate:",
+                "    type: approval",
+                '    question: "Go on?"',
+                "    timeoutSeconds: 600",
+                "    transition: { next: { approved: done, rejected: failed, timed_out: failed } }",
+                "  done: { type: terminal, outcome: succeeded }",
+                "  failed: { type: terminal, outcome: failed }",
+            ].join("\n");
+            parse(await client.callTool({
+                name: "workflow_definition",
+                arguments: { operation: "save", owner_session_id: owner.session_id, name: "mcp-gate", yaml: gateYaml, operation_id: "save-gate-1" },
+            }));
+            const gated = parse(await client.callTool({
+                name: "workflow_definition",
+                arguments: { operation: "start", owner_session_id: owner.session_id, name: "mcp-gate", workspace: "none", operation_id: "start-gate-1" },
+            }));
+            assert.ok(gated.workflowId, `${modeLabel}: mcp-gate started (${JSON.stringify(gated)})`);
+            sessionsToClean.push(gated.workflowId);
+            let pending = null;
+            let answer = null;
+            for (const until = Date.now() + 60_000; Date.now() < until && !pending;) {
+                const gv = parse(await client.callTool({ name: "read_workflow", arguments: { session_id: gated.workflowId } }));
+                pending = [...(gv?.run?.nodeExecutions ?? []), ...(gv?.run?.openExecutions ?? [])].find((e) => e.stateId === "gate" && e.approval?.status === "pending")?.approval ?? null;
+                answer = gv?.personCommands?.approvals?.find((a) => a.approvalId === pending?.approvalId) ?? null;
+                if (!pending) await new Promise((r) => setTimeout(r, 500));
+            }
+            assert.ok(pending, `${modeLabel}: the approval opens`);
+            assert.equal(answer?.mayAnswer, true, `${modeLabel}: the owner may answer (${JSON.stringify(answer)})`);
+            const receipt = parse(await client.callTool({
+                name: "update_workflow",
+                arguments: { session_id: gated.workflowId, command: { operation: "approval_respond", operation_id: "answer-gate-1", run_id: gated.runId,
+                    approval_id: pending.approvalId, context_sha256: pending.contextSha256, decision: "approved" } },
+            }));
+            assert.equal(receipt?.decision, "approved", `${modeLabel}: ${JSON.stringify(receipt)}`);
+            let gatedView = null;
+            for (const until = Date.now() + 60_000; Date.now() < until;) {
+                gatedView = parse(await client.callTool({ name: "read_workflow", arguments: { session_id: gated.workflowId } }));
+                if (["completed", "failed", "cancelled", "stopped"].includes(gatedView?.run?.status)) break;
+                await new Promise((r) => setTimeout(r, 500));
+            }
+            assert.equal(gatedView?.run?.outcome, "succeeded", `${modeLabel}: approved over MCP (${JSON.stringify(gatedView?.run)})`);
+        }
 
         // 10. send_workflow_input end-to-end: correlated receive -> claimedBy -> idempotent replay -> succeeded + refusal guards
         const recvYaml = [

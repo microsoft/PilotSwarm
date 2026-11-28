@@ -179,13 +179,13 @@ run; to change or start a definition, use `workflow_definition`.
 |---|---|---|
 | `set_vars` | `set?`, `delete?`, `expected_kv_revision`, `run_id?` | One atomic KV change. |
 | `pause`, `resume`, `cancel` | `reason?`, `run_id?` | Run control. |
-| `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; then the run ends `stopped`. |
+| `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; ends `stopped`. |
 | `recover` | `run_id?` | Ends or starts a run that `read_workflow` shows as `needsRecovery`. |
+| `approval_respond` | `run_id`, `approval_id`, `context_sha256`, `decision` (`approved`/`rejected`), `reason?` (to reject) | Answers as the owner; first answer wins. |
 
 - `set_vars`: `set` (`{ key: JSON value }`) and `delete` (keys) make one
-  atomic change; `null` is a value, and deleting is explicit. A step that
-  starts later reads the variables as `context.kv` or `${kv.key}`; a
-  running step keeps the values it started with.
+  atomic change (`null` is a value). A later step reads them as
+  `context.kv` or `${kv.key}`; a running step keeps its values.
 - `pause`: no new step starts; work already started finishes and keeps its
   result. `cancel`: a run that has not begun ends at once; otherwise
   `read_workflow` shows when it has ended.
@@ -201,13 +201,12 @@ run; to change or start a definition, use `workflow_definition`.
 `workflow_id`, `run_id?` (default live run),
 `include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
 rows), `execution_id?` (its whole input and result). Shows the graph, runs, a
-run's rows (below), KV, stop, `agent.childSessionId`, branches. It is how
+run's rows (below), KV, stop, `agent.childSessionId`, branches, `approvals`. It is how
 you follow a run (`workflow-authoring`, Follow a run): use it, not `list_sessions`, for a workflow's status.
 
 Each section of a run (step executions, inbox, outbox) holds its newest
 rows, oldest first; open rows are listed apart however old. `limit` sets
-the rows per page (default 200 executions, 50 inputs, 50 sent messages);
-give a section's `run.pages` `nextCursor` back as `cursor` for its next, older page. Separate reads, each alone: `execution_id` (with
+the rows per page (default 200 executions, 50 inputs, 50 sent messages). Separate reads, each alone: `execution_id` (with
 `run_id`: one step execution's whole input and output or error), `kv_revision` (that
 revision of the variables; with `kv_key`, one variable whole),
 `agent_versions` (the agent versions publishing would lock now),
@@ -215,7 +214,7 @@ revision of the variables; with `kv_key`, one variable whole),
 `step_input` (`{ state, input? }`: an agent step's input fields and where
 each comes from; with `input`, the draft's YAML with only those inputs
 changed). While a run is paused it shows `pausedFrom` and `pauseSettled`. A
-delivered message was accepted by its recipient, not necessarily read.
+delivered message was accepted, not necessarily read.
 
 ## send_workflow_input
 

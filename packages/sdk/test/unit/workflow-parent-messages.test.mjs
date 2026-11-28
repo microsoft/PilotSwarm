@@ -228,8 +228,9 @@ test("provenance comes from the queued message's server-stamped sender, never fr
         message: { kind: "system", display: "workflow message" },
         request: { kind: "system", display: "workflow request" },
         test_waiting: { kind: "system", display: "workflow test" },
+        approval: { kind: "system", display: "workflow approval" },
     });
-    for (const type of ["ended", "message", "request", "test_waiting"]) {
+    for (const type of ["ended", "message", "request", "test_waiting", "approval"]) {
         assert.equal(isWorkflowRuntimeSender(workflowRuntimeSender(type), type), true);
         assert.notEqual(workflowRuntimeSender(type), WORKFLOW_RUNTIME_SENDERS[type], "a fresh object for a queue payload");
     }

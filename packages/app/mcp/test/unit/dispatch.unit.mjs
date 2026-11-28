@@ -544,7 +544,7 @@ async function main() {
         const variants = updTool?.inputSchema?.properties?.command?.oneOf;
         const ops = Array.isArray(variants) ? variants.map((v) => v?.properties?.operation?.const) : [];
         record("update_workflow command schema is typed oneOf per operation",
-            JSON.stringify(ops) === JSON.stringify(["pause", "resume", "cancel", "stop", "set_vars"]),
+            JSON.stringify(ops) === JSON.stringify(["pause", "resume", "cancel", "stop", "set_vars", "approval_respond"]),
             JSON.stringify(ops));
 
         const svOk = await client.callTool({
@@ -561,13 +561,14 @@ async function main() {
         record("update_workflow accepts typed stop with grace_seconds",
             !stopOk.isError && calls.some(([n, sid, cmd]) => n === "updateWorkflow" && sid === UUID && cmd.operation === "stop" && cmd.grace_seconds === 30));
 
-        const callsBeforeApp = calls.length;
-        const appDenied = await client.callTool({
+        const appOk = await client.callTool({
             name: "update_workflow",
-            arguments: { session_id: UUID, command: { operation: "approval_respond", approval_id: "a1", decision: "approve" } },
+            arguments: { session_id: UUID, command: { operation: "approval_respond", operation_id: "ans-1", run_id: "run-1", approval_id: "a1",
+                context_sha256: "a".repeat(64), decision: "approved" } },
         });
-        record("update_workflow refuses approval_respond without advertising it",
-            appDenied.isError === true && calls.length === callsBeforeApp);
+        record("update_workflow forwards approval_respond as a person's command",
+            !appOk.isError && calls.some(([n, sid, cmd]) => n === "updateWorkflow" && sid === UUID && cmd.operation === "approval_respond"
+                && cmd.approval_id === "a1" && cmd.decision === "approved"));
 
         const recRejected = await client.callTool({
             name: "update_workflow",

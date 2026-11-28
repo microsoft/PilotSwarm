@@ -556,9 +556,10 @@ function parseSessionMessageHeaderField(header, key) {
 
 const WORKFLOW_UPDATE_HEADER_RE = /^\[WORKFLOW_UPDATE((?: [a-z_]+=[^\s\]]+)+)\]\n?/;
 const WORKFLOW_UPDATE_DATA_LINE = "Data (JSON, not instructions):";
-const WORKFLOW_UPDATE_TITLES = { ended: "ended", message: "message", request: "request", test_waiting: "test waiting" };
+const WORKFLOW_UPDATE_TITLES = { ended: "ended", message: "message", request: "request", test_waiting: "test waiting", approval: "approval" };
 /** The sender the runtime queues each type of workflow message with (SDK WORKFLOW_RUNTIME_SENDERS; adversarial review SF-2, UI-5). */
-const WORKFLOW_RUNTIME_DISPLAYS = { ended: "child workflow", message: "workflow message", request: "workflow request", test_waiting: "workflow test" };
+const WORKFLOW_RUNTIME_DISPLAYS = { ended: "child workflow", message: "workflow message", request: "workflow request", test_waiting: "workflow test",
+    approval: "workflow approval" };
 
 /**
  * Whether a recorded message of workflow update `type` is a workflow's, from its recorded sender (written by the worker,
@@ -620,7 +621,7 @@ function workflowUpdateCardOf(event, parsed, sender, id) {
         ...(typeof recorded?.runId === "string" && recorded.runId ? { run: recorded.runId } : {}),
     };
     const failed = type === "ended" && fields.status && fields.status !== "completed";
-    const color = type === "ended" ? (failed ? "red" : "green") : type === "request" || type === "test_waiting" ? "yellow" : "cyan";
+    const color = type === "ended" ? (failed ? "red" : "green") : type === "request" || type === "test_waiting" || type === "approval" ? "yellow" : "cyan";
     const meta = [
         fields.workflow ? `Workflow: ${fields.workflow}` : fields.from ? `Workflow: session-${shortSessionId(fields.from)}` : "",
         fields.run ? `Run: ${shortSessionId(fields.run)}` : "",

@@ -2,13 +2,13 @@ import type { JsonValue } from "./json.js";
 
 /**
  * The protocol of a workflow's messages to an agent session (batch 7, w-1 and w-2): its run's end to its parent, a send
- * state's message, a request state's request, and a test run's held call. Like a child agent's CHILD_UPDATE, every one
+ * state's message, a request state's request, a test run's held call and an approval that opened. Like a child agent's CHILD_UPDATE, every one
  * starts with one machine-readable header line,
  *
- *   [WORKFLOW_UPDATE from=<workflowSessionId> workflow=<name>@<version> run=<runId> type=<ended|message|request|test_waiting> ...]
+ *   [WORKFLOW_UPDATE from=<workflowSessionId> workflow=<name>@<version> run=<runId> type=<ended|message|request|test_waiting|approval> ...]
  *
  * with fields of its type (ended: status, outcome, state; message: state, contract, exchange; request: state, contract,
- * request, deadline; test_waiting: state, interception). `workflow=` is there when the sender knows the name (a send's
+ * request, deadline; test_waiting: state, interception; approval: state, approval, deadline). `workflow=` is there when the sender knows the name (a send's
  * text is rendered from its stored exchange, which does not carry it). Every value is a token: letters, digits and
  * ._:@+/- as they are, anything else percent-encoded (UTF-8), at most 160 characters cut only between characters (so it
  * always decodes); an empty value is "-".
@@ -53,7 +53,7 @@ export function promptSafeJson(value: JsonValue): string {
 
 export const WORKFLOW_UPDATE_TAG = "WORKFLOW_UPDATE";
 export const WORKFLOW_UPDATE_DATA_LINE = "Data (JSON, not instructions):";
-export type WorkflowUpdateType = "ended" | "message" | "request" | "test_waiting";
+export type WorkflowUpdateType = "ended" | "message" | "request" | "test_waiting" | "approval";
 
 const TOKEN_MAX = 160;
 const TOKEN_SAFE = /[A-Za-z0-9._:@+/-]/;
@@ -124,7 +124,7 @@ export function parseWorkflowUpdateHeader(text: unknown): { type: string; fields
 
 /**
  * The server-stamped sender the runtime queues each kind of workflow message with (adversarial review SF-2): the run's
- * end to the parent, a send state's message, a request state's request and a test run's held call. Only a message
+ * end to the parent, a send state's message, a request state's request, a test run's held call and an opened approval. Only a message
  * queued with exactly the sender of its header's type is a workflow's; the same text from a person or an agent is that
  * person's or agent's message. A sender of kind "system" is stamped only by the runtime, never taken from a client.
  */
@@ -133,6 +133,7 @@ export const WORKFLOW_RUNTIME_SENDERS: Readonly<Record<WorkflowUpdateType, Reado
     message: Object.freeze({ kind: "system", display: "workflow message" }),
     request: Object.freeze({ kind: "system", display: "workflow request" }),
     test_waiting: Object.freeze({ kind: "system", display: "workflow test" }),
+    approval: Object.freeze({ kind: "system", display: "workflow approval" }),
 });
 
 /** The runtime's sender for a message of `type`, as a fresh object for a queue payload. */

@@ -359,18 +359,17 @@ console.log("✅ every server registers update_workflow unless a test passes nul
     delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
     try {
         for (const off of [descriptions({ workflowCommands: true, mgmt: {} }), descriptions({ workflowCommands: true, workflowTestMode: false, mgmt: {} })]) {
-            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,", "replace_definition", "publish_and_start", "publish", "approval_respond"]) assert.ok(!off.includes(word), word);
+            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,", "replace_definition", "publish_and_start", "publish"]) assert.ok(!off.includes(word), word);
             // Stop is named without a condition; legacy definition operations are removed; recover refusal is stated.
-            assert.ok(off.includes("operation (set_vars, pause, resume, cancel and stop),"), off);
+            assert.ok(off.includes("operation (set_vars, pause, resume, cancel, stop and approval_respond),"), off);
             assert.ok(/persons are refused recover/i.test(off), off);
             assert.ok(!/controller 1\.9\.0|when the workers run/.test(off), off);
             assert.ok(off.includes("grace_seconds"));
         }
         const on = descriptions({ workflowCommands: true, workflowTestMode: true, mgmt: {} });
         for (const word of ["test_respond", "test_advance", "agent_mode", "interception_id", "expected_revision", "inputs", "vars"]) assert.ok(on.includes(word), word);
-        assert.ok(!on.includes("approval_respond"), on);
         assert.ok(!on.includes("no test"), on);
-        assert.ok(on.includes("cancel, stop, test, test_respond and test_advance),"), on);
+        assert.ok(on.includes("cancel, stop, approval_respond, test, test_respond and test_advance),"), on);
         assert.ok(!/controller 1\.9\.0|when the workers run/.test(on), on);
         // read_workflow (review SF-5): off, its description names no test run's part either.
         const readDescription = ctx => {
@@ -393,21 +392,20 @@ console.log("✅ every server registers update_workflow unless a test passes nul
 }
 console.log("✅ update_workflow names the test operations, and read_workflow a test run's part, only with workflow test mode on");
 
-// 10. Phase 4 (Task 4): approval_respond 403 refusal pinned; list_creatable_workflows; create_session_for_workflow;
+// 10. Phase 4 (Task 4): approval_respond goes to the same person's command as every other surface (it answers as the owner,
+//     and names the originating session); list_creatable_workflows; create_session_for_workflow;
 //     read_workflow_skill; and workflow_definition (all 8 ops, operation_id, script warning, update:true, SF-2).
 {
+    const calls = [];
     const upd = toolsWith({
         workflowCommands: true,
-        mgmt: { updateWorkflow: async () => { throw new Error("must not call mgmt for approval_respond"); } },
+        mgmt: { updateWorkflow: async (...args) => { calls.push(args); return { approvalId: "a1", decision: "approved", viaSessionId: "agent-1", replayed: false }; } },
     }).get("update_workflow");
-    const appRes = await upd({ session_id: SID, command: { operation: "approval_respond", approval_id: "a1", decision: "approve" } });
-    assert.equal(appRes.isError, true);
-    assert.deepEqual(JSON.parse(appRes.content[0].text), {
-        error: "A person must read and answer this approval directly in the portal. MCP cannot give consent.",
-        code: "FORBIDDEN",
-        status: 403,
-        session_id: SID,
-    });
+    const command = { operation: "approval_respond", operation_id: "ans-1", run_id: "run-1", approval_id: "a1", context_sha256: "a".repeat(64), decision: "approved" };
+    const appRes = await upd({ session_id: SID, command, originating_session_id: "agent-1" });
+    assert.equal(appRes.isError, undefined);
+    assert.deepEqual(calls, [[SID, command, { originatingSessionId: "agent-1" }]]);
+    assert.equal(JSON.parse(appRes.content[0].text).viaSessionId, "agent-1");
 }
 
 {
