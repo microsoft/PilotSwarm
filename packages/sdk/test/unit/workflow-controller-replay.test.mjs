@@ -148,6 +148,11 @@ test("pass-over histories pin the unchanged controller version and never start e
     assert.deepEqual(supAgentTasks.filter(t => t.kind === "start").map(t => t.input.nodeExecutionId), ["nx-step2"]);
     assert.ok(!supAgentTasks.some(t => t.name === "workflow.spawnAgent"));
     assert.ok(supAgentTasks.some(t => t.name === "workflow.endAgents"));
+    // The singular endAgent of a reused and a supplied agent row answers as the runtime's pass-over no-op does.
+    for (const scenario of ["rerun-passover-script-and-agent", "rerun-passover-supplied-agent"]) {
+        const ends = byName[scenario].events.filter(({ task }) => task.name === "workflow.endAgent");
+        assert.deepEqual(ends.map(({ task, reply }) => [task.input.nodeExecutionId, reply]), [["nx-agent1", { end: "done", sent: false }]], scenario);
+    }
     // 25-admission continue-as-new pass-over: s1..s25 passed over (0 starts) -> continue-as-new -> s26 passed over -> only s27 starts!
     const canMoved = byName["rerun-passover-continue-as-new"];
     const canResumed = byName["rerun-passover-continue-as-new-resumed"];

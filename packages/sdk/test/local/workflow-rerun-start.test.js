@@ -147,6 +147,40 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
 
+const RECEIVE_CARRY_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: rerun-receive-carry-wf, version: "1.0.0" }
+limits: { maxNodeExecutions: 30 }
+schemas:
+  Note:
+    type: object
+    properties:
+      n: { type: integer }
+contracts:
+  Note@1: { schema: { $ref: "#/schemas/Note" } }
+initial: first
+states:
+  first:
+    type: messaging
+    mode: receive
+    contract: "Note@1"
+    wait: { seconds: 60 }
+    transition: { next: { received: second, elapsed: failed, failure: failed } }
+  second:
+    type: messaging
+    mode: receive
+    contract: "Note@1"
+    wait: { seconds: 60 }
+    transition: { next: { received: work, elapsed: failed, failure: failed } }
+  work:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
 function deferHost(client) {
     const store = client._catalog.workflowStore();
     return {
@@ -797,6 +831,8 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 await seedNote(srcB, 1, srcB.baseMs + 1_300);
                 await seedNote(srcB, 2, srcB.baseMs + 3_000);
                 await seedNote(srcB, 3, srcB.baseMs + 6_200);
+                // D-M1: accepted after the last reused root visit (mid) completed, before post was entered: still carried.
+                await seedNote(srcB, 4, srcB.baseMs + 5_500);
                 const rB = await startSessionWorkflowDefinition(h, {
                     ownerSessionId: srcB.ownerSessionId,
                     definition: { definitionId: srcB.definitionId },
@@ -808,7 +844,7 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 });
                 expect(rB.rerun?.mode).toBe("run_again");
                 expect(rB.rerun?.reused).toBe(5);
-                expect(await carriedNotes(rB.runId)).toEqual([1, 2]);
+                expect(await carriedNotes(rB.runId)).toEqual([1, 2, 4]);
 
                 // (c) continue from the last top-level visit V (step2, visit 2 of the root chain, completed at 1.4 s):
                 // cutAt = sourceRun.finishedAt, so a message accepted after V completed (2.0 s) is carried.
@@ -840,6 +876,88 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 expect(mappedStep2?.reusedFromExecutionId).toBe(srcC.ids["step2#1"]);
                 expect(rCRow?.rerunResume?.predecessorId).toBe(mappedStep2?.nodeExecutionId);
                 expect(rCRow?.rerunResume?.predecessorId).not.toBe(mappedStep1?.nodeExecutionId);
+            } finally {
+                await pool.end();
+            }
+        });
+    });
+
+    it("cuts the carried inbox at the exact microsecond (D-I1), carries messages consumed only by dropped visits (D-I2), and cuts continue at the first dropped root visit (D-M1)", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            // A Note@1 message of source `src`: `accepted` and `expires` are SQL timestamptz expressions ($5 is the source run id).
+            const seedNoteAt = async (src, n, accepted, expires, consumedBy = null) => {
+                const opId = `seed-note-${n}-${randomUUID()}`;
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_inbox (
+                        message_id, workflow_session_id, run_id, sender_session_id, operation_id, request_sha256,
+                        contract, correlation, payload, accepted_at, expires_at, consumed_by, consumed_at
+                     ) VALUES ($1,$2,$5,$3,$4,$6,'Note@1','null',$7,${accepted},${expires},$8::text,
+                               CASE WHEN $8::text IS NULL THEN NULL ELSE ${accepted} END)`,
+                    [`msg-${randomUUID()}`, src.workflowId, src.ownerSessionId, opId, src.runId, sha256Hex(opId), canonicalJson({ n }), consumedBy],
+                );
+            };
+            const carriedNotes = async (runId) => (await pool.query(
+                `SELECT payload FROM ${s}.workflow_inbox WHERE run_id = $1 AND contract = 'Note@1' ORDER BY seq`,
+                [runId],
+            )).rows.map(r => JSON.parse(r.payload).n);
+            const start = (src, operationId, rerunFrom) => startSessionWorkflowDefinition(h, {
+                ownerSessionId: src.ownerSessionId, definition: { definitionId: src.definitionId }, inputs: {}, actor: OWNER_ACTOR, owner: OWNER,
+                operationId, rerunFrom: { workflowId: src.workflowId, ...rerunFrom },
+            });
+            try {
+                // D-I1: step2 (the cut of a run_again of step2) entered at a time with 900 microseconds past the millisecond.
+                // Note 1, accepted 400 us before the cut and unexpired, waits at the cut; note 2 expired 500 us before the cut;
+                // note 3 was accepted 100 us after the cut. A cut truncated to the millisecond would carry note 2 and drop note 1.
+                const srcP = await seedEndedSessionWorkflow(h);
+                const { rows: [cutRow] } = await pool.query(
+                    `UPDATE ${s}.workflow_node_executions SET entered_at = date_trunc('milliseconds', entered_at) + interval '900 microseconds'
+                      WHERE node_execution_id = $1 RETURNING to_char(entered_at AT TIME ZONE 'UTC', 'US') AS us`,
+                    [srcP.ids["step2#1"]],
+                );
+                expect(cutRow.us.endsWith("900")).toBe(true);
+                const cutSql = `(SELECT entered_at FROM ${s}.workflow_node_executions WHERE run_id = $5 AND node_id = 'step2')`;
+                await seedNoteAt(srcP, 1, `${cutSql} - interval '400 microseconds'`, `${cutSql} + interval '1 hour'`);
+                await seedNoteAt(srcP, 2, `${cutSql} - interval '10 seconds'`, `${cutSql} - interval '500 microseconds'`);
+                await seedNoteAt(srcP, 3, `${cutSql} + interval '100 microseconds'`, `${cutSql} + interval '1 hour'`);
+                const rP = await start(srcP, "d-i1-microsecond-cut", { executionId: srcP.ids["step2#1"], mode: "run_again" });
+                expect(await carriedNotes(rP.runId)).toEqual([1]);
+
+                // D-I2 + D-M1: first (receive, kept) consumed note 1; second (receive) consumed note 2; note 3 waited unconsumed.
+                // Notes 4 and 5 were accepted before and after second's entry, both before the source run finished.
+                const srcR = await seedEndedSessionWorkflow(h, {
+                    yaml: RECEIVE_CARRY_YAML,
+                    visits: [
+                        { nodeId: "first", ordinal: 1, nodeType: "messaging", outcome: "received", resultKind: "business", output: { n: 1 }, enteredMs: 0, completedMs: 400 },
+                        { nodeId: "second", ordinal: 1, nodeType: "messaging", arrivalRoute: "received", outcome: "received", resultKind: "business", output: { n: 2 }, enteredMs: 1_000, completedMs: 1_400 },
+                        { nodeId: "work", ordinal: 1, nodeType: "script", arrivalRoute: "received", outcome: "execution_failed", resultKind: "runtime_error", enteredMs: 2_000, completedMs: 2_400 },
+                    ],
+                });
+                const at = ms => `'${new Date(srcR.baseMs + ms).toISOString()}'::timestamptz`;
+                await seedNoteAt(srcR, 1, at(100), at(3_600_000), srcR.ids["first#1"]);
+                await seedNoteAt(srcR, 2, at(200), at(3_600_000), srcR.ids["second#1"]);
+                await seedNoteAt(srcR, 3, at(300), at(3_600_000));
+                await seedNoteAt(srcR, 4, at(500), at(3_600_000));
+                await seedNoteAt(srcR, 5, at(1_500), at(3_600_000));
+                const runR = await h.store.readRun(srcR.runId);
+                expect(runR.finishedAt.getTime()).toBeGreaterThan(srcR.baseMs + 2_400);
+
+                // run_again of second keeps only first: note 2 (consumed by the dropped second) waits again for second's re-run;
+                // note 1 stays consumed by the kept first. The carried-message preview counts the same messages.
+                const rAgain = await start(srcR, "d-i2-run-again-second", { executionId: srcR.ids["second#1"], mode: "run_again" });
+                expect(await carriedNotes(rAgain.runId)).toEqual([2, 3, 4]);
+                expect(await h.store.summarizeRerunCarriedInbox(srcR.runId, { enteredAtOf: srcR.ids["second#1"] }, [], [srcR.ids["first#1"]]))
+                    .toEqual({ count: 3, contracts: ["Note@1"] });
+
+                // continue from first cuts at second's entry (the first dropped root visit), not at the source run's end: note 5,
+                // accepted after second was entered but before the run finished, is not carried.
+                const rContinue = await start(srcR, "d-m1-continue-first", { executionId: srcR.ids["first#1"], mode: "continue" });
+                expect(rContinue.rerun?.mode).toBe("continue");
+                expect(await carriedNotes(rContinue.runId)).toEqual([2, 3, 4]);
+                expect(await h.store.summarizeRerunCarriedInbox(srcR.runId, { sourceRunEnd: true }, [], [srcR.ids["first#1"]]))
+                    .toEqual({ count: 4, contracts: ["Note@1"] });
             } finally {
                 await pool.end();
             }

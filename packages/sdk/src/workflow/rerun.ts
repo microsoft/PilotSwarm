@@ -723,6 +723,24 @@ export function partitionRerunVisits(
     };
 }
 
+/**
+ * The KV revisions a re-run copies, 1..R (plan Task 4b, review D-1): R is the KV pin of the first dropped top-level visit
+ * (the variables as they were at the cut), or the source run's last revision when no top-level visit is dropped. It also
+ * covers every copied visit's pin and, in `supply` mode, the supplied visit's pin (its replacement keeps the chosen visit's
+ * revision), so each pin names its own snapshot; a `vars` overlay is revision R+1.
+ */
+export function rerunCutKvRevision(input: {
+    mode: WorkflowRerunMode;
+    chosen: Pick<WorkflowRerunKey, "kvRevision">;
+    reused: readonly Pick<WorkflowRerunKey, "kvRevision">[];
+    firstDroppedTop: Pick<WorkflowRerunKey, "kvRevision"> | null;
+    sourceKvRevision: number;
+}): number {
+    const cut = input.firstDroppedTop ? input.firstDroppedTop.kvRevision : input.sourceKvRevision;
+    const pins = [...input.reused.map(v => v.kvRevision), ...(input.mode === "supply" ? [input.chosen.kvRevision] : [])];
+    return Math.max(1, cut ?? 1, ...pins.map(pin => pin ?? 1));
+}
+
 export function mapRerunExecutions(
     newRunId: string,
     reused: readonly WorkflowRerunKey[],

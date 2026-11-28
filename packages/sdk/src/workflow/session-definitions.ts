@@ -28,10 +28,12 @@ import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, readWorkflowToolBinding, type WorkflowToolBinding } from "./tool-policy.js";
 import { EMPTY_CAPABILITY_STATE } from "../capability-catalog.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, type JsonObject, type JsonValue } from "./json.js";
-import { WorkflowStoreError, parseDefinitionReceipt, type RerunAdmissionSpec, type WorkflowActor, type WorkflowDefinitionReceipt } from "./store.js";
+import {
+    WorkflowStoreError, parseDefinitionReceipt, type RerunAdmissionSpec, type RerunInboxCut, type WorkflowActor, type WorkflowDefinitionReceipt,
+} from "./store.js";
 import {
     buildRerunResume, checkRerunCompatibility, mapRerunExecutions, mapRerunSuppliedExecution, partitionRerunVisits,
-    pickRerunTarget, validateRerunSupply, type WorkflowRerunMode,
+    pickRerunTarget, rerunCutKvRevision, validateRerunSupply, type WorkflowRerunMode,
 } from "./rerun.js";
 import { effectiveChildLevel, SESSION_MAX_NESTING_LEVEL, WORKFLOW_HUMAN_INPUT_DENIED, workflowHumanInputError } from "./input-policy.js";
 import { mergeWorkflowAgentModels, parseWorkflowAgentModels, parseWorkflowDecisionModels, readStoredAgentModels,
@@ -707,7 +709,7 @@ async function replaySessionStart(host: WorkflowHost, request: Parameters<typeof
                 unwalkedCount: 0,
                 supplied: supObj,
                 cutKvRevision: 1,
-                inboxCutAt: new Date(),
+                inboxCutAt: { sourceRunEnd: true },
                 reusedSpawnChildIds: [],
                 approvalOwnerCheck: null,
             };
@@ -873,7 +875,6 @@ async function prepareRerunStart(
     if (!sourceRun.finishedAt || sourceRun.status === "admitted" || sourceRun.status === "running" || sourceRun.status === "paused") {
         throw new WorkflowStoreError("RERUN_SOURCE_ACTIVE", `Source Workflow ${rf.workflowId} is still ${sourceRun.status}; wait for it to finish before re-running.`);
     }
-    const sourceFinishedAt = sourceRun.finishedAt;
     // Decision 8: default revision is the source run's revision (NOT newestValidRevision).
     const sourceRevision = sourceDef.sessionRevision as number;
     const revision = pinned?.revision ?? (request.revision != null ? request.revision : sourceRevision);
@@ -969,7 +970,9 @@ async function prepareRerunStart(
     }
     const newRunId = randomUUID();
     const mapped = mapRerunExecutions(newRunId, part.reused);
-    const cutKvRevision = part.reused.reduce((maxRev, v) => Math.max(maxRev, v.kvRevision ?? 1), 1);
+    const cutKvRevision = rerunCutKvRevision({
+        mode: picked.mode, chosen: picked.chosen, reused: part.reused, firstDroppedTop: part.firstDroppedTop, sourceKvRevision: sourceRun.kvRevision,
+    });
     const now = new Date();
     const nowIso = now.toISOString();
     let suppliedSpec: RerunAdmissionSpec["supplied"] = null;
@@ -1027,10 +1030,10 @@ async function prepareRerunStart(
         supplied: resumeSupplied,
     });
     // Design §5.4 / §3.5.2: run_again cuts at V's entry; continue and supply cut at the first dropped top-level visit
-    // after V, or at the source run's end when V was its last top-level visit.
-    const inboxCutAt = new Date(picked.mode === "run_again"
-        ? picked.chosen.enteredAt
-        : (part.firstDroppedTop?.enteredAt ?? sourceFinishedAt));
+    // after V, or at the source run's end when V was its last top-level visit. The store reads that time exactly (D-I1).
+    const inboxCutAt: RerunInboxCut = picked.mode === "run_again"
+        ? { enteredAtOf: picked.chosen.nodeExecutionId }
+        : (part.firstDroppedTop ? { enteredAtOf: part.firstDroppedTop.nodeExecutionId } : { sourceRunEnd: true });
     const reusedSpawnChildIds = part.reused
         .filter(v => v.nodeType === "spawn" && typeof v.spawnChildWorkflowId === "string" && v.spawnChildWorkflowId.length > 0)
         .map(v => v.spawnChildWorkflowId!);

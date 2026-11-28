@@ -7,7 +7,11 @@ import { schemaSnapshot, snapshotDifferences } from "../helpers/schema-snapshot.
 import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
 import { runMigrations } from "../../src/pg-migrator.ts";
 import { workflowRerunMigration } from "../../src/migrations/workflow-rerun-0104.ts";
+import { PostgresProvider, Runtime, Client } from "duroxide";
+import { PgSessionCatalog } from "../../src/cms.ts";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
+import { registerWorkflow, sessionQueueTransport, WORKFLOW_ACTIVITIES } from "../../src/workflow/runtime.ts";
 import { createWorkflow, dispatchWorkflowRun } from "../../src/workflow/service.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 
@@ -608,13 +612,24 @@ describe("migration 0104: workflow_rerun", () => {
                     await dispatchWorkflowRun(h, created.receipt);
                     const finished = await waitForRunEnd(h, runId, 240_000);
                     const elapsedMs = Date.now() - t0;
-                    timings[count] = elapsedMs;
+                    // The pass-over boundary, in the database's clock: from the run's begin (workflow.started) to its first live
+                    // admission (the first row that is neither reused nor supplied).
+                    const s = `"${schema.replace(/"/g, '""')}"`;
+                    const boundary = await pool.query(
+                        `SELECT round(EXTRACT(EPOCH FROM (
+                                (SELECT min(n.entered_at) FROM ${s}.workflow_node_executions n
+                                  WHERE n.run_id = $1 AND n.reused_from_execution_id IS NULL AND n.supplied_from_execution_id IS NULL)
+                                - (SELECT min(e.created_at) FROM ${s}.session_events e WHERE e.session_id = $2 AND e.event_type = 'workflow.started')
+                            )) * 1000)::int AS ms`,
+                        [runId, wfId],
+                    );
+                    timings[count] = { dispatchToEndMs: elapsedMs, startedToFirstLiveMs: boundary.rows[0].ms };
 
                     expect(finished.status, `count=${count}`).toBe("completed");
                     expect(finished.terminalOutcome).toBe("succeeded");
                     expect(finished.terminalOutput).toMatchObject({ n: count + 1 });
 
-                    const s = `"${schema.replace(/"/g, '""')}"`;
+                    expect(timings[count].startedToFirstLiveMs, `count=${count}`).toBeGreaterThanOrEqual(0);
                     const stats = await pool.query(
                         `SELECT
                             COUNT(*) FILTER (WHERE node_id = 'step' AND reused_from_execution_id IS NOT NULL)::int AS reused_steps,
@@ -631,10 +646,128 @@ describe("migration 0104: workflow_rerun", () => {
                         live_attempts: 1,
                     });
                 }
-                console.info("RERUN_PASSOVER_MS", JSON.stringify({ baseline0Ms: timings[0], visits100Ms: timings[100], visits1000Ms: timings[1000] }));
+                console.info("RERUN_PASSOVER_MS", JSON.stringify({ baseline0: timings[0], visits100: timings[100], visits1000: timings[1000] }));
             } finally {
                 await pool.end();
             }
         });
+    });
+
+    it("Spec §11.2 #19: a worker shut down mid-way through a 60-visit pass-over resumes from persisted history, continues as new and completes with 0 re-executions", { timeout: testTime.ms(300_000) }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const store = catalog.workflowStore();
+        const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
+        const client = new Client(provider);
+        const pool = new pg.Pool(pgPoolConfig(env.store));
+        const count = 60;
+        const stopAfter = 30;
+        const enters = [];
+        let scriptRuns = 0;
+        let reached;
+        const reachedStop = new Promise(resolve => { reached = resolve; });
+        // A worker runtime with the Workflow activities. Worker A counts the pass-over admissions, signals after `stopAfter` of
+        // them and then slows each further one, so it is shut down mid-way; worker B is a fresh runtime with no hooks.
+        const startWorker = async (label) => {
+            const runtime = new Runtime(provider, {
+                dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency: 8, workerLockTimeoutMs: 5_000,
+                workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
+            });
+            registerWorkflow({
+                registerActivity: (name, activity) => runtime.registerActivity(name, async (actx, input) => {
+                    if (name === WORKFLOW_ACTIVITIES.runScript) scriptRuns += 1;
+                    if (name === WORKFLOW_ACTIVITIES.enter && input?.nodeId === "step") {
+                        enters.push({ worker: label, ordinal: input.ordinal });
+                        if (label === "A" && input.ordinal >= stopAfter) {
+                            if (input.ordinal === stopAfter) reached();
+                            await new Promise(resolve => setTimeout(resolve, 300));
+                        }
+                    }
+                    return activity(actx, input);
+                }),
+                registerOrchestrationVersioned: (name, version, handler) => runtime.registerOrchestrationVersioned(name, version, handler),
+            }, {
+                store,
+                catalog,
+                enabled: () => true,
+                resolveToolBinding: async () => null,
+                openToolExecutor: async () => { throw new Error("No tools"); },
+                authorizeParentNotification: async () => false,
+                notifyParent: async () => {},
+                deleteSession: async id => catalog.softDeleteSession(id),
+                wakeBackstopMs: 500,
+                sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
+            });
+            await runtime.start();
+            return runtime;
+        };
+        let worker = null;
+        try {
+            const h = { catalog, store, duroxideClient: client };
+            const deferDispatchHost = { ...h, duroxideClient: Object.assign(Object.create(client), { startOrchestrationVersioned: async () => {} }) };
+            const wfId = randomUUID();
+            const created = await createWorkflow(deferDispatchHost, {
+                workflowSessionId: wfId,
+                parentSessionId: null,
+                yaml: PASSOVER_LOOP(count),
+                actor: ACTOR,
+                operationId: `crash-create-${wfId}`,
+                start: { inputs: {}, actor: ACTOR, operationId: `crash-start-${wfId}` },
+            });
+            const runId = created.receipt.run.runId;
+            const instanceId = created.receipt.run.controllerInstanceId;
+            await seedCopiedLoopVisits(pool, env.cmsSchema, randomUUID(), randomUUID(), runId, count);
+
+            worker = await startWorker("A");
+            await dispatchWorkflowRun(h, created.receipt);
+            await Promise.race([
+                reachedStop,
+                new Promise((_, reject) => setTimeout(() => reject(new Error(`worker A did not reach pass-over visit ${stopAfter}`)), testTime.ms(120_000))),
+            ]);
+            await worker.shutdown(10_000);
+            worker = null;
+
+            // Worker A stopped mid-way: the run is still running, it already continued as new (25 admissions per execution),
+            // and it walked some but not all copied visits.
+            const mid = await store.readRun(runId);
+            expect(mid.finishedAt).toBeNull();
+            expect(["running", "admitted"]).toContain(mid.status);
+            const byA = enters.filter(e => e.worker === "A").map(e => e.ordinal);
+            expect(Math.max(...byA)).toBeGreaterThanOrEqual(stopAfter);
+            expect(Math.max(...byA)).toBeLessThan(count);
+            expect((await client.listExecutions(instanceId)).length).toBeGreaterThanOrEqual(2);
+            expect(scriptRuns).toBe(0);
+
+            worker = await startWorker("B");
+            const finished = await waitForRunEnd({ store }, runId, 240_000);
+            expect(finished.status).toBe("completed");
+            expect(finished.terminalOutcome).toBe("succeeded");
+            expect(finished.terminalOutput).toMatchObject({ n: count + 1 });
+
+            // Worker B resumed from the persisted history (it never walked the run from its first visit again) and finished
+            // the pass-over; only the one live visit ran a script.
+            const byB = enters.filter(e => e.worker === "B").map(e => e.ordinal);
+            expect(byB.length).toBeGreaterThan(0);
+            expect(Math.min(...byB)).toBeGreaterThanOrEqual(Math.max(...byA));
+            expect(new Set([...byA, ...byB])).toEqual(new Set(Array.from({ length: count + 1 }, (_, i) => i + 1)));
+            expect(scriptRuns).toBe(1);
+            expect((await client.listExecutions(instanceId)).length).toBeGreaterThanOrEqual(3);
+            const s = `"${env.cmsSchema.replace(/"/g, '""')}"`;
+            const stats = await pool.query(
+                `SELECT
+                    COUNT(*) FILTER (WHERE reused_from_execution_id IS NOT NULL)::int AS reused_steps,
+                    COUNT(*) FILTER (WHERE reused_from_execution_id IS NOT NULL AND (state <> 'completed' OR effect_attempts <> 0 OR outcome <> 'again'))::int AS reused_changed,
+                    COUNT(*) FILTER (WHERE node_id = 'step' AND reused_from_execution_id IS NULL)::int AS live_steps,
+                    COALESCE(SUM(effect_attempts) FILTER (WHERE node_id = 'step' AND reused_from_execution_id IS NULL), 0)::int AS live_attempts
+                 FROM ${s}.workflow_node_executions WHERE run_id = $1`,
+                [runId],
+            );
+            expect(stats.rows[0]).toEqual({ reused_steps: count, reused_changed: 0, live_steps: 1, live_attempts: 1 });
+        } finally {
+            if (worker) await worker.shutdown(10_000).catch(() => {});
+            await pool.end();
+            await catalog.close();
+        }
     });
 });

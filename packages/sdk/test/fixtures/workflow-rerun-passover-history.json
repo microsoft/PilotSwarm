@@ -1486,7 +1486,8 @@
             "tag": "pilotswarm.workflow-request.v1"
           },
           "reply": {
-            "ended": false
+            "end": "done",
+            "sent": false
           }
         },
         {

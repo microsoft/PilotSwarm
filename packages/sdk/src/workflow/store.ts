@@ -398,6 +398,13 @@ export interface WorkflowReusedAgentVisitsSummary {
     visits: WorkflowReusedAgentVisit[];
 }
 
+/**
+ * Where a re-run's inbox carry-over cuts its source run (Design §5.4): the entry of a source visit (`run_again`: the chosen
+ * visit; `continue` / `supply`: the first dropped top-level visit), or the source run's end. The store reads that time in SQL
+ * at full microsecond precision (a JavaScript Date keeps only milliseconds). A Date is a fixed cut, for tests.
+ */
+export type RerunInboxCut = { enteredAtOf: string } | { sourceRunEnd: true } | Date;
+
 export interface RerunAdmissionSpec {
     sourceWorkflowSessionId: string;
     sourceRunId: string;
@@ -418,7 +425,7 @@ export interface RerunAdmissionSpec {
     } | null;
     cutKvRevision: number;
     varsOverlay?: Record<string, JsonValue> | null;
-    inboxCutAt: Date;
+    inboxCutAt: RerunInboxCut;
     reusedSpawnChildIds: readonly string[];
     approvalOwnerCheck: { provider: string; subject: string } | null;
     /** Override max copied bytes (default WORKFLOW_RERUN_MAX_COPY_BYTES = 256 MiB); for tests. */
@@ -743,6 +750,14 @@ function receiveOf(row: Row): WorkflowNodeExecutionRow["receive"] {
 /** A timestamp column as exact ISO 8601 UTC text with microseconds (a JavaScript Date keeps only milliseconds). */
 function isoUtc(column: string): string {
     return `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+}
+
+/**
+ * The source visits a re-run keeps (Design §5.4): its reused visits, lane visits included, and the visit a supplied result
+ * replaces. A message one of them consumed stays consumed; a message consumed only by a dropped visit is carried again.
+ */
+export function rerunKeptSourceIds(rerun: Pick<RerunAdmissionSpec, "mapped" | "supplied">): string[] {
+    return [...rerun.mapped.map(m => m.source.nodeExecutionId), ...(rerun.supplied ? [rerun.supplied.sourceExecutionId] : [])];
 }
 
 /** The inbox columns inboxFrom reads, with exact times. */
@@ -3057,27 +3072,31 @@ export class WorkflowStore {
 
     /**
      * R2-S6: count and distinct contract names of inbox messages that a re-run will carry into #3,
-     * using the exact predicate of copyRerunInboxIn without reading message payload bodies.
+     * using the exact predicate of copyRerunInboxIn without reading message payload bodies. `keptSourceIds` are the source
+     * visits the re-run keeps (reused, including lane visits, and a supplied visit): a message one of them consumed is not
+     * carried; one consumed only by a dropped visit is (Design §5.4).
      */
     async summarizeRerunCarriedInbox(
         runId: string,
-        cutAt: Date,
+        cut: RerunInboxCut,
         reusedSpawnChildIds: readonly string[],
+        keptSourceIds: readonly string[] = [],
         client?: PoolClient,
     ): Promise<{ count: number; contracts: string[] }> {
         const runner = client ?? this.pool;
+        const cutAt = await this.resolveRerunInboxCut(runner, runId, cut);
         const { rows } = await runner.query(
             `SELECT contract, COUNT(*)::int AS cnt
                FROM ${this.t.inbox}
               WHERE run_id = $1
-                AND consumed_by IS NULL
+                AND (consumed_by IS NULL OR NOT (consumed_by = ANY($5::text[])))
                 AND (
                     (accepted_at <= $2::timestamptz AND expires_at > $2::timestamptz)
                     OR (contract = $3 AND sender_session_id = ANY($4::text[]))
                 )
               GROUP BY contract
               ORDER BY contract ASC`,
-            [runId, cutAt.toISOString(), WORKFLOW_ENDED_CONTRACT, [...reusedSpawnChildIds]],
+            [runId, cutAt, WORKFLOW_ENDED_CONTRACT, [...reusedSpawnChildIds], [...keptSourceIds]],
         );
         let count = 0;
         const contracts: string[] = [];
@@ -3321,10 +3340,32 @@ export class WorkflowStore {
     }
 
     /**
+     * The exact time of a re-run's inbox cut (RerunInboxCut) as microsecond UTC text: read from the source visit's entry or
+     * the source run's end, never through a JavaScript Date (review D-I1).
+     */
+    private async resolveRerunInboxCut(runner: Pool | PoolClient, sourceRunId: string, cut: RerunInboxCut): Promise<string> {
+        if (cut instanceof Date) return cut.toISOString();
+        const { rows } = "enteredAtOf" in cut
+            ? await runner.query(`SELECT ${isoUtc("entered_at")} AS at FROM ${this.t.nodes} WHERE node_execution_id = $1 AND run_id = $2`,
+                [cut.enteredAtOf, sourceRunId])
+            : await runner.query(`SELECT ${isoUtc("finished_at")} AS at FROM ${this.t.runs} WHERE run_id = $1`, [sourceRunId]);
+        const at = rows[0] ? strOrNull(rows[0], "at") : null;
+        if (at === null) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "enteredAtOf" in cut
+                ? `Source visit ${cut.enteredAtOf} of run ${sourceRunId} has no entry time for the re-run's inbox cut.`
+                : `Source run ${sourceRunId} has no end time for the re-run's inbox cut.`);
+        }
+        return at;
+    }
+
+    /**
      * Copies eligible waiting inbox messages + unconsumed WorkflowEnded@1 child notices from source run #2 into #3
      * in seq ASC order with fresh message_id / operation_id and restarted TTL (`now() + (expires_at - accepted_at)`).
+     * A waiting message is one accepted by the cut and unexpired at it, and not consumed by a source visit #3 keeps (Design
+     * §5.4, review D-I2): one consumed only by a dropped visit waits again for that visit's re-run.
      */
     private async copyRerunInboxIn(client: PoolClient, newWorkflowSessionId: string, newRunId: string, rerun: RerunAdmissionSpec): Promise<void> {
+        const cutAt = await this.resolveRerunInboxCut(client, rerun.sourceRunId, rerun.inboxCutAt);
         await client.query(
             `INSERT INTO ${this.t.inbox} (
                 message_id, workflow_session_id, run_id, sender_session_id, operation_id, contract, correlation, payload,
@@ -3336,15 +3377,15 @@ export class WorkflowStore {
                 s.request_sha256, now(), now() + GREATEST(s.expires_at - s.accepted_at, interval '1 second'), NULL, NULL
                FROM ${this.t.inbox} s
               WHERE s.run_id = $3
-                AND s.consumed_by IS NULL
+                AND (s.consumed_by IS NULL OR NOT (s.consumed_by = ANY($7::text[])))
                 AND (
                     (s.accepted_at <= $4::timestamptz AND s.expires_at > $4::timestamptz)
                     OR (s.contract = $5 AND s.sender_session_id = ANY($6::text[]))
                 )
               ORDER BY s.seq ASC`,
             [
-                newWorkflowSessionId, newRunId, rerun.sourceRunId, rerun.inboxCutAt.toISOString(),
-                WORKFLOW_ENDED_CONTRACT, [...rerun.reusedSpawnChildIds],
+                newWorkflowSessionId, newRunId, rerun.sourceRunId, cutAt,
+                WORKFLOW_ENDED_CONTRACT, [...rerun.reusedSpawnChildIds], rerunKeptSourceIds(rerun),
             ],
         );
     }
@@ -7689,6 +7730,37 @@ export class WorkflowStore {
     }
 
     /**
+     * Phase 3 I7, review I-2: the earlier visits of a run's state `stateId` that went to agent session `childSessionId`, before
+     * visit `nodeExecutionId`, numbered among the state's visits in the run as readAgentVisitsBefore orders them (1 for the
+     * run's first live visit): the first of them (null when none), and the first whose prompt is known to have reached the
+     * session (its spawn was recorded, or its agent reported its result; null when none). A session's visits are
+     * consecutive: a state moves to a new session and never back.
+     */
+    async readAgentSessionVisitsBefore(runId: string, stateId: string, childSessionId: string, nodeExecutionId: string)
+        : Promise<{ first: number | null; firstReached: number | null }> {
+        const { rows } = await this.pool.query(
+            `WITH ranked AS (
+                 SELECT i.node_execution_id, i.child_session_id, (i.spawned_at IS NOT NULL OR n.winner = 'agent') AS reached,
+                        row_number() OVER (ORDER BY COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id)::int AS visit
+                   FROM ${this.t.agentInvocations} i
+                   JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                   ${this.parallelJoinSql("n", "p")}
+                  WHERE i.run_id = $1 AND n.node_id = $2
+             )
+             SELECT min(r.visit)::int AS first, (min(r.visit) FILTER (WHERE r.reached))::int AS first_reached
+               FROM ranked r
+              WHERE r.child_session_id = $3
+                AND r.visit < (SELECT c.visit FROM ranked c WHERE c.node_execution_id = $4)`,
+            [runId, stateId, childSessionId, nodeExecutionId],
+        );
+        const row = rows[0];
+        return {
+            first: row && row.first !== null ? int(row, "first") : null,
+            firstReached: row && row.first_reached !== null ? int(row, "first_reached") : null,
+        };
+    }
+
+    /**
      * Phase 3 I7: bounded summary of pre-cut reused and supplied agent visits of `stateId` in a re-run, ordered by
      * `(COALESCE(p.ordinal, 0), n.ordinal)` so I8 named-branch continued agents see visits in execution order. Keeps at most
      * the last `WORKFLOW_RERUN_RECAP_MAX_VISITS` visits, selects only a 500-char preview in SQL (never fetching huge output
@@ -7833,12 +7905,15 @@ export class WorkflowStore {
 
     /**
      * Review D-2: for the turn of visit `nodeExecutionId` of continued session `childSessionId`, its cycle and the earlier cycles
-     * of that session whose conversation was lost after their report. Null when the visit is not that session's. When this run
-     * has pre-cut reused/supplied cycles (`firstSessionCycle = K + 1`), also returns `firstSessionCycle` (and `rerunRecap` if
-     * cycle `K + 1` itself was lost so the prompt can re-carry the pre-cut summary).
+     * of that session whose conversation was lost after their report. Null when the visit is not that session's.
+     * `firstSessionCycle` (given when it is not 1) is this session's first cycle: earlier cycles ran in an ended session or
+     * (a re-run, Phase 3 I7) were reused or supplied, so none of them is above. In a re-run with pre-cut cycles 1..K
+     * (`preCutCount`), the first cycle whose prompt reached this session carried their summary (review I-2): when that cycle
+     * (`recapCycle`) was lost, `rerunRecap` carries the summary again.
      */
     async readAgentCyclesLostBefore(childSessionId: string, nodeExecutionId: string)
-        : Promise<{ cycle: number; lost: number[]; firstSessionCycle?: number; rerunRecap?: WorkflowRerunRecapPayload } | null> {
+        : Promise<{ cycle: number; lost: number[]; firstSessionCycle?: number; preCutCount?: number; recapCycle?: number;
+            rerunRecap?: WorkflowRerunRecapPayload } | null> {
         const invocation = await this.readAgentInvocation(nodeExecutionId);
         if (!invocation || invocation.childSessionId !== childSessionId) return null;
         const lost = [...(await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).entries()]
@@ -7846,19 +7921,25 @@ export class WorkflowStore {
         if (lost.length === 0) return { cycle: 0, lost };
         const node = await this.readNodeExecution(nodeExecutionId);
         if (!node) return null;
-        const [{ count }, preCutCount] = await Promise.all([
+        const [{ count }, preCutCount, inSession] = await Promise.all([
             this.readAgentVisitsBefore(invocation.runId, node.nodeId, nodeExecutionId),
             this.countReusedAgentVisits(invocation.runId, node.nodeId),
+            this.readAgentSessionVisitsBefore(invocation.runId, node.nodeId, childSessionId, nodeExecutionId),
         ]);
         const cycle = preCutCount + count + 1;
-        if (preCutCount === 0) return { cycle, lost };
-        const firstSessionCycle = preCutCount + 1;
+        const firstSessionCycle = inSession.first !== null ? preCutCount + inSession.first : cycle;
+        const recapCycle = inSession.firstReached !== null ? preCutCount + inSession.firstReached : null;
         let rerunRecap: WorkflowRerunRecapPayload | undefined;
-        if (lost.includes(firstSessionCycle)) {
+        if (preCutCount > 0 && recapCycle !== null && lost.includes(recapCycle)) {
             const preCut = await this.readReusedAgentVisits(invocation.runId, node.nodeId);
             rerunRecap = { omitted: preCut.omitted, visits: preCut.visits };
         }
-        return { cycle, lost, firstSessionCycle, ...(rerunRecap ? { rerunRecap } : {}) };
+        return {
+            cycle, lost,
+            ...(firstSessionCycle !== 1 ? { firstSessionCycle } : {}),
+            ...(preCutCount > 0 ? { preCutCount } : {}),
+            ...(rerunRecap ? { recapCycle: recapCycle!, rerunRecap } : {}),
+        };
     }
 
     /**

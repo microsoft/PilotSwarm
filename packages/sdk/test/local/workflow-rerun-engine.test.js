@@ -9,7 +9,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
-import { registerWorkflow, sessionQueueTransport, workflowAgentSessionId } from "../../src/workflow/runtime.ts";
+import { registerWorkflow, sessionQueueTransport, WORKFLOW_ACTIVITIES, workflowAgentSessionId } from "../../src/workflow/runtime.ts";
 import { workflowAgentCycleMemoryLostPrompt } from "../../src/workflow/agent-node-service.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { sendTypedWorkflowInput } from "../../src/workflow/service.ts";
@@ -260,6 +260,162 @@ function* fakeChildSession(ctx) {
     }
 }
 
+// D-1 / I-2 (R2): the loop agent's input reads a variable, and a spawn refused as unavailable loops back through bump.
+const CONTINUED_AGENT_KV_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: rerun-continued-agent-kv, version: "1.0.0" }
+limits: { maxNodeExecutions: 30 }
+initial: loop_agent
+states:
+  loop_agent:
+    type: agent
+    session: continue
+    input: { x: "\${kv.x ?? 0}" }
+    invoke:
+      prompt: "Process cycle input."
+    outcomes: [more, done]
+    timeoutSeconds: 60
+    transition: { next: { more: bump, done: ok_end, unavailable: bump, execution_failed: fail_end, failure: fail_end } }
+  bump:
+    type: script
+    outcomes: [ok]
+    source: |
+      await setResult("ok", { bumped: true });
+    transition: { next: { ok: loop_agent, failure: fail_end } }
+  ok_end: { type: terminal, outcome: succeeded }
+  fail_end: { type: terminal, outcome: failed }
+`;
+
+/**
+ * A worker runtime with the Workflow activities and a fake agent host. It records every prompt, every live
+ * workflow.endAgent call and its result or error, and keeps the registered activities for direct calls. Set
+ * spawnControl.refuseNext to refuse the next spawn as unavailable (its visit then never reaches its session).
+ */
+async function withFakeAgentRuntime(env, fn) {
+    const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+    await catalog.initialize();
+    const store = catalog.workflowStore();
+    const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
+    const client = new Client(provider);
+    const runtime = new Runtime(provider, {
+        dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency: 8, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
+    });
+    const prompts = [];
+    const activities = new Map();
+    const endAgentCalls = [];
+    const spawnControl = { refuseNext: false };
+    runtime.registerOrchestrationVersioned("fake-agent-child", "1.0.0", fakeChildSession);
+    registerWorkflow({
+        registerActivity: (name, activity) => {
+            activities.set(name, activity);
+            runtime.registerActivity(name, name !== WORKFLOW_ACTIVITIES.endAgent ? activity : async (actx, input) => {
+                try {
+                    const result = await activity(actx, input);
+                    endAgentCalls.push({ input, result });
+                    return result;
+                } catch (error) {
+                    endAgentCalls.push({ input, error: String(error?.message ?? error) });
+                    throw error;
+                }
+            });
+        },
+        registerOrchestrationVersioned: (name, version, handler) => runtime.registerOrchestrationVersioned(name, version, handler),
+    }, {
+        store,
+        catalog,
+        enabled: () => true,
+        resolveToolBinding: async () => null,
+        openToolExecutor: async () => { throw new Error("No tools"); },
+        authorizeParentNotification: async () => false,
+        notifyParent: async () => {},
+        deleteSession: async id => catalog.softDeleteSession(id),
+        wakeBackstopMs: 500,
+        sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" },
+        agentNodes: {
+            async spawn(req) {
+                if (spawnControl.refuseNext) {
+                    spawnControl.refuseNext = false;
+                    prompts.push({ ...req, refused: true });
+                    return { refused: { code: "unavailable", message: "The test refused this spawn." } };
+                }
+                prompts.push(req);
+                const instanceId = `session-${req.childSessionId}`;
+                if ((await client.getStatus(instanceId)).status === "NotFound") {
+                    await catalog.createSession(req.childSessionId, {}).catch(() => {});
+                    await client.startOrchestrationVersioned(instanceId, "fake-agent-child", {}, "1.0.0");
+                }
+                await client.enqueueEvent(instanceId, "messages", JSON.stringify({ prompt: req.prompt }));
+                return { spawned: true, used: { model: "mock:test" } };
+            },
+        },
+    });
+    await runtime.start();
+    try {
+        return await fn({ catalog, store, client, prompts, activities, endAgentCalls, spawnControl, h: { catalog, store, duroxideClient: client, scripts: true } });
+    } finally {
+        await runtime.shutdown();
+        await catalog.close();
+    }
+}
+
+/** The next spawned (not refused) prompt of run `runId` after the first `after` of them; fails with the run's end when it ends first. */
+async function nextPromptOf(store, prompts, runId, after = 0, timeoutMs = 45_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const mine = prompts.filter(p => p.runId === runId && !p.refused);
+        if (mine.length > after) return mine[after];
+        const run = await store.readRun(runId);
+        if (run?.finishedAt) throw new Error(`Run ${runId} ended (${run.status}: ${JSON.stringify(run.terminalError)}) before prompt ${after + 1}.`);
+        if (Date.now() > deadline) throw new Error(`Timed out waiting for prompt ${after + 1} of run ${runId} (status=${run?.status}).`);
+        await new Promise(r => setTimeout(r, 100));
+    }
+}
+
+/**
+ * Seeds an ended source run of CONTINUED_AGENT_KV_YAML: loop_agent#1 (KV revision 1, "more") -> bump#1 (KV revision 1;
+ * while it ran, set_vars made revision 2 = { x: 1 }) -> loop_agent#2 (pinned revision 2, failed).
+ */
+async function seedKvContinuedSource(env, h, client, definitionId, ownerSessionId) {
+    const deferH = { ...h, duroxideClient: Object.assign(Object.create(client), { startOrchestrationVersioned: async () => {} }) };
+    const started = await startSessionWorkflowDefinition(deferH, {
+        ownerSessionId, definition: { definitionId }, inputs: {}, actor: OWNER_ACTOR, owner: OWNER, operationId: `seed-kv-r2-${randomUUID()}`,
+    });
+    const runId = started.runId;
+    const v1 = nodeExecutionIdFor(runId, "root", "loop_agent", 1);
+    const b1 = nodeExecutionIdFor(runId, "root", "bump", 1);
+    const v2 = nodeExecutionIdFor(runId, "root", "loop_agent", 2);
+    const pool = new pg.Pool(pgPoolConfig(env.store));
+    const s = `"${env.cmsSchema.replace(/"/g, '""')}"`;
+    try {
+        const base = Date.now() - 20_000;
+        const rows = [
+            [v1, null, "loop_agent", 1, "agent", null, '{"x":0}', "more", "business", '{"note":"cycle1"}', null, "agent", 1],
+            [b1, v1, "bump", 1, "script", "more", '{"note":"cycle1"}', "ok", "business", '{"bumped":true}', null, "effect", 1],
+            [v2, b1, "loop_agent", 2, "agent", "ok", '{"x":1}', "execution_failed", "runtime_error", null, '{"code":"execution_failed","message":"boom"}', "agent", 2],
+        ];
+        for (let i = 0; i < rows.length; i += 1) {
+            const [id, pred, nid, ord, ntype, route, inp, out, rk, outText, errText, win, kvRev] = rows[i];
+            await pool.query(
+                `INSERT INTO ${s}.workflow_node_executions (
+                    node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                    input, input_sha256, state, outcome, result_kind, output, error, winner,
+                    effect_attempts, entered_at, completed_at, kv_revision, deadline_at
+                 ) VALUES ($1,$2,'root',$3,$4,$5,$6,$7,$8,$9,'completed',$10,$11,$12,$13,$14,1,$15::timestamptz,$16::timestamptz,$17,NULL)`,
+                [id, runId, pred, nid, ord, ntype, route, inp, sha256Hex(inp), out, rk, outText, errText, win,
+                    new Date(base + i * 1000).toISOString(), new Date(base + i * 1000 + 300).toISOString(), kvRev],
+            );
+        }
+        await pool.query(`INSERT INTO ${s}.workflow_kv_revisions (run_id, revision, kv, operation_id) VALUES ($1, 2, '{"x":1}', $2)`,
+            [runId, `seed-set-vars-${runId}`]);
+        await pool.query(`UPDATE ${s}.workflow_runs SET kv = '{"x":1}', kv_revision = 2, status = 'failed', finished_at = now() WHERE run_id = $1`,
+            [runId]);
+    } finally {
+        await pool.end();
+    }
+    return { workflowId: started.workflowId, runId, v1, b1, v2 };
+}
+
 describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", () => {
     it("runs supply mode end-to-end with real execution counters, exact rerunOf shape (I-1), and supply at visit 1 (reused=0)", { timeout: testTime.ms(180_000) }, async () => {
         await withCounterFile(async (counter) => {
@@ -467,11 +623,12 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
                 expect(counter.read().sort()).toEqual(["finish", "lane:a", "lane:b"]);
                 expect(rWholePar.terminalOutput).toEqual({ finished: true, step1Exec: step1Visit.nodeExecutionId });
 
-                // #17 Path A: enterNodeActivity pre-cut coordinate mismatch (rev 2 changes initial to finish) -> fails rerun_diverged with 0 executions!
+                // #17 Path A: enterNodeActivity pre-cut coordinate mismatch. Rev 2 starts at fan, so the controller enters the COPIED
+                // fan#1 with no predecessor while the copy's predecessor is step1#1 -> rerun_diverged before any new admission.
                 counter.reset();
                 const divYamlA = PARALLEL_RERUN_YAML
                     .replace('version: "1.0.0"', 'version: "1.0.1"')
-                    .replace("initial: step1", "initial: finish");
+                    .replace("initial: step1", "initial: fan");
                 await saveSessionWorkflowDefinition(h, {
                     ownerSessionId,
                     name: "rerun-parallel-flow",
@@ -492,6 +649,10 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
                 const rDivA = await waitRunTerminal(h.store, rDivAStart.runId);
                 expect(rDivA.status).toBe("failed");
                 expect(rDivA.terminalError?.code).toBe("rerun_diverged");
+                expect(rDivA.terminalError?.details?.reason).toBe("pre_cut_coord_mismatch");
+                expect(rDivA.terminalError?.details?.nodeExecutionId).toBe(nodeExecutionIdFor(rDivA.runId, "root", "fan", 1));
+                expect(rDivA.rerunResumedAt).toBeNull();
+                expect((await h.store.listRerunKeys(rDivA.runId)).filter(k => k.reusedFromExecutionId === null && k.suppliedFromExecutionId === null)).toEqual([]);
                 expect(counter.read()).toEqual([]);
 
                 // #17 Path B: first-new-visit divergence (rev 3 keeps pre-cut step1 + fan identical, but routes fan.joined -> alt_finish instead of finish) -> 0 executions!
@@ -522,6 +683,9 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
                 const rDivB = await waitRunTerminal(h.store, rDivBStart.runId);
                 expect(rDivB.status).toBe("failed");
                 expect(rDivB.terminalError?.code).toBe("rerun_diverged");
+                expect(rDivB.terminalError?.details?.reason).toBe("cut_coord_mismatch");
+                expect(rDivB.rerunResumedAt).toBeNull();
+                expect((await h.store.listRerunKeys(rDivB.runId)).filter(k => k.reusedFromExecutionId === null && k.suppliedFromExecutionId === null)).toEqual([]);
                 expect(counter.read()).toEqual([]);
             });
         });
@@ -708,12 +872,11 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
                 cycle: 4,
                 lost: [3],
                 firstSessionCycle: 3,
+                preCutCount: 2,
+                recapCycle: 3,
                 rerunRecap: p3Json.rerunRecap,
             });
-            const rewrittenP4 = workflowAgentCycleMemoryLostPrompt(p4.prompt, lostInfo.cycle, lostInfo.lost, {
-                firstSessionCycle: lostInfo.firstSessionCycle,
-                rerunRecap: lostInfo.rerunRecap,
-            });
+            const rewrittenP4 = workflowAgentCycleMemoryLostPrompt(p4.prompt, lostInfo.cycle, lostInfo.lost, lostInfo);
             expect(rewrittenP4).not.toContain("other earlier cycles");
             expect(rewrittenP4).not.toContain("in cycle 3's prompt above");
             expect(JSON.parse(rewrittenP4.split("\n")[1]).rerunRecap).toEqual(p3Json.rerunRecap);
@@ -747,8 +910,38 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
                 error: null,
             });
 
-            // Complete cycle 5 with outcome="done" -> run completes cleanly
-            await store.completeNode(p5.nodeExecutionId, { outcome: "done", resultKind: "business", valueText: '{"c":5}', winner: "agent" }, {
+            // I-2 (R2): cycle 5 reports "more", so cycle 6 stays in the REPLACEMENT session, where only cycle 5's prompt carries the
+            // pre-cut summary: cycle 6 points to cycle 5 (not cycle 3, which ran in the ended session) and sends no recap again.
+            await store.completeNode(p5.nodeExecutionId, { outcome: "more", resultKind: "business", valueText: '{"c":5}', winner: "agent" }, {
+                sessionId: r3Start.workflowId, events: [],
+            });
+            const deadline4 = Date.now() + 30_000;
+            while (promptsSeen.length < 4 && Date.now() < deadline4) await new Promise(r => setTimeout(r, 100));
+            expect(promptsSeen.length).toBeGreaterThanOrEqual(4);
+            const p6 = promptsSeen[3];
+            expect(p6.childSessionId).toBe(p5.childSessionId);
+            expect(p6.prompt).toContain("CYCLE 6");
+            expect(p6.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; their summary is in cycle 5's prompt above.");
+            expect(p6.prompt).not.toContain("cycle 3's prompt above");
+            expect(Object.hasOwn(JSON.parse(p6.prompt.split("\n")[1]), "rerunRecap")).toBe(false);
+
+            // I-2 (R2) S7: the replacement session lost cycle 5's conversation. Cycle 6 carries the summary again and claims no
+            // earlier cycle is above (cycles 3 and 4 ran in the ended session).
+            expect((await store.recordAgentCycleMemoryLost({
+                nodeExecutionId: p5.nodeExecutionId, childSessionId: p5.childSessionId, reason: "not_committed",
+            })).recorded).toBe(true);
+            const lost6 = await store.readAgentCyclesLostBefore(p6.childSessionId, p6.nodeExecutionId);
+            expect(lost6).toEqual({ cycle: 6, lost: [5], firstSessionCycle: 5, preCutCount: 2, recapCycle: 5, rerunRecap: p3Json.rerunRecap });
+            const rewrittenP6 = workflowAgentCycleMemoryLostPrompt(p6.prompt, lost6.cycle, lost6.lost, lost6);
+            expect(rewrittenP6).toContain("The conversation of cycle 5 is not available");
+            expect(rewrittenP6).not.toContain("other earlier cycles");
+            expect(rewrittenP6).not.toContain("prompt above");
+            expect(rewrittenP6).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 5's conversation was lost, "
+                + "rerunRecap in the JSON carries their summary again.");
+            expect(JSON.parse(rewrittenP6.split("\n")[1]).rerunRecap).toEqual(p3Json.rerunRecap);
+
+            // Complete cycle 6 with outcome="done" -> run completes cleanly
+            await store.completeNode(p6.nodeExecutionId, { outcome: "done", resultKind: "business", valueText: '{"c":6}', winner: "agent" }, {
                 sessionId: r3Start.workflowId, events: [],
             });
             const r3 = await waitRunTerminal(store, r3Start.runId);
@@ -854,6 +1047,117 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
             await runtime.shutdown();
             await catalog.close();
         }
+    });
+
+    it("copies KV through the cut for continued-agent re-runs (D-1), points later cycles at the cycle that reached the session (I-2), and no-ops endAgent on reused and supplied rows (M-4)", { timeout: testTime.ms(240_000) }, async () => {
+        const env = getEnv();
+        await withFakeAgentRuntime(env, async ({ store, client, prompts, activities, endAgentCalls, spawnControl, h }) => {
+            const ownerSessionId = randomUUID();
+            await h.catalog.createSession(ownerSessionId, { owner: OWNER });
+            const saved = await saveSessionWorkflowDefinition(h, {
+                ownerSessionId, name: "rerun-continued-agent-kv", yaml: CONTINUED_AGENT_KV_YAML, expected: null, actor: OWNER_ACTOR,
+                operationId: `save-agkv-${randomUUID()}`,
+            });
+            expect(saved.receipt.valid).toBe(true);
+            const defId = saved.receipt.definitionId;
+            const src = await seedKvContinuedSource(env, h, client, defId, ownerSessionId);
+            const rerun = (operation, rerunFrom, vars) => startSessionWorkflowDefinition(h, {
+                ownerSessionId, definition: { definitionId: defId }, inputs: {}, actor: OWNER_ACTOR, owner: OWNER,
+                operationId: `${operation}-${randomUUID()}`, ...(vars ? { vars } : {}), rerunFrom: { workflowId: src.workflowId, ...rerunFrom },
+            });
+            const supplyLoop = { executionId: src.v2, mode: "supply", result: { outcome: "more", output: { rescued: true } }, note: "Manual rescue of cycle 2" };
+            const finish = async (started, prompt) => {
+                await store.completeNode(prompt.nodeExecutionId, { outcome: "done", resultKind: "business", valueText: '{"done":true}', winner: "agent" }, {
+                    sessionId: started.workflowId, events: [],
+                });
+                const ended = await waitRunTerminal(store, started.runId);
+                expect(ended.status).toBe("completed");
+            };
+            const promptJson = prompt => JSON.parse(prompt.prompt.split("\n")[1]);
+
+            // D-1, supply without an overlay: the chosen visit pinned KV revision 2 (set while bump#1 ran, after the last reused
+            // row's revision 1). Its supplied copy keeps that pin, so the re-run copies KV 1..2 and K+1 (cycle 3) reads both.
+            const plain = await rerun("start-agkv-supply", supplyLoop);
+            const plainRun = await store.readRun(plain.runId);
+            expect(plainRun.kvRevision).toBe(2);
+            expect(plainRun.rerunResume.cutKvRevision).toBe(2);
+            const plainK1 = await nextPromptOf(store, prompts, plain.runId);
+            expect(plainK1.prompt).toContain("cycle 3");
+            expect(promptJson(plainK1)).toMatchObject({
+                input: { x: 1 },
+                previousResult: { outcome: "more", resultKind: "business", output: { rescued: true }, error: null },
+                variables: { x: 1 },
+                changedVariables: [],
+            });
+            await finish(plain, plainK1);
+
+            // M-4: the controller's own endAgent calls on the reused row (loop_agent#1) and the supplied row (loop_agent#2) each
+            // answered done once, without an error (so no retry), and a direct call of the registered activity answers the same.
+            const plainKeys = await store.listRerunKeys(plain.runId);
+            const reusedAgent = plainKeys.find(k => k.reusedFromExecutionId === src.v1);
+            const suppliedAgent = plainKeys.find(k => k.suppliedFromExecutionId === src.v2);
+            expect(reusedAgent?.nodeId).toBe("loop_agent");
+            expect(suppliedAgent?.nodeId).toBe("loop_agent");
+            for (const row of [reusedAgent, suppliedAgent]) {
+                expect(endAgentCalls.filter(call => call.input?.nodeExecutionId === row.nodeExecutionId))
+                    .toEqual([{ input: { runId: plain.runId, nodeExecutionId: row.nodeExecutionId }, result: { end: "done", sent: false } }]);
+                const startedAt = Date.now();
+                expect(await activities.get(WORKFLOW_ACTIVITIES.endAgent)({ getClient: () => client }, { runId: plain.runId, nodeExecutionId: row.nodeExecutionId }))
+                    .toEqual({ end: "done", sent: false });
+                expect(Date.now() - startedAt).toBeLessThan(5_000);
+            }
+            expect(endAgentCalls.filter(call => call.error !== undefined)).toEqual([]);
+
+            // D-1, supply with a vars overlay: the overlay is revision 3, after the copied 1..2, so K+1 sees x and y, and only y changed.
+            const overlay = await rerun("start-agkv-overlay", supplyLoop, { y: 2 });
+            const overlayRun = await store.readRun(overlay.runId);
+            expect(overlayRun.kvRevision).toBe(3);
+            const overlayK1 = await nextPromptOf(store, prompts, overlay.runId);
+            expect(overlayK1.prompt).toContain("cycle 3");
+            expect(promptJson(overlayK1)).toMatchObject({
+                input: { x: 1 },
+                previousResult: { outcome: "more", resultKind: "business", output: { rescued: true }, error: null },
+                variables: { x: 1, y: 2 },
+                changedVariables: ["y"],
+            });
+            await finish(overlay, overlayK1);
+
+            // D-1, run_again of loop_agent#2: the cut is its own pin (2), so its fresh visit reads x = 1, matches the recorded
+            // input of the same revision (no false rerun_diverged) and sees x as changed since cycle 1.
+            const again = await rerun("start-agkv-again", { executionId: src.v2, mode: "run_again" });
+            const againK1 = await nextPromptOf(store, prompts, again.runId);
+            expect(againK1.prompt).toContain("cycle 2");
+            expect(promptJson(againK1)).toMatchObject({
+                input: { x: 1 },
+                previousResult: { outcome: "more", resultKind: "business", output: { note: "cycle1" }, error: null },
+                variables: { x: 1 },
+                changedVariables: ["x"],
+            });
+            await finish(again, againK1);
+
+            // I-2 (c): K+1 (cycle 3) never reaches its session (its spawn is refused as unavailable). Cycle 4 is the session's first
+            // prompt, so it carries the recap itself; cycle 5 then points to cycle 4's prompt, not cycle 3's.
+            spawnControl.refuseNext = true;
+            const skipped = await rerun("start-agkv-skip", supplyLoop);
+            const k2 = await nextPromptOf(store, prompts, skipped.runId);
+            expect(spawnControl.refuseNext).toBe(false);
+            expect(prompts.filter(p => p.runId === skipped.runId && p.refused).map(p => p.childSessionId)).toEqual([k2.childSessionId]);
+            expect(k2.prompt).toContain("CYCLE 4");
+            expect(k2.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 3 did not run in this session, "
+                + "rerunRecap in the JSON carries their summary.");
+            const k2Json = promptJson(k2);
+            expect(k2Json.rerunRecap.visits.map(v => [v.visit, v.source])).toEqual([[1, "reused"], [2, "supplied"]]);
+            await store.completeNode(k2.nodeExecutionId, { outcome: "more", resultKind: "business", valueText: '{"c":4}', winner: "agent" }, {
+                sessionId: skipped.workflowId, events: [],
+            });
+            const k3 = await nextPromptOf(store, prompts, skipped.runId, 1);
+            expect(k3.childSessionId).toBe(k2.childSessionId);
+            expect(k3.prompt).toContain("CYCLE 5");
+            expect(k3.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; their summary is in cycle 4's prompt above.");
+            expect(k3.prompt).not.toContain("cycle 3's prompt above");
+            expect(Object.hasOwn(promptJson(k3), "rerunRecap")).toBe(false);
+            await finish(skipped, k3);
+        });
     });
 
     it("delivers carried waiting inbox messages to a downstream receive state in the re-run", { timeout: testTime.ms(180_000) }, async () => {
