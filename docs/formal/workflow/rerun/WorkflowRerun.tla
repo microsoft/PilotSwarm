@@ -49,7 +49,7 @@
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS
-    SourceKind,          \* "loop" | "catchall" | "parallel" | "approval" | "inbox" | "supply_first" | "spawn" | "spawn_lane"
+    SourceKind,          \* "loop" | "catchall" | "parallel" | "approval" | "inbox" | "supply_first" | "decision" | "spawn" | "spawn_lane"
     Mode,                \* "run_again" | "continue" | "supply"
     Target,              \* "same" | "fix_chosen" | "reroute_taken" | "reroute_onto_copy" | "reroute_supply"
     Generations,         \* 1 or 2 (#1 -> #2 -> #3)
@@ -95,7 +95,7 @@ CONSTANTS
     AllowResumeAfterCrash,        \* TRUE = crashed claim can retry; FALSE = unretried crash (S6)
     AllowShellSweeper,            \* enable SweeperReadBareShell + SweeperCollectClaimShell after grace without OwnerEnd
     AllowPostSweepStart,          \* allow one fresh Start (new key/opId) after Sweeper collects a stale shell
-    AllowSupplyOnForbiddenStep,   \* fault: allow supply on approval / non-script-agent step
+    AllowSupplyOnForbiddenStep,   \* fault: allow supply on approval
     StartsSupplied,               \* fault: controller starts effect/agent for supplied visit V'
     AllowUndeclaredSupplyOutcome, \* fault: admit undeclared supplied outcome
     IgnoreSupplyNever,            \* fault: ignore supply: never opt-out
@@ -122,7 +122,8 @@ CONSTANTS
     ReceiveSkipsWait,             \* fault (H1): a pending receive completes at once (msg, or elapsed) with no accepted message and no due deadline
     WaitRearms                    \* fault (H1): a due wait timer re-arms from now instead of elapsing the receive (it never times out)
 
-ASSUME SourceKind \in {"loop", "catchall", "parallel", "approval", "inbox", "supply_first", "spawn", "spawn_lane"}
+ASSUME SourceKind \in {"loop", "catchall", "parallel", "approval", "inbox", "supply_first", "decision", "spawn", "spawn_lane"}
+ASSUME SourceKind = "decision" => Mode = "supply"
 ASSUME Mode \in {"run_again", "continue", "supply"}
 ASSUME Target \in {"same", "fix_chosen", "reroute_taken", "reroute_onto_copy", "reroute_supply"}
 ASSUME Generations \in {1, 2}
@@ -169,7 +170,8 @@ WorkNodes == AllNodes \ {TNode}
 DeclaredOutcomes == {"ok", "again"}
 
 NodeKindOf(x) ==
-    CASE x[1] = "S"   -> "script_or_agent"
+    CASE SourceKind = "decision" /\ x = SNode(1) -> "decision"
+      [] x[1] = "S"   -> "script_or_agent"
       [] x[1] = "H"   -> "script_or_agent"
       [] x = ANode    -> "approval"
       [] x = PNode    -> "parallel"
@@ -179,6 +181,8 @@ NodeKindOf(x) ==
       [] x[1] = "R"   -> "receive"
       [] x = TNode    -> "terminal"
       [] OTHER        -> "unknown"
+
+CanSupply(x) == NodeKindOf(x) \in {"script_or_agent", "decision"}
 
 \* G-R1: whether a visit in #2 is a spawn (top-level or parallel lane) whose child was cancelled by #2's end or lacks a notice
 IsCancelledOrNoticelessSpawn(x) ==
@@ -275,7 +279,7 @@ Refused == {
 \* Chosen visit V' in supply mode
 ChosenSupplyNode ==
     CASE Mode # "supply"           -> NoNode
-      [] SourceKind = "supply_first" -> SNode(1)
+      [] SourceKind \in {"supply_first", "decision"} -> SNode(1)
       [] SourceKind = "loop"       -> SNode(2)
       [] SourceKind = "approval"   -> ANode
       [] OTHER                     -> SNode(2)
@@ -284,7 +288,7 @@ ExpectedSupplied == IF Mode = "supply" /\ ChosenSupplyNode # NoNode THEN {Chosen
 
 \* Source reused top-level chain
 SrcReusedTop ==
-    CASE SourceKind = "supply_first"                       -> <<>>
+    CASE SourceKind \in {"supply_first", "decision"}       -> <<>>
       [] SourceKind = "approval" /\ Mode = "supply"        -> <<>>
       [] SourceKind = "loop" /\ Mode = "run_again"         -> <<SNode(1)>>
       [] SourceKind = "loop" /\ Mode = "supply"            -> <<SNode(1)>>
@@ -309,6 +313,7 @@ InitSrcOutcome(x) ==
     CASE SourceKind = "loop" /\ x = SNode(1)        -> "again"
       [] SourceKind = "loop" /\ x = SNode(2)        -> "again"
       [] SourceKind = "supply_first" /\ x = SNode(1) -> "error"
+      [] SourceKind = "decision" /\ x = SNode(1)     -> "again"
       [] SourceKind = "catchall" /\ x = SNode(1)    -> "error"
       [] SourceKind = "catchall" /\ x = HNode(1)    -> "ok"
       [] SourceKind = "parallel" /\ x = PNode       -> "ok"
@@ -360,8 +365,8 @@ InitialStep ==
       [] OTHER -> SNode(1)
 
 ExpectedCutNode ==
-    CASE Mode = "supply" /\ SourceKind = "supply_first" /\ SuppliedOutcome = "again" -> SNode(2)
-      [] Mode = "supply" /\ SourceKind = "supply_first" /\ SuppliedOutcome = "ok"    -> TNode
+    CASE Mode = "supply" /\ SourceKind \in {"supply_first", "decision"} /\ SuppliedOutcome = "again" -> SNode(2)
+      [] Mode = "supply" /\ SourceKind \in {"supply_first", "decision"} /\ SuppliedOutcome = "ok"    -> TNode
       [] Mode = "supply" /\ SourceKind = "loop" /\ SuppliedOutcome = "again"         -> SNode(3)
       [] Mode = "supply" /\ SourceKind = "loop" /\ SuppliedOutcome = "ok"            -> TNode
       [] Mode = "supply"                                                             -> TNode
@@ -1027,7 +1032,7 @@ CopyCommit ==
                                      payloadVer |-> IF RepickSuppliedOnRetry THEN retrySupplyVer ELSE rerunPin.supplied.payloadVer]
                                ELSE EmptySuppliedPin
            incompatible == Target \in {"reroute_taken", "reroute_onto_copy", "reroute_supply"}
-           supplyStepBad == Mode = "supply" /\ NodeKindOf(ChosenSupplyNode) # "script_or_agent" /\ ~AllowSupplyOnForbiddenStep
+           supplyStepBad == Mode = "supply" /\ ~CanSupply(ChosenSupplyNode) /\ ~AllowSupplyOnForbiddenStep
            supplyNeverBad == Mode = "supply" /\ SupplyNever /\ ~IgnoreSupplyNever
            supplyOutcomeBad == Mode = "supply" /\ SuppliedOutcome \notin DeclaredOutcomes /\ ~AllowUndeclaredSupplyOutcome
            supplyNoteBad == Mode = "supply" /\ ~SupplyNotePresent /\ ~IgnoreMissingSupplyNote
@@ -1892,7 +1897,7 @@ Inv_SuppliedSingleton ==
     /\ ((Mode # "supply") => suppliedSet = {})
 
 Inv_SupplyAllowedStepOnly ==
-    \A x \in suppliedSet : NodeKindOf(x) = "script_or_agent" /\ ~SupplyNever
+    \A x \in suppliedSet : CanSupply(x) /\ ~SupplyNever
 
 Inv_SuppliedOutcomeDeclared ==
     \A x \in suppliedSet :
@@ -2125,6 +2130,10 @@ Wit_NoSupplyFirstVisit ==
 
 Wit_NoSupplyToTerminal ==
     ~(Mode = "supply" /\ resumedAtCut /\ firstNew = TNode /\ runStatus = "completed")
+
+Wit_NoSuppliedDecisionRoute ==
+    ~(SourceKind = "decision" /\ SNode(1) \in suppliedSet /\ nOutcome[SNode(1)] # InitSrcOutcome(SNode(1))
+      /\ resumedAtCut /\ firstNew = TNode /\ runStatus = "completed")
 
 Wit_NoSupplyRefusedStepType ==
     ~(Mode = "supply" /\ startPhase = "refused_supply_not_allowed")

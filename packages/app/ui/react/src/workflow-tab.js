@@ -1863,7 +1863,7 @@ export function RerunDialog({ controller, ownerId, definitionId = null, name, so
                         } },
                     h("option", { value: "" }, "Choose an outcome…"),
                     sheet.outcomes.map(option => h("option", { key: option.value, value: option.value }, option.label)))),
-                h("div", { className: "ps-wf-field", "data-field": "rerun-output" },
+                plan.supplyContract.outcomeOnly ? null : h("div", { className: "ps-wf-field", "data-field": "rerun-output" },
                     h("div", { className: "ps-wf-rerun-output-head" },
                         h("span", { className: "ps-wf-label", id: `${id}-output` }, "Output"),
                         fields ? h("span", { className: "ps-wf-rerun-toggle", role: "group", "aria-label": "Edit the output as" },

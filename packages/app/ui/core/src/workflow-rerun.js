@@ -47,13 +47,13 @@ const cancelledByRunEnd = visit => visit?.status !== "completed"
 
 /**
  * The modes a visit offers besides Run this step again (rerun.ts › modesAvailableFor): `continue` for a step with a result,
- * `supply` for a top-level script or agent step that completed (not exhausted) and does not set supply: never. Pure.
+ * `supply` for a completed top-level script, agent or decision (not exhausted or supply: never). Pure.
  */
 function keptModes(visit, node) {
     const type = node?.type ?? null;
     const modes = [];
     if (type !== "terminal" && !cancelledByRunEnd(visit)) modes.push("continue");
-    if (!inLane(visit) && visit?.status === "completed" && (type === "script" || type === "agent") && visit.outcome !== "exhausted"
+    if (!inLane(visit) && visit?.status === "completed" && (type === "script" || type === "agent" || type === "decision") && visit.outcome !== "exhausted"
         && node?.supply !== "never") modes.push("supply");
     return modes;
 }
@@ -206,6 +206,7 @@ const contractOf = plan => (isRecord(plan?.supplyContract) ? plan.supplyContract
 /** The draft's supplied output, from its fields or its JSON, checked as Start's pre-claim check would (size, depth). Pure. */
 export function workflowRerunDraftOutput(draft, plan) {
     const contract = contractOf(plan);
+    if (contract?.outcomeOnly) return { ok: true, value: undefined, bytes: 0, problems: [] };
     const maxBytes = Number.isSafeInteger(contract?.maxOutputBytes) ? contract.maxOutputBytes : WORKFLOW_RERUN_MAX_OUTPUT_BYTES;
     const fields = workflowRerunSupplyFields(contract?.resolvedOutputSchema);
     if (draft?.view === "fields" && fields) {
@@ -235,14 +236,15 @@ function draftIdentity(draft, plan) {
  * for `mint`.
  */
 export function workflowRerunDraft(plan, { mint = randomUuid } = {}) {
-    const schema = contractOf(plan)?.resolvedOutputSchema ?? null;
+    const contract = contractOf(plan);
+    const schema = contract?.resolvedOutputSchema ?? null;
     return {
         mode: MODES.has(plan?.mode) ? plan.mode : "run_again",
         revision: Number.isSafeInteger(plan?.revision?.source) ? plan.revision.source : null,
         outcome: null,
-        view: workflowRerunSupplyFields(schema) ? "fields" : "json",
+        view: contract?.outcomeOnly ? null : workflowRerunSupplyFields(schema) ? "fields" : "json",
         values: {},
-        outputText: workflowRerunOutputSkeleton(schema),
+        outputText: contract?.outcomeOnly ? "" : workflowRerunOutputSkeleton(schema),
         note: "",
         operationId: mint(),
     };
@@ -303,7 +305,8 @@ export function workflowRerunCanStart(draft, plan, { previewed } = {}) {
 export function workflowRerunStartRequest(draft, { plan, definitionId = null }) {
     const rerunFrom = { workflowId: plan.of.workflowId, executionId: plan.from.executionId, mode: draft.mode };
     if (draft.mode === "supply") {
-        rerunFrom.result = { outcome: draft.outcome, output: workflowRerunDraftOutput(draft, plan).value ?? null };
+        rerunFrom.result = { outcome: draft.outcome };
+        if (!contractOf(plan)?.outcomeOnly) rerunFrom.result.output = workflowRerunDraftOutput(draft, plan).value ?? null;
         rerunFrom.note = String(draft.note ?? "").trim();
     }
     return { ...(definitionId ? { definitionId } : {}), revision: draft.revision, operationId: draft.operationId, rerunFrom };
@@ -396,7 +399,7 @@ export function workflowRerunSheet(plan, { draft = null, name = null, sourceNumb
         modes,
         supplyNote: supplyNever && !modes.some(item => item.value === "supply") ? "This step sets supply: never." : null,
         outcomes,
-        outputHint: contract && contract.resolvedOutputSchema == null ? "Optional JSON output (no outputSchema on this step)." : null,
+        outputHint: contract && !contract.outcomeOnly && contract.resolvedOutputSchema == null ? "Optional JSON output (no outputSchema on this step)." : null,
         grantNote: plan?.grantSource === "inherited" ? `Scripts use the tools this session gave ${source}${startedOn ? ` on ${startedOn}` : ""}.` : null,
         blocked: plan?.allowed === false ? text(plan.blockedReason) ?? "This Start would be refused." : null,
         effect,

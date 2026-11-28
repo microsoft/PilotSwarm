@@ -62,7 +62,7 @@ Nonterminals take `maxVisits` (1–10,000; forbids business outcome `exhausted`)
 visit N+1 skips carry/input/effect and ends at entry with `exhausted` (route
 required) and incoming value as output.
 Nonterminals except approval take `carry`: load `workflow-carry`.
-Script and agent take `supply: never`: re-runs cannot supply it.
+Script and agent take `supply: never`. So does decision.
 
 ### approval
 

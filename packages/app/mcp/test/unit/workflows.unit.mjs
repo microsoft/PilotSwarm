@@ -991,6 +991,28 @@ console.log("✅ Phase 4 MCP workflow tools unit suite passed");
             viaMcp: true,
         });
 
+        // Decision supply forwards an outcome without adding an output.
+        const note = "Engineering owns this ticket.";
+        const decision = body(await wfDef({
+            operation: "start", owner_session_id: OWNER_SID, operation_id: "op-decision",
+            rerun_from: { workflow_id: SOURCE, execution_id: "nx-3", mode: "supply", result: { outcome: "engineering" }, note },
+        }));
+        assert.equal(decision.rerun.mode, "supply");
+        assert.deepEqual(calls.at(-1)[2].rerunFrom, {
+            workflowId: SOURCE, executionId: "nx-3", mode: "supply", result: { outcome: "engineering" }, note,
+        });
+        const supplyContract = { outcomes: ["engineering", "uncertain"], outcomeOnly: true, resolvedOutputSchema: null };
+        const readDecision = toolsWith({ mgmt: {
+            ...mgmt, readWorkflow: async (id, opts) => {
+                assert.equal(id, SOURCE);
+                assert.deepEqual(opts.rerunPlan, { executionId: "nx-3", mode: "supply", outcome: "engineering", viaMcp: true });
+                return { workflowId: id, rerunPlan: { supplyContract } };
+            },
+        } }).get("read_workflow");
+        const read = body(await readDecision({ session_id: SOURCE,
+            rerun_plan: { execution_id: "nx-3", mode: "supply", outcome: "engineering" } }));
+        assert.deepEqual(read.rerunPlan.supplyContract, supplyContract);
+
         // Without update and revision, the source revision is the server's default: none is sent.
         calls.length = 0;
         await wfDef({ operation: "start", owner_session_id: OWNER_SID, rerun_from: { workflow_id: SOURCE }, operation_id: "op-r1" });

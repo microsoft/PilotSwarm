@@ -81,10 +81,41 @@ async function serve(runtime) {
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
-    const transport = (subject) => new HttpApiTransport({ api: new ApiClient({ apiUrl: origin,
-        fetchImpl: (url, init = {}) => fetch(url, { ...init, headers: { ...init.headers, "x-test-user": subject } }) }) });
-    return { transport, close: () => new Promise((resolve) => server.close(resolve)) };
+    const api = (subject) => new ApiClient({ apiUrl: origin,
+        fetchImpl: (url, init = {}) => fetch(url, { ...init, headers: { ...init.headers, "x-test-user": subject } }) });
+    const transport = (subject) => new HttpApiTransport({ api: api(subject) });
+    return { api, transport, close: () => new Promise((resolve) => server.close(resolve)) };
 }
+
+test("the Web SDK and HTTP route preserve the decision plan, outcome-only Start and refusals", async () => {
+    const { runtime } = harness();
+    const supplyContract = { outcomes: ["engineering", "uncertain"], outcomeOnly: true, resolvedOutputSchema: null };
+    runtime.transport.readWorkflow = async (_id, { rerunPlan }) => {
+        assert.deepEqual(rerunPlan, { executionId: "nx-2", mode: "supply", outcome: "engineering" });
+        return { rerunPlan: { ...PLAN, supplyContract } };
+    };
+    const rerunFrom = { workflowId: "wf-2", executionId: "nx-2", mode: "supply",
+        result: { outcome: "engineering" }, note: "Engineering confirmed ownership." };
+    runtime.transport.startSessionWorkflowDefinition = async (_id, req) => {
+        assert.deepEqual(req.rerunFrom, rerunFrom);
+        if (req.operationId !== "op-ok") {
+            throw PilotSwarmManagementClient.prototype._definitionFailure.call({},
+                new WorkflowStoreError(req.operationId, "Decision supply refused."));
+        }
+        return { workflowId: "wf-3" };
+    };
+    const served = await serve(runtime);
+    try {
+        const client = new WebPilotSwarmManagementClient({ api: served.api("alice") });
+        const plan = await client.readWorkflow("wf-2", { rerunPlan: { executionId: "nx-2", mode: "supply", outcome: "engineering" } });
+        assert.deepEqual(plan.rerunPlan.supplyContract, supplyContract);
+        const start = operationId => client.startSessionWorkflowDefinition("owner-1", { definitionId: "def-1", operationId, rerunFrom });
+        assert.deepEqual(await start("op-ok"), { workflowId: "wf-3" });
+        for (const code of ["RERUN_SUPPLIED_RESULT_INVALID", "RERUN_SUPPLY_NOT_ALLOWED"]) {
+            await assert.rejects(start(code), error => error.code === code && error.status === 422);
+        }
+    } finally { await served.close(); }
+});
 
 test("GET ?rerunPlan= reads the plan for the signed-in caller (outcome only, viaMcp kept); a shared reader reads only the revision's fit (OQ2)", async () => {
     const { runtime, calls } = harness();

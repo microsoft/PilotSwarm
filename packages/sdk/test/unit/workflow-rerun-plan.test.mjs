@@ -91,6 +91,50 @@ function chainKeys(specs, runId = "run-src") {
     return out;
 }
 
+test("decision supply accepts only declared business routes, refuses output, and honors supply: never", () => {
+    const yaml = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: decision-supply, version: "1.0.0" }
+initial: choose
+states:
+  choose:
+    type: decision
+    question: { type: choice, instructions: Pick a team, criteria: { agent: Agent, person: Person } }
+    transition: { next: { agent: done, person: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+    const ir = mustCompile(yaml).ir;
+    const chosen = makeKey({ nodeType: "decision", nodeId: "choose", outcome: "person" });
+    const input = { chosen, reused: [], sourceIr: ir, targetIr: ir, note: "Confirmed route", requireResultAndNote: true };
+    const invalid = err => err.code === "RERUN_SUPPLIED_RESULT_INVALID";
+    for (const outcome of ["missing", "error", "failure", "uncertain"]) {
+        assert.throws(() => validateRerunSupply({ ...input, result: { outcome } }), invalid);
+    }
+    assert.throws(() => validateRerunSupply({ ...input, result: { outcome: "agent", output: null } }), invalid);
+    assert.throws(() => validateRerunSupply({ ...input, note: " ", result: { outcome: "agent" } }),
+        err => err.code === "RERUN_ARGUMENT_REFUSED");
+    const never = mustCompile(yaml.replace("type: decision", "type: decision\n    supply: never")).ir;
+    assert.equal(parseWorkflowIr(never).nodes.choose.supply, "never");
+    for (const side of ["sourceIr", "targetIr"]) {
+        assert.throws(() => validateRerunSupply({ ...input, [side]: never, result: { outcome: "agent" } }),
+            err => err.code === "RERUN_SUPPLY_NOT_ALLOWED" && err.details.reason === "supply_never");
+    }
+    for (const [question, routes, outcomes, outcome, output] of [
+        ["{ type: noul, instructions: Approve? }\n    confidence: { minimumProbability: 0.8 }", '"yes": done, "no": done, uncertain: failed', ["yes", "no", "uncertain"], "uncertain",
+            { questionType: "noul", outcome: "uncertain", selection: null }],
+        ["{ type: score, instructions: Rank it, criteria: [Low, High] }", "scored: done", ["scored"], "scored",
+            { questionType: "score", outcome: "scored" }],
+    ]) {
+        const revision = mustCompile(yaml.replace(/question: .*/, `question: ${question}`)
+            .replace("agent: done, person: done", routes)).ir;
+        const decision = validateRerunSupply({ ...input, sourceIr: revision, targetIr: revision, result: { outcome } });
+        assert.deepEqual(decision.contract.outcomes, outcomes);
+        assert.deepEqual(JSON.parse(decision.validated.outputText), output);
+    }
+});
+
 const SPEC_82_BASE_YAML = `
 apiVersion: pilotswarm.dev/v1
 kind: Workflow

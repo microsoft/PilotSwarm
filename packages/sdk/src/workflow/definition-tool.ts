@@ -95,7 +95,7 @@ export function workflowDefinitionToolSpec() {
 const WORKFLOW_RERUN_FROM_SCHEMA = {
     type: "object",
     description: "start: re-run an ended Workflow from a step, reusing the steps before it (call load_skill with name workflow-rerun). "
-        + "mode supply gives one script or agent step's result, with a note. Revision defaults to that Workflow's. Omit inputs and workspace.",
+        + "Supply a script, agent or decision result with a note; for decisions, omit output. Revision defaults to the source's. Omit inputs and workspace.",
     properties: {
         workflow_id: { type: "string" },
         execution_id: { type: "string" },

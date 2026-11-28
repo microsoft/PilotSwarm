@@ -1,4 +1,4 @@
-import { type WorkflowIR, type WorkflowIRNode } from "./compiler.js";
+import { decisionBusinessRoutes, type WorkflowIR, type WorkflowIRDecisionQuestion, type WorkflowIRNode } from "./compiler.js";
 import { isWorkflowControllerVersion, workflowControllerFeatures } from "./controller-features.js";
 import { WORKFLOW_CONTROLLER_VERSION } from "./controller-version.js";
 import {
@@ -147,6 +147,7 @@ export interface WorkflowRerunWarning {
 
 export interface WorkflowRerunSupplyContract {
     outcomes: string[];
+    outcomeOnly?: true;
     outputSchemaName: string | null;
     resolvedOutputSchema: JsonValue | null;
     maxOutputBytes: number;
@@ -306,10 +307,18 @@ function isCancelledByRunEnd(visit: WorkflowRerunKey): boolean {
         && RUN_END_CANCEL_WINNERS.has(visit.winner ?? "");
 }
 
+function isSupplyNodeType(type: string): type is "script" | "agent" | "decision" {
+    return type === "script" || type === "agent" || type === "decision";
+}
+
+function isSupplyNode(node: WorkflowIRNode | undefined): node is Extract<WorkflowIRNode, { type: "script" | "agent" | "decision" }> {
+    return node !== undefined && isSupplyNodeType(node.type);
+}
+
 function isSupplyNeverOn(nodeId: string, sourceIr?: WorkflowIR | null, targetIr?: WorkflowIR | null): boolean {
     const check = (ir: WorkflowIR | null | undefined): boolean => {
         const node = ir?.nodes[nodeId];
-        return !!node && (node.type === "script" || node.type === "agent") && node.supply === "never";
+        return isSupplyNode(node) && node.supply === "never";
     };
     return check(sourceIr) || check(targetIr);
 }
@@ -323,11 +332,11 @@ function modesAvailableFor(
     if (visit.predecessorId !== null) modes.push("run_again");
     if (visit.nodeType !== "terminal" && !isCancelledByRunEnd(visit)) modes.push("continue");
     const targetNode = targetIr?.nodes[visit.nodeId];
-    const targetAllowsSupply = !targetIr || (targetNode !== undefined && (targetNode.type === "script" || targetNode.type === "agent"));
+    const targetAllowsSupply = !targetIr || (targetNode !== undefined && isSupplyNodeType(targetNode.type));
     if (
         visit.scopeId === ROOT_SCOPE
         && visit.state === "completed"
-        && (visit.nodeType === "script" || visit.nodeType === "agent")
+        && isSupplyNodeType(visit.nodeType)
         && visit.outcome !== "exhausted"
         && targetAllowsSupply
         && !isSupplyNeverOn(visit.nodeId, sourceIr, targetIr)
@@ -398,10 +407,10 @@ function validateVisitAndMode(
         });
     }
     if (mode === "supply") {
-        if (chosen.nodeType !== "script" && chosen.nodeType !== "agent") {
+        if (!isSupplyNodeType(chosen.nodeType)) {
             throw new WorkflowStoreError(
                 "RERUN_SUPPLY_NOT_ALLOWED",
-                `Results can only be supplied for a script or agent step (got ${chosen.nodeType}).`,
+                `Results can only be supplied for a script, agent or decision step (got ${chosen.nodeType}).`,
                 {
                     reason: "step_type",
                     nodeType: chosen.nodeType,
@@ -468,7 +477,7 @@ export function pickRerunTarget(
     }
 
     if (reqMode === "supply" && reqExecId === null) {
-        throw new WorkflowStoreError("RERUN_VISIT_REQUIRED", "mode 'supply' requires execution_id naming the script or agent visit.");
+        throw new WorkflowStoreError("RERUN_VISIT_REQUIRED", "mode 'supply' requires execution_id naming the script, agent or decision visit.");
     }
 
     if (reqExecId !== null) {
@@ -895,6 +904,15 @@ function stripCosmeticAndRouting(node: WorkflowIRNode): JsonValue {
     return copy;
 }
 
+/** A supplied decision has no model answer. Keep only the route and the selection it implies. */
+export function suppliedDecisionOutput(questionType: WorkflowIRDecisionQuestion["type"], outcome: string): JsonValue {
+    return {
+        questionType,
+        outcome,
+        ...(questionType === "score" ? {} : { selection: outcome === "uncertain" ? null : outcome }),
+    };
+}
+
 export function validateRerunSupply(input: {
     chosen: WorkflowRerunKey;
     reused: readonly WorkflowRerunKey[];
@@ -920,10 +938,10 @@ export function validateRerunSupply(input: {
             },
         );
     }
-    if (chosen.nodeType !== "script" && chosen.nodeType !== "agent") {
+    if (!isSupplyNodeType(chosen.nodeType)) {
         throw new WorkflowStoreError(
             "RERUN_SUPPLY_NOT_ALLOWED",
-            `Results can only be supplied for a script or agent step (got ${chosen.nodeType}).`,
+            `Results can only be supplied for a script, agent or decision step (got ${chosen.nodeType}).`,
             { reason: "step_type", nodeType: chosen.nodeType, executionId: chosen.nodeExecutionId, stateId: chosen.nodeId, visit: chosen.ordinal },
         );
     }
@@ -950,21 +968,27 @@ export function validateRerunSupply(input: {
         );
     }
     const tNode = targetIr.nodes[chosen.nodeId];
-    if (!tNode || (tNode.type !== "script" && tNode.type !== "agent")) {
+    if (!isSupplyNode(tNode)) {
         throw new WorkflowStoreError(
             "RERUN_SUPPLY_NOT_ALLOWED",
-            `Step ${chosen.nodeId} in the target revision is not a script or agent step (got ${tNode?.type ?? "missing"}).`,
+            `Step ${chosen.nodeId} in the target revision is not a script, agent or decision step (got ${tNode?.type ?? "missing"}).`,
             { reason: "step_type", nodeType: tNode?.type ?? "missing", executionId: chosen.nodeExecutionId, stateId: chosen.nodeId, visit: chosen.ordinal },
         );
     }
 
+    const decision = tNode.type === "decision" ? tNode : null;
+    const outcomes = tNode.type === "decision"
+        ? decisionBusinessRoutes(tNode.question, Object.hasOwn(tNode.next, "uncertain"))
+            .filter(outcome => outcome !== "error" && Object.hasOwn(tNode.next, outcome))
+        : tNode.outcomes;
+    const outputSchema = tNode.type === "decision" ? null : tNode.outputSchema;
     const reusedTop = reused.filter(k => k.scopeId === ROOT_SCOPE);
     const preCutTop = [...reusedTop, chosen];
     // M1: include V itself in catchAllUsedBeforeCut (matching C4 preCutTop) so catch-all self-loops match Start's catch_all_twice refusal.
     const catchAllUsedBeforeCut = targetIr.catchAll !== null
         && preCutTop.some(k => k.arrivalRoute === CATCH_ALL_ROUTE || k.nodeId === targetIr.catchAll);
     const nextByOutcome: Record<string, { stateId: string; visit: number } | null> = {};
-    for (const outcome of tNode.outcomes) {
+    for (const outcome of outcomes) {
         const route = selectRoute(tNode.next, { outcome, resultKind: "business" });
         if (route === null) {
             nextByOutcome[outcome] = null;
@@ -987,9 +1011,10 @@ export function validateRerunSupply(input: {
             : WORKFLOW_PAYLOAD_MAX_BYTES,
     );
     const contract: WorkflowRerunSupplyContract = {
-        outcomes: [...tNode.outcomes],
-        outputSchemaName: tNode.outputSchema,
-        resolvedOutputSchema: workflowResolvedSchema(targetIr, tNode.outputSchema),
+        outcomes: [...outcomes],
+        ...(decision ? { outcomeOnly: true as const } : {}),
+        outputSchemaName: outputSchema,
+        resolvedOutputSchema: workflowResolvedSchema(targetIr, outputSchema),
         maxOutputBytes,
         nextByOutcome,
     };
@@ -1019,16 +1044,23 @@ export function validateRerunSupply(input: {
     }
 
     // S11: Contract & value checks -> 422 RERUN_SUPPLIED_RESULT_INVALID
-    if (!tNode.outcomes.includes(rawOutcome)) {
+    if (!outcomes.includes(rawOutcome)) {
         throw new WorkflowStoreError(
             "RERUN_SUPPLIED_RESULT_INVALID",
-            `Outcome '${rawOutcome}' is not declared by ${chosen.nodeId}. Allowed outcomes: ${tNode.outcomes.join(", ")}.`,
-            { reason: "undeclared_outcome", outcome: rawOutcome, allowedOutcomes: [...tNode.outcomes] },
+            `Outcome '${rawOutcome}' is not declared by ${chosen.nodeId}. Allowed outcomes: ${outcomes.join(", ")}.`,
+            { reason: "undeclared_outcome", outcome: rawOutcome, allowedOutcomes: [...outcomes] },
         );
     }
 
+    if (decision && Object.hasOwn(result, "output")) {
+        const message = "A supplied decision takes an outcome only. Omit result.output.";
+        throw new WorkflowStoreError("RERUN_SUPPLIED_RESULT_INVALID", message, {
+            reason: "schema", outputSchema, problems: [{ path: "/output", message }],
+        });
+    }
     // N4: Omitted output defaults to null and serializes to 'null' JSON text (never SQL NULL)
-    const rawOutput: unknown = Object.hasOwn(result, "output") && result.output !== undefined ? result.output : null;
+    const rawOutput: unknown = decision ? suppliedDecisionOutput(decision.question.type, rawOutcome)
+        : Object.hasOwn(result, "output") && result.output !== undefined ? result.output : null;
     try {
         assertJsonValue(rawOutput, "result.output");
     } catch (error) {
@@ -1036,7 +1068,7 @@ export function validateRerunSupply(input: {
         const errPath = error instanceof WorkflowJsonError ? error.path : "result.output";
         throw new WorkflowStoreError("RERUN_SUPPLIED_RESULT_INVALID", `Supplied result.output is not valid JSON: ${message}`, {
             reason: "schema",
-            outputSchema: tNode.outputSchema,
+            outputSchema,
             problems: [{ path: errPath, message }],
         });
     }
@@ -1050,16 +1082,16 @@ export function validateRerunSupply(input: {
             { reason: "too_large", bytes: outputBytes, maxBytes: maxOutputBytes },
         );
     }
-    if (tNode.outputSchema !== null) {
+    if (outputSchema !== null) {
         const schemaSet = new WorkflowSchemaSet(targetIr.schemaDefs);
-        const problems = schemaSet.validate(tNode.outputSchema, output, "/output");
+        const problems = schemaSet.validate(outputSchema, output, "/output");
         if (problems.length > 0) {
             throw new WorkflowStoreError(
                 "RERUN_SUPPLIED_RESULT_INVALID",
                 `Supplied result.output does not match ${chosen.nodeId}'s outputSchema: ${problems[0].message}`,
                 {
                     reason: "schema",
-                    outputSchema: tNode.outputSchema,
+                    outputSchema,
                     problems: problems.map(p => ({ path: p.path, message: p.message })),
                 },
             );

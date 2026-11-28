@@ -494,7 +494,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     workflow_id: z.string().describe("The ended Workflow to re-run"),
                     execution_id: z.string().optional().describe("The visit to re-run from; omit to re-run from the failed step"),
                     mode: z.enum(["run_again", "continue", "supply"]).optional()
-                        .describe("run_again: run the step again; continue: keep the step's result and go on; supply: give a script or agent step's result"),
+                        .describe("run_again: run the step again; continue: keep the result and go on; supply: give a script, agent or decision result (decision: outcome only)"),
                     // Review H3: result and note pass the wire as given; the handler checks them as Start does (400 RERUN_ARGUMENT_REFUSED).
                     result: z.unknown().optional()
                         .describe("supply: the step's result { outcome, output? }, checked in the external system"),

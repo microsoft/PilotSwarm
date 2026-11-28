@@ -334,7 +334,7 @@ export interface RerunClaimPin {
     revision: number;
     reusedCount: number;
     grant?: "inherited";
-    supplied?: { outcome: string; outputSha256: string; noteSha256: string; note: string };
+    supplied?: { outcome: string; outputSha256: string; noteSha256: string; note: string; decisionQuestionType?: "choice" | "noul" | "score" };
 }
 
 export interface CreateWorkflowRequest {

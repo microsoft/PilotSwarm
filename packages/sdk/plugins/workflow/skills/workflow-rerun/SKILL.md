@@ -99,14 +99,17 @@ What fit means (C1 to C10):
 
 ## Supply a step's result
 
-- Only a top-level `script` or `agent` step. Never an approval, wait,
-  decision, spawn, messaging or `parallel` step, and never a step inside a
-  lane.
+- Only a completed top-level `script`, `agent` or `decision` step. Never
+  an approval, wait, spawn, messaging or `parallel` step, or a step in a lane.
 - A step with `supply: never` (on the source or the target revision) is
   refused. Authors set it on steps whose result must come from real work.
 - `result: { outcome, output? }`: `outcome` must be a declared business
   outcome of the step with a route; `output` must match the step's
   `outputSchema` and be at most 256 KiB (and at most 64 levels deep).
+- For a decision, give only `outcome`: a choice label, `yes`/`no` for a
+  yes-or-no decision, `scored` for a score, or `uncertain` if routed.
+  Never `error`. Omit `output`. The step uses that route without asking the
+  model. Its recorded output has no model evidence.
 - `note` is required: 1 to 2,000 characters.
 - **Supply only values you checked in the external system; never invent ids; put the evidence in `note`.**
   If the check finds nothing (no server was created), do not supply: use
@@ -115,9 +118,9 @@ What fit means (C1 to C10):
   `operation_id`, pass the exact same `outcome`, `output` and `note`. A
   change refuses `409 OPERATION_CONFLICT`; a new attempt needs a new key.
 - Read the plan with `mode: "supply"`, `execution_id` and `outcome`:
-  `plan.supplyContract` shows the outcomes, the output schema and
-  `maxOutputBytes`; `plan.supply` shows whether the outcome is valid and
-  which step comes next.
+  `plan.supplyContract` lists the outcomes and, for scripts and agents,
+  the output schema and `maxOutputBytes`. `plan.supply` shows whether the
+  outcome is valid and which step comes next.
 - The supplied visit is recorded as supplied (who, why, when). It never shows
   as run.
 

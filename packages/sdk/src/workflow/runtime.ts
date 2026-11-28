@@ -1033,7 +1033,8 @@ export function describeWorkflowState(node: WorkflowIRNode): { [key: string]: Js
     if (node.type === "decision") {
         return {
             id: node.id, type: "decision", question: { ...node.question }, timeoutSeconds: node.timeoutSeconds,
-            ...(node.confidence !== undefined ? { confidence: { ...node.confidence } } : {}), next: node.next,
+            ...(node.confidence !== undefined ? { confidence: { ...node.confidence } } : {}),
+            ...(node.supply === "never" ? { supply: node.supply } : {}), next: node.next,
         };
     }
     if (node.type === "spawn") {

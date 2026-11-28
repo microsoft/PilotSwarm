@@ -63,6 +63,28 @@ const plan = (over = {}) => ({
 let counter = 0;
 const mint = () => `op-${++counter}`;
 
+test("a completed decision offers supply and Start sends only its outcome and Why", () => {
+    const button = workflowRerunButtonState({
+        runStatus: "failed", visit: { id: "nx-choose-1", status: "completed", outcome: "uncertain", ordinal: 1 },
+        node: { id: "choose", type: "decision", initial: true },
+    });
+    assert.equal(button.mode, "supply");
+    const decisionPlan = plan({
+        supplyContract: { outcomes: ["agent", "uncertain"], outcomeOnly: true },
+        supply: { outcome: "agent", valid: true, next: { stateId: "review", visit: 1 } },
+    });
+    const draft = workflowRerunDraft(decisionPlan, { mint });
+    assert.equal(draft.view, null);
+    assert.equal(workflowRerunCanStart(draft, decisionPlan).reason, "Choose an outcome.");
+    const selected = { ...draft, outcome: "agent", outputText: "not JSON" };
+    assert.equal(workflowRerunCanStart(selected, decisionPlan).reason, "Say why this result is supplied.");
+    const ready = { ...selected, note: "Checked the route" };
+    assert.equal(workflowRerunCanStart(ready, decisionPlan).ok, true);
+    const { rerunFrom } = workflowRerunStartRequest(ready, { plan: decisionPlan });
+    assert.deepEqual(rerunFrom.result, { outcome: "agent" });
+    assert.equal(rerunFrom.note, "Checked the route");
+});
+
 // ─── 1. The button: six disabled states, and visit 1 ────────────────────────────────────────────────────────────────
 
 test("the button says each of its six disabled states in one sentence, and is enabled otherwise", () => {

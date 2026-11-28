@@ -365,11 +365,11 @@ on from the failed step without doing that work again.
    - **Keep this step's result and go on:** the step keeps its result and the
      next step runs.
    - **Supply this step's result and go on:** the step does not run; you give
-     its result. Choose its **Outcome**, fill its **Output** (field by field,
-     or as JSON), and write what you checked in **Why**. Use it when the
-     external work finished but the step did not report it, for example a
-     server that was created before a script timed out. Supply only values you
-     checked; never guess an id.
+     its result. Choose its **Outcome** and write your reason in **Why**.
+     For a decision, that's all: the new Workflow takes that route without
+     asking the model again. For a script or agent, also supply any required
+     **Output**. Supply only values you checked, such as the ID of a server
+     created before a script timed out.
 3. Check the revision. The re-run uses the revision of the Workflow that
    failed. After you fix the definition, choose the newer revision when the
    sheet says it fits.
@@ -395,8 +395,9 @@ The session's agent and the MCP server can do the same: they read the
 3. **A spawned child that was cancelled when the earlier Workflow ended:**
    the re-run goes back to the spawn step (or the parallel step that holds it)
    so a fresh child runs. That step and every step after it run again.
-4. **Supplying results:** only for top-level script and agent steps without
-   `supply: never`. Never for approvals, waits, decisions, spawns or messages.
+4. **Supplying results:** only for completed top-level script, agent and
+   decision steps without `supply: never`. Never for approvals, waits, spawns
+   or messages.
 5. **Agent memory:** an agent step that continues its session starts a fresh
    session with a summary of the reused and supplied cycles, not the old chat.
 6. **Cleaned-up Workflows and size:** automatic cleanup removes a finished
