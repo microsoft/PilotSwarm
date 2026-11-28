@@ -306,11 +306,11 @@ Fan-out: keep only what you need from each child; size limits: `workflow-limits`
 | agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones refused. |
 | send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
 | request | At least once, one id. First answer decides; none after deadline. |
-| receive | Takes each message once, in the order the run accepted it. |
+| receive | Takes each message once, in accepted order. |
 | wait | Elapses once, by the store's clock. |
 
 - **Timers.** Deadlines are durable; restarts and pauses don't stop them.
-- **Pause / Stop / Cancel.** Pause holds new admissions; stop drains active work until grace ends; cancel/delete end pending work and active child Workflows.
+- **Pause / Stop / Cancel.** Pause holds new admissions; stop drains active work until grace ends; cancel/delete end pending work and children.
 - **Failure.** Errors route by code, then `failure`, then `catchAll` once, else fail the run.
 - **Versions.** Started revisions and agent pins stay fixed; only variables (`set_vars`) change.
 
