@@ -1197,10 +1197,12 @@ describe("J3 robust joins, part 2: the Workflow controller (test-only)", () => {
             expect(decisionsOf(await eventsOf(base, run.workflowSessionId), run.fan)).toHaveLength(1);
 
             // The time limit crosses in a later execution: decided once, by the deadline set at entry.
-            // At 41 ms/query the 50 passes did not fit in 200 s. Keep the local 20 s window, with room for
-            // those database round trips remotely; branch waits must outlive the fork's limit.
+            // At 41 ms/query the 50 passes did not fit in 200 s. Keep a local 40 s window, with room for
+            // those database round trips remotely; branch waits must outlive the fork's limit. In the full
+            // local suite the 50 passes sometimes outlasted a 20 s window (2026-11-25), so the run timed out
+            // before any continue-as-new.
             const timed = await startJoin(base, joinDoc({ items, join: { first: 2 }, concurrency: 3,
-                timeoutSeconds: testTime.seconds(testTime.scale > 1 ? 60 : 20) }));
+                timeoutSeconds: testTime.seconds(testTime.scale > 1 ? 60 : 40) }));
             await persisted(base, [0, 1, 2].map(index => timed.at(index, "hold")), "every wait pending");
             const timedDeadline = await deadlineText(base, timed.fan);
             const timedFan = await base.store.readNodeExecution(timed.fan);

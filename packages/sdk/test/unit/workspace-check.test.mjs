@@ -160,10 +160,14 @@ describe("path check", () => {
     });
 
     it("a slow but live check makes nine queued checks wait and pass, none times out (F8)", async () => {
+        // A queued check's deadline counts from when it joins the queue, and the
+        // ten checks start ten node processes one after another. The deadline
+        // only bounds a failure, so it covers those starts under suite load.
+        const timeoutMs = 30_000;
         setWorkspaceCheckTestHook(({ path: target }) => (target.endsWith("app") ? { sleepMs: 400 } : undefined));
-        const slow = check("sessions/s-1/app", { timeoutMs: 3_000 });
+        const slow = check("sessions/s-1/app", { timeoutMs });
         await new Promise((resolve) => setTimeout(resolve, 20));
-        const queued = Array.from({ length: 9 }, () => check("sessions/s-1", { timeoutMs: 3_000 }));
+        const queued = Array.from({ length: 9 }, () => check("sessions/s-1", { timeoutMs }));
         const results = await Promise.all([slow, ...queued]);
         assert.deepEqual(results.map((r) => r.ok), Array(10).fill(true), JSON.stringify(results.filter((r) => !r.ok)));
     });

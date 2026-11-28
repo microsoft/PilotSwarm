@@ -13,6 +13,15 @@ import { resolveWorkflowCapabilitySnapshot } from "../../src/workflow/package-pi
 const harness = (options, run) => handoffHarness(transport, { callTools: [], ...options }, run);
 const deploymentParent = { boundAgentPackageId: undefined, boundAgentSource: "deployment", toolNames: ["deployment_tool"] };
 const firstOffer = h => toolNames(h.server.requests[0]).sort();
+// The CLI offers its GitHub MCP tools and web_search only once its runtime has reached GitHub, so one session's
+// offer can lack all of them while another session's has them. Every other tool must match exactly; these must
+// match whenever both offers have them.
+const githubBacked = name => typeof name === "string" && (name.startsWith("github-mcp-server-") || name === "web_search");
+const expectSameOffer = (actual, expected) => {
+    expect(actual.filter(name => !githubBacked(name)).sort()).toEqual(expected.filter(name => !githubBacked(name)).sort());
+    const actualGithub = actual.filter(githubBacked).sort(), expectedGithub = expected.filter(githubBacked).sort();
+    if (actualGithub.length > 0 && expectedGithub.length > 0) expect(actualGithub).toEqual(expectedGithub);
+};
 
 describe("composition child sets through real SessionManager and CLI turns", () => {
     it("leaves a top-level session's tool catalog unchanged after capturing a child grant", { timeout: 30_000 }, async () => {
@@ -41,7 +50,7 @@ describe("composition child sets through real SessionManager and CLI turns", () 
                 await harness(options, async h => {
                     await h.invoke("composition", { task: "Harmless child.", grant });
                     expect(h.children[0].result.type).toBe("completed");
-                    expect(firstOffer(h)).toEqual(old);
+                    expectSameOffer(firstOffer(h), old);
                     expect(h.children[0].config.toolGrant?.tools ?? []).toEqual([]);
                 });
             }
@@ -57,7 +66,7 @@ describe("composition child sets through real SessionManager and CLI turns", () 
         await harness(options, async h => {
             await h.invoke("composition", { agent_name: "analyst", task: "Harmless child.", grant: "all" });
             expect(h.children[0].result.type).toBe("completed");
-            expect(firstOffer(h)).toEqual(old);
+            expectSameOffer(firstOffer(h), old);
             expect(h.children[0].config.toolGrant).toBeUndefined();
         });
     });
@@ -74,7 +83,7 @@ describe("composition child sets through real SessionManager and CLI turns", () 
             await harness(options, async h => {
                 await h.invoke("composition", { task: "Child.", tool_names: ["deployment_tool"] });
                 expect(h.children[0].result.type).toBe("completed");
-                expect(firstOffer(h)).toEqual(old);
+                expectSameOffer(firstOffer(h), old);
                 expect(firstOffer(h)).toContain("deployment_tool");
                 expect(h.children[0].config.toolGrant).toBeUndefined();
             });
@@ -201,7 +210,7 @@ describe("composition child sets through real SessionManager and CLI turns", () 
             expect(baseline).not.toContain("pkg_tool_a");
             await h.invoke("composition", { agent_name: agent.name, task: "ADD_ONE", grant: ["pkg_tool_a"] });
             expect(h.children[1].result.type, JSON.stringify(h.children[1].result)).toBe("completed");
-            expect(toolNames(h.server.requests[1]).sort()).toEqual([...baseline, "pkg_tool_a"].sort());
+            expectSameOffer(toolNames(h.server.requests[1]), [...baseline, "pkg_tool_a"]);
             expect(h.children[1].config.toolGrant.sourceRevisions).toEqual({ "package-a": "a".repeat(64) });
         });
     });
