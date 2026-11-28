@@ -1870,10 +1870,11 @@ Inv_CarriedWereWaiting ==
 Inv_InboxCarryExact ==
     (startPhase = "admitted") => (carriedInbox = EligibleCarrySet)
 
-\* Review RR-1: a second-generation re-run whose cut is a visit #2 copied from #1 loses no message that waited at that cut
-\* in #1's history. The ground truth is EligibleCarry (first acceptance and expiry in #1's history); the code side reads
-\* #2's stored accepted_at / origin_accepted_at (CodeAcceptAt). This is the no-loss half of Inv_InboxCarryExact, for the
-\* copied-prefix cut only.
+\* Review RR-1: a second-generation re-run whose cut is a visit #2 copied from #1 loses no message, among rows carried into
+\* the immediate source (#2), that waited at that cut in #1's history. The ground truth is EligibleCarry (first acceptance
+\* and expiry in #1's history); the code side reads #2's stored accepted_at / origin_accepted_at (CodeAcceptAt). This is the
+\* no-loss half of Inv_InboxCarryExact, for the copied-prefix cut only. A row of #1 that #2 did not carry is outside it: a
+\* re-run reads its immediate source only, never an earlier ancestor.
 Inv_NoWaitingLostAcrossGenerations ==
     (startPhase = "admitted" /\ SrcCarried) => (EligibleCarrySet \subseteq carriedInbox)
 
