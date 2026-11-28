@@ -20,10 +20,10 @@ Start `key` deduplicates. `workspace`: omit/object = record+defaults, `null` = d
 | `description` | Text. |
 | `notes` | Optional literal text; see States. |
 | `inputs` | Optional `{ schema }`: the run's static inputs must match it. |
-| `outputSchema` | Optional: the output of a `succeeded` terminal must match it. |
+| `outputSchema` | Optional: a `succeeded` terminal's output must match it. |
 | `initial` | The first state; not a terminal. |
 | `initialInput` | Optional JSON template (`inputs`, `kv`); first-state input; default null. |
-| `limits` | Optional `{ maxNodeExecutions?, timeoutSeconds?, onExceeded? }`. `maxNodeExecutions`: 1 to 10,000 per run, default 1,000. `timeoutSeconds`: the run's deadline, 1 to 2,592,000 seconds from when it begins. `onExceeded`: `expired` (the only policy). |
+| `limits` | Optional `{ maxNodeExecutions?, timeoutSeconds?, onExceeded? }`. `maxNodeExecutions`: 1 to 10,000 per run, default 1,000. `timeoutSeconds`: run deadline, 1 to 2,592,000 seconds from its start. `onExceeded`: `expired` (only policy). |
 | `catchAll` | Optional non-initial state for an unrouted runtime error; at most once per run. |
 | `schemas` | Named JSON Schema 2020-12 documents; refer to one as `{ $ref: "#/schemas/Name" }`. |
 | `contracts` | `Name@N: { schema, description?, response?: { schema, description? } }`; requests need `response`. |
@@ -50,12 +50,12 @@ schemas get `WORKFLOW_INPUT_MISMATCH`.
 ## States
 
 Every state except a terminal has `transition: { next: { <route>: <state> } }`.
-A route is an outcome of the state, a runtime error code or `failure` (any
+A route is a state outcome, a runtime error code or `failure` (any
 runtime error without its own route). All states take an optional
 `description` (graph label; id stays visible). Root and states take optional
 `notes`; `transition.notes: { <route>: <text> }` annotates existing routes.
 Each note: at most 16 KiB UTF-8, no NUL/lone surrogates, never executed.
-Notes are shared with graph readers; no secrets. Absent keys stay absent;
+Graph readers see notes; no secrets. Absent keys stay absent;
 editing notes makes a new revision/hash, not a run change.
 
 Nonterminals take `maxVisits` (1–10,000; forbids business outcome `exhausted`):
@@ -71,10 +71,10 @@ Owner consent: load `workflow-approval`. Agents cannot answer it.
 
 | Field | Rule |
 |---|---|
-| `source` | Required. Node ES module text; syntax errors are saved as `WORKFLOW_SCRIPT_SYNTAX` errors and refuse Start. Use top-level await, not top-level return. |
+| `source` | Required. Node ES module text; syntax errors save as `WORKFLOW_SCRIPT_SYNTAX` and refuse Start. Use top-level await, not top-level return. |
 | `runtime` | Optional; `node` only. |
 | `timeoutSeconds` | 1 to 3,600; default 300. |
-| `input` | Optional template; default: the value that arrived. |
+| `input` | Optional template; default: the arrived value. |
 | `inputSchema`, `outputSchema` | Optional. |
 | `outcomes` | Optional list; default: its routes that are not runtime routes. |
 
@@ -90,7 +90,7 @@ refuses overlap. Diagnostics: `workflow-tools`.
 | Field | Rule |
 |---|---|
 | `seconds` | 1 to 2,592,000 (30 days), or one binding (checked at entry: `invalid_input`). Required unless `at`. A literal longer than the run timeout warns. |
-| `at` | Instead of `seconds`: `{ minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`; a day needs `hour`, and `minute` alone is every hour. Waits for the next such time in IANA zone `tz` (with daylight saving), decided at entry. |
+| `at` | Instead of `seconds`: `{ minute, hour?, day_of_week? (0-6, Sunday 0) or day_of_month? (1-31), tz }`; a day needs `hour`; `minute` alone is hourly. Waits for the next such time in IANA zone `tz` (daylight saving aware), decided at entry. |
 | `input` | Optional template. |
 
 Outcome: `elapsed` (route required). Output: its input.
@@ -100,15 +100,15 @@ Outcome: `elapsed` (route required). Output: its input.
 | Field | Rule |
 |---|---|
 | `contract` | Required. One root contract (or `WorkflowEnded@1`), or a list of 2–8 distinct names. |
-| `from` | Optional: `{ parent: true }`, session id, or `{ sessionId }` (binding ok); default any permitted sender (including people over SDK, Web API, or MCP). Receives with `from:` never accept person input (`409 UNSUPPORTED_CONTRACT`). |
+| `from` | Optional: `{ parent: true }`, session id, or `{ sessionId }` (binding ok); default any permitted sender, people included (SDK, Web API, MCP); with `from:`, person input is refused (`409 UNSUPPORTED_CONTRACT`). |
 | `correlate` | Optional template object; a message's `correlation` must equal it. |
 | `wait` | Optional `{ seconds }` (per visit) or `{ totalSeconds }` (never resets in a run/branch execution; binding read once on first start; use `seconds` in outer loops), 1–86,400; never both. |
 | `input` | Optional template. |
 
 One name: `received` (payload). List: each contract is an outcome (no `received`),
-output `{ contract, from, payload }`, earliest match (for person input, `from` is
-`person:user:<provider>:<subject>` or `person:system:<name>`, not a session id —
-do not pass it to `from:` or `send.recipient`). With `wait`, `elapsed`
+output `{ contract, from, payload }`, earliest match (person input: `from` is
+`person:user:<provider>:<subject>` or `person:system:<name>`, not a session id;
+never use it as `from:` or `send.recipient`). With `wait`, `elapsed`
 (input) is required; spent `totalSeconds` fires `elapsed` at entry.
 
 ### messaging, mode send
@@ -146,30 +146,30 @@ route both. Only that output reaches the next state. Deadline:
 
 ### decision
 
-Use this first-class state only when `workflows.decision.available` is `true`.
-It takes `input` (optional template; default: the arrived value), optional
-`inputSchema`, a required static `question`, optional `confidence`, and
+Use it only when `workflows.decision.available` is `true`.
+Fields: `input` (optional template; default: the arrived value), optional
+`inputSchema`, required static `question`, optional `confidence`, and
 `timeoutSeconds` (literal integer 1 to 86,400; default 30).
 Instructions/descriptions are non-empty literal UTF-8 of at most 32 KiB; no
 bindings or dynamic options. YAML never names a model.
 
 | `question.type` | `criteria` | Exact business routes |
 |---|---|---|
-| `choice` | Object with at least two static route-label keys and descriptions. Keys cannot be `failure`, `uncertain`, `scored`, or a runtime code. | Every criterion; `uncertain` exactly when `confidence` exists. |
+| `choice` | Object, at least two static route-label keys with descriptions; keys cannot be `failure`, `uncertain`, `scored`, or a runtime code. | Every criterion; `uncertain` exactly when `confidence` exists. |
 | `noul` | Omit, or exactly `{ true: <description>, false: <description> }`. | `yes`, `no`; `uncertain` exactly when `confidence` exists. |
 | `score` | Ordered array of at least two distinct static labels. | `scored` only; `confidence` is invalid. |
 
-Missing/extra business routes are invalid. Runtime routes and `failure` may be
+Missing/extra business routes are invalid; runtime routes and `failure` may be
 added. `confidence` is `{ minimumProbability: <finite literal 0..1> }`.
-Choice confidence is the selected label's returned probability, even if not the
+Choice confidence is the selected label's probability, even if not the
 largest. `noul` selects `yes` at provider `p >= 0.5`, else `no`, with confidence
 `max(p, 1-p)`. Confidence strictly below the threshold takes `uncertain`;
-equality does not. Score preserves the provider's finite score (`0..last level`)
-and ordered levels; it is never banded or re-derived.
+equality does not. Score keeps the provider's finite score (`0..last level`)
+and ordered levels, never banded or re-derived.
 
-Every provider probability is finite in `0..1`. Choice requires exactly the
-declared option keys. `noul` requires exactly raw `true`/`false`. Score requires
-exactly level indexes `0..n-1`; a supplied legend must match the labels in order.
+Provider probabilities are finite in `0..1`. Choice needs exactly the declared
+option keys, `noul` exactly raw `true`/`false`, score exactly level indexes
+`0..n-1`; a supplied legend must match the labels in order.
 
 Exact semantic outputs (`qualified` is the effective `provider:model`):
 
@@ -180,7 +180,7 @@ Exact semantic outputs (`qualified` is the effective `provider:model`):
 | `score` | `{ questionType: "score", outcome: "scored", score, levels: [{ label, probability }], model: { qualified } }` |
 
 Transport IDs/status/timing/usage/hashes/raw bodies never enter output;
-scripts and agents receive the semantic result unchanged.
+scripts and agents get the semantic result unchanged.
 
 The Cluster Decision Default is a hard gate, not a fallback: without an
 eligible default Save marks the revision invalid and fresh Start refuses with
@@ -205,7 +205,7 @@ See workflow-tools for merge rules.
 | `requiredTools` | Optional 1-16 exact tool names; call each per visit. See workflow-tools. |
 | `grant` | `all`/`none`/selectors (tool, `package:`, `mcp:`); default named `none`, inline `all`. See workflow-tools. |
 
-Output: the agent's validated output. The agent may report `needs_input` or
+Output: the validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three
 invalid completions), `unavailable`, `forbidden` and `cancelled`.
 
@@ -226,28 +226,27 @@ on its own is replaced, and the prompt says so.
 Multi-day work: short visits, a sleep outcome routed to a wait; call
 `load_skill` with name `workflow-long-agent`. A timeout self-loop warns.
 
-`interface: <name>@<version>` (for example `review_change@1`) names the
-workflow interface its package agent exports. `ps_list_agents` lists it as
-the entry's `workflowInterface` (`ref`, `outcomes`, `inputSchema`,
-`outputSchema`, `digest`); set `package` to the entry's `namespace`. The
-state must declare `outputSchema`. At publication and start, its outcomes,
-`outputSchema` and (when the interface has one) `inputSchema` must equal
-the interface's. Copy each interface
-schema into `schemas` unchanged (no `$ref` inside the copy) and refer to it
-from the state; a stricter or looser schema does not match. A
-mismatch refuses with `CONTRACT_MISMATCH` and its `problems`; a match pins
-the interface's digest with the package revision.
+`interface: <name>@<version>` (e.g. `review_change@1`) names the workflow
+interface its package agent exports; `ps_list_agents` lists it as the entry's
+`workflowInterface` (`ref`, `outcomes`, `inputSchema`, `outputSchema`,
+`digest`); set `package` to the entry's `namespace`. The state must declare
+`outputSchema`. At publication and start, its outcomes, `outputSchema` and
+(if the interface has one) `inputSchema` must equal the interface's: copy
+each schema unchanged into `schemas` (no `$ref` inside) and refer to it;
+stricter or looser does not match. A mismatch refuses with
+`CONTRACT_MISMATCH` and its `problems`; a match pins the interface's digest
+with the package revision.
 
 ### parallel
 
 | Field | Rule |
 |---|---|
 | `forEach` | One binding that gives a list, or a list; at most 64 items. |
-| `branches` | Instead of `forEach` and `body`: `{ <name>: { initial, states, input? } }`, 1 to 64, each its own graph from its `initial`, with its `input` (default: the value that arrived). `concurrency` defaults to their number; above 16, set it. |
+| `branches` | Instead of `forEach` and `body`: `{ <name>: { initial, states, input? } }`, 1 to 64, each its own graph from its `initial` and `input` (default: the arrived value). `concurrency` defaults to their number; above 16, set it. |
 | `concurrency` | 1 to 16; default 1. |
 | `join` | Optional: `all` (default; `all_required` is the same) or `{ first: k }`, k from 1 to 64 and at most the items of a literal list. |
-| `failFast` | Optional boolean; default false. Cancels the other branches once the join can no longer succeed. |
-| `timeoutSeconds` | Optional: the state's own time limit, 1 to 86400 or one binding. Needs a `timed_out` route. |
+| `failFast` | Optional boolean (default false): cancels the other branches once the join can no longer succeed. |
+| `timeoutSeconds` | Optional state time limit, 1 to 86400 or one binding; needs a `timed_out` route. |
 | `inputSchema` | Optional: checks the whole list. |
 | `outputSchema` | Optional: checks the joined output, never a report. |
 | `body` | With `forEach`: `{ initial, states }`. No parallel state inside. |
@@ -255,9 +254,8 @@ the interface's digest with the package revision.
 Outcomes: `joined` and `blocked`. Routes for both are required.
 
 - `joined` with `all`: the branch outputs in list order. With `{ first: k }`:
-  `[{ index, output }]` of the first k successes, in the order the store
-  saved them (ties: lower index first); the other branches are cancelled or
-  not started. Named branches: `{ <name>: output }`, the winners only; a
+  `[{ index, output }]` of the first k successes, in store save order (ties:
+  lower index first); the others are cancelled or not started. Named branches: `{ <name>: output }`, the winners only; a
   report's branches add `name`. Without `timeoutSeconds`, a named branch
   with an agent state, or a receive with no wait, warns
   `WORKFLOW_BRANCH_UNBOUNDED`.
@@ -265,9 +263,9 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   than k items, at once). Output: `{ joined: false, timedOut, total, needed,
   succeeded, failFast, branches: [{ index, ended, nodeExecutionId, outcome,
   resultKind, output or error, cancelledBy?, late? }] }`. `ended` is
-  `terminal`, `error`, `cancelled`, `not_started` or `finished` (its last
-  step's result was saved, and kept, but its next step never started). `cancelledBy` is `failFast`, `join` or `timeout`. `late` marks a
-  success saved after the time limit. A report too large to store drops
+  `terminal`, `error`, `cancelled`, `not_started` or `finished` (last
+  step's result saved and kept; next step never started). `cancelledBy` is `failFast`, `join` or `timeout`. `late` marks a
+  success saved after the time limit. An oversized report drops
   every `output` and `error` and adds `truncated: true`.
 - With `timeoutSeconds`, only timely successes count; fewer than k ends `timed_out` (or `blocked` if k was already unreachable) with `timedOut: true`. Keep `concurrency` below `PILOTSWARM_WORKER_CONCURRENCY`.
 
@@ -294,18 +292,18 @@ Fan-out: keep only what you need from each child; size limits: `workflow-limits`
 
 ## Semantics
 
-- **Durable.** The store keeps runs, visits, variables and accepted messages.
-  Worker restarts resume saved work.
+- **Durable.** The store keeps runs, visits, variables and accepted messages;
+  worker restarts resume saved work.
 - **Order.** Starts at `initial`. Outside parallel branches, one state runs
   at a time and takes one route. Every visit counts toward
   `maxNodeExecutions`; exhaustion fails with `limit_exceeded`.
 - **One result per visit.** The first saved result wins. Effects are not undone.
 
-| Effect | On a retry or a worker restart |
+| Effect | On retry or worker restart |
 |---|---|
 | script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. Canvas: absolute ticks and `put`s; a `CONFLICT` where `get` shows your value is success; draw once, then tick. |
 | decision | Attempts 1–2 call the provider; attempt 3 records `unavailable`. First stored result wins. |
-| spawn | Keyed Start (`spawn:<nodeExecutionId>`): retries replay the same child; never creates a second child. |
+| spawn | Keyed Start (`spawn:<nodeExecutionId>`): retries replay the same child, never a second. |
 | agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones are refused. |
 | send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
 | request | At least once, one id. First answer decides; none after deadline. |
