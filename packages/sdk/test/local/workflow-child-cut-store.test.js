@@ -258,7 +258,7 @@ async function setupFixture(env) {
             runId: parent.runId, nodeExecutionId: nx, scopeId: "root", nodeId: "after_recv", ordinal,
             nodeType: "messaging", predecessorId: null, arrivalRoute: null, inputText: "null",
             kvRevision: 1, waitSeconds: 60, immediate: null,
-            receive: { contract: WORKFLOW_ENDED_CONTRACT, from, refused: null, correlationText: "{}" },
+            receive: { contract: WORKFLOW_ENDED_CONTRACT, from, refused: from === null ? null : {}, correlationText: "{}" },
         });
     };
 

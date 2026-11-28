@@ -246,6 +246,16 @@ export function parallelBranchStates(ir: WorkflowIR, parallelNodeExecutionId: st
     });
 }
 
+/**
+ * Whether a parallel branch is cut for child-Workflow ownership: either a cut
+ * cancelled one of its states (`ended === "cancelled"`), or its fork is decided
+ * (`forkDecided`), the branch has no terminal state row, and it did not end by
+ * its own error (`ended !== "error"`).
+ */
+export function parallelBranchCut(branch: ParallelBranchState, forkDecided: boolean, hasTerminal: boolean): boolean {
+    return branch.ended === "cancelled" || (forkDecided && !hasTerminal && branch.ended !== "error");
+}
+
 /** A branch as its report lists it: `late` for a success committed after the time limit. */
 export function parallelBranchEnd(branch: ParallelBranchState): ParallelBranchEnd {
     return {

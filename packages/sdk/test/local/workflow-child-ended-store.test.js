@@ -363,7 +363,7 @@ states:
                 runId: c2.parent.runId, nodeExecutionId: recvNewerNamed, scopeId: "root", nodeId: "after_recv", ordinal: 2,
                 nodeType: "messaging", predecessorId: null, arrivalRoute: null, inputText: "null", kvRevision: 1,
                 waitSeconds: 60, immediate: null,
-                receive: { contract: WORKFLOW_ENDED_CONTRACT, from: c2.child.workflowId, refused: null, correlationText: "{}" },
+                receive: { contract: WORKFLOW_ENDED_CONTRACT, from: c2.child.workflowId, refused: {}, correlationText: "{}" },
             });
             await notifyParent(actx, { runId: c2.child.runId });
             expect((await h.store.readNodeExecution(recvOlderAnon))?.state).toBe("pending");
