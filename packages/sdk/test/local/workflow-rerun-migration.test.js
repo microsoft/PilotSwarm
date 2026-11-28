@@ -523,6 +523,55 @@ describe("migration 0104: workflow_rerun", () => {
         }
     });
 
+    it("upgrades one schema while another schema with the same 0104 constraints is dropped concurrently", { timeout: testTime.ms(120_000) }, async () => {
+        const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+        const tag = randomUUID().replace(/-/g, "").slice(0, 10);
+        const target = `wf0104_${tag}_t`;
+        const dropped = `wf0104_${tag}_d`;
+        const qIdent = (name) => `"${name.replace(/"/g, '""')}"`;
+        const minimalTables = async (schema) => {
+            await pool.query(`CREATE SCHEMA ${qIdent(schema)}`);
+            await pool.query(`CREATE TABLE ${qIdent(schema)}.workflow_runs (run_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+            await pool.query(`CREATE TABLE ${qIdent(schema)}.workflow_node_executions (node_execution_id TEXT PRIMARY KEY, state TEXT NOT NULL, deadline_at TIMESTAMPTZ, winner TEXT, result_kind TEXT, effect_attempts INTEGER NOT NULL DEFAULT 0)`);
+        };
+        const upgrader = new pg.Client(pgPoolConfig(getEnv().store));
+        await upgrader.connect();
+        try {
+            await minimalTables(dropped);
+            for (const stepSql of workflowRerunMigration(dropped)) await pool.query(stepSql);
+            await minimalTables(target);
+            // The upgrader's snapshot still sees the dropped schema's constraints after the DROP commits: the constraint lookup
+            // must stay on the target schema's own tables, or its definition read opens a relation that no longer exists.
+            await upgrader.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+            await upgrader.query("SELECT 1");
+            await pool.query(`DROP SCHEMA ${qIdent(dropped)} CASCADE`);
+            const [first, ...rest] = workflowRerunMigration(target);
+            try {
+                await upgrader.query(first);
+            } catch (error) {
+                await upgrader.query("ROLLBACK").catch(() => {});
+                throw error;
+            }
+            for (const stepSql of rest) await upgrader.query(stepSql);
+            const { rows } = await pool.query(
+                `SELECT c.conname, pg_get_constraintdef(c.oid) AS def
+                   FROM pg_constraint c
+                  WHERE c.conrelid IN (to_regclass(format('%I.%I', $1::text, 'workflow_runs')), to_regclass(format('%I.%I', $1::text, 'workflow_node_executions')))
+                    AND c.conname IN ('workflow_runs_rerun_check', 'workflow_node_executions_reused_check')
+                  ORDER BY c.conname`,
+                [target],
+            );
+            expect(rows.map(r => r.conname)).toEqual(["workflow_node_executions_reused_check", "workflow_runs_rerun_check"]);
+            expect(rows[0].def).toContain("supplied_from_execution_id");
+            expect(rows[1].def).toContain("supply");
+        } finally {
+            await upgrader.end().catch(() => {});
+            await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(target)} CASCADE`);
+            await pool.query(`DROP SCHEMA IF EXISTS ${qIdent(dropped)} CASCADE`);
+            await pool.end();
+        }
+    });
+
     it("passes over 0 (baseline), 100, and 1,000 SQL-seeded reused visits on the unchanged 1.3.0 controller and records RERUN_PASSOVER_MS", { timeout: testTime.ms(300_000) }, async () => {
         await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
             const h = host(client);

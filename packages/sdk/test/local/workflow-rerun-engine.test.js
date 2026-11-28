@@ -1476,7 +1476,7 @@ states:
     transition: { next: { received: record, elapsed: failed, failure: failed } }
   record:
     type: script
-    input: { seq: "\${states.listen.output.payload.seq}" }
+    input: { seq: "\${states.listen.output.seq}" }
     outcomes: [again, done]
     source: |
       if (context.input.seq >= 2) await setResult("done", { seq: context.input.seq });
@@ -1514,9 +1514,9 @@ states:
                             input, input_sha256, state, outcome, result_kind, output, error, winner,
                             effect_attempts, entered_at, completed_at, kv_revision, deadline_at
                          ) VALUES
-                         ($1,$2,'root',NULL,'listen',1,'messaging',NULL,'{}',$3,'completed','received','business','{"payload":{"seq":1}}',NULL,'message',1,$4::timestamptz,$4::timestamptz,1,$5::timestamptz),
+                         ($1,$2,'root',NULL,'listen',1,'messaging',NULL,'{}',$3,'completed','received','business','{"seq":1}',NULL,'message',1,$4::timestamptz,$4::timestamptz,1,$5::timestamptz),
                          ($6,$2,'root',$1,'record',1,'script','received','{"seq":1}',$7,'completed','again','business','{"seq":1}',NULL,'effect',1,$8::timestamptz,$8::timestamptz,1,NULL),
-                         ($9,$2,'root',$6,'listen',2,'messaging','again','{}',$3,'completed','elapsed','business','{}',NULL,'timer',1,$5::timestamptz,$5::timestamptz,1,NULL)`,
+                         ($9,$2,'root',$6,'listen',2,'messaging','again','{"seq":1}',$7,'completed','elapsed','business','{}',NULL,'timer',1,$5::timestamptz,$5::timestamptz,1,NULL)`,
                         [l1, clockR2Id, sha256Hex("{}"), twoHoursAgo, twoHoursAgoPlus4s, rec1, sha256Hex('{"seq":1}'), twoHoursAgoPlus1s, l2],
                     );
                     await pool.query(

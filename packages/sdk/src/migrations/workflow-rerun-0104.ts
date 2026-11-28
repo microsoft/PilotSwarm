@@ -4,7 +4,8 @@
  *
  * Uses `steps` (individually autocommitted, idempotent statements) so:
  *   1. Step 1 adds the nullable columns and `CHECK (...) NOT VALID` constraints under a bounded 5 s lock_timeout
- *      (also self-upgrading any pre-supply 3A constraint via pg_get_constraintdef) and commits immediately,
+ *      (also self-upgrading any pre-supply 3A constraint via pg_get_constraintdef, read only for this schema's own table
+ *      so a concurrently dropped schema's same-named constraint is never decompiled) and commits immediately,
  *      releasing ACCESS EXCLUSIVE without a full-table scan.
  *   2. Steps 2 and 3 run `VALIDATE CONSTRAINT` in separate transactions under SHARE UPDATE EXCLUSIVE (allowing concurrent
  *      reads and writes).
@@ -51,21 +52,19 @@ ALTER TABLE ${s}.workflow_runs
     ADD COLUMN IF NOT EXISTS rerun_actor TEXT;
 
 DO $runs_check$
+DECLARE
+    v_table regclass := to_regclass(format('%I.%I', '${name}', 'workflow_runs'));
+    v_def text;
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_constraint c
-        JOIN pg_class t ON t.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE n.nspname = '${name}' AND t.relname = 'workflow_runs' AND c.conname = 'workflow_runs_rerun_check'
-          AND pg_get_constraintdef(c.oid) NOT LIKE '%supply%'
-    ) THEN
+    SELECT pg_get_constraintdef(c.oid) INTO v_def
+      FROM pg_constraint c
+     WHERE c.conrelid = v_table AND c.conname = 'workflow_runs_rerun_check';
+    IF v_def IS NOT NULL AND v_def NOT LIKE '%supply%' THEN
         ALTER TABLE ${s}.workflow_runs DROP CONSTRAINT workflow_runs_rerun_check;
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint c
-        JOIN pg_class t ON t.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE n.nspname = '${name}' AND t.relname = 'workflow_runs' AND c.conname = 'workflow_runs_rerun_check'
+        WHERE c.conrelid = v_table AND c.conname = 'workflow_runs_rerun_check'
     ) THEN
         ALTER TABLE ${s}.workflow_runs ADD CONSTRAINT workflow_runs_rerun_check CHECK (
             (rerun_of_workflow_session_id IS NULL AND rerun_of_run_id IS NULL AND rerun_from_execution_id IS NULL
@@ -102,21 +101,19 @@ ALTER TABLE ${s}.workflow_node_executions
     ADD COLUMN IF NOT EXISTS supplied_at TIMESTAMPTZ;
 
 DO $nodes_check$
+DECLARE
+    v_table regclass := to_regclass(format('%I.%I', '${name}', 'workflow_node_executions'));
+    v_def text;
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_constraint c
-        JOIN pg_class t ON t.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE n.nspname = '${name}' AND t.relname = 'workflow_node_executions' AND c.conname = 'workflow_node_executions_reused_check'
-          AND pg_get_constraintdef(c.oid) NOT LIKE '%supplied_from_execution_id%'
-    ) THEN
+    SELECT pg_get_constraintdef(c.oid) INTO v_def
+      FROM pg_constraint c
+     WHERE c.conrelid = v_table AND c.conname = 'workflow_node_executions_reused_check';
+    IF v_def IS NOT NULL AND v_def NOT LIKE '%supplied_from_execution_id%' THEN
         ALTER TABLE ${s}.workflow_node_executions DROP CONSTRAINT workflow_node_executions_reused_check;
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint c
-        JOIN pg_class t ON t.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE n.nspname = '${name}' AND t.relname = 'workflow_node_executions' AND c.conname = 'workflow_node_executions_reused_check'
+        WHERE c.conrelid = v_table AND c.conname = 'workflow_node_executions_reused_check'
     ) THEN
         ALTER TABLE ${s}.workflow_node_executions ADD CONSTRAINT workflow_node_executions_reused_check CHECK (
             (
