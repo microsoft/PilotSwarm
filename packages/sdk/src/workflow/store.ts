@@ -24,9 +24,9 @@ import {
 } from "./intake.js";
 import {
     BRANCH_CANCEL_WINNERS, BRANCH_CANCEL_WINNER_VALUES, branchCancelError, branchCancelReasonOf, branchScopeIds, branchScopeNameList, branchScopeNames,
-    parallelBlockedResult, parallelBranchCut, parallelBranchEnd, parallelJoinedOutput,
-    parallelBranchStates, parallelSuccesses, parallelTimeoutResult, parallelVerdict, parseBranchScope, type BranchCancelReason, type ParallelBranchState,
-    type ParallelCommit,
+    parallelBlockedResult, parallelBranchCut, parallelBranchEnd, parallelBranchMetaState, parallelJoinedOutput,
+    parallelBranchStates, parallelSuccesses, parallelTimeoutResult, parallelVerdict, parseBranchScope, type BranchCancelReason, type ParallelBranchNodeMeta,
+    type ParallelBranchState, type ParallelCommit,
 } from "./parallel.js";
 import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLocked } from "./session-definition-store.js";
 import { workflowAgentSessionContinues } from "./agent-ids.js";
@@ -611,6 +611,19 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         deadlineAt: dateOrNull(row, "deadline_at"),
         receive: receiveOf(row),
         enteredAt: date(row, "entered_at"), completedAt: dateOrNull(row, "completed_at"),
+    };
+}
+
+function nodeMetaFrom(row: Row): ParallelBranchNodeMeta {
+    const state = str(row, "state");
+    const resultKind = strOrNull(row, "result_kind");
+    if (state !== "pending" && state !== "completed") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Unknown node state ${state}.`);
+    if (resultKind !== null && resultKind !== "business" && resultKind !== "runtime_error") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Unknown result kind ${resultKind}.`);
+    return {
+        nodeExecutionId: str(row, "node_execution_id"), scopeId: str(row, "scope_id"),
+        predecessorId: strOrNull(row, "predecessor_id"), nodeId: str(row, "node_id"),
+        state, winner: strOrNull(row, "winner"), outcome: strOrNull(row, "outcome"), resultKind,
+        enteredAt: date(row, "entered_at"),
     };
 }
 
@@ -4883,20 +4896,18 @@ export class WorkflowStore {
                 if (!runRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Input ${input.operationId} names a missing run.`);
                 return { receipt: parseInputReceipt(parseStoredJson(receiptText, "receipt")), replayed: true, run: runFrom(runRows[0]) };
             }
-            let trustedChildEnded = false;
-            let trustedChildRunId: string | null = null;
+            let trustedChild: { runId: string; startOperationId: string | null } | null = null;
             if (input.bypassInboxLimits === true && input.contract === WORKFLOW_ENDED_CONTRACT
                 && input.operationId.startsWith("ended:") && decided.senderParentSessionId === input.workflowSessionId) {
                 const childRunId = input.operationId.slice("ended:".length);
                 const { rows: childRuns } = await client.query(
-                    `SELECT status FROM ${this.t.runs} WHERE run_id = $1 AND workflow_session_id = $2`,
+                    `SELECT status, start_operation_id FROM ${this.t.runs} WHERE run_id = $1 AND workflow_session_id = $2`,
                     [childRunId, input.senderSessionId]);
                 if (childRuns[0] && !ACTIVE_RUN_STATUSES.includes(str(childRuns[0], "status") as WorkflowRunStatus)) {
-                    trustedChildEnded = true;
-                    trustedChildRunId = childRunId;
+                    trustedChild = { runId: childRunId, startOperationId: strOrNull(childRuns[0], "start_operation_id") };
                 }
             }
-            if (decided.authority !== "allowed" && !trustedChildEnded) {
+            if (decided.authority !== "allowed" && trustedChild === null) {
                 throw new WorkflowStoreError("FORBIDDEN", TYPED_INPUT_REFUSALS[decided.authority]);
             }
             if (input.sendExchangeId) await this.requireUndecidedSend(client, { ...input, sendExchangeId: input.sendExchangeId });
@@ -4905,12 +4916,9 @@ export class WorkflowStore {
             if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
                 throw new WorkflowStoreError("RUN_ENDED", `Run ${run.runId} has ended (${run.status}); it takes no input.`, { status: run.status });
             }
-            const cutChild = trustedChildEnded && trustedChildRunId !== null
-                ? await this.cutChildIn(client, run, trustedChildRunId, input.senderSessionId)
-                : false;
             const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
             const at = str(clock[0], "at");
-            if (!trustedChildEnded) {
+            if (trustedChild === null) {
                 const { rows: counts } = await client.query(
                     `SELECT
                         (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > $4::timestamptz AND NOT (contract = $6 AND operation_id LIKE 'ended:%')))::int AS unconsumed,
@@ -4937,6 +4945,18 @@ export class WorkflowStore {
                  RETURNING ${isoUtc("accepted_at")} AS accepted_at_iso, ${isoUtc("expires_at")} AS expires_at_iso`,
                 [input.messageId, input.workflowSessionId, run.runId, input.senderSessionId, input.operationId, input.requestSha256,
                     input.contract, input.correlationText, input.payloadText, at, input.ttlSeconds]);
+            let cutChild = false;
+            if (trustedChild !== null && trustedChild.startOperationId !== null && trustedChild.startOperationId.startsWith("spawn:")) {
+                const { rows: anonWait } = await client.query(
+                    `SELECT 1 FROM ${this.t.nodes}
+                      WHERE run_id = $1 AND state = 'pending' AND node_type = 'messaging'
+                        AND (receive_contract = $2 OR $2 = ANY(string_to_array(receive_contract, ',')))
+                        AND receive_from IS NULL AND receive_correlation = $3
+                        AND (deadline_at IS NULL OR deadline_at > $4::timestamptz)
+                      LIMIT 1`,
+                    [run.runId, input.contract, input.correlationText, at]);
+                if (anonWait[0]) cutChild = await this.cutSpawnIn(client, run, trustedChild.startOperationId);
+            }
             const { rows: waiting } = await client.query(
                 `SELECT node_execution_id, receive_contract FROM ${this.t.nodes}
                   WHERE run_id = $1 AND state = 'pending' AND node_type = 'messaging'
@@ -7960,7 +7980,8 @@ export class WorkflowStore {
     /**
      * Whether a child Workflow end notice (`ended:<childRunId>` from `senderSessionId`)
      * belongs to a cut parallel branch of `run`. Runs inside the caller's transaction
-     * (which already holds `run`'s session and run locks) without locking any child row.
+     * (which already holds `run`'s session and run locks) without locking any child row
+     * or reading/deserializing any branch payload columns.
      */
     private async cutChildIn(
         client: PoolClient,
@@ -7978,9 +7999,22 @@ export class WorkflowStore {
                 AND s.parent_session_id = $3`,
             [childRunId, senderSessionId, run.workflowSessionId]);
         if (!childRows[0] || ACTIVE_RUN_STATUSES.includes(str(childRows[0], "status") as WorkflowRunStatus)) return false;
-        const startOp = strOrNull(childRows[0], "start_operation_id");
-        if (startOp === null || !startOp.startsWith("spawn:")) return false;
-        const spawnNodeExecutionId = startOp.slice("spawn:".length);
+        return this.cutSpawnIn(client, run, strOrNull(childRows[0], "start_operation_id"), cache);
+    }
+
+    /**
+     * Classify whether `startOperationId` (`spawn:<nx>`) started a child inside a cut
+     * parallel branch of `run`, reading only scalar branch metadata (cut-winner existence,
+     * terminal existence, and the last visit's routing fields) — never branch payloads.
+     */
+    private async cutSpawnIn(
+        client: PoolClient,
+        run: WorkflowRunRow,
+        startOperationId: string | null,
+        cache?: { ir?: WorkflowIR; branchCut: Map<string, boolean> },
+    ): Promise<boolean> {
+        if (startOperationId === null || !startOperationId.startsWith("spawn:")) return false;
+        const spawnNodeExecutionId = startOperationId.slice("spawn:".length);
         const { rows: spawnRows } = await client.query(
             `SELECT scope_id FROM ${this.t.nodes}
               WHERE node_execution_id = $1 AND run_id = $2 AND node_type = 'spawn'`,
@@ -7990,21 +8024,52 @@ export class WorkflowStore {
         const scope = parseBranchScope(scopeId);
         if (scope === null) return false;
         if (cache?.branchCut.has(scopeId)) return cache.branchCut.get(scopeId)!;
-        const { rows: forkRows } = await client.query(
-            `SELECT state FROM ${this.t.nodes}
-              WHERE node_execution_id = $1 AND run_id = $2 AND node_type = 'parallel'`,
-            [scope.parallelNodeExecutionId, run.runId]);
-        if (!forkRows[0]) return false;
-        const forkDecided = str(forkRows[0], "state") === "completed";
-        const ir = cache?.ir ?? await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
-        if (cache) cache.ir = ir;
-        const { rows: branchRows } = await client.query(
-            `SELECT * FROM ${this.t.nodes} WHERE run_id = $1 AND scope_id = $2`,
-            [run.runId, scopeId]);
-        const nodes = branchRows.map(row => nodeFrom(row));
-        const branch = parallelBranchStates(ir, scope.parallelNodeExecutionId, scope.index + 1, nodes, new Map(), new Set())[scope.index];
-        const hasTerminal = nodes.some(row => row.nodeType === "terminal");
-        const cut = parallelBranchCut(branch, forkDecided, hasTerminal);
+        const { rows } = await client.query(
+            `WITH scope_nodes AS (
+                SELECT node_execution_id, scope_id, predecessor_id, node_id, node_type,
+                       state, winner, outcome, result_kind, entered_at
+                  FROM ${this.t.nodes}
+                 WHERE run_id = $1 AND scope_id = $2
+             ),
+             referenced AS (
+                SELECT DISTINCT predecessor_id AS id
+                  FROM scope_nodes
+                 WHERE predecessor_id IS NOT NULL
+             )
+             SELECT
+                (SELECT state FROM ${this.t.nodes}
+                  WHERE node_execution_id = $3 AND run_id = $1 AND node_type = 'parallel') AS fork_state,
+                EXISTS (SELECT 1 FROM scope_nodes WHERE state = 'completed' AND winner = ANY($4::text[])) AS has_cut_winner,
+                EXISTS (SELECT 1 FROM scope_nodes WHERE node_type = 'terminal') AS has_terminal,
+                last.node_execution_id,
+                last.scope_id,
+                last.predecessor_id,
+                last.node_id,
+                last.state,
+                last.winner,
+                last.outcome,
+                last.result_kind,
+                last.entered_at
+               FROM (
+                SELECT s.*
+                  FROM scope_nodes s
+                  LEFT JOIN referenced r ON r.id = s.node_execution_id
+                 ORDER BY (r.id IS NULL) DESC, s.entered_at DESC, s.node_execution_id DESC
+                 LIMIT 1
+               ) last`,
+            [run.runId, scopeId, scope.parallelNodeExecutionId, BRANCH_CANCEL_WINNER_VALUES]);
+        const row = rows[0];
+        if (!row || row.fork_state === null) return false;
+        let cut: boolean;
+        if (row.has_cut_winner === true) {
+            cut = true;
+        } else if (str(row, "fork_state") !== "completed" || row.has_terminal === true) {
+            cut = false;
+        } else {
+            const ir = cache?.ir ?? await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
+            if (cache) cache.ir = ir;
+            cut = parallelBranchCut(parallelBranchMetaState(ir, [nodeMetaFrom(row)]), true, false);
+        }
         cache?.branchCut.set(scopeId, cut);
         return cut;
     }

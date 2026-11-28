@@ -134,8 +134,14 @@ export function parallelReportText(input: { total: number; needed: number; failF
     }
 }
 
+/** Narrow metadata projection of a node execution row (no payloads) for branch classification. */
+export type ParallelBranchNodeMeta = Pick<
+    WorkflowNodeExecutionRow,
+    "scopeId" | "nodeExecutionId" | "predecessorId" | "nodeId" | "state" | "winner" | "outcome" | "resultKind" | "enteredAt"
+>;
+
 /** The route a stored result of a body state takes, as the controller selects it (selectRoute); null when none does. */
-function routeOf(next: Record<string, string>, row: WorkflowNodeExecutionRow): string | null {
+function routeOf(next: Record<string, string>, row: Pick<WorkflowNodeExecutionRow, "outcome" | "resultKind">): string | null {
     if (row.outcome === null || row.resultKind === null) return null;
     if (Object.hasOwn(next, row.outcome)) return row.outcome;
     return row.resultKind === "runtime_error" && Object.hasOwn(next, FAILURE_ROUTE) ? FAILURE_ROUTE : null;
@@ -176,12 +182,55 @@ export interface ParallelBranchState extends ParallelBranchEnd {
  * does not form one chain (corrupt) falls back to the latest admitted of
  * its ends, then the greatest id.
  */
-export function branchLastState(states: readonly WorkflowNodeExecutionRow[]): WorkflowNodeExecutionRow {
+export function branchLastState<T extends Pick<WorkflowNodeExecutionRow, "nodeExecutionId" | "predecessorId" | "enteredAt">>(states: readonly T[]): T {
     const named = new Set(states.flatMap(row => typeof row.predecessorId === "string" ? [row.predecessorId] : []));
     const ends = states.filter(row => !named.has(row.nodeExecutionId));
     if (ends.length === 1) return ends[0];
     return (ends.length > 0 ? ends : states).slice().sort((a, b) => a.enteredAt.getTime() - b.enteredAt.getTime()
         || (a.nodeExecutionId < b.nodeExecutionId ? -1 : a.nodeExecutionId > b.nodeExecutionId ? 1 : 0)).at(-1)!;
+}
+
+function classifyBranch<T extends ParallelBranchNodeMeta>(
+    ir: WorkflowIR,
+    index: number,
+    states: readonly T[],
+    committed: ReadonlyMap<string, ParallelCommit>,
+    notStarted: ReadonlySet<number>,
+): Omit<ParallelBranchState, "row"> & { row?: T | undefined } {
+    const commitOf = (row: T | undefined): ParallelCommit | null => (row === undefined ? null : committed.get(row.nodeExecutionId) ?? null);
+    if (states.length === 0) {
+        return { index, ended: "not_started", nodeExecutionId: null, success: false, confirmed: false, failure: false, done: notStarted.has(index), commit: null };
+    }
+    const cut = states.find(row => row.state === "completed" && row.winner !== null && BRANCH_CANCEL_WINNER_VALUES.includes(row.winner));
+    if (cut) {
+        return { index, ended: "cancelled", nodeExecutionId: cut.nodeExecutionId, row: cut, cancelledBy: branchCancelReasonOf(cut.winner),
+            success: false, confirmed: false, failure: true, done: true, commit: commitOf(cut) };
+    }
+    const last = branchLastState(states);
+    const node = ir.nodes[last.nodeId];
+    if (node?.type === "terminal") {
+        const before = states.find(row => row.nodeExecutionId === last.predecessorId);
+        const commit = commitOf(before) ?? commitOf(last);
+        if (last.state === "completed") {
+            const success = last.resultKind === "business" && last.outcome === "succeeded";
+            return { index, ended: "terminal", nodeExecutionId: last.nodeExecutionId, row: last, success, confirmed: success, failure: !success, done: true, commit };
+        }
+        const success = node.outcome === "succeeded";
+        return { index, ended: "finished", nodeExecutionId: (before ?? last).nodeExecutionId, row: before,
+            success, confirmed: false, failure: !success, done: false, commit };
+    }
+    if (last.state !== "completed" || node === undefined || node.type === "parallel") {
+        return { index, ended: "running", nodeExecutionId: last.nodeExecutionId, success: false, confirmed: false, failure: false, done: false, commit: null };
+    }
+    const route = routeOf(node.next, last);
+    if (route === null) {
+        return { index, ended: "error", nodeExecutionId: last.nodeExecutionId, row: last, success: false, confirmed: false, failure: true, done: true,
+            commit: commitOf(last) };
+    }
+    const target = ir.nodes[node.next[route]];
+    const success = target?.type === "terminal" && target.outcome === "succeeded";
+    return { index, ended: "finished", nodeExecutionId: last.nodeExecutionId, row: last, success, confirmed: false,
+        failure: target?.type === "terminal" && !success, done: false, commit: commitOf(last) };
 }
 
 /**
@@ -207,43 +256,13 @@ export function parallelBranchStates(ir: WorkflowIR, parallelNodeExecutionId: st
         if (!byScope.has(row.scopeId)) byScope.set(row.scopeId, []);
         byScope.get(row.scopeId)!.push(row);
     }
-    const commitOf = (row: WorkflowNodeExecutionRow | undefined): ParallelCommit | null => (row === undefined ? null : committed.get(row.nodeExecutionId) ?? null);
-    return branchScopeIds(parallelNodeExecutionId, total).map((scopeId, index): ParallelBranchState => {
-        const states = byScope.get(scopeId) ?? [];
-        if (states.length === 0) {
-            return { index, ended: "not_started", nodeExecutionId: null, success: false, confirmed: false, failure: false, done: notStarted.has(index), commit: null };
-        }
-        const cut = states.find(row => row.state === "completed" && row.winner !== null && BRANCH_CANCEL_WINNER_VALUES.includes(row.winner));
-        if (cut) {
-            return { index, ended: "cancelled", nodeExecutionId: cut.nodeExecutionId, row: cut, cancelledBy: branchCancelReasonOf(cut.winner),
-                success: false, confirmed: false, failure: true, done: true, commit: commitOf(cut) };
-        }
-        const last = branchLastState(states);
-        const node = ir.nodes[last.nodeId];
-        if (node?.type === "terminal") {
-            const before = states.find(row => row.nodeExecutionId === last.predecessorId);
-            const commit = commitOf(before) ?? commitOf(last);
-            if (last.state === "completed") {
-                const success = last.resultKind === "business" && last.outcome === "succeeded";
-                return { index, ended: "terminal", nodeExecutionId: last.nodeExecutionId, row: last, success, confirmed: success, failure: !success, done: true, commit };
-            }
-            const success = node.outcome === "succeeded";
-            return { index, ended: "finished", nodeExecutionId: (before ?? last).nodeExecutionId, row: before,
-                success, confirmed: false, failure: !success, done: false, commit };
-        }
-        if (last.state !== "completed" || node === undefined || node.type === "parallel") {
-            return { index, ended: "running", nodeExecutionId: last.nodeExecutionId, success: false, confirmed: false, failure: false, done: false, commit: null };
-        }
-        const route = routeOf(node.next, last);
-        if (route === null) {
-            return { index, ended: "error", nodeExecutionId: last.nodeExecutionId, row: last, success: false, confirmed: false, failure: true, done: true,
-                commit: commitOf(last) };
-        }
-        const target = ir.nodes[node.next[route]];
-        const success = target?.type === "terminal" && target.outcome === "succeeded";
-        return { index, ended: "finished", nodeExecutionId: last.nodeExecutionId, row: last, success, confirmed: false,
-            failure: target?.type === "terminal" && !success, done: false, commit: commitOf(last) };
-    });
+    return branchScopeIds(parallelNodeExecutionId, total).map((scopeId, index): ParallelBranchState =>
+        classifyBranch(ir, index, byScope.get(scopeId) ?? [], committed, notStarted));
+}
+
+/** Classify one branch from metadata-only rows (no payloads), sharing the exact rules of `parallelBranchStates`. */
+export function parallelBranchMetaState(ir: WorkflowIR, states: readonly ParallelBranchNodeMeta[]): Pick<ParallelBranchState, "ended"> {
+    return classifyBranch(ir, 0, states, new Map(), new Set());
 }
 
 /**
@@ -252,7 +271,7 @@ export function parallelBranchStates(ir: WorkflowIR, parallelNodeExecutionId: st
  * (`forkDecided`), the branch has no terminal state row, and it did not end by
  * its own error (`ended !== "error"`).
  */
-export function parallelBranchCut(branch: ParallelBranchState, forkDecided: boolean, hasTerminal: boolean): boolean {
+export function parallelBranchCut(branch: Pick<ParallelBranchState, "ended">, forkDecided: boolean, hasTerminal: boolean): boolean {
     return branch.ended === "cancelled" || (forkDecided && !hasTerminal && branch.ended !== "error");
 }
 

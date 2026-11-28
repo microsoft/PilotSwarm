@@ -609,4 +609,80 @@ describe("Child Workflow CW-1 minimal store tests (R1–R3, R11)", () => {
             await h.stop();
         }
     });
+
+    it("CW1-H1: large uncut branch with many visits still delivers to a named receive while T5 skips a stored cut", { timeout: TIMEOUT }, async () => {
+        const { h, host, chat, spawnInBranch, endChildAndAccept, enterEndedReceive } = await setupFixture(getEnv());
+        try {
+            const parent = await startSessionWorkflowDefinition(host, {
+                ownerSessionId: chat, definition: { name: "parent-named-fork" }, inputs: {},
+                actor: ENGINE, operationId: "start-r12-large-uncut", owner: OWNER,
+            });
+            await h.store.beginRun(parent.runId);
+            const fan = nodeExecutionIdFor(parent.runId, "root", "fan", 1);
+            await h.store.enterNode({
+                runId: parent.runId, nodeExecutionId: fan, scopeId: "root", nodeId: "fan", ordinal: 1,
+                nodeType: "parallel", predecessorId: null, arrivalRoute: null,
+                inputText: JSON.stringify(["fast", "slow"]),
+                kvRevision: 1, waitSeconds: 60, immediate: null,
+            });
+            const sFast = branchScopeId(fan, 0);
+            const sSlow = branchScopeId(fan, 1);
+
+            // Fast uncut branch: spawn child, then 50 chained visits with 16 KiB payloads before terminal succeeded.
+            const { nx: fSpawn, child: cFast } = await spawnInBranch(parent, sFast, "f_spawn", 1, fan, true);
+            const bigOutput = JSON.stringify({ pad: "x".repeat(16_000) });
+            let prev = fSpawn;
+            for (let i = 2; i <= 51; i++) {
+                const nx = nodeExecutionIdFor(parent.runId, sFast, "f_step", i);
+                await h.store.enterNode({
+                    runId: parent.runId, nodeExecutionId: nx, scopeId: sFast, nodeId: "f_step", ordinal: i,
+                    nodeType: "script", predecessorId: prev, arrivalRoute: "next", inputText: "{}",
+                    kvRevision: 1, waitSeconds: null,
+                    immediate: { outcome: "next", resultKind: "business", winner: "controller", valueText: bigOutput },
+                });
+                prev = nx;
+            }
+            const fDone = nodeExecutionIdFor(parent.runId, sFast, "f_done", 52);
+            await h.store.enterNode({
+                runId: parent.runId, nodeExecutionId: fDone, scopeId: sFast, nodeId: "f_done", ordinal: 52,
+                nodeType: "terminal", predecessorId: prev, arrivalRoute: "next", inputText: "{}",
+                kvRevision: 1, waitSeconds: null,
+                immediate: { outcome: "succeeded", resultKind: "business", winner: "controller", valueText: '{"branch":"fast"}' },
+            });
+
+            // Slow cut branch: spawn child + pending s_hold cancelled by join.
+            const { nx: sSpawn, child: cSlow } = await spawnInBranch(parent, sSlow, "s_spawn", 1, fan, true);
+            const sHold = nodeExecutionIdFor(parent.runId, sSlow, "s_hold", 2);
+            await h.store.enterNode({
+                runId: parent.runId, nodeExecutionId: sHold, scopeId: sSlow, nodeId: "s_hold", ordinal: 2,
+                nodeType: "wait", predecessorId: sSpawn, arrivalRoute: "started", inputText: "{}",
+                kvRevision: 1, waitSeconds: 60, immediate: null,
+            });
+            const decided = await h.store.decideParallelJoin({
+                nodeExecutionId: fan, notStarted: [],
+                joined: output => ({ outcome: "joined", resultKind: "business", winner: "controller", valueText: canonicalJson(output) }),
+            });
+            expect(decided.result).toBe("won");
+            expect(decided.cancelled).toEqual([sHold]);
+
+            // Cut child ends first and stays stored in inbox.
+            const slowRes = await endChildAndAccept(parent, cSlow, "r12-cut-stored");
+            expect(slowRes.receipt?.messageId).toBeTruthy();
+
+            // Named receive for the large uncut branch's child waits, then T4 claims its notice directly.
+            const recvFastNamed = await enterEndedReceive(parent, 1, cFast.workflowId);
+            expect(recvFastNamed.node.state).toBe("pending");
+            const fastRes = await endChildAndAccept(parent, cFast, "r12-large-uncut");
+            expect(fastRes.receipt?.claimedBy?.nodeExecutionId).toBe(recvFastNamed.node.nodeExecutionId);
+
+            // Senderless T5 still skips the stored cut notice; named T5 can still claim it.
+            const recvAnon = await enterEndedReceive(parent, 2, null);
+            expect(recvAnon.node.state).toBe("pending");
+            const recvSlowNamed = await enterEndedReceive(parent, 3, cSlow.workflowId);
+            expect(recvSlowNamed.node.state).toBe("completed");
+            expect(recvSlowNamed.node.output.workflowId).toBe(cSlow.workflowId);
+        } finally {
+            await h.stop();
+        }
+    });
 });
