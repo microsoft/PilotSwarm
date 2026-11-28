@@ -3,7 +3,10 @@
  * - GET .../workflow?rerunPlan=<json> reaches the read with the signed-in caller (OQ1/OQ5 are decided for that caller), and
  *   a shared reader reads only the revision's fit (OQ2);
  * - POST .../workflow-definitions/start forwards rerunFrom and Boolean(viaMcp); each re-run refusal keeps its HTTP status;
- * - /bootstrap advertises workflows.rerun, and WebPilotSwarmManagementClient fails closed without it (M1);
+ * - /bootstrap advertises workflows.rerun, and WebPilotSwarmManagementClient (its methods and its generated ops) and
+ *   HttpApiTransport fail closed without it (M1, review H1);
+ * - a shared reader's plan is chosen field by field from the real plan: nothing a supply preview or a changed reused step
+ *   decides (review H2);
  * - NodeSdkTransport and HttpApiTransport forward rerunFrom and rerunPlan.
  * The re-run behaviour itself is proven against PG16 (packages/sdk/test/local/workflow-rerun-read.test.js).
  *
@@ -16,8 +19,13 @@ import express from "express";
 import { NodeSdkTransport } from "pilotswarm/host";
 import { PilotSwarmManagementClient, WebPilotSwarmManagementClient } from "pilotswarm-sdk";
 import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
-import { WorkflowStoreError } from "../../../sdk/dist/workflow/store.js";
+import { WorkflowStoreError, nodeExecutionIdFor } from "../../../sdk/dist/workflow/store.js";
 import { workflowCapabilities } from "../../../sdk/dist/workflow/human-commands.js";
+import { compileWorkflow } from "../../../sdk/dist/workflow/compiler.js";
+import { WORKFLOW_CONTROLLER_VERSION } from "../../../sdk/dist/workflow/controller-version.js";
+import {
+    buildRerunPlan, buildRerunWarnings, checkRerunCompatibility, partitionRerunVisits, pickRerunTarget,
+} from "../../../sdk/dist/workflow/rerun.js";
 
 import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
@@ -52,6 +60,8 @@ function harness() {
             viewerIsOwner: viewer.provider === owner.provider && viewer.subject === owner.subject, viewerShareAccess: null,
         }),
         recordAuthzAudit: async () => {},
+        // A server that takes re-runs advertises it: HttpApiTransport sends a re-run only after reading workflows.rerun (M1).
+        getWorkflowCapabilities: async () => workflowCapabilities({ read: true, commands: {} }),
         readWorkflow: async (...args) => { calls.push(["read", ...args]); return { workflowId: args[0], rerunPlan: structuredClone(PLAN) }; },
         startSessionWorkflowDefinition: async (...args) => { calls.push(["start", ...args]); return { operation: "start", workflowId: "wf-3" }; },
     };
@@ -99,6 +109,112 @@ test("GET ?rerunPlan= reads the plan for the signed-in caller (outcome only, via
     } finally {
         await served.close();
     }
+});
+
+/**
+ * Review H2: real plans, made by the SDK's own planner as readWorkflowRerunPlan calls it, for a source that ran review (an agent
+ * step with session: continue) and failed at provision, whose outcome retry goes back to review. Revision 2 changes review.
+ */
+const READER_YAML = (prompt) => `apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: reader-plan, version: "1.0.0" }
+limits: { maxNodeExecutions: 50 }
+initial: review
+states:
+  review:
+    type: agent
+    session: continue
+    invoke: { prompt: "${prompt}" }
+    outcomes: [approved]
+    timeoutSeconds: 120
+    transition: { next: { approved: provision } }
+  provision:
+    type: script
+    outcomes: [ok, retry]
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: done, retry: review } }
+  done: { type: terminal, outcome: succeeded }
+`;
+
+function realPlanRead({ mode, outcome = null, revision = 1 }) {
+    const compiled = (prompt) => {
+        const result = compileWorkflow(READER_YAML(prompt));
+        assert.equal(result.valid, true, JSON.stringify(result.diagnostics));
+        return result.ir;
+    };
+    const sourceIr = compiled("Review the change.");
+    const targetIr = revision === 1 ? sourceIr : compiled("Review the change and its tests.");
+    const visit = (nodeId, nodeType, fields) => ({
+        nodeExecutionId: nodeExecutionIdFor("run-src", "root", nodeId, 1), runId: "run-src", scopeId: "root", nodeId, ordinal: 1, nodeType,
+        predecessorId: null, arrivalRoute: null, state: "completed", outcome: "ok", resultKind: "business", winner: "effect", kvRevision: 1,
+        enteredAt: new Date("2026-11-26T10:00:00Z"), completedAt: new Date("2026-11-26T10:01:00Z"), inputSha256: `in-${nodeId}`, carrySha256: null,
+        hasCarry: false, carryByteLength: 0, byteLength: 1024, reusedFromExecutionId: null, reusedFromRunId: null, reusedFromWorkflowSessionId: null,
+        suppliedFromExecutionId: null, suppliedFromRunId: null, suppliedFromWorkflowSessionId: null, suppliedNote: null, spawnChildWorkflowId: null,
+        spawnChildCancelledBySourceEnd: false, spawnChildHasNotice: true, ...fields,
+    });
+    const review = visit("review", "agent", { outcome: "approved" });
+    const provision = visit("provision", "script", { predecessorId: review.nodeExecutionId, arrivalRoute: "approved", outcome: "execution_failed",
+        resultKind: "runtime_error", enteredAt: new Date("2026-11-26T10:02:00Z"), completedAt: new Date("2026-11-26T10:03:00Z") });
+    const keys = [review, provision];
+    const run = { status: "failed", terminalNodeId: null, terminalOutcome: null,
+        terminalError: { code: "execution_failed", details: { nodeExecutionId: provision.nodeExecutionId } } };
+    const picked = pickRerunTarget(run, keys, { executionId: provision.nodeExecutionId, mode, sourceIr, targetIr });
+    const part = partitionRerunVisits(keys, picked.chosen.nodeExecutionId, picked.mode);
+    const fit = checkRerunCompatibility({ sourceIr, targetIr, reused: part.reused, reusedTop: part.reusedTop, chosen: picked.chosen, mode: picked.mode,
+        sourceControllerVersion: WORKFLOW_CONTROLLER_VERSION, suppliedOutcome: null });
+    const dropped = part.dropped.map((item) => ({ ...item, outputPreview: null }));
+    const supplyOutcome = picked.mode === "supply" ? outcome : null;
+    const warnings = buildRerunWarnings({ sourceNumber: null, targetIr, reused: part.reused, dropped, chosen: picked.chosen, mode: picked.mode,
+        suppliedOutcome: supplyOutcome, changedReusedSteps: fit.changedReusedSteps, deliveredOutboxExecIds: new Set(), droppedSpawnChildren: new Map(),
+        reusedSpawnNoticeChildIds: new Set(), droppedConsumedUncarriedExecIds: new Set(), reusedApprovals: [], droppedApprovals: [] });
+    const plan = buildRerunPlan({
+        source: { workflowId: "wf-2", runId: "run-src", revision: 1, status: "failed", number: null },
+        chosen: picked.chosen, picked: picked.picked, mode: picked.mode, modesAvailable: picked.modesAvailable,
+        revision: { target: revision, newestValid: 2, newestValidFits: true, newestValidProblem: null, fits: fit.fits, problems: fit.problems,
+            changedReusedSteps: fit.changedReusedSteps },
+        reused: part.reused, reusedRequests: [], dropped, sourceIr, targetIr, supplyOutcome, carried: { count: 1, contracts: ["Note@1"] }, warnings,
+        allowed: true, blockedReason: null, grantSource: "none",
+    });
+    return JSON.parse(JSON.stringify({ workflowId: "wf-2", rerunPlan: { ...plan, reused: { ...plan.reused, approvals: [] } } }));
+}
+
+test("a shared reader's plan shows nothing a supply preview or a changed reused step decides; the owner's keeps them (OQ2, review H2)", async () => {
+    const { runtime } = harness();
+    runtime.transport.readWorkflow = async (_sessionId, options) => realPlanRead(options.rerunPlan);
+    const read = async (subject, rerunPlan) => (await runtime.call("readWorkflow", { sessionId: "wf-2", rerunPlan },
+        { principal: { provider: "dev", subject }, authorization: { role: "user" } })).rerunPlan;
+
+    // (a) supply: retry is valid and goes back to review; nope is not declared. The owner's previews differ.
+    const ownerValid = await read("alice", { mode: "supply", outcome: "retry" });
+    const ownerInvalid = await read("alice", { mode: "supply", outcome: "nope" });
+    assert.equal(ownerValid.supply.valid, true);
+    assert.deepEqual(ownerValid.runs.first, { stateId: "review", visit: 2 });
+    assert.ok(ownerValid.warnings.some((warning) => warning.code === "agent_memory"), "the valid outcome's route reaches review again");
+    assert.ok(ownerValid.supplyContract && ownerValid.carried && ownerValid.grantSource, "the owner's preview is whole");
+    assert.equal(ownerInvalid.supply.valid, false);
+    assert.equal(ownerInvalid.runs.first, null);
+    assert.equal(ownerInvalid.warnings.some((warning) => warning.code === "agent_memory"), false);
+    // The reader's two plans are the same, apart from its own outcome echoed back.
+    const readerValid = await read("bob", { mode: "supply", outcome: "retry" });
+    const readerInvalid = await read("bob", { mode: "supply", outcome: "nope" });
+    const echo = (plan, outcome) => JSON.parse(JSON.stringify(plan).replaceAll(`'${outcome}'`, "'<outcome>'"));
+    assert.deepEqual(echo(readerValid, "retry"), echo(readerInvalid, "nope"));
+    assert.equal(readerValid.runs.first, null);
+    for (const key of ["supplyContract", "supply", "carried", "grantSource"]) assert.equal(key in readerValid, false, key);
+    assert.deepEqual(readerValid.revision, { target: 1, source: 1, fits: true });
+    assert.equal(readerValid.allowed, false);
+    assert.equal(readerValid.blockedReason, "Only the owner or an admin can start a Workflow.");
+
+    // (b) Revision 2 changed review, a reused step: the owner reads which; the reader reads only the fit.
+    const ownerChanged = await read("alice", { mode: "run_again", revision: 2 });
+    assert.deepEqual(ownerChanged.revision.changedReusedSteps, [{ stateId: "review", visits: 1 }]);
+    assert.ok(ownerChanged.warnings.some((warning) => warning.code === "changed_reused_step"));
+    const readerChanged = await read("bob", { mode: "run_again", revision: 2 });
+    const readerSame = await read("bob", { mode: "run_again" });
+    assert.equal(readerChanged.warnings.some((warning) => warning.code === "changed_reused_step"), false);
+    assert.deepEqual(readerChanged.revision, { target: 2, source: 1, fits: true });
+    assert.deepEqual({ ...readerChanged, revision: { ...readerChanged.revision, target: 1 } }, readerSame,
+        "only the target tells revision 2 apart");
 });
 
 test("POST start forwards rerunFrom and Boolean(viaMcp) with the signed-in caller; a start without rerunFrom is sent as before", async () => {
@@ -187,6 +303,62 @@ test("bootstrap advertises workflows.rerun; the web client fails closed (501, no
     ]);
 });
 
+test("the web client's generated ops and HttpApiTransport fail closed the same way: no re-run is sent without workflows.rerun (M1, review H1)", async () => {
+    const newer = workflowCapabilities({ read: true, commands: {} });
+    const json = (status, payload) => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+    // A portal on the wire: /bootstrap answers as given ("down": it cannot be read); every other request is recorded.
+    const portal = (bootstrap) => {
+        const sent = [];
+        const api = new ApiClient({ apiUrl: "http://portal.test", fetchImpl: async (url, init = {}) => {
+            const { pathname, searchParams } = new URL(String(url));
+            if (pathname === "/api/v1/bootstrap") {
+                return bootstrap === "down" ? json(502, { ok: false, error: { code: "BAD_GATEWAY", message: "down" } }) : json(200, bootstrap);
+            }
+            sent.push([init.method ?? "GET", pathname, init.body ? JSON.parse(init.body) : Object.fromEntries(searchParams)]);
+            return json(200, { ok: true, result: {} });
+        } });
+        return { sent, client: new WebPilotSwarmManagementClient({ api }), transport: new HttpApiTransport({ api }) };
+    };
+    const rerunCalls = ({ client, transport }) => [
+        () => client.ops.startSessionWorkflowDefinition({ sessionId: "owner-1", definitionId: "def-1", rerunFrom: { workflowId: "wf-2" }, operationId: "op-1" }),
+        () => client.ops.readWorkflow({ sessionId: "wf-2", rerunPlan: { mode: "continue" } }),
+        () => transport.startSessionWorkflowDefinition("owner-1", { definitionId: "def-1", rerunFrom: { workflowId: "wf-2" }, operationId: "op-2" }),
+        () => transport.readWorkflow("wf-2", { rerunPlan: { mode: "continue" } }),
+    ];
+    for (const [label, bootstrap] of [
+        ["no workflows", { ok: true }],
+        ["workflows without rerun", { ok: true, workflows: { ...newer, rerun: undefined } }],
+        ["rerun false", { ok: true, workflows: { ...newer, rerun: false } }],
+        ["rerun not true", { ok: true, workflows: { ...newer, rerun: "yes" } }],
+        ["bootstrap failed", "down"],
+    ]) {
+        const wire = portal(bootstrap);
+        for (const [index, send] of rerunCalls(wire).entries()) {
+            await assert.rejects(send(), (error) => error.code === "WORKFLOW_API_UNAVAILABLE" && error.status === 501
+                && /workflows\.rerun is not advertised/.test(error.message), `${label}: call ${index}`);
+        }
+        assert.deepEqual(wire.sent, [], `${label}: nothing is sent`);
+        // A start or read without re-run is not gated.
+        await wire.client.ops.startSessionWorkflowDefinition({ sessionId: "owner-1", definitionId: "def-1", operationId: "op-3" });
+        await wire.client.ops.readWorkflow({ sessionId: "wf-2" });
+        await wire.transport.startSessionWorkflowDefinition("owner-1", { definitionId: "def-1", operationId: "op-4" });
+        await wire.transport.readWorkflow("wf-2", {});
+        assert.deepEqual(wire.sent.map(([method, path]) => `${method} ${path}`), [
+            "POST /api/v1/sessions/owner-1/workflow-definitions/start", "GET /api/v1/sessions/wf-2/workflow",
+            "POST /api/v1/sessions/owner-1/workflow-definitions/start", "GET /api/v1/sessions/wf-2/workflow",
+        ], label);
+    }
+    // A portal that advertises workflows.rerun gets each re-run as it was given.
+    const wire = portal({ ok: true, workflows: newer });
+    for (const send of rerunCalls(wire)) await send();
+    assert.deepEqual(wire.sent, [
+        ["POST", "/api/v1/sessions/owner-1/workflow-definitions/start", { definitionId: "def-1", rerunFrom: { workflowId: "wf-2" }, operationId: "op-1" }],
+        ["GET", "/api/v1/sessions/wf-2/workflow", { rerunPlan: JSON.stringify({ mode: "continue" }) }],
+        ["POST", "/api/v1/sessions/owner-1/workflow-definitions/start", { definitionId: "def-1", rerunFrom: { workflowId: "wf-2" }, operationId: "op-2" }],
+        ["GET", "/api/v1/sessions/wf-2/workflow", { rerunPlan: JSON.stringify({ mode: "continue" }) }],
+    ]);
+});
+
 test("the TUI transports forward rerunFrom and rerunPlan: NodeSdkTransport with its user, HttpApiTransport on the wire", async () => {
     const calls = [];
     const mgmt = {
@@ -206,7 +378,9 @@ test("the TUI transports forward rerunFrom and rerunPlan: NodeSdkTransport with 
     const requests = [];
     const wire = new HttpApiTransport({ api: new ApiClient({ apiUrl: "http://portal.test", fetchImpl: async (url, init = {}) => {
         requests.push({ url: String(url), method: init.method ?? "GET", body: init.body ? JSON.parse(init.body) : null });
-        return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
+        // The server takes re-runs (M1): its bootstrap advertises workflows.rerun.
+        const result = new URL(String(url)).pathname === "/api/v1/bootstrap" ? { workflows: { rerun: true } } : {};
+        return new Response(JSON.stringify({ ok: true, result }), { status: 200, headers: { "content-type": "application/json" } });
     } }) });
     await wire.readWorkflow("wf-2", { rerunPlan: { executionId: "nx-2", outcome: "ok" } });
     const read = new URL(requests.at(-1).url);

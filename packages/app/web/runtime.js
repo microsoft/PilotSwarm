@@ -36,15 +36,29 @@ function normalizeParams(params) {
 
 /**
  * Phase 3 I7 (OQ2, owner decision 27 Nov): a re-run plan as a caller who can read the session but not start its Workflows
- * reads it: the revision's fit only ({ target, source, fits }), never its problems, the supply contract, a supply preview or
- * the carried messages, and allowed: false.
+ * reads it: the revision's fit only ({ target, source, fits }), never its problems or changed reused steps, the supply
+ * contract, a supply preview, the carried messages or a grant, and allowed: false. Each field is chosen here (review H2), so
+ * nothing derived from them is kept either: in supply mode the first step (runs.first, the supplied outcome's route) is null and
+ * agent_memory (which steps that route reaches) is left out of the warnings, as is changed_reused_step everywhere.
  */
 function rerunPlanForReader(read) {
     const plan = read?.rerunPlan;
     if (!plan || typeof plan !== "object" || Array.isArray(plan)) return read;
-    const { supplyContract: _contract, supply: _supply, carried: _carried, revision, ...rest } = plan;
-    return { ...read, rerunPlan: { ...rest, revision: { target: revision?.target ?? null, source: revision?.source ?? null, fits: revision?.fits ?? null },
-        allowed: false, blockedReason: "Only the owner or an admin can start a Workflow." } };
+    const supply = plan.mode === "supply";
+    const hidden = new Set(supply ? ["changed_reused_step", "agent_memory"] : ["changed_reused_step"]);
+    return { ...read, rerunPlan: {
+        of: plan.of ?? null,
+        from: plan.from ?? null,
+        mode: plan.mode ?? null,
+        modesAvailable: Array.isArray(plan.modesAvailable) ? plan.modesAvailable : [],
+        revision: { target: plan.revision?.target ?? null, source: plan.revision?.source ?? null, fits: plan.revision?.fits ?? null },
+        reused: plan.reused ?? null,
+        runs: { first: supply ? null : plan.runs?.first ?? null },
+        dropped: Array.isArray(plan.dropped) ? plan.dropped : [],
+        warnings: Array.isArray(plan.warnings) ? plan.warnings.filter((warning) => !hidden.has(warning?.code)) : [],
+        allowed: false,
+        blockedReason: "Only the owner or an admin can start a Workflow.",
+    } };
 }
 
 function clampInteger(value, defaultValue, min, max) {

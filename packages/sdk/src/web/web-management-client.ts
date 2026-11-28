@@ -1,4 +1,4 @@
-import type { ApiClient } from "pilotswarm-sdk/api";
+import { requireWorkflowRerun, sendsWorkflowRerun, type ApiClient } from "pilotswarm-sdk/api";
 import {
     PilotSwarmWebOptions,
     createApiClientFromOptions,
@@ -55,7 +55,18 @@ export class WebPilotSwarmManagementClient {
 
     constructor(options: PilotSwarmWebOptions) {
         this._api = createApiClientFromOptions(options);
-        this.ops = createManagementOps((name, params) => this._api.call(name, params));
+        this.ops = createManagementOps((name, params) => this._call(name, params));
+    }
+
+    /**
+     * Phase 3 I7 (M1): the dispatch of `ops` and of the Workflow methods. A call that sends rerunFrom or rerunPlan goes only to a
+     * server that advertises workflows.rerun: an older server ignores rerunFrom and would start a fresh run from step 1, so a
+     * missing advert, one without rerun, or a bootstrap that cannot be read fails closed (501 WORKFLOW_API_UNAVAILABLE) before
+     * anything is sent.
+     */
+    private async _call(name: string, params: Record<string, unknown>): Promise<any> {
+        if (sendsWorkflowRerun(name, params)) await requireWorkflowRerun(() => this.getWorkflowCapabilities());
+        return this._api.call(name, params);
     }
 
     async start(): Promise<void> {
@@ -345,20 +356,7 @@ export class WebPilotSwarmManagementClient {
      * and any other value is sent for the server to check. The session id is always the argument's.
      */
     async readWorkflow(sessionId: string, options: WorkflowReadOptions = {}): Promise<any> {
-        if (options?.rerunPlan !== undefined && options?.rerunPlan !== null) await this._requireWorkflowRerun();
-        return this._api.call("readWorkflow", { ...options, sessionId });
-    }
-
-    /**
-     * Phase 3 I7 (M1): rerunFrom and rerunPlan go only to a server that advertises workflows.rerun. An older server ignores
-     * rerunFrom and would start a fresh run from step 1, so a missing advert, one without rerun, or a bootstrap that cannot be
-     * read fails closed (501 WORKFLOW_API_UNAVAILABLE) before anything is sent.
-     */
-    private async _requireWorkflowRerun(): Promise<void> {
-        const advert = await this.getWorkflowCapabilities().catch(() => null);
-        if (advert?.rerun === true) return;
-        throw Object.assign(new Error("This PilotSwarm portal predates Workflow re-run from a step (workflows.rerun is not advertised); "
-            + "upgrade pilotswarm-web before calling rerun_from or rerun_plan."), { code: "WORKFLOW_API_UNAVAILABLE", status: 501 });
+        return this._call("readWorkflow", { ...options, sessionId });
     }
 
     /** Stage 2.1: a session's Workflow Definitions (listSessionWorkflowDefinitions, session:read). */
@@ -394,8 +392,7 @@ export class WebPilotSwarmManagementClient {
         /** Phase 3 I7: re-run an ended Workflow of this definition from a step; only a server that advertises workflows.rerun takes it. */
         rerunFrom?: { workflowId: string; executionId?: string | null; mode?: "run_again" | "continue" | "supply" | null; result?: unknown; note?: unknown } | null;
         viaMcp?: boolean }, options: { originatingSessionId?: string | null } = {}): Promise<any> {
-        if (request?.rerunFrom !== undefined && request?.rerunFrom !== null) await this._requireWorkflowRerun();
-        return this._api.call("startSessionWorkflowDefinition", {
+        return this._call("startSessionWorkflowDefinition", {
             sessionId: ownerSessionId,
             ...request,
             ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),

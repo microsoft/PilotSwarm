@@ -154,6 +154,12 @@ export declare class HttpApiTransport {
     [method: string]: any;
 }
 
+// ── Workflow re-run skew guard (src/workflow-rerun-guard.js; Phase 3 I7 M1) ──
+/** Whether this call sends a re-run: startSessionWorkflowDefinition with rerunFrom, or readWorkflow with rerunPlan (not null). */
+export declare function sendsWorkflowRerun(name: string, params?: Record<string, unknown> | null): boolean;
+/** Resolves when the advert `readCapabilities()` returns says rerun: true; otherwise (or when it fails) rejects 501 WORKFLOW_API_UNAVAILABLE. */
+export declare function requireWorkflowRerun(readCapabilities: () => unknown): Promise<void>;
+
 // ── Session-tree access predicate (src/session-authz.js) ──────────
 // Pure; shared by the portal runtime and the worker's agent tools so the
 // "may this principal touch this session?" answer has ONE implementation.
