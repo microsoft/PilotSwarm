@@ -213,4 +213,166 @@ describe("Child Workflows WorkflowEnded@1 inbox delivery, A6, A7 & T9/T17", () =
             await h.stop();
         }
     });
+
+    it("R4 (CW-1 T4): cut child's WorkflowEnded@1 stores cleanly, leaves pending no-from receive pending, and wakes a newer named from receive", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const duroxideClient = {
+                startOrchestrationVersioned: async () => {},
+                getStatus: async () => ({ status: "Running" }),
+                enqueueEvent: async () => {},
+            };
+            const host = { catalog: h.catalog, store: h.store, duroxideClient };
+            const activities = new Map();
+            registerWorkflow({
+                registerOrchestrationVersioned: () => {},
+                registerActivity: (name, fn) => { activities.set(name, fn); },
+            }, {
+                store: h.store, catalog: h.catalog, enabled: () => true,
+                resolveToolBinding: async () => null,
+                openToolExecutor: async () => { throw new Error("unused"); },
+                authorizeParentNotification: async () => true,
+                notifyParent: async () => ({ delivered: true }),
+                deleteSession: async () => {},
+            });
+            const notifyParent = activities.get(WORKFLOW_ACTIVITIES.notifyParent);
+            const actx = { getClient: () => duroxideClient, isCancelled: () => false, traceWarn: () => {} };
+
+            const chat = randomUUID();
+            await h.catalog.createSession(chat, { owner: OWNER });
+            const forkParentYaml = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: parent-r4, version: "1.0.0" }
+initial: fan
+states:
+  fan:
+    type: parallel
+    join: { first: 1 }
+    branches:
+      a:
+        initial: a_done
+        states: { a_done: { type: terminal, outcome: succeeded } }
+      b:
+        initial: b_spawn
+        states:
+          b_spawn:
+            type: spawn
+            definition: child-job
+            inputs: {}
+            transition: { next: { started: b_hold } }
+          b_hold: { type: wait, seconds: 600, transition: { next: { elapsed: b_done } } }
+          b_done: { type: terminal, outcome: succeeded }
+    transition: { next: { joined: after_recv, blocked: after_recv, failure: failed } }
+  after_recv:
+    type: messaging
+    mode: receive
+    contract: WorkflowEnded@1
+    wait: { seconds: 60 }
+    transition: { next: { received: done, elapsed: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+            const sC = await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: chat, name: "child-job", yaml: CHILD_YAML, expected: null,
+                actor: { kind: "session", sessionId: chat }, operationId: "save-r4-c", by: "session",
+            });
+            expect(sC.receipt.valid, JSON.stringify(sC.receipt.diagnostics)).toBe(true);
+            const sP = await saveSessionWorkflowDefinition(host, {
+                ownerSessionId: chat, name: "parent-r4", yaml: forkParentYaml, expected: null,
+                actor: { kind: "session", sessionId: chat }, operationId: "save-r4-p", by: "session",
+            });
+            expect(sP.receipt.valid, JSON.stringify(sP.receipt.diagnostics)).toBe(true);
+
+            const makeCutParentWithChild = async (opTag) => {
+                const parent = await startSessionWorkflowDefinition(host, {
+                    ownerSessionId: chat, definition: { name: "parent-r4" }, inputs: {},
+                    actor: ENGINE, operationId: `start-r4-${opTag}`, owner: OWNER,
+                });
+                await h.store.beginRun(parent.runId);
+                const fanNx = nodeExecutionIdFor(parent.runId, "root", "fan", 1);
+                await h.store.enterNode({
+                    runId: parent.runId, nodeExecutionId: fanNx, scopeId: "root", nodeId: "fan", ordinal: 1,
+                    nodeType: "parallel", predecessorId: null, arrivalRoute: null, inputText: JSON.stringify(["a", "b"]),
+                    kvRevision: 1, waitSeconds: null, immediate: null,
+                });
+                const scopeB = `${fanNx}#1`;
+                const nxSpawn = nodeExecutionIdFor(parent.runId, scopeB, "b_spawn", 1);
+                await h.store.enterNode({
+                    runId: parent.runId, nodeExecutionId: nxSpawn, scopeId: scopeB, nodeId: "b_spawn", ordinal: 1,
+                    nodeType: "spawn", predecessorId: fanNx, arrivalRoute: "branch", inputText: "{}",
+                    kvRevision: 1, waitSeconds: null, immediate: null,
+                });
+                const child = await startSessionWorkflowDefinition(host, {
+                    ownerSessionId: chat, parentSessionId: parent.workflowId, spawn: { nodeExecutionId: nxSpawn },
+                    definition: { name: "child-job" }, inputs: {},
+                    actor: ENGINE, operationId: nxSpawn, owner: OWNER,
+                });
+                await h.store.completeNode(nxSpawn, {
+                    outcome: "started", resultKind: "business", winner: "effect",
+                    valueText: canonicalJson({ workflowId: child.workflowId, runId: child.runId, definition: "child-job", revision: 1 }),
+                });
+                const nxHold = nodeExecutionIdFor(parent.runId, scopeB, "b_hold", 2);
+                await h.store.enterNode({
+                    runId: parent.runId, nodeExecutionId: nxHold, scopeId: scopeB, nodeId: "b_hold", ordinal: 2,
+                    nodeType: "wait", predecessorId: nxSpawn, arrivalRoute: "started", inputText: "{}",
+                    kvRevision: 1, waitSeconds: 600, immediate: null,
+                });
+                await h.store.cancelBranchScopes({ runId: parent.runId, scopeIds: [scopeB], reason: "join" });
+                await h.q("UPDATE SCHEMA.workflow_runs SET status = 'completed', terminal_outcome = 'succeeded', terminal_node_id = 'done', terminal_output = '{\"ok\":1}', finished_at = now() WHERE run_id = $1", [child.runId]);
+                return { parent, child };
+            };
+
+            // Case 1: Only a pending no-`from` receive exists -> T4 stores the row, claimedBy is null, receive stays pending.
+            const c1 = await makeCutParentWithChild("anon-only");
+            const recvAnon = nodeExecutionIdFor(c1.parent.runId, "root", "after_recv", 1);
+            await h.store.enterNode({
+                runId: c1.parent.runId, nodeExecutionId: recvAnon, scopeId: "root", nodeId: "after_recv", ordinal: 1,
+                nodeType: "messaging", predecessorId: null, arrivalRoute: null, inputText: "null", kvRevision: 1,
+                waitSeconds: 60, immediate: null,
+                receive: { contract: WORKFLOW_ENDED_CONTRACT, from: null, refused: null, correlationText: "{}" },
+            });
+            const op1 = `ended:${c1.child.runId}`;
+            const payload1 = canonicalJson({ workflowId: c1.child.workflowId, definition: "child-job", revision: 1, spawnedBy: { stateId: "b_spawn", visit: 1 }, status: "completed", outcome: "succeeded", stateId: "done", output: { ok: 1 }, outputTruncated: false, error: null });
+            const res1 = await h.store.acceptInput({
+                workflowSessionId: c1.parent.workflowId, runId: c1.parent.runId, messageId: op1,
+                senderSessionId: c1.child.workflowId, operationId: op1,
+                requestSha256: typedInputRequestSha256({ runId: c1.parent.runId, contract: WORKFLOW_ENDED_CONTRACT, correlationText: "{}", payloadText: payload1, ttlSeconds: WORKFLOW_INPUT_TTL_SECONDS }),
+                contract: WORKFLOW_ENDED_CONTRACT, correlationText: "{}", payloadText: payload1,
+                ttlSeconds: WORKFLOW_INPUT_TTL_SECONDS, limits: WORKFLOW_INBOX_LIMITS, bypassInboxLimits: true,
+            });
+            expect(res1.receipt.messageId).toBe(op1);
+            expect(res1.receipt.claimedBy).toBeNull();
+            expect((await h.store.readNodeExecution(recvAnon))?.state).toBe("pending");
+            const inbox1 = await h.q("SELECT consumed_by FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND sender_session_id = $2", [c1.parent.runId, c1.child.workflowId]);
+            expect(inbox1).toHaveLength(1);
+            expect(inbox1[0].consumed_by).toBeNull();
+
+            // Case 2: Older pending no-`from` receive + newer pending named `from` receive -> T4 skips the older
+            // senderless waiter and wakes the newer named waiter (via real notifyParent).
+            const c2 = await makeCutParentWithChild("named-over-anon");
+            const recvOlderAnon = nodeExecutionIdFor(c2.parent.runId, "root", "after_recv", 1);
+            await h.store.enterNode({
+                runId: c2.parent.runId, nodeExecutionId: recvOlderAnon, scopeId: "root", nodeId: "after_recv", ordinal: 1,
+                nodeType: "messaging", predecessorId: null, arrivalRoute: null, inputText: "null", kvRevision: 1,
+                waitSeconds: 60, immediate: null,
+                receive: { contract: WORKFLOW_ENDED_CONTRACT, from: null, refused: null, correlationText: "{}" },
+            });
+            const recvNewerNamed = nodeExecutionIdFor(c2.parent.runId, "root", "after_recv", 2);
+            await h.store.enterNode({
+                runId: c2.parent.runId, nodeExecutionId: recvNewerNamed, scopeId: "root", nodeId: "after_recv", ordinal: 2,
+                nodeType: "messaging", predecessorId: null, arrivalRoute: null, inputText: "null", kvRevision: 1,
+                waitSeconds: 60, immediate: null,
+                receive: { contract: WORKFLOW_ENDED_CONTRACT, from: c2.child.workflowId, refused: {}, correlationText: "{}" },
+            });
+            await notifyParent(actx, { runId: c2.child.runId });
+            expect((await h.store.readNodeExecution(recvOlderAnon))?.state).toBe("pending");
+            const namedAfter = await h.store.readNodeExecution(recvNewerNamed);
+            expect(namedAfter?.state).toBe("completed");
+            expect(namedAfter?.outcome).toBe("received");
+            expect(namedAfter?.output?.workflowId).toBe(c2.child.workflowId);
+        } finally {
+            await h.stop();
+        }
+    });
 });

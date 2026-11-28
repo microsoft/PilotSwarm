@@ -273,7 +273,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 ### spawn
 
-`definition` (literal name or `<package>/<name>`), `inputs` (object template), `revision` (fixed positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (use `from: "${states.<spawn>.output.workflowId}"`). Child end sends built-in `WorkflowEnded@1` while parent is active (inbox order; correlate by `workflowId`; no `contracts:` entry; cannot `send`; exempt from 100-inbox cap; >16 KiB sets `outputTruncated: true`). Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
+`definition` (name or `<package>/<name>`), `inputs` (object template), `revision` (positive int, else newest valid at admission), `agentModels`, `carry`. Outcome `started` outputs `{ workflowId, runId, definition, revision }` (`from: "${states.<spawn>.output.workflowId}"`). Child end sends `WorkflowEnded@1` while parent is active (inbox order; correlate by `workflowId`; no `contracts:`; cannot `send`; exempt from 100-inbox cap; >16 KiB sets `outputTruncated: true`). A receive with no `from` does not take a cut branch's child end; name it with `from` or give the receive a `wait`. Parent end cancels children; direct delete sends no notice (`cancel`/`stop`).
 
 ### terminal
 

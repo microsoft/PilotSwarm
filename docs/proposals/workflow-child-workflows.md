@@ -228,6 +228,7 @@ Rules:
 - Exactly one message per child run, keyed by a fixed operation id (`ended:<runId>`).
 - Exempt from the 100-message inbox cap when verified in the store as `WorkflowEnded@1` from a direct child.
 - Always delivered to a Workflow parent while the spawning run is still active, including when cancelled by `child_workflows` `cancel` (even before the child began executing).
+- A receive with no `from` does not take the end notice of a child that a cut parallel branch started; name the child with `from`, or give the receive a `wait`.
 - Expires from the inbox after 24 hours; the child's result remains readable via `child_workflows` `read`.
 
 ### 6.3 Messaging Between Parent and Child
