@@ -156,8 +156,10 @@ answers also use this shape in `${states.<approval>.output.decidedBy}` and
 in answer receipts, including retries. Typed-input events and inbox reads
 use `sender` instead of a person's `senderSessionId` and include the display
 name when known. Execution and result reads mask legacy approval identities
-and person sender IDs carried through Workflow values. This does not change
-typed-input delivery, matching, or its command receipts.
+and person sender IDs carried through Workflow values, including variables,
+run inputs, outbox and event previews, and re-run recaps. Variable sizes and
+hashes still describe the stored values. Masking does not change typed-input
+delivery, matching, or its command receipts.
 
 ### Session sharing
 
