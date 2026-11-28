@@ -244,7 +244,7 @@ export function lockedRefusal(definition: Pick<SessionDefinitionRow, "definition
 /** "the session", a person's name, or "the system", for the stale-save words (E2-3). */
 export function sessionActorWords(actor: SessionDefinitionActor): string {
     if (actor.kind === "session") return "the session";
-    if (actor.kind === "user") return actor.display?.trim() || actor.subject;
+    if (actor.kind === "user") return actor.display?.trim() || "a person";
     return actor.name === "imported" ? "the import of stage 1 Workflows" : "the system";
 }
 
@@ -468,6 +468,21 @@ export class SessionDefinitionStore {
         });
     }
 
+    /** Same visible, started rows and ordering as listWorkflows, without loading the definition's history. */
+    async readWorkflowNumber(workflowSessionId: string): Promise<number | null> {
+        const { rows } = await this.pool.query(
+            `SELECT COUNT(*) AS number
+               FROM ${this.t.wfDefinitions} target
+               JOIN ${this.t.sessions} ts ON ts.session_id = target.workflow_session_id AND ts.deleted_at IS NULL
+               JOIN ${this.t.wfDefinitions} d ON d.session_definition_id = target.session_definition_id
+                  AND (d.created_at, d.workflow_session_id) <= (target.created_at, target.workflow_session_id)
+               JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id AND s.deleted_at IS NULL
+              WHERE target.workflow_session_id = $1
+                AND EXISTS (SELECT 1 FROM ${this.t.runs} r WHERE r.workflow_session_id = target.workflow_session_id AND r.mode = 'live')
+                AND EXISTS (SELECT 1 FROM ${this.t.runs} r WHERE r.workflow_session_id = d.workflow_session_id AND r.mode = 'live')`,
+            [workflowSessionId]);
+        return Number(rows[0].number) || null;
+    }
     /**
      * Stage 2.2: a session's agent tests (its test benches: service_kind workflow-test), newest first, each with its newest test
      * run; of one definition when `definitionId` is given. Deleted test benches are not listed.

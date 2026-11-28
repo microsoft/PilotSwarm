@@ -139,20 +139,25 @@ and `run`. `finishedAt` is `null` until the run ends. Definition list and
 detail responses include `workflows[].number`, the Portal's 1-based position
 among started Workflows for that definition, in creation order. The Workflow
 overview also exposes `number`. Drafts and Workflows without a numbered
-definition entry have `null`.
+definition entry have `null`. Deleting a started Workflow renumbers the
+remaining ones, just as it does in the Portal.
 
 Agent execution rows and details include `agentModel` when a spawn recorded
 the model used for that visit: `{ model, reasoningEffort, contextTier,
-source }`. This is not the start-time model choice. Variable history reads
+source }`. A reused visit shows the original spawn's model if its event is
+still retained. This is not the start-time model choice. Variable history reads
 (`kvRevision`, with or without `kvKey`) include `kv.change` when a variable
 update produced the revision. Like `run.lastControl`, it gives the actor
 and timestamp without giving a person's sign-in identity. Approval owners,
 approval answers and Workflow event actors use the same public attribution:
 `{ by: "a person", name? }`. The signed-in owner can still answer; the
-server checks ownership against the private approval record. Typed-input
-events and inbox reads use `sender` instead of a person's `senderSessionId`.
-List-receive execution reads mask the engine's `from` field as well.
-This does not change delivery receipts, Workflow bindings, or authored payloads.
+server checks ownership against the private approval record. New person
+answers also use this shape in `${states.<approval>.output.decidedBy}` and
+in answer receipts, including retries. Typed-input events and inbox reads
+use `sender` instead of a person's `senderSessionId` and include the display
+name when known. Execution and result reads mask legacy approval identities
+and person sender IDs carried through Workflow values. This does not change
+typed-input delivery, matching, or its command receipts.
 
 ### Session sharing
 

@@ -16,7 +16,7 @@ import {
     redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets,
     type WorkflowErrorRedaction,
 } from "./redact.js";
-import { workflowActorView, workflowInputEventView } from "./actor-view.js";
+import { workflowActorView, workflowInputEventView, workflowInputSenderActor, workflowPublicValueText } from "./actor-view.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -3110,18 +3110,18 @@ export class WorkflowStore {
         return { count, contracts };
     }
 
-    /** Clipped output previews (LEFT(output, 300)) for dropped visits only, never reading full JSON blobs. */
+    /** Dropped visits only. Mask before clipping; batch the reads to bound the unprojected values in memory. */
     async readDroppedVisitPreviews(runId: string, nodeExecutionIds: readonly string[]): Promise<Map<string, string | null>> {
         const out = new Map<string, string | null>();
-        if (nodeExecutionIds.length === 0) return out;
-        const { rows } = await this.pool.query(
-            `SELECT node_execution_id, CASE WHEN output IS NULL THEN NULL ELSE left(output, 300) END AS preview
-               FROM ${this.t.nodes}
-              WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`,
-            [runId, [...new Set(nodeExecutionIds)]],
-        );
-        for (const row of rows) {
-            out.set(str(row, "node_execution_id"), strOrNull(row, "preview"));
+        const ids = [...new Set(nodeExecutionIds)];
+        for (let i = 0; i < ids.length; i += 100) {
+            const { rows } = await this.pool.query(
+                `SELECT node_execution_id, output FROM ${this.t.nodes}
+                  WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`, [runId, ids.slice(i, i + 100)]);
+            for (const row of rows) {
+                const text = workflowPublicValueText(strOrNull(row, "output"));
+                out.set(str(row, "node_execution_id"), text?.match(/^.{0,300}/su)?.[0] ?? null);
+            }
         }
         return out;
     }
@@ -3202,7 +3202,8 @@ export class WorkflowStore {
         const approvalsTable = `"${this.schema.replace(/"/g, "\"\"")}".workflow_approvals`;
         const { rows } = await runner.query(
             `SELECT n.node_execution_id, n.node_id, n.ordinal, n.outcome, n.output,
-                    a.snapshot AS approval_snapshot, a.decided_by AS approval_decided_by, a.decided_at AS approval_decided_at
+                    a.node_execution_id AS approval_id, a.snapshot AS approval_snapshot,
+                    a.decided_by AS approval_decided_by, a.decided_at AS approval_decided_at
                FROM ${this.t.nodes} n
                LEFT JOIN ${approvalsTable} a
                  ON a.node_execution_id = COALESCE(n.reused_from_execution_id, n.node_execution_id)
@@ -3215,7 +3216,8 @@ export class WorkflowStore {
             const outObj = isJsonObject(outJson) ? outJson : null;
             const snapJson = jsonOrNull(row, "approval_snapshot");
             const snapObj = isJsonObject(snapJson) ? snapJson : null;
-            const decidedByRaw = jsonOrNull(row, "approval_decided_by") ?? (outObj?.decidedBy ?? null);
+            // Only historical visits without an audit row can use the old raw engine result.
+            const decidedByRaw = row.approval_id === null ? (outObj?.decidedBy ?? null) : jsonOrNull(row, "approval_decided_by");
             const decidedByObj = isJsonObject(decidedByRaw) ? decidedByRaw : null;
             const decidedBy = decidedByObj && typeof decidedByObj.provider === "string" && typeof decidedByObj.subject === "string"
                 ? { provider: decidedByObj.provider, subject: decidedByObj.subject }
@@ -4710,6 +4712,20 @@ export class WorkflowStore {
         return workflowActorView(actor, null, rows[0]?.display_name ?? null);
     }
 
+    /** Resolve person display names for a bounded inbox page, without returning the sign-in identity. */
+    async readInputSenderViews(messages: readonly WorkflowInboxMessage[]): Promise<Map<string, JsonObject>> {
+        const people = [...new Set(messages.map(message => message.senderSessionId))].flatMap(id => {
+            const actor = workflowInputSenderActor(id);
+            return actor?.kind === "user" ? [{ id, provider: actor.provider, subject: actor.subject }] : [];
+        });
+        if (!people.length) return new Map();
+        const { rows } = await this.pool.query(
+            `SELECT p.id, u.display_name
+               FROM jsonb_to_recordset($1::jsonb) AS p(id text, provider text, subject text)
+               JOIN ${this.t.users} u ON u.provider = p.provider AND u.subject = p.subject`, [JSON.stringify(people)]);
+        return new Map(rows.map(row => [str(row, "id"), workflowActorView({ kind: "user", display: strOrNull(row, "display_name") })!]));
+    }
+
     /**
      * Lock one run's row FOR UPDATE.
      *
@@ -5341,7 +5357,7 @@ export class WorkflowStore {
                         runId: node.runId, nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, step: node.ordinal,
                         outcome: claim.outcome, resultKind: "business", messageId: claim.messageId, contract: claim.contract,
                         senderSessionId: claim.senderSessionId, outputPreview: jsonbSafeText(claim.valueText, 1_000),
-                    }) }] };
+                    }, await this.eventActorIn(client, workflowInputSenderActor(claim.senderSessionId))) }] };
                 }
             }
             if (totalExpired && projection) {
@@ -5860,16 +5876,17 @@ export class WorkflowStore {
                 claimedBy: claimed ? { nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId } : null,
             };
             await client.query(`UPDATE ${this.t.inbox} SET receipt = $2 WHERE message_id = $1`, [input.messageId, canonicalJson(receipt)]);
+            const sender = await this.eventActorIn(client, workflowInputSenderActor(input.senderSessionId));
             const events: SessionEventRecord[] = [{ eventType: "workflow.input_accepted", data: workflowInputEventView({
                 runId: run.runId, messageId: input.messageId, contract: input.contract, senderSessionId: input.senderSessionId,
                 claimedBy: claimed ? claimed.nodeExecutionId : null,
-            }) }];
+            }, sender) }];
             if (claimed && claimedResult) {
                 events.push({ eventType: "workflow.state_completed", data: workflowInputEventView({
                     runId: run.runId, nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId, step: claimed.ordinal,
                     outcome: claimedResult.outcome, resultKind: "business", messageId: input.messageId, contract: input.contract,
                     senderSessionId: input.senderSessionId, outputPreview: jsonbSafeText(claimedResult.valueText, 1_000),
-                }) });
+                }, sender) });
             }
             await this.project(client, { sessionId: input.workflowSessionId, events, update: { touch: true } });
             return { receipt, replayed: false, run };
