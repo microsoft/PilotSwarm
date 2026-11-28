@@ -203,7 +203,7 @@ function decisionFixtureValue(state: WorkflowIRNode | null): JsonValue {
             probabilities: Object.fromEntries(labels.map(label => [label, label === selection ? 1 : 0])) } } };
     }
     if (state.question.type === "noul") {
-        return { answers: { decision: { type: "noul", noul: 1, probabilities: { true: 1, false: 0 } } } };
+        return { answers: { decision: { type: "noul", noul: 1 } } };
     }
     return { answers: { decision: { type: "score", score: 0,
         probabilities: Object.fromEntries(state.question.criteria.map((_, index) => [String(index), index === 0 ? 1 : 0])) } } };
