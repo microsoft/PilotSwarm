@@ -2160,10 +2160,19 @@ export function registerActivities(
         let notRunAgainRan = false;
         let notRunAtAdmission = false;
         // Review D-2: the earlier cycles this later cycle's prompt says were lost (recovery runs rebuild the prompt with them).
-        let lostCycles: { cycle: number; lost: number[] } | null = null;
+        let lostCycles: { cycle: number; lost: number[]; savedEarlier?: number; firstSessionCycle?: number; preCutCount?: number;
+            recapCycle?: number; rerunRecap?: import("./workflow/store.js").WorkflowRerunRecapPayload } | null = null;
         // The store and the turn's visit, for the record at the commit (set once the turn's Workflow fence exists).
         let memoryLossFence: { store: WorkflowStore; visit: () => WorkflowTurnVisit | null } | null = null;
-        const withLostCycles = (text: string): string => lostCycles ? workflowAgentCycleMemoryLostPrompt(text, lostCycles.cycle, lostCycles.lost) : text;
+        const withLostCycles = (text: string): string => lostCycles
+            ? workflowAgentCycleMemoryLostPrompt(text, lostCycles.cycle, lostCycles.lost, {
+                ...(lostCycles.firstSessionCycle !== undefined ? { firstSessionCycle: lostCycles.firstSessionCycle } : {}),
+                ...(lostCycles.savedEarlier !== undefined ? { savedEarlier: lostCycles.savedEarlier } : {}),
+                ...(lostCycles.preCutCount !== undefined ? { preCutCount: lostCycles.preCutCount } : {}),
+                ...(lostCycles.recapCycle !== undefined ? { recapCycle: lostCycles.recapCycle } : {}),
+                ...(lostCycles.rerunRecap !== undefined ? { rerunRecap: lostCycles.rerunRecap } : {}),
+            })
+            : text;
         const noteVisitDecided = (managed: Pick<ManagedSession, "getActiveTurn" | "cancelBackgroundTasks">): void => {
             visitDecidedThisTurn = true;
             if (replySettleTimer) return;

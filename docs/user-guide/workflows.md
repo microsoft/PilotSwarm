@@ -345,6 +345,69 @@ graph, timeline and panels:
   runs, the script runs again from its start. Ask for scripts that are safe to
   repeat.
 
+## Go on from a step that failed
+
+**What you're trying to do:** a Workflow failed after steps that did real work
+(it created a server, sent a message, asked for an approval). You want to go
+on from the failed step without doing that work again.
+
+**Steps:**
+
+1. Open the Workflow that failed. Select **Re-run from here…** in its failure
+   line, in the step's Node panel, or (on a desktop) beside the timeline while
+   it shows an earlier step. Or ask the session "re-run it from the failed
+   step".
+2. Choose how the step goes on (**Mode**):
+   - **Run this step again:** the step runs again. Use it after a fix or for a
+     temporary error.
+   - **Keep this step's result and go on:** the step keeps its result and the
+     next step runs.
+   - **Supply this step's result and go on:** the step does not run; you give
+     its result. Choose its **Outcome**, fill its **Output** (field by field,
+     or as JSON), and write what you checked in **Why**. Use it when the
+     external work finished but the step did not report it, for example a
+     server that was created before a script timed out. Supply only values you
+     checked; never guess an id.
+3. Check the revision. The re-run uses the revision of the Workflow that
+   failed. After you fix the definition, choose the newer revision when the
+   sheet says it fits.
+4. Select **Start #N**. A new Workflow starts. The steps before the chosen
+   step show as **Reused** (or **✎ Supplied**) and do not run again. The
+   Workflow that failed does not change.
+
+**What just happened:** the new Workflow took the inputs and workspace of the
+one that failed, its variables as they were at the chosen step, and its count
+of visits. Its time limits start again. If the scripts call session tools that the session's agent gave
+the first Workflow, a re-run you start yourself uses the same tools.
+
+The session's agent and the MCP server can do the same: they read the
+`workflow-rerun` skill and use `rerun_plan` and `rerun_from` (see
+[2.3 The MCP server](#23-the-mcp-server)).
+
+### Current limits of a re-run
+
+1. **One lane inside a parallel step:** you cannot re-run one lane. Re-run the
+   whole parallel step.
+2. **A parent and one of its spawned children together:** re-run the parent
+   from its spawn step, or re-run the child alone first.
+3. **A spawned child that was cancelled when the earlier Workflow ended:**
+   the re-run goes back to the spawn step (or the parallel step that holds it)
+   so a fresh child runs. That step and every step after it run again.
+4. **Supplying results:** only for top-level script and agent steps without
+   `supply: never`. Never for approvals, waits, decisions, spawns or messages.
+5. **Agent memory:** an agent step that continues its session starts a fresh
+   session with a summary of the reused and supplied cycles, not the old chat.
+6. **Cleaned-up Workflows and size:** automatic cleanup removes a finished
+   Workflow after its grace period (5 minutes to 6 hours); then use
+   **Run again…** from the start. The reused steps can hold at most 256 MiB;
+   above that, choose an earlier step.
+7. **Messages a step already received:** a re-run carries only unread
+   messages. To keep a message a step already received, re-run from the step
+   after it. A re-run from that step or an earlier one needs a new message.
+8. **Approvals:** a re-run past an answered approval is allowed only to the
+   owner, directly in the portal. An agent or the MCP server must choose the
+   approval step or an earlier one.
+
 ## 5. Share it with others
 
 **What you're trying to do:** let other people start your Workflow without
@@ -673,7 +736,7 @@ It exposes six Workflow tools (and projects `session_kind: "agent" | "workflow"`
 | `create_session_for_workflow` | Create a coordinating chat agent session for a packaged `<package>/<name>` Workflow (greets and asks for inputs; call `workflow_definition` `start` with `name: "<package>/<name>"` and `inputs` on the returned session to start directly). |
 | `read_workflow_skill` | List packaged Workflow authoring skills (omit `name`) or read one skill's Markdown guide by `name` (start with `workflow-authoring`). |
 | `workflow_definition` | Validate (`validate`, no session or DB write needed), `list`, `read`, inspect package `card`, `save`, `start`, `delete`, or `copy` session Workflow Definitions on an `owner_session_id` (created via `create_session`). Pass `key` (preferred) or `operation_id` on `start`, a fresh `operation_id` on `save`/`delete`/`copy`, and `workspace: "none"` when starting on a fresh 0-turn session. |
-| `read_workflow` | Read a Workflow: `session_id` (the Workflow's), and optionally `run_id`, `limit` and `cursor` for older pages. |
+| `read_workflow` | Read a Workflow: `session_id` (the Workflow's), and optionally `run_id`, `limit` and `cursor` for older pages, or `rerun_plan` alone for what a re-run from a step would do. |
 | `update_workflow` | A person's control: `session_id` and `command` (`{ operation, operation_id, ... }`, as for `updateWorkflow` above). Owner or admin only. Approval steps (`approval_respond`) remain portal-only and are refused over MCP. |
 
 To run a packaged Workflow, call `list_creatable_workflows` and then
@@ -687,6 +750,7 @@ To write and run your own Workflow directly from an MCP client:
 3. Call `workflow_definition { operation: "validate", yaml }` to check the YAML without writing a revision.
 4. Call `workflow_definition { operation: "save", owner_session_id, name, yaml, operation_id }` and then `workflow_definition { operation: "start", owner_session_id, name, inputs, workspace: "none", key }`. Note that person starts have no captured session tool grant (literal `callTool` requirements fail with `409 WORKFLOW_TOOLS_UNAVAILABLE` and scripts that call `callTool` emit `WORKFLOW_PERSON_START_NO_TOOL_BINDING`; have the session's agent start definitions whose scripts need session tools).
 5. Poll `read_workflow { session_id: "<workflowId>" }` for progress and output, and control runs with `update_workflow`. To answer a Workflow `request` step, message `owner_session_id` with `send_and_wait`.
+6. To go on from a step of an ended Workflow, read `read_workflow_skill { name: "workflow-rerun" }`, preview with `read_workflow { session_id, rerun_plan: {} }`, then call `workflow_definition { operation: "start", owner_session_id, rerun_from: { workflow_id }, key }` without `inputs` or `workspace`. Over MCP a re-run never reuses an answered approval (`403 RERUN_APPROVAL_REUSED`).
 
 ## 2.4 The terminal UI
 

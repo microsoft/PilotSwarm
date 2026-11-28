@@ -42,6 +42,11 @@ import {
 } from "./workflow-panels.js";
 import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
+import {
+    workflowRerunButtonState, workflowRerunCanStart, workflowRerunChip, workflowRerunDraft, workflowRerunDraftChange, workflowRerunDraftOutput,
+    workflowRerunLogRows, workflowRerunReruns, workflowRerunSelectionKey, workflowRerunSheet, workflowRerunStartRequest, workflowRerunSupplyFields,
+    workflowRerunTimeline,
+} from "../../core/src/workflow-rerun.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { DecisionQuestionSection, NodeCodeSections } from "./workflow-code.js";
 import { workflowDecisionDefinition } from "../../core/src/workflow-decision.js";
@@ -71,8 +76,11 @@ export const TIMELINE_PLAY_LIVE_TITLE = "Play — step back first; live view alr
  * session's events) and sends its commands (sendWorkflowRunCommand). Every command is the server's decision.
  */
 
-/** One workflow child's view parts, fresh for `sessionId` (a store change for another child is never paired with it). */
-function useWorkflowChild(controller, sessionId) {
+/**
+ * One workflow child's view parts, fresh for `sessionId` (a store change for another child is never paired with it).
+ * `numberOf` (Phase 3 I7) numbers its definition's Workflows for a re-run's reused and supplied steps ("Reused from #2").
+ */
+function useWorkflowChild(controller, sessionId, numberOf = null) {
     const selected = useControllerSelector(controller, state => selectWorkflowViewSnapshotFor(state, sessionId), workflowViewSnapshotEqual);
     const snapshot = selected.sessionId === (sessionId ?? null) ? selected : selectWorkflowViewSnapshotFor(controller.getState(), sessionId);
     const { session, history, view, places } = snapshot;
@@ -91,11 +99,12 @@ function useWorkflowChild(controller, sessionId) {
     const sessionModel = React.useMemo(() => workflowModelFromKey(sessionModelKey), [sessionModelKey]);
     const projection = React.useMemo(() => {
         if (!view.definition && !readModel && !workflowModel) return null;
-        return projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, sessionModel });
-    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, sessionModel]);
+        return projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory, sessionModel, numberOf });
+    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, sessionModel, numberOf]);
     // Stage 2.4 (FU-26, the replay): the same projection as it stood at a moment (epoch milliseconds).
     const projectAt = React.useCallback(asOf => projectWorkflow({ definition: view.definition, readModel, workflowModel, selectedRunId, events,
-        readModelAfterSeq, olderHistory, asOf, sessionModel }), [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, sessionModel]);
+        readModelAfterSeq, olderHistory, asOf, sessionModel, numberOf }),
+    [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory, sessionModel, numberOf]);
     return { sessionId, session, view, places, events, olderEvents: history?.hasOlderEvents === true, projection, projectAt, readModel, workflowModel, readError: error,
         definition: projection ? projection.definition : null, nodes: projection ? projection.nodes : EMPTY_NODES };
 }
@@ -869,8 +878,8 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
 
 /** One Workflow (08): its header, controls by state, its failure first, its graph and its bottom panel. */
 export function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, phone = false, onOpen, nodeStateId = null, displayMode = "normal",
-    sessionRevision = null, extraActions = null }) {
-    const child = useWorkflowChild(controller, workflow.sessionId);
+    sessionRevision = null, extraActions = null, rerun = null }) {
+    const child = useWorkflowChild(controller, workflow.sessionId, rerun?.numberOf ?? null);
     const { sessionId, session, view, places, events, projection, readModel, workflowModel, readError } = child;
     // Live while it is shown, also when its session's chat is the active session (the companion subscription).
     React.useEffect(() => controller.watchWorkflow(sessionId), [controller, sessionId]);
@@ -1011,6 +1020,29 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
     const [failureOpen, setFailureOpen] = React.useState(false);
     // An agent node's Log shows its session (finding 8); "Whole Workflow" shows every line of this Workflow.
     const [logScope, setLogScope] = React.useState("node");
+    // Phase 3 I7 (design §7.2): Re-run from here… for a Workflow of a session's definition (`rerun`: { ownerId, definitionId,
+    // nextNumber, ownerStatus, locked, numberOf }), in the failure banner, the Node panel and, on a desktop, the timeline's
+    // history; `rerunFrom` is the open sheet's visit ({ executionId, mode }; a null visit: the server picks it).
+    const [rerunFrom, setRerunFrom] = React.useState(null);
+    const numberOf = rerun?.numberOf ?? null;
+    const rerunnable = rerun && readModel?.run && readModel.run.mode !== "test" ? rerun : null;
+    const rerunState = (visit = null, node = null) => {
+        const state = workflowRerunButtonState({ runStatus: readModel?.run?.status ?? null, viewerAllowed: readModel?.personCommands?.viewer?.allowed !== false,
+            ownerStatus: rerun?.ownerStatus ?? null, deleted: readModel?.deleted === true, visit, node });
+        return state.enabled ? { ...state, title: workflowTabButtonTip("rerun", { number: rerun?.nextNumber ?? null }) } : state;
+    };
+    const openRerun = (executionId = null, mode = null) => setRerunFrom({ executionId, mode });
+    const failureRerun = failure && rerunnable ? rerunState() : null;
+    const nodeRerun = rerunnable ? { stateOf: rerunState, open: openRerun, numberOf, workflowNumber: workflow.number } : null;
+    const rerunOf = readModel?.run?.rerunOf ?? null;
+    const rerunChip = workflowRerunChip(rerunOf, { numberOf, phone });
+    const rerunsChip = workflowRerunReruns(readModel?.reruns, { numberOf });
+    const frameVisit = frame ? visits.find(item => item?.id === frame.nodeExecutionId) ?? null : null;
+    const frameRerun = rerunnable && frame && !phone ? rerunState(frameVisit, child.nodes.find(node => node.id === frame.stateId) ?? null) : null;
+    const replayRerun = {
+        band: rerunOf ? workflowRerunTimeline(frames, { sourceNumber: typeof numberOf === "function" ? numberOf(rerunOf.workflowId) : null }) : null,
+        button: frameRerun ? { ...frameRerun, open: () => openRerun(frame.nodeExecutionId, frameRerun.mode) } : null,
+    };
     const controls = runControls?.controls ?? [];
     const has = operation => controls.find(control => control.operation === operation) ?? null;
     const pause = has("pause"), resume = has("resume"), stop = has("stop"), cancel = has("cancel");
@@ -1040,6 +1072,11 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                 ? h(StateChip, { state, time: took,
                     title: [state.title, started ? `Started ${started}` : null, revisionWords].filter(Boolean).join(" · ") })
                 : h(StateChip, { state }),
+            // Phase 3 I7: what this Workflow re-ran ("Re-run of #2 from finish · visit 1"), and what re-ran it ("Re-run as #3").
+            rerunChip ? h("button", { type: "button", className: `ps-mini-button ps-wf-rerun-chip${rerunOf.mode === "supply" ? " is-supplied" : ""}`,
+                "data-field": "rerun-of", "data-session": rerunOf.workflowId, title: rerunOf.originGone ? "That Workflow was cleaned up." : "Open it",
+                disabled: rerunOf.originGone === true || !numberOf?.(rerunOf.workflowId), onClick: () => onOpen(rerunOf.workflowId) }, rerunChip) : null,
+            rerunsChip ? h("span", { className: "ps-wf-rerun-chip", "data-field": "reruns" }, rerunsChip) : null,
             phone ? null : h("span", { className: "ps-wf-bar-text", title: headerTitle || undefined },
                 [revisionWords, started, took].filter(Boolean).join(" · ")),
             child?.spawnedBy ? h("button", { type: "button", className: "ps-mini-button", "data-field": "spawned-by",
@@ -1066,17 +1103,19 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                 phone ? h("button", { type: "button", className: "ps-wf-failure-toggle", "aria-expanded": failureOpen, title: failure.headline,
                     onClick: () => setFailureOpen(open => !open) }, failure.headline) : failure.headline),
             h(WorkflowFailureDetails, { failure, runId, executionValues: view.executionValues ?? null,
-                onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); } })) : null,
+                onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); } }),
+            failureRerun ? h("button", { type: "button", className: "ps-mini-button ps-wf-rerun-button", "data-action": "rerun-from-failure",
+                disabled: !failureRerun.enabled, title: failureRerun.title, onClick: () => openRerun(null, null) }, "Re-run from here…") : null) : null,
         readError ? h("p", { className: "ps-wf-line is-error", role: "alert" }, `This Workflow could not be read: ${readError} `,
             h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry")) : null,
         notice ? h(WorkflowRunCommandNotice, { controller, sessionId, notice }) : null,
         h(WorkflowStage, { side, panel: h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"),
             panel, mobile, side, onPanel: id => setTab({ runPanel: id }) },
             panel === "node" ? h(RunNodePanel, { controller, child: replayed ? { ...child, nodes } : child, selected, replayFrame: replayed ? frame : null,
-                visits, onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
+                visits, rerun: nodeRerun, onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
             panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
                 runs: Array.isArray(readModel?.runs) ? readModel.runs : null, selected, scope: logScope, onScope: setLogScope,
-                instructionsReadable: workflowBaseInstructionsReadable(readModel), replay: logReplay }) : null,
+                instructionsReadable: workflowBaseInstructionsReadable(readModel), replay: logReplay, numberOf }) : null,
             panel === "variables" ? (variables ? h(WorkflowVariables, { controller, sessionId, model: variables }) : h("p", { className: "ps-wf-muted" }, "No variables."))
                 : null) },
         h("div", { className: "ps-wf-main" },
@@ -1085,9 +1124,14 @@ export function WorkflowRunView({ controller, definition, workflow, tab, setTab,
                 : projection ? h(WorkflowNoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         // The timeline stays with the graph (OF-S2-1).
-        graph && replay ? h(ReplayBar, replay) : null),
+        graph && replay ? h(ReplayBar, { ...replay, rerun: replayRerun }) : null),
         stopping ? h(StopDialog, { controller, sessionId, runId: runControls?.runId ?? runId, title: `${definition.name} #${number}`, stop, cancel,
-            onClose: () => setStopping(false) }) : null);
+            onClose: () => setStopping(false) }) : null,
+        rerunFrom && rerunnable ? h(RerunDialog, { controller, ownerId: rerunnable.ownerId, definitionId: rerunnable.definitionId, name: definition.name,
+            sourceWorkflowId: sessionId, sourceNumber: number, nextNumber: rerunnable.nextNumber, sourceStartedAt: times.started,
+            executionId: rerunFrom.executionId, mode: rerunFrom.mode, locked: rerunnable.locked === true, phone,
+            onClose: () => setRerunFrom(null),
+            onStarted: result => { setRerunFrom(null); onOpen(result?.receipt?.workflowId ?? null); } }) : null);
 }
 
 /**
@@ -1160,7 +1204,7 @@ export function timelineVisitAt(frames, index) {
  * the right end; Live has nothing to play. With no visit yet every control is off ("No steps yet"). The Log's line for the
  * visit shown is marked, and a click on a visit's line shows it.
  */
-export function ReplayBar({ frames, index, playing, ended = false, startMs = null, onGo, onPlay, onPause, onOlder = null }) {
+export function ReplayBar({ frames, index, playing, ended = false, startMs = null, onGo, onPlay, onPause, onOlder = null, rerun = null }) {
     const id = `wf-replay-${React.useId().replace(/:/g, "")}`;
     const count = frames.length;
     const newest = count - 1;
@@ -1180,6 +1224,22 @@ export function ReplayBar({ frames, index, playing, ended = false, startMs = nul
     const words = count === 0 ? "No steps yet"
         : live ? `${liveWord} · ${workflowReplayLabel(frames[newest])}`
             : `${workflowReplayLabel(frames[index])} · ${newest - index} newer`;
+    const range = h("input", { id, type: "range", className: "ps-wf-replay-range", min: scale.min, max: scale.max, step: "any",
+        value: count ? frames[position].atMs : scale.min, disabled: count === 0, "aria-valuetext": words,
+        onChange: event => slide(Number(event.target.value)), onKeyDown: keys });
+    // Phase 3 I7 (design §7.2): a re-run's reused and supplied visits as a hatched band to where the re-run starts, the
+    // supplied visit marked in its accent; the band's words are its title (the Log and the Node panel say them too).
+    const band = rerun?.band && count ? rerun.band : null;
+    const at = value => `${Math.max(0, Math.min(100, scale.max > scale.min ? ((value - scale.min) / (scale.max - scale.min)) * 100 : 100))}%`;
+    const track = band ? h("span", { className: "ps-wf-replay-track" },
+        h("span", { className: "ps-wf-replay-band", "data-field": "rerun-band", title: band.label, "aria-hidden": "true",
+            style: { width: at(frames[band.end].atMs) } }),
+        band.suppliedIndex !== null ? h("span", { className: "ps-wf-replay-supplied", "data-field": "rerun-supplied-marker", title: "Supplied", "aria-hidden": "true",
+            style: { left: at(frames[band.suppliedIndex].atMs) } }) : null,
+        h("span", { className: "ps-wf-replay-start", "data-field": "rerun-start-marker", title: "Re-run starts", "aria-hidden": "true",
+            style: { left: at(frames[band.end].atMs) } }),
+        range) : range;
+    const rerunButton = !live && rerun?.button ? rerun.button : null;
     return h("div", { className: "ps-wf-replay", role: "group", "aria-label": "Timeline", "data-replaying": live ? "false" : "true",
         "data-mode": count === 0 ? "empty" : live ? "live" : "history" },
         h(WorkflowToolButton, { label: "Step back", glyph: "step-back", "data-action": "replay-back", disabled: count < 2 || (position <= 0 && !onOlder),
@@ -1191,11 +1251,12 @@ export function ReplayBar({ frames, index, playing, ended = false, startMs = nul
         h(WorkflowToolButton, { label: "Step on", glyph: "step-on", "data-action": "replay-on", disabled: live,
             title: !live && timelineVisitAt(frames, index + 1) === null ? `Back to ${liveWord}` : "Show the next visit", onClick: () => onGo(index + 1) }),
         h("label", { htmlFor: id, className: "ps-sr-only" }, "Timeline position"),
-        h("input", { id, type: "range", className: "ps-wf-replay-range", min: scale.min, max: scale.max, step: "any",
-            value: count ? frames[position].atMs : scale.min, disabled: count === 0, "aria-valuetext": words,
-            onChange: event => slide(Number(event.target.value)), onKeyDown: keys }),
+        track,
         h("span", { className: "ps-wf-replay-label", title: count === 0 ? undefined
             : workflowTimeTitle(frames[live ? newest : index].atMs) ?? undefined }, words),
+        band ? h("span", { className: "ps-sr-only", "data-field": "rerun-band-words" }, band.label) : null,
+        rerunButton ? h("button", { type: "button", className: "ps-mini-button ps-wf-rerun-button", "data-action": "rerun-from-timeline",
+            disabled: !rerunButton.enabled, title: rerunButton.title, onClick: rerunButton.open }, "Re-run from here…") : null,
         // Live while the graph is live: pressed, and (UXFD-F15) off but still focusable, its title saying why.
         h("button", { type: "button", className: `ps-mini-button ps-wf-replay-live${live && count > 0 ? " is-on" : ""}`, "data-action": "replay-live",
             "aria-disabled": live ? "true" : undefined, "aria-pressed": live, title: live ? `Showing ${liveWord.toLowerCase()}` : `Back to ${liveWord}`,
@@ -1297,7 +1358,7 @@ export function useWorkflowRevisionYaml(controller, sessionId, view, model, want
  * Owner 2026-11-20: its visit's Input and Output follow the timeline: the replayed visit (`replayFrame`) on its own node,
  * else the node's latest visit by then; `visits` (the timeline's, as recorded) give an output recorded after that moment.
  */
-export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null, visits = null }) {
+export function RunNodePanel({ controller, child, selected, onLog = null, replayFrame = null, visits = null, rerun = null }) {
     const { sessionId, view, projection } = child;
     const sessionName = React.useCallback(id => {
         if (typeof child.sessionName === "function") return child.sessionName(id);
@@ -1337,6 +1398,8 @@ export function RunNodePanel({ controller, child, selected, onLog = null, replay
             replay: replayFrame ? { frame: replayFrame, picked: replayPick?.key === replayKey } : null,
             visits: visits ?? projection?.allExecutions ?? null,
             selection: replayFrame ? null : view.selectedExecution ?? null,
+            // Phase 3 I7: Re-run from here… for the visit shown.
+            rerun,
             onBranch: index => {
                 if (replayFrame) setReplayPick({ key: replayKey, index });
                 else setBranchPick({ key: pickKey, index });
@@ -1389,13 +1452,14 @@ export function WorkflowApprovalDetails({ controller, sessionId, approval }) {
  * The Log panel (W10; finding 8). For an agent node: its own Log with its session (AgentNodeLog), or, switched, the whole
  * Workflow's. For any other node: the whole Workflow's, as before.
  */
-function RunLogPanel({ controller, workflowSessionId = null, events, runId, runs = null, selected, scope, onScope, instructionsReadable = true, replay = null }) {
-    if (selected?.kind !== "agent") return h(WorkflowLog, { events, runId, runs, replay });
+function RunLogPanel({ controller, workflowSessionId = null, events, runId, runs = null, selected, scope, onScope, instructionsReadable = true, replay = null,
+    numberOf = null }) {
+    if (selected?.kind !== "agent") return h(WorkflowLog, { events, runId, runs, replay, numberOf });
     return h("div", { className: "ps-wf-log-panel" },
         h("div", { className: "ps-wf-switch is-log", role: "group", "aria-label": "Log of" },
             [["node", `Node ${selected.id}`], ["all", "Whole Workflow"]].map(([id, label]) => h("button", { key: id, type: "button",
                 "aria-pressed": scope === id, className: scope === id ? "is-on" : "", onClick: () => onScope(id) }, label))),
-        scope === "all" ? h(WorkflowLog, { events, runId, runs, replay }) : h(AgentNodeLog, { controller, workflowSessionId, node: selected, events, runId, instructionsReadable }));
+        scope === "all" ? h(WorkflowLog, { events, runId, runs, replay, numberOf }) : h(AgentNodeLog, { controller, workflowSessionId, node: selected, events, runId, instructionsReadable }));
 }
 
 /**
@@ -1472,9 +1536,10 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
  * The Log panel (W10): this Workflow only, newest first, one sentence each. That is its live run's events and the
  * Workflow's own notices (no run id, such as a recovery request); a test run's events never show (test mode is hidden,
  * spec 16, and test runs are not Workflows): which runs are live is the server's word, its read model's runs
- * (workflowLogEvents; review SF-D5).
+ * (workflowLogEvents; review SF-D5). Phase 3 I7: a re-run's reused lines fold into one ("15 steps reused from #2"; `numberOf`
+ * numbers the Workflows); its supplied line stays its own.
  */
-export function WorkflowLog({ events, runId, runs = null, replay = null }) {
+export function WorkflowLog({ events, runId, runs = null, replay = null, numberOf = null }) {
     const all = React.useMemo(() => workflowActivity(workflowLogEvents(events, { runId, runs }), { runId: null, limit: Infinity }), [events, runId, runs]);
     const listRef = React.useRef(null);
     // Stage 2.4 (FU-26): the replay's visit is the marked line, kept in view as the replay moves. Review S2UI-F7: the Log
@@ -1500,6 +1565,7 @@ export function WorkflowLog({ events, runId, runs = null, replay = null }) {
         if (!current) return;
         listRef.current?.querySelector?.('[aria-current="step"]')?.scrollIntoView?.({ block: "nearest" });
     }, [current, shown.found]);
+    const items = React.useMemo(() => workflowRerunLogRows(rows, { numberOf }), [rows, numberOf]);
     if (!rows.length) return h("p", { className: "ps-wf-muted" }, "Nothing yet.");
     const visit = row => row.eventType === "workflow.state_started" && row.nodeExecutionId && replay?.visits?.has(row.nodeExecutionId) ? row.nodeExecutionId : null;
     const note = missing
@@ -1508,7 +1574,13 @@ export function WorkflowLog({ events, runId, runs = null, replay = null }) {
         : shown.around ? h("p", { className: "ps-wf-muted", "data-log": "around" }, "Around the visit shown. Live shows the newest.")
         : null;
     return h(React.Fragment, null, note, h("ol", { className: "ps-wf-log", "aria-label": "Workflow log", ref: listRef },
-        rows.map((row, index) => {
+        items.map((row, index) => {
+            if (row.fold === "reused") {
+                return h("li", { key: `reused-${row.seq ?? index}`, className: "ps-wf-log-fold", "data-log": "reused" },
+                    h("details", null,
+                        h("summary", null, row.at ? h("time", { title: row.atTitle ?? undefined }, row.at) : null, h("span", null, row.what)),
+                        h("ol", { className: "ps-wf-log" }, row.rows.map((item, at) => h("li", { key: item.seq ?? at }, h("span", null, item.what))))));
+            }
             const id = visit(row);
             const isCurrent = id !== null && id === current;
             const text = `${row.what}${row.who ? ` · ${row.who}` : ""}`;
@@ -1590,6 +1662,194 @@ function StopDialog({ controller, sessionId, runId, title, stop, cancel, onClose
             option("stop", "Let started nodes finish, then cancel", "No new node starts; started nodes get up to 60 s.", stop),
             option("cancel", "Cancel now", "Started nodes are canceled.", cancel)),
         h("p", { className: "ps-wf-muted" }, "Effects that already happened are not undone."));
+}
+
+/** One field of the supply editor's Fields view (workflowRerunSupplyFields): text, a number, yes or no, or one of a list. */
+function RerunOutputField({ id, field, value, onChange, disabled }) {
+    const inputId = `${id}-out-${field.name}`;
+    const common = { id: inputId, className: "ps-workflow-input", "data-output-field": field.name, disabled, required: field.required || undefined };
+    let control;
+    if (field.type === "enum" || field.type === "boolean") {
+        const options = field.type === "boolean" ? [true, false] : field.options;
+        control = h("select", { ...common, value: value === undefined || value === null || value === "" ? "" : String(value),
+            onChange: event => onChange(event.target.value === "" ? "" : options.find(option => String(option) === event.target.value)) },
+        h("option", { value: "" }, field.required ? "Choose…" : "Not set"),
+        options.map(option => h("option", { key: String(option), value: String(option) }, field.type === "boolean" ? (option ? "Yes" : "No") : String(option))));
+    } else {
+        control = h("input", { ...common, type: "text", inputMode: field.type === "integer" ? "numeric" : field.type === "number" ? "decimal" : undefined,
+            value: value ?? "", spellCheck: false, onChange: event => onChange(event.target.value) });
+    }
+    return h("div", { className: "ps-wf-field" },
+        h("label", { htmlFor: inputId }, h("span", null, field.label), h("small", { className: "ps-wf-muted" }, ` · ${field.hint}`)), control);
+}
+
+/**
+ * Phase 3 I7 (design §7.2): "Re-run from here…", the confirm sheet of a re-run of ended Workflow `sourceWorkflowId`
+ * (#`sourceNumber`) from one of its visits (`executionId`; null: the server picks it), in `mode` (null: the server's
+ * default). A desktop dialog, or on a phone a bottom sheet. It reads the plan on open (the source revision preselected),
+ * again when the mode, revision or outcome changes, a cleared outcome too (the outcome only, never the output: M6), and
+ * starts #`nextNumber` with the sheet's own operation id, new whenever what it asks changes (N5). Start waits for the plan
+ * read for the sheet's own choice: while it is on its way, or after it failed (with Try again), Start stays off. The supply
+ * editor checks the output's syntax, size and depth here (R2-S4); Start's 422 problems show under it. `plan` gives the
+ * first plan instead of reading it.
+ */
+export function RerunDialog({ controller, ownerId, definitionId = null, name, sourceWorkflowId, sourceNumber = null, nextNumber = null,
+    sourceStartedAt = null, executionId = null, mode = null, locked = false, phone = false, plan: givenPlan = null, onClose, onStarted }) {
+    const id = `wf-rerun-${React.useId().replace(/:/g, "")}`;
+    const [plan, setPlan] = React.useState(givenPlan);
+    const [draft, setDraft] = React.useState(() => (givenPlan ? workflowRerunDraft(givenPlan) : null));
+    // The choice the plan shown was read for (workflowRerunSelectionKey).
+    const [previewed, setPreviewed] = React.useState(() => (givenPlan && draft
+        ? workflowRerunSelectionKey({ ...draft, executionId: givenPlan.from?.executionId }) : null));
+    const [reading, setReading] = React.useState(!givenPlan);
+    const [readError, setReadError] = React.useState(null);
+    const [startError, setStartError] = React.useState(null);
+    const [problems, setProblems] = React.useState([]);
+    const [touched, setTouched] = React.useState(false);
+    const [busy, setBusy] = React.useState(false);
+    const [supplyNever, setSupplyNever] = React.useState(false);
+    const asked = React.useRef(0);
+    const read = async (query, { first = false } = {}) => {
+        const ask = ++asked.current;
+        setReading(true);
+        let result = await controller.readWorkflowRerunPlan(sourceWorkflowId, query);
+        // A reader's graph does not say supply: never; a first visit opened to be supplied then opens to be continued.
+        if (first && !result.ok && result.code === "RERUN_SUPPLY_NOT_ALLOWED" && query.mode === "supply") {
+            setSupplyNever(true);
+            result = await controller.readWorkflowRerunPlan(sourceWorkflowId, { ...query, mode: "continue" });
+        }
+        if (ask !== asked.current) return;
+        setReading(false);
+        if (!result.ok) { setReadError(result.message); return; }
+        setReadError(null);
+        setPlan(result.plan);
+        const opened = first ? workflowRerunDraft(result.plan) : null;
+        if (opened) setDraft(opened);
+        setPreviewed(workflowRerunSelectionKey(opened ? { ...opened, executionId: result.plan.from?.executionId } : query));
+    };
+    React.useEffect(() => { if (!givenPlan) read({ executionId, mode }, { first: true }); }, []);
+    const change = patch => {
+        setDraft(current => workflowRerunDraftChange(current, patch, { plan }));
+        setProblems([]);
+        setStartError(null);
+    };
+    const reread = patch => read({ executionId: plan.from.executionId, mode: draft.mode, revision: draft.revision, outcome: draft.outcome, ...patch });
+    const retry = () => { if (!reading) reread({}); };
+    const sheet = plan && draft ? workflowRerunSheet(plan, { draft, name, sourceNumber, nextNumber, sourceStartedAt, locked, supplyNever }) : null;
+    const fields = plan ? workflowRerunSupplyFields(plan.supplyContract?.resolvedOutputSchema) : null;
+    const supplying = Boolean(sheet && draft.mode === "supply" && plan.supplyContract);
+    const output = supplying ? workflowRerunDraftOutput(draft, plan) : null;
+    const shownProblems = [...(touched && output && !output.ok ? output.problems : []), ...problems];
+    const can = workflowRerunCanStart(draft, plan, { previewed });
+    const ready = Boolean(sheet) && !reading && !readError && can.ok;
+    const editOutput = patch => { setTouched(true); change(patch); };
+    const toJson = () => editOutput({ view: "json", outputText: output?.ok ? JSON.stringify(output.value, null, 2) : JSON.stringify(draft.values ?? {}, null, 2) });
+    const toFields = () => {
+        let values = draft.values;
+        try {
+            const parsed = JSON.parse(draft.outputText || "{}");
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) values = parsed;
+        } catch { /* the fields keep their own values */ }
+        editOutput({ view: "fields", values });
+    };
+    const start = async () => {
+        if (busy || !ready) return;
+        setBusy(true);
+        const result = await controller.startWorkflowRerun(ownerId, workflowRerunStartRequest(draft, { plan, definitionId }));
+        setBusy(false);
+        if (result?.ok) { onStarted?.(result); return; }
+        setProblems(Array.isArray(result?.problems) ? result.problems : []);
+        setStartError(result?.phase === "unconfirmed" && result?.message ? result.message
+            : workflowRefusalText("Start refused", result?.message, "the Workflow was not started."));
+    };
+    const radio = (group, option, onPick) => h("label", { key: String(option.value), className: `ps-wf-choice${option.disabled ? " is-disabled" : ""}` },
+        h("input", { type: "radio", name: `${id}-${group}`, value: String(option.value), checked: Boolean(option.checked), disabled: option.disabled || busy,
+            onChange: () => onPick(option.value) }),
+        h("span", null, option.label, option.reason ? h("small", null, option.reason) : null));
+    const footer = [
+        h("button", { key: "cancel", type: "button", className: "ps-mini-button", onClick: onClose }, "Cancel"),
+        sheet?.blocked
+            ? h("p", { key: "blocked", className: "ps-wf-line is-error", role: "alert", "data-field": "rerun-blocked" }, sheet.blocked)
+            : h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-action": "rerun-start",
+                disabled: !ready, "aria-disabled": busy || undefined,
+                title: readError ? "The plan for this choice could not be read. Try again." : can.ok ? undefined : can.reason ?? undefined, onClick: start },
+            busy ? "Starting…" : sheet?.start ?? "Start"),
+    ];
+    return h(Dialog, { title: sheet?.title ?? `Re-run ${name} from here`, onClose, className: `is-rerun${phone ? " is-sheet" : ""}`, footer },
+        !sheet ? h("p", { className: readError ? "ps-wf-line is-error" : "ps-wf-muted", role: readError ? "alert" : "status" }, readError ?? "Reading the plan…") : h(React.Fragment, null,
+            h("p", { className: "ps-wf-muted ps-wf-dialog-sub" }, sheet.sub),
+            sheet.grantNote ? h("p", { className: "ps-wf-muted", "data-field": "rerun-grant" }, sheet.grantNote) : null,
+            h("div", { className: "ps-wf-field" }, h("span", { className: "ps-wf-label" }, "From"), h("p", { "data-field": "rerun-from" }, sheet.from)),
+            h("fieldset", { className: "ps-wf-rerun-group", "data-field": "rerun-revision" },
+                h("legend", { className: "ps-wf-label" }, "Revision"),
+                sheet.revisions.map(option => radio("revision", option, value => {
+                    if (value === draft.revision) return;
+                    change({ revision: value });
+                    reread({ revision: value });
+                })),
+                sheet.revisionNote ? h("small", { className: "ps-wf-muted" }, sheet.revisionNote) : null),
+            h("fieldset", { className: "ps-wf-rerun-group", "data-field": "rerun-mode" },
+                h("legend", { className: "ps-wf-label" }, "Mode"),
+                sheet.modes.map(option => radio("mode", option, value => {
+                    if (value === draft.mode) return;
+                    change({ mode: value });
+                    reread({ mode: value, outcome: value === "supply" ? draft.outcome : null });
+                })),
+                sheet.supplyNote ? h("small", { className: "ps-wf-muted", "data-field": "rerun-supply-never" }, sheet.supplyNote) : null),
+            supplying ? h("div", { className: "ps-wf-rerun-supply", "data-field": "rerun-supply" },
+                h("div", { className: "ps-wf-field" },
+                    h("label", { htmlFor: `${id}-outcome` }, "Outcome *"),
+                    h("select", { id: `${id}-outcome`, className: "ps-workflow-input", "data-field": "rerun-outcome", value: draft.outcome ?? "", disabled: busy,
+                        onChange: event => {
+                            const outcome = event.target.value || null;
+                            change({ outcome });
+                            reread({ mode: "supply", outcome });
+                        } },
+                    h("option", { value: "" }, "Choose an outcome…"),
+                    sheet.outcomes.map(option => h("option", { key: option.value, value: option.value }, option.label)))),
+                h("div", { className: "ps-wf-field", "data-field": "rerun-output" },
+                    h("div", { className: "ps-wf-rerun-output-head" },
+                        h("span", { className: "ps-wf-label", id: `${id}-output` }, "Output"),
+                        fields ? h("span", { className: "ps-wf-rerun-toggle", role: "group", "aria-label": "Edit the output as" },
+                            h("button", { type: "button", className: "ps-link-button", "data-action": "rerun-output-fields", "aria-pressed": draft.view === "fields",
+                                onClick: () => { if (draft.view !== "fields") toFields(); } }, "Fields"),
+                            h("span", { "aria-hidden": "true" }, " | "),
+                            h("button", { type: "button", className: "ps-link-button", "data-action": "rerun-output-json", "aria-pressed": draft.view === "json",
+                                onClick: () => { if (draft.view !== "json") toJson(); } }, "JSON")) : null),
+                    sheet.outputHint ? h("small", { className: "ps-wf-muted" }, sheet.outputHint) : null,
+                    draft.view === "fields" && fields
+                        ? fields.map(field => h(RerunOutputField, { key: field.name, id, field, value: draft.values?.[field.name], disabled: busy,
+                            onChange: value => editOutput({ values: { ...draft.values, [field.name]: value } }) }))
+                        : h("textarea", { className: "ps-workflow-input is-code", "data-field": "rerun-output-json", "aria-labelledby": `${id}-output`,
+                            rows: Math.min(10, Math.max(3, String(draft.outputText ?? "").split("\n").length)), value: draft.outputText ?? "", spellCheck: false,
+                            disabled: busy, onChange: event => editOutput({ outputText: event.target.value }) }),
+                    plan.supplyContract.resolvedOutputSchema && !(draft.view === "fields" && fields)
+                        ? h("details", { className: "ps-wf-rerun-schema", "data-field": "rerun-schema" }, h("summary", null, "Schema hint"),
+                            h("pre", null, JSON.stringify(plan.supplyContract.resolvedOutputSchema, null, 2))) : null,
+                    shownProblems.length ? h("ul", { className: "ps-wf-rerun-problems", role: "alert", "data-field": "rerun-output-problems" },
+                        shownProblems.map((problem, at) => h("li", { key: at }, `${problem.path && problem.path !== "/output" ? `${problem.path}: ` : ""}${problem.message}`)))
+                        : null),
+                h("div", { className: "ps-wf-field" },
+                    h("label", { htmlFor: `${id}-note` }, "Why *"),
+                    h("textarea", { id: `${id}-note`, className: "ps-workflow-input", "data-field": "rerun-note", rows: 2, maxLength: 2000, required: true,
+                        placeholder: "Why is this result supplied?", value: draft.note, disabled: busy, onChange: event => change({ note: event.target.value }) }))) : null,
+            h("p", { className: `ps-wf-line${supplying ? " is-supplied" : ""}`, "data-field": "rerun-effect" }, sheet.effect),
+            sheet.problems.length ? h("ul", { className: "ps-wf-rerun-problems", role: "alert", "data-field": "rerun-revision-problems" },
+                sheet.problems.map((message, at) => h("li", { key: at }, message))) : null,
+            sheet.warnings.length ? h("ul", { className: "ps-wf-rerun-warnings", "data-field": "rerun-warnings" },
+                sheet.warnings.map((message, at) => h("li", { key: at }, message))) : null,
+            h("details", { className: "ps-wf-rerun-reused", "data-field": "rerun-reused" },
+                h("summary", null, sheet.reused.summary),
+                sheet.reused.lines.length ? h("ul", null, sheet.reused.lines.map(line => h("li", { key: line }, line))) : null,
+                sheet.reused.carried ? h("p", { "data-field": "rerun-carried" }, sheet.reused.carried) : null),
+            h("p", { className: "ps-wf-muted", "data-field": "rerun-undo" },
+                `Cannot be undone: ${sourceNumber ? `#${sourceNumber}` : "the Workflow"} stays as it is, and what its steps did stays done.`),
+            readError ? h("div", { className: "ps-wf-field", "data-field": "rerun-read-error" },
+                h("p", { className: "ps-wf-line is-error", role: "alert" }, readError),
+                h("div", { className: "ps-wf-field-actions" },
+                    h("button", { type: "button", className: "ps-mini-button", "data-action": "rerun-retry", "aria-disabled": reading || undefined,
+                        onClick: retry }, "Try again"))) : null,
+            startError ? h("p", { className: "ps-wf-line is-error", role: "alert", "data-field": "rerun-start-error" }, startError) : null));
 }
 
 

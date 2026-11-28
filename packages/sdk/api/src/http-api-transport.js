@@ -1,5 +1,6 @@
 import { ApiClient } from "./api-client.js";
 import { createCanvasLiveMirror } from "./canvas-live-mirror.js";
+import { requireWorkflowRerun, sendsWorkflowRerun } from "./workflow-rerun-guard.js";
 
 /**
  * Flatten an agent-package copy selector into wire params.
@@ -273,7 +274,16 @@ export class HttpApiTransport {
      * and any other value is sent for the server to check. The session id is always the argument's.
      */
     async readWorkflow(sessionId, options = {}) {
-        return this.api.call("readWorkflow", { ...options, sessionId });
+        return this._callWorkflow("readWorkflow", { ...options, sessionId });
+    }
+
+    /**
+     * Phase 3 I7 (M1): a Workflow call that sends a re-run (rerunFrom, rerunPlan) goes only to a server whose bootstrap, read
+     * again now, advertises workflows.rerun: true (501 WORKFLOW_API_UNAVAILABLE, nothing sent, otherwise); any other is sent as it is.
+     */
+    async _callWorkflow(name, params) {
+        if (sendsWorkflowRerun(name, params)) await requireWorkflowRerun(() => this.refreshWorkflowCapabilities());
+        return this.api.call(name, params);
     }
 
     /** Workflow: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
@@ -309,7 +319,7 @@ export class HttpApiTransport {
 
     /** Stage 2.1: a person starts a Workflow from a revision (startSessionWorkflowDefinition, session:manage). */
     async startSessionWorkflowDefinition(sessionId, request) {
-        return this.api.call("startSessionWorkflowDefinition", { sessionId, ...request });
+        return this._callWorkflow("startSessionWorkflowDefinition", { sessionId, ...request });
     }
 
     /** Stage 2.1: a person deletes a definition (deleteSessionWorkflowDefinition, session:manage). */

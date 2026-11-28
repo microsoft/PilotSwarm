@@ -1,4 +1,4 @@
-import type { ApiClient } from "pilotswarm-sdk/api";
+import { requireWorkflowRerun, sendsWorkflowRerun, type ApiClient } from "pilotswarm-sdk/api";
 import {
     PilotSwarmWebOptions,
     createApiClientFromOptions,
@@ -56,7 +56,18 @@ export class WebPilotSwarmManagementClient {
 
     constructor(options: PilotSwarmWebOptions) {
         this._api = createApiClientFromOptions(options);
-        this.ops = createManagementOps((name, params) => this._api.call(name, params));
+        this.ops = createManagementOps((name, params) => this._call(name, params));
+    }
+
+    /**
+     * Phase 3 I7 (M1): the dispatch of `ops` and of the Workflow methods. A call that sends rerunFrom or rerunPlan goes only to a
+     * server that advertises workflows.rerun: an older server ignores rerunFrom and would start a fresh run from step 1, so a
+     * missing advert, one without rerun, or a bootstrap that cannot be read fails closed (501 WORKFLOW_API_UNAVAILABLE) before
+     * anything is sent.
+     */
+    private async _call(name: string, params: Record<string, unknown>): Promise<any> {
+        if (sendsWorkflowRerun(name, params)) await requireWorkflowRerun(() => this.getWorkflowCapabilities());
+        return this._api.call(name, params);
     }
 
     async start(): Promise<void> {
@@ -346,7 +357,7 @@ export class WebPilotSwarmManagementClient {
      * and any other value is sent for the server to check. The session id is always the argument's.
      */
     async readWorkflow(sessionId: string, options: WorkflowReadOptions = {}): Promise<any> {
-        return this._api.call("readWorkflow", { ...options, sessionId });
+        return this._call("readWorkflow", { ...options, sessionId });
     }
 
     /** Stage 2.1: a session's Workflow Definitions (listSessionWorkflowDefinitions, session:read). */
@@ -378,8 +389,11 @@ export class WebPilotSwarmManagementClient {
     /** Stage 2.1: a person starts a Workflow from a revision (startSessionWorkflowDefinition, session:manage). */
     async startSessionWorkflowDefinition(ownerSessionId: string, request: { definitionId?: string | null; name?: string | null; revision?: number | null; runAgainOf?: string | null;
         agentModels?: unknown; decisionModels?: unknown; inputs?: unknown; vars?: Record<string, unknown> | null; notifyParent?: boolean;
-        operationId: string; key?: string; workspace?: unknown }, options: { originatingSessionId?: string | null } = {}): Promise<any> {
-        return this._api.call("startSessionWorkflowDefinition", {
+        operationId: string; key?: string; workspace?: unknown;
+        /** Phase 3 I7: re-run an ended Workflow of this definition from a step; only a server that advertises workflows.rerun takes it. */
+        rerunFrom?: { workflowId: string; executionId?: string | null; mode?: "run_again" | "continue" | "supply" | null; result?: unknown; note?: unknown } | null;
+        viaMcp?: boolean }, options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        return this._call("startSessionWorkflowDefinition", {
             sessionId: ownerSessionId,
             ...request,
             ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}),

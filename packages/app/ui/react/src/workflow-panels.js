@@ -557,10 +557,12 @@ export function WorkflowAgentLog({ log, failed = null, onMore = null, nodeId = n
  * (a chosen branch's); while the timeline shows a moment (`replay`: { frame, picked }, picked when a branch was chosen
  * then), the replayed visit itself on its own node, else the node's latest visit by then. `visits`: every loaded visit as
  * recorded, for the output a visit recorded after the moment shown. Its output is the node's result; only live, while
- * the visit shown runs, is an earlier visit's result shown apart, said as that visit's.
+ * the visit shown runs, is an earlier visit's result shown apart, said as that visit's. Phase 3 I7: `rerun` ({ stateOf(visit,
+ * node), open(executionId, mode), numberOf, workflowNumber }) offers Re-run from here… for the visit shown, and numbers the
+ * Workflows a reused or supplied visit came from.
  */
 export function WorkflowNodeSummary({ selected, nodes, select, openSession = null, runId = null, executionValues = null, onReadWholeValue = null,
-    branchIndex = null, onBranch = null, onLog = null, sections = null, replay = null, visits = null, selection = null, sessionName = null }) {
+    branchIndex = null, onBranch = null, onLog = null, sections = null, replay = null, visits = null, selection = null, sessionName = null, rerun = null }) {
     const branch = workflowBranchChoice(selected.branches, branchIndex);
     const current = branch ? branch.execution : selected.current ?? null;
     // Review UI-3: a chosen item shows its own result (its latest ended visit in that item), never another item's.
@@ -572,7 +574,9 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
         frame: replay?.frame ?? null, picked: replay?.picked === true });
     const visitReceive = selected.kind === "receive"
         ? workflowNodeSummary(selected, { execution: visit ?? current, sessionName }).receive : null;
-    const io = visit ? workflowVisitIo(selected, visit, { recorded: workflowRecordedVisit(visits, visit), atMs: replay?.frame?.atMs ?? null }) : null;
+    const io = visit ? workflowVisitIo(selected, visit, { recorded: workflowRecordedVisit(visits, visit), atMs: replay?.frame?.atMs ?? null,
+        numberOf: rerun?.numberOf ?? null, workflowNumber: rerun?.workflowNumber ?? null }) : null;
+    const rerunState = rerun && visit ? rerun.stateOf(workflowRecordedVisit(visits, visit) ?? visit, selected) : null;
     const apart = summary.result && (!io || (!replay && io.output.kind === "pending" && summary.result.executionId !== io.id)) ? summary.result : null;
     const apartVisit = apart && io ? (selected.executions ?? []).find(item => item?.id === apart.executionId) : null;
     const result = apart ? { ...apart, label: `${apart.label}${Number.isSafeInteger(apartVisit?.ordinal) ? ` · visit ${apartVisit.ordinal}` : ""}` } : null;
@@ -622,7 +626,9 @@ export function WorkflowNodeSummary({ selected, nodes, select, openSession = nul
                     .map(item => `${item.label} ${workflowDecisionPercentage(item.probability)}`).join(" · "), { "data-fact": "decision-levels" }) : null,
             summary.decision?.latency ? fact("Latency", summary.decision.latency, { "data-fact": "decision-latency" }) : null),
         summary.decision?.warning ? h("p", { className: "ps-wf-muted", role: "status", "data-field": "decision-warning" }, summary.decision.warning) : null,
-        io ? h(WorkflowVisitSection, { key: io.id, io, result: !result, runId, executionValues, onReadWholeValue }) : null,
+        io ? h(WorkflowVisitSection, { key: io.id, io, result: !result, runId, executionValues, onReadWholeValue, onOpenOrigin: openSession }) : null,
+        rerunState ? h("button", { type: "button", className: "ps-mini-button ps-wf-rerun-button", "data-action": "rerun-from-node", "data-execution": visit.id,
+            disabled: !rerunState.enabled, title: rerunState.title, onClick: () => rerun.open(visit.id, rerunState.mode) }, "Re-run from here…") : null,
         result ? h("div", { className: `ps-wf-result${result.error ? " is-error" : ""}`, "data-fact": "result" },
             h("h3", null, result.label),
             h(CodeBlock, { text: result.text, language: "auto" }),

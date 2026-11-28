@@ -123,3 +123,52 @@ test("recorded 1.2.0 decision-continue-as-new: the resumed execution keeps the p
     assert.ok(!resumed.events.some(({ task }) => task.kind === "start"));
     assert.equal(resumed.result.status, "completed");
 });
+
+// ── Phase 3 I7: pass-over replay histories on the unchanged 1.3.0 controller ──
+
+const passoverRecordings = JSON.parse(readFileSync(new URL("../fixtures/workflow-rerun-passover-history.json", import.meta.url)));
+
+test("pass-over histories pin the unchanged controller version and never start effects on reused/supplied steps", () => {
+    assert.equal(passoverRecordings.controllerVersion, WORKFLOW_CONTROLLER_VERSION);
+    assert.equal(passoverRecordings.histories.length, 6);
+    const byName = Object.fromEntries(passoverRecordings.histories.map(h => [h.scenario.name, h]));
+    // script-and-agent: step1 + agent1 passed over (0 starts), only post-cut step2 starts 1 workflow-effect; agent1 gets endAgent no-op.
+    const saTasks = byName["rerun-passover-script-and-agent"].events.map(({ task }) => task);
+    assert.deepEqual(saTasks.filter(t => t.kind === "start").map(t => t.input.nodeExecutionId), ["nx-step2"]);
+    assert.ok(!saTasks.some(t => t.name === "workflow.spawnAgent"));
+    // supply-to-terminal: 0 effects started!
+    const stTasks = byName["rerun-passover-supply-to-terminal"].events.map(({ task }) => task);
+    assert.equal(stTasks.filter(t => t.kind === "start").length, 0);
+    // parallel: step1 + fan passed over (0 lane enters), only finish starts 1 workflow-effect!
+    const parTasks = byName["rerun-passover-parallel"].events.map(({ task }) => task);
+    assert.deepEqual(parTasks.filter(t => t.kind === "start").map(t => t.input.nodeExecutionId), ["nx-finish"]);
+    assert.ok(!parTasks.some(t => t.name === "workflow.enter" && t.input.nodeId === "lane"));
+    // supplied agent V': step1 reused + agent1 supplied ("override") passed over with 0 starts and no spawnAgent; only step2 starts!
+    const supAgentTasks = byName["rerun-passover-supplied-agent"].events.map(({ task }) => task);
+    assert.deepEqual(supAgentTasks.filter(t => t.kind === "start").map(t => t.input.nodeExecutionId), ["nx-step2"]);
+    assert.ok(!supAgentTasks.some(t => t.name === "workflow.spawnAgent"));
+    assert.ok(supAgentTasks.some(t => t.name === "workflow.endAgents"));
+    // The singular endAgent of a reused and a supplied agent row answers as the runtime's pass-over no-op does.
+    for (const scenario of ["rerun-passover-script-and-agent", "rerun-passover-supplied-agent"]) {
+        const ends = byName[scenario].events.filter(({ task }) => task.name === "workflow.endAgent");
+        assert.deepEqual(ends.map(({ task, reply }) => [task.input.nodeExecutionId, reply]), [["nx-agent1", { end: "done", sent: false }]], scenario);
+    }
+    // 25-admission continue-as-new pass-over: s1..s25 passed over (0 starts) -> continue-as-new -> s26 passed over -> only s27 starts!
+    const canMoved = byName["rerun-passover-continue-as-new"];
+    const canResumed = byName["rerun-passover-continue-as-new-resumed"];
+    assert.ok(canMoved.can && !canResumed.can);
+    assert.deepEqual(canResumed.input, canMoved.can.input);
+    assert.equal(canMoved.events.filter(({ task }) => task.kind === "start").length, 0);
+    assert.deepEqual(
+        canResumed.events.filter(({ task }) => task.kind === "start").map(({ task }) => task.input.nodeExecutionId),
+        ["nx-s27"],
+    );
+    assert.equal(canResumed.result.status, "completed");
+});
+
+for (const history of passoverRecordings.histories) {
+    test(`${history.version} replays pass-over ${history.scenario.name} with an identical schedule`, () => {
+        replayControllerHistory(handlerOf(history.version), history, WORKFLOW_CONTROLLER_VERSION);
+    });
+}
+

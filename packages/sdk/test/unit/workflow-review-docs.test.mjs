@@ -40,3 +40,31 @@ test("PRA-F4: no doc says a 1.0.82 turn lacks the test operation, or that workfl
     assert.match(sessions, /Every turn declares `test`/);
     assert.doesNotMatch(doc("building-agent-packages.md"), /not enabled in deployments yet/);
 });
+
+test("Phase 3 I7 (S8, S9, N12): the docs say how to re-run from a step, its v1 limits, and the 0104 deploy and rollback rule", () => {
+    const flat = (text) => text.replace(/\s+/g, " ");
+    const guide = flat(doc("user-guide/workflows.md"));
+    assert.match(guide, /## Go on from a step that failed/);
+    assert.match(guide, /### Current limits of a re-run/);
+    for (const want of ["To keep a message a step already received, re-run from the step after it.", "Re-run the whole parallel step",
+        "That step and every step after it run again", "Supply only values you checked", "5 minutes to 6 hours", "256 MiB",
+        "rerun_from", "rerun_plan", "workflow-rerun"]) {
+        assert.ok(guide.includes(want), `workflows.md: ${want}`);
+    }
+    const sessions = flat(doc("developer/building/workflow-sessions.md"));
+    for (const want of ["## Re-running from a step", "rerun_from", "rerun_plan", "rerunFrom", "rerunPlan", "`viaMcp`", "workflows.rerun",
+        "`visit.reused`", "`visit.supplied`", "`run.rerunOf`", "workflow-rerun", "To keep a message a step already received, re-run from the step after it."]) {
+        assert.ok(sessions.includes(want), `workflow-sessions.md: ${want}`);
+    }
+    const mcp = flat(fs.readFileSync(new URL("../../../app/mcp/README.md", import.meta.url), "utf8"));
+    for (const want of ["rerun_from", "rerun_plan", "403 RERUN_APPROVAL_REUSED", "workflows.rerun: true", "workflow-rerun"]) {
+        assert.ok(mcp.includes(want), `mcp/README.md: ${want}`);
+    }
+    const drain = "rerun_of_run_id IS NOT NULL AND status IN ('admitted', 'running', 'paused')";
+    const changelog = flat(fs.readFileSync(new URL("../../../../CHANGELOG.md", import.meta.url), "utf8"));
+    for (const [name, text] of [["aks.md", flat(doc("developer/deploy/aks.md"))], ["CHANGELOG.md", changelog]]) {
+        assert.match(text, /`0104`/, `${name}: migration 0104`);
+        assert.match(text, /[Ss]cale every worker, the portal and any Web-mode MCP deployment to `0`/, `${name}: scale to 0 before 0104`);
+        assert.ok(text.includes(drain), `${name}: drain active re-runs before a rollback`);
+    }
+});

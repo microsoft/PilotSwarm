@@ -193,6 +193,8 @@ export interface WorkflowIRScript extends WorkflowIRCarrying {
     outcomes: string[];
     /** Route label -> target node. Includes runtime routes (failure and error codes). */
     next: Record<string, string>;
+    /** Present only when YAML sets `supply: never` (omitted when unset so WORKFLOW_IR_VERSION=1 & irSha256 stay unchanged). */
+    supply?: "never";
 }
 
 export interface WorkflowIRTerminal extends WorkflowIRAnnotations {
@@ -403,6 +405,8 @@ export interface WorkflowIRAgent extends WorkflowIRCarrying {
     grant?: CapabilityToolGrant;
     /** Tools that this agent must call at least once in each visit before reporting an outcome. */
     requiredTools?: string[];
+    /** Present only when YAML sets `supply: never` (omitted when unset so WORKFLOW_IR_VERSION=1 & irSha256 stay unchanged). */
+    supply?: "never";
 }
 
 /**
@@ -719,7 +723,12 @@ function warnUnhandledFailure(path: string, next: Record<string, string>, hasCat
 
 function compileScript(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRScript | null {
     const path = `states.${id}`;
-    checkKeys(raw, ["type", "description", "runtime", "source", "timeoutSeconds", "input", "inputSchema", "outputSchema", "outcomes", "transition"], path, diagnostics);
+    checkKeys(raw, ["type", "description", "runtime", "source", "timeoutSeconds", "input", "inputSchema", "outputSchema", "outcomes", "transition", "supply"], path, diagnostics);
+    let supply: "never" | undefined;
+    if (raw.supply !== undefined) {
+        if (raw.supply === "never") supply = "never";
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.supply`, "supply must be 'never' when given (omitting it allows supplying this step's result on re-run).");
+    }
     if (raw.runtime !== undefined && raw.runtime !== "node") {
         diagnostics.error("WORKFLOW_RUNTIME_UNSUPPORTED", `${path}.runtime`, "Workflow scripts run as Node ES modules; runtime must be 'node' when given.");
     }
@@ -771,6 +780,7 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
         id, type: "script", description: optionalText(raw.description, `${path}.description`, diagnostics),
         source, timeoutSeconds, hasInput, input,
         inputSchema, outputSchema, outcomes, next,
+        ...(supply !== undefined ? { supply } : {}),
     };
 }
 
@@ -1453,7 +1463,12 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     diagnostics: Diagnostics): WorkflowIRAgent | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "session",
-        "tools", "grant", "requiredTools"], path, diagnostics);
+        "tools", "grant", "requiredTools", "supply"], path, diagnostics);
+    let supply: "never" | undefined;
+    if (raw.supply !== undefined) {
+        if (raw.supply === "never") supply = "never";
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.supply`, "supply must be 'never' when given (omitting it allows supplying this step's result on re-run).");
+    }
     let session: "continue" | null = null;
     if (raw.session !== undefined && raw.session !== "new") {
         if (raw.session === "continue") session = "continue";
@@ -1583,6 +1598,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
         ...(session !== null ? { session } : {}),
         ...(tools !== null ? { tools } : {}),
         ...(grant !== undefined ? { grant } : {}),
+        ...(supply !== undefined ? { supply } : {}),
     };
 }
 
@@ -2918,12 +2934,14 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         if (node.type === "script") {
             need(typeof node.source === "string" && typeof node.timeoutSeconds === "number" && typeof node.hasInput === "boolean"
                 && Object.hasOwn(node, "input") && nullableString(node.inputSchema) && nullableString(node.outputSchema)
-                && stringArray(node.outcomes) && stringMap(node.next),
+                && stringArray(node.outcomes) && stringMap(node.next)
+                && (node.supply === undefined || node.supply === "never"),
                 `stored IR script ${id} is invalid`);
             nodes[id] = {
                 id, type: "script", description: node.description, source: node.source, timeoutSeconds: node.timeoutSeconds,
                 hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 outcomes: node.outcomes, next: node.next,
+                ...(node.supply === "never" ? { supply: "never" as const } : {}),
             };
         } else if (node.type === "approval") {
             need(typeof node.question === "string" && node.question.trim().length > 0 && node.question.length <= 4_000 && node.approver === "owner"
@@ -3062,6 +3080,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 && (node.grant === undefined || isCapabilityToolGrant(node.grant))
                 && (node.tools === undefined || (stringArray(node.tools) && node.tools.length <= WORKFLOW_AGENT_TOOLS_MAX
                     && node.tools.every(name => WORKFLOW_AGENT_TOOL_NAME.test(name))))
+                && (node.supply === undefined || node.supply === "never")
                 && (node.requiredTools === undefined || (stringArray(node.requiredTools)
                     && node.requiredTools.length >= 1 && node.requiredTools.length <= 16
                     && new Set(node.requiredTools).size === node.requiredTools.length
@@ -3082,6 +3101,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 ...(Array.isArray(node.tools) ? { tools: [...node.tools as string[]] } : {}),
                 ...(isCapabilityToolGrant(node.grant) ? { grant: Array.isArray(node.grant) ? [...node.grant] : node.grant } : {}),
                 ...(Array.isArray(node.requiredTools) ? { requiredTools: [...node.requiredTools as string[]] } : {}),
+                ...(node.supply === "never" ? { supply: "never" as const } : {}),
             };
         } else if (node.type === "parallel") {
             const body = node.body;

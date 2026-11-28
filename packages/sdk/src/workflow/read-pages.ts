@@ -150,3 +150,17 @@ export const WORKFLOW_READ_STATUS: Readonly<Record<string, number>> = Object.fre
     // The workflow store cannot be reached or has no room now (batch 7, n-3): try again.
     WORKFLOW_STORE_UNAVAILABLE: 503,
 });
+
+/**
+ * Phase 3 I7: the HTTP status of each refusal a re-run plan read (rerunPlan) gives, as Start gives it (design §6.3). A plan
+ * that does not fit, or a supplied outcome that is not valid, is read as 200 (fits: false; supply.valid: false), never refused.
+ */
+export const WORKFLOW_RERUN_READ_STATUS: Readonly<Record<string, number>> = Object.freeze({
+    RERUN_VISIT_NOT_FOUND: 404, RERUN_VISIT_REQUIRED: 400, RERUN_SOURCE_ACTIVE: 409, RERUN_SOURCE_GONE: 409,
+    RERUN_NOT_A_WORKFLOW: 422, RERUN_VISIT_NOT_ALLOWED: 422, RERUN_SUPPLY_NOT_ALLOWED: 422, DEFINITION_INVALID: 422,
+});
+
+/** The HTTP status of a read's refusal (WORKFLOW_READ_STATUS, then WORKFLOW_RERUN_READ_STATUS); undefined for any other code. */
+export function workflowReadStatus(code: string): number | undefined {
+    return WORKFLOW_READ_STATUS[code] ?? WORKFLOW_RERUN_READ_STATUS[code];
+}

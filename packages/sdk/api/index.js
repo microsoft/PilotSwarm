@@ -37,6 +37,7 @@ export {
     canvasArtifactFilename,
 } from "./src/canvas-slots.js";
 export { HttpApiTransport } from "./src/http-api-transport.js";
+export { requireWorkflowRerun, sendsWorkflowRerun } from "./src/workflow-rerun-guard.js";
 export {
     NON_MANAGEMENT_OPERATION_OWNERS,
     WEB_MODE_UNSUPPORTED_OPERATION_METHODS,

@@ -84,10 +84,75 @@ export function workflowDefinitionToolSpec() {
                 update: { type: "boolean", description: "start: a package's newer version." },
                 key: { type: "string", minLength: 1, maxLength: 128,
                     description: "start: exact idempotency key in this session. Reuse it for a retry; use a new key for another attempt." },
+                rerun_from: WORKFLOW_RERUN_FROM_SCHEMA,
             },
             required: ["operation"],
         },
     } as const;
+}
+
+/** start's rerun_from (Phase 3 I7, design §6.4): the ended Workflow, the visit and how to re-run from it. */
+const WORKFLOW_RERUN_FROM_SCHEMA = {
+    type: "object",
+    description: "start: re-run an ended Workflow from a step, reusing the steps before it (call load_skill with name workflow-rerun). "
+        + "mode supply gives one script or agent step's result, with a note. Revision defaults to that Workflow's. Omit inputs and workspace.",
+    properties: {
+        workflow_id: { type: "string" },
+        execution_id: { type: "string" },
+        mode: { type: "string", enum: ["run_again", "continue", "supply"] },
+        result: { type: "object", properties: { outcome: { type: "string" }, output: {} }, required: ["outcome"], additionalProperties: false },
+        note: { type: "string", maxLength: 2000 },
+    },
+    required: ["workflow_id"],
+    additionalProperties: false,
+} as const;
+
+const RERUN_FROM_KEYS = ["workflow_id", "execution_id", "mode", "result", "note"];
+
+/**
+ * start's rerun_from as Start takes it (rerunFrom), or null when absent. The arguments a re-run inherits from its source
+ * (inputs, workspace) or that name another start (run_again_of, rerun_from.child) are refused here, before anything is read
+ * (400 RERUN_ARGUMENT_REFUSED); Start checks the rest.
+ */
+function rerunFromArg(args: Args): { workflowId: string; executionId?: string; mode?: string; result?: unknown; note?: unknown } | null {
+    const value = args.rerun_from;
+    if (value === undefined || value === null) return null;
+    const refused = (message: string) => new WorkflowStoreError("RERUN_ARGUMENT_REFUSED", message);
+    if (typeof value !== "object" || Array.isArray(value)) throw refused("rerun_from must be { workflow_id, execution_id?, mode?, result?, note? }.");
+    const from = value as Record<string, unknown>;
+    const extra = Object.keys(from).filter(key => !RERUN_FROM_KEYS.includes(key));
+    if (extra.length) throw refused(`rerun_from takes ${RERUN_FROM_KEYS.join(", ")}; leave out ${extra.join(", ")}.`);
+    if (typeof from.workflow_id !== "string" || !from.workflow_id.trim()) throw refused("rerun_from.workflow_id must name an ended Workflow.");
+    if (from.execution_id !== undefined && from.execution_id !== null && (typeof from.execution_id !== "string" || !from.execution_id.trim())) {
+        throw refused("rerun_from.execution_id, when given, must be a node execution id.");
+    }
+    const inputs = args.inputs;
+    if (inputs !== undefined && inputs !== null && !(typeof inputs === "object" && !Array.isArray(inputs) && Object.keys(inputs).length === 0)) {
+        throw refused("A re-run takes the source Workflow's inputs: omit inputs with rerun_from.");
+    }
+    if (Object.hasOwn(args, "workspace")) throw refused("A re-run keeps the source Workflow's workspace: omit workspace with rerun_from.");
+    if (args.run_again_of !== undefined && args.run_again_of !== null) throw refused("rerun_from cannot be combined with run_again_of.");
+    return {
+        workflowId: from.workflow_id,
+        ...(typeof from.execution_id === "string" ? { executionId: from.execution_id } : {}),
+        ...(from.mode !== undefined && from.mode !== null ? { mode: from.mode as string } : {}),
+        ...(from.result !== undefined ? { result: from.result } : {}),
+        ...(from.note !== undefined ? { note: from.note } : {}),
+    };
+}
+
+/**
+ * The definition a re-run starts from when the call names none: the session definition `workflowId` was started from, which
+ * must be this session's (an ancestor reads the Workflow, but only its definition's owner starts it again: 404).
+ */
+async function rerunSourceDefinition(host: WorkflowHost, session: string, workflowId: string): Promise<{ definitionId: string; name: string; locked: boolean }> {
+    const source = await host.store.readDefinition(workflowId);
+    const definition = typeof source?.sessionDefinitionId === "string"
+        ? await host.store.sessionDefinitions.readDefinition(source.sessionDefinitionId) : null;
+    if (!definition || definition.ownerSessionId !== session) {
+        throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Workflow ${workflowId} was not started from a Workflow Definition of this session.`);
+    }
+    return { definitionId: definition.definitionId, name: definition.name, locked: definition.locked };
 }
 
 /** The declaration. */
@@ -308,7 +373,15 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
         }
         if (operation === "start") {
             if (!context.toolCallId) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "start needs a tool call id.");
-            if (!ref.definitionId && !ref.name) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "start needs name or definition_id.");
+            // Phase 3 I7: a re-run names its definition through the Workflow it re-runs (M4a); with update, through the package
+            // definition's name, so a newer version is attached before it starts (M4b).
+            const rerunFrom = rerunFromArg(args);
+            let startBase = ref;
+            if (rerunFrom && !ref.definitionId && !ref.name) {
+                const source = await rerunSourceDefinition(context.host, session, rerunFrom.workflowId);
+                startBase = args.update === true && source.locked ? { definitionId: null, name: source.name } : { definitionId: source.definitionId, name: null };
+            }
+            if (!startBase.definitionId && !startBase.name) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "start needs name or definition_id.");
             const inputs = objectArg(args, "inputs") ?? {};
             const vars = objectArg(args, "vars");
             let revision = intArg(args, "revision");
@@ -318,13 +391,13 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
             const decisionModels = parseWorkflowDecisionModels(args.decision_models);
             mergeWorkflowAgentModels(agentModels, decisionModels);
             const { workspace, workspaceDefaults, workspaceWorkingDirectory, workspaceInherited } = await resolveWorkflowStartWorkspace(args, context);
-            let startRef: { definitionId?: string | null; name?: string | null } = ref;
+            let startRef: { definitionId?: string | null; name?: string | null } = startBase;
             const prior = args.key !== undefined ? await storedStartPin(context.host,
                 workflowStartSessionId(session, `definition:${context.toolCallId}`, args.key)) : null;
             // Stage 2.3 (P2, P4–P6): a package's definition is attached first when this session does not have it yet (or, with
             // update, when the package has a newer version); the start then pins exactly the revision attached.
-            if (!prior && !ref.definitionId && ref.name && ref.name.includes("/")) {
-                const packageRef = requirePackageRef(ref.name).ref;
+            if (!prior && !startBase.definitionId && startBase.name && startBase.name.includes("/")) {
+                const packageRef = requirePackageRef(startBase.name).ref;
                 const attached = await context.host.store.sessionDefinitions.readDefinitionByName(session, packageRef);
                 if (!attached || args.update === true) {
                     // Option a (owner 2026-11-11): any package definition the session's owner can see; the attach refuses one
@@ -346,9 +419,12 @@ export async function workflowDefinitionFromTool(args: Args, context: WorkflowDe
                 ...(workspaceWorkingDirectory !== undefined ? { workspaceWorkingDirectory } : {}),
                 ...(workspaceInherited ? { workspaceInherited: true } : {}),
                 ...(args.agent_models !== undefined && args.agent_models !== null ? { agentModels: agentModels ?? {} } : {}),
-                ...(args.decision_models !== undefined && args.decision_models !== null ? { decisionModels: decisionModels ?? {} } : {}) });
+                ...(args.decision_models !== undefined && args.decision_models !== null ? { decisionModels: decisionModels ?? {} } : {}),
+                // M3: the session's own call. It hands its own tool grant (binding) and never reuses an answered approval.
+                ...(rerunFrom ? { rerunFrom: rerunFrom as Parameters<typeof startSessionWorkflowDefinition>[1]["rerunFrom"], originatingSessionId: session } : {}) });
             return JSON.stringify({ ok: true, operation: "start", replayed: started.replayed, definitionId: started.definitionId, name: started.name,
                 revision: started.revision, workflowId: started.workflowId, runId: started.runId,
+                ...(started.rerun ? { rerun: started.rerun as unknown as JsonValue } : {}),
                 ...(started.warnings?.length ? { warnings: started.warnings.map(item => ({ code: item.code, path: item.path, message: item.message })) } : {}),
                 ...(started.agentModels ? { agentModels: started.agentModels as unknown as JsonValue } : {}),
                 ...(started.decisionModels ? { decisionModels: started.decisionModels as unknown as JsonValue } : {}),

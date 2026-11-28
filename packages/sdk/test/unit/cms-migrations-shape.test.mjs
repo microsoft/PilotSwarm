@@ -40,16 +40,45 @@ test("released 0091 bytes stay approval-only; 0099 admits Decision interceptions
         !/CHECK \(operation IN [^)]*decision/.test(migration.sql)));
 });
 
-test("the Decision-era migrations 0096-0103 quote-escape the schema name; 0098's SQL is unchanged for a plain name", () => {
-    const quoted = CMS_MIGRATIONS('pilot"swarm').filter(migration => migration.version >= "0096" && migration.version <= "0103");
-    assert.deepEqual(quoted.map(migration => migration.version), ["0096", "0097", "0098", "0099", "0100", "0101", "0102", "0103"]);
+test("the Decision-era and Workflow rerun migrations 0096-0104 quote-escape the schema name; 0098's SQL is unchanged for a plain name", () => {
+    const quoted = CMS_MIGRATIONS('pilot"swarm').filter(migration => migration.version >= "0096" && migration.version <= "0104");
+    assert.deepEqual(quoted.map(migration => migration.version), ["0096", "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104"]);
     for (const migration of quoted) {
-        assert.ok(migration.sql.includes('"pilot""swarm".'), `${migration.version} must write the schema as "pilot""swarm"`);
-        assert.ok(!migration.sql.includes('"pilot"swarm"'), `${migration.version} must not write the schema name unescaped`);
+        const text = migration.sql ?? migration.steps.join("\n");
+        assert.ok(text.includes('"pilot""swarm".'), `${migration.version} must write the schema as "pilot""swarm"`);
+        assert.ok(!text.includes('"pilot"swarm"'), `${migration.version} must not write the schema name unescaped`);
     }
     const m98 = migrations.find(migration => migration.version === "0098");
     assert.equal(createHash("sha256").update(m98.sql).digest("hex"),
         "8652d2f979958aea2f2e18b8f00f3ef660ec71516a55e45960d3f76e3cf48441");
+    const m104 = migrations.find(migration => migration.version === "0104");
+    assert.ok(m104, "migration 0104 must be registered");
+    assert.equal(m104.name, "workflow_rerun");
+    assert.ok(Array.isArray(m104.steps) && m104.steps.length === 7, "0104 must use 7 separate steps: NOT VALID, VALIDATE x2, drop-invalid + CONCURRENTLY x2");
+    // Replacing an earlier constraint decompiles only this schema's own constraint (conrelid), never a concurrently dropped schema's.
+    assert.match(m104.steps[0], /SELECT pg_get_constraintdef\(c\.oid\) INTO v_def\s+FROM pg_constraint c\s+WHERE c\.conrelid = v_table AND c\.conname = 'workflow_runs_rerun_check';\s+IF v_def IS NOT NULL AND v_def NOT LIKE '%supply%'/);
+    assert.match(m104.steps[0], /SELECT pg_get_constraintdef\(c\.oid\) INTO v_def\s+FROM pg_constraint c\s+WHERE c\.conrelid = v_table AND c\.conname = 'workflow_node_executions_reused_check';\s+IF v_def IS NOT NULL AND v_def NOT LIKE '%supplied_from_execution_id%'/);
+    assert.match(m104.steps[0], /ADD CONSTRAINT workflow_runs_rerun_check CHECK \([\s\S]*?'supply'[\s\S]*?\) NOT VALID;/);
+    assert.match(m104.steps[0], /ADD CONSTRAINT workflow_node_executions_reused_check CHECK \([\s\S]*?supplied_from_execution_id[\s\S]*?winner = 'supplied'[\s\S]*?result_kind = 'business'[\s\S]*?effect_attempts = 0[\s\S]*?\) NOT VALID;/);
+    for (const col of [
+        "supplied_from_execution_id",
+        "supplied_from_run_id",
+        "supplied_from_workflow_session_id",
+        "supplied_actor",
+        "supplied_note",
+        "supplied_at",
+    ]) {
+        assert.ok(m104.steps[0].includes(col), `0104 step 0 must add ${col}`);
+    }
+    assert.match(m104.steps[0], /length\(btrim\(supplied_note\)\) >= 1/);
+    assert.match(m104.steps[0], /char_length\(supplied_note\) <= 2000/);
+    assert.doesNotMatch(m104.steps[0], /VALIDATE CONSTRAINT/, "step 0 must release ACCESS EXCLUSIVE before VALIDATE");
+    assert.match(m104.steps[1], /ALTER TABLE "shape_check"\.workflow_runs VALIDATE CONSTRAINT workflow_runs_rerun_check;/);
+    assert.match(m104.steps[2], /ALTER TABLE "shape_check"\.workflow_node_executions VALIDATE CONSTRAINT workflow_node_executions_reused_check;/);
+    assert.match(m104.steps[3], /NOT i\.indisvalid[\s\S]*workflow_runs_by_rerun_of_run/);
+    assert.match(m104.steps[4], /CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_runs_by_rerun_of_run/);
+    assert.match(m104.steps[5], /NOT i\.indisvalid[\s\S]*workflow_runs_by_rerun_of_workflow/);
+    assert.match(m104.steps[6], /CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_runs_by_rerun_of_workflow/);
 });
 
 // Extract the RETURNS TABLE column list of a named function from a SQL blob.

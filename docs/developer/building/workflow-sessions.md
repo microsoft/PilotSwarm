@@ -1212,6 +1212,51 @@ start after a catalog/start interruption. A different definition or owner
 conflicts; a completed run does not restart. There is no automatic sweep for
 a pending creation that is never retried.
 
+## Re-running from a step
+
+A re-run starts a new Workflow from an ended one (the source). The steps
+before the chosen visit are copied as **reused** visits and never run again;
+the source never changes. Three modes:
+
+- `run_again`: the chosen step runs again on the target revision.
+- `continue`: the chosen step keeps its result; the step it routes to runs.
+- `supply`: a top-level `script` or `agent` step (without `supply: never`)
+  does not run; the caller gives its `{ outcome, output }` and a required
+  `note`, recorded as **supplied**.
+
+The surfaces take the same arguments:
+
+| Surface | Plan (changes nothing) | Start |
+|---|---|---|
+| Agent tools | `read_workflow { workflow_id, rerun_plan: { execution_id?, mode?, revision?, outcome? } }` | `workflow_definition { operation: "start", rerun_from: { workflow_id, execution_id?, mode?, result?, note? } }` |
+| Web API, SDK | `readWorkflow(sessionId, { rerunPlan })` | `startSessionWorkflowDefinition(ownerSessionId, { rerunFrom })` |
+| MCP | `read_workflow { session_id, rerun_plan }` | `workflow_definition { operation: "start", owner_session_id, rerun_from }` |
+
+- The revision defaults to the source's revision. `name` and `definition_id`
+  may be omitted with `rerun_from`; `inputs`, `workspace` and `run_again_of`
+  are refused (`400 RERUN_ARGUMENT_REFUSED`): a re-run takes the source's
+  inputs and workspace.
+- A plan takes an `outcome` only, never an `output`, and is a read of its own.
+- Omitting `execution_id` auto-picks the visit and mode from how the source
+  ended (never `supply`). A reused `spawn` whose child was cancelled when the
+  source ended moves the cut back to that `spawn` (or its `parallel` step),
+  and every step after it runs again.
+- A re-run carries only unread messages. To keep a message a step already
+  received, re-run from the step after it.
+- Answered approvals before the cut are reused only by the owner starting
+  directly (`403 RERUN_APPROVAL_REUSED` for an agent session, a call with
+  `originatingSessionId`, and every MCP call: `viaMcp`). A person's direct
+  Start inherits the source's session tool grant only as the owner, without
+  `originatingSessionId` (`409 WORKFLOW_TOOLS_UNAVAILABLE` otherwise).
+- Reads show `visit.reused`, `visit.supplied`, `run.rerunOf` and, on the
+  source, `reruns`.
+- A web client sends `rerunFrom` and `rerunPlan` only to a portal whose
+  `/bootstrap` advertises `workflows.rerun` (else `501 WORKFLOW_API_UNAVAILABLE`).
+
+The `workflow-rerun` skill has every refusal, the fit rules and the v1
+limits. Migration `0104` adds the re-run columns; see
+[the AKS upgrade note](../deploy/aks.md) before you apply or roll it back.
+
 ## Reading the saved definition revision
 
 The overview returned by `read_workflow` and `readWorkflow` exposes an

@@ -205,7 +205,7 @@ test("the card's words and the coordinating session's instructions (P3) name the
     const instructions = coordinatingInstructions("release-tools/release-watch", "1.2.0", card, face);
     for (const want of ["coordinates one Workflow Definition: release-tools/release-watch (package version 1.2.0)", "locked",
         "Ask the person for each input you do not have", `operation "start", name "release-tools/release-watch"`, "answer its requests",
-        "tell the person how it ended"]) {
+        "tell the person how it ended", "load the workflow-rerun skill"]) {
         assert.ok(instructions.includes(want), want);
     }
 });

@@ -33,7 +33,7 @@ const testModeSkills = () => loadSkillsSync(WORKFLOW_TEST_MODE_SKILLS_DIR);
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_SKILLS_DIR), path.join(PLUGINS, "workflow", "skills"));
     assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-approval", "workflow-authoring", "workflow-carry", "workflow-decision", "workflow-limits", "workflow-long-agent",
-        "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-schedules", "workflow-tools"]);
+        "workflow-patterns", "workflow-polling", "workflow-reference", "workflow-rerun", "workflow-schedules", "workflow-tools"]);
     assert.equal(path.resolve(WORKFLOW_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow", "test-mode-skills"));
     assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
     for (const skill of [...skills(), ...testModeSkills()]) {

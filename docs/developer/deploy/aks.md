@@ -1006,6 +1006,30 @@ and keep the new workers up until every ended child has told its parent (no
 child end notice is pending or retrying). Then stop every worker, deploy the
 older release, and start them.
 
+### Upgrading to Workflow re-run from a step (migration 0104; stop, deploy, start)
+
+The release that lets a person or agent re-run a Workflow from a step adds
+migration `0104` (the re-run columns of `workflow_runs`,
+`workflow_node_executions` and `workflow_inbox`). Do not roll it:
+
+1. Scale every worker, the portal and any Web-mode MCP deployment to `0`
+   replicas, and wait until no pod runs (the commands in "Upgrading to
+   orchestration 1.0.83" above).
+2. Deploy the new image. The new release applies `0104` when it starts.
+3. Start the workers, then the portal and the MCP server.
+
+Rollback: an older worker cannot run a re-run (it has no pass-over over
+reused visits). Before you deploy a pre-re-run image, let every active re-run
+finish, or cancel it, until this query returns `0`:
+
+```sql
+SELECT count(*) FROM workflow_runs
+WHERE rerun_of_run_id IS NOT NULL AND status IN ('admitted', 'running', 'paused');
+```
+
+(Prefix the table with the deployment's Workflow schema.) Then stop every
+worker, deploy the older release, and start them. The `0104` columns stay.
+
 ### Rolling Update
 
 Use a rolling update only for a release that keeps the default session

@@ -109,7 +109,7 @@ test("advertises the workflow support the host was configured with: a person's c
         schema: WORKFLOW_CAPABILITIES_SCHEMA,
         enabled: true,
         decision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
-        apiVersion: WORKFLOW_API_VERSION, read: true, validate: true, skills: true, card: true, create: false, input: false,
+        apiVersion: WORKFLOW_API_VERSION, read: true, validate: true, skills: true, card: true, rerun: true, create: false, input: false,
         commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
     });
     assert.equal(off.apiVersion, "pilotswarm.dev/v1");

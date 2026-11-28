@@ -521,5 +521,6 @@ export function coordinatingInstructions(ref: string, semver: string, card: Work
         "4. While it runs, answer its requests and messages. When an answer is the person's to give, ask the person.",
         "5. When it ends, tell the person how it ended and what it gave back, in plain words.",
         "To run it again, start it again. Do not start a second Workflow while one is running unless the person asks.",
+        "If it fails after steps that did real work, it can go on from the failed step: load the workflow-rerun skill first.",
     ].join("\n");
 }

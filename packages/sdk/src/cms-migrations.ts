@@ -33,6 +33,7 @@ import { decisionProviderIdentityMigration } from "./migrations/decision-provide
 import { providerInferenceLatencyMigration } from "./migrations/provider-inference-latency-0101.js";
 import { decisionDefaultProviderRoutingMigration } from "./migrations/decision-default-provider-routing-0102.js";
 import { workflowChildWorkflowsMigration } from "./migrations/workflow-child-workflows-0103.js";
+import { workflowRerunMigration } from "./migrations/workflow-rerun-0104.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -446,6 +447,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0101", name: "provider_inference_latency", sql: providerInferenceLatencyMigration(schema) },
         { version: "0102", name: "decision_default_provider_routing", sql: decisionDefaultProviderRoutingMigration(schema) },
         { version: "0103", name: "workflow_child_workflows", sql: workflowChildWorkflowsMigration(schema) },
+        { version: "0104", name: "workflow_rerun", steps: workflowRerunMigration(schema) },
     ];
 }
 

@@ -70,6 +70,7 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  * - apiVersion: the workflow document version this build compiles.
  * - read: readWorkflow (GET /sessions/{id}/workflow) reads workflows; false where the host has no workflow store (each
  *   read is then WORKFLOW_NOT_FOUND).
+ * - rerun: always true. Start takes rerunFrom and the read takes rerunPlan (Phase 3 I7).
  * - create: false. A person creates no workflow directly over this API; the workflow's parent agent or session
  *   workflow_definition flow does.
  * - input: true when both read and commands are enabled; a person can send typed input to a workflow waiting at an
@@ -99,6 +100,9 @@ export function workflowCapabilities(options: {
         validate: true,
         skills: true,
         card: options.read === true,
+        // Phase 3 I7 (R2-N9, M1): Start takes rerunFrom and the read takes rerunPlan. A client fails closed on a server that does
+        // not say so: an older server would start a fresh run from step 1 instead.
+        rerun: true,
         // Review SF-D5: the server's word that workflow test mode is on, only then, so a client shows stored test notices (a
         // parent session's "test waiting" card) only while it is; absent: hidden.
         ...(resolveWorkflowTestMode(commands?.testMode) ? { testMode: true } : {}),
@@ -173,15 +177,22 @@ const NOT_FOUND = new Set(["WORKFLOW_NOT_FOUND", "WORKFLOW_DELETED", "RUN_NOT_FO
     // Stage 2.3: a package's Workflow Definition.
     "PACKAGE_WORKFLOW_NOT_FOUND",
     // Phase 4: Workflow skills over management / Web API / MCP.
-    "WORKFLOW_SKILL_NOT_FOUND"]);
+    "WORKFLOW_SKILL_NOT_FOUND",
+    // Phase 3 I7 (design §6.3): a re-run's chosen visit that is not one of the source run's.
+    "RERUN_VISIT_NOT_FOUND"]);
 const INVALID = new Set(["WORKFLOW_COMMAND_INVALID", "WORKFLOW_YAML_INVALID", "WORKFLOW_YAML_TOO_LARGE", "INPUT_INVALID", "WORKFLOW_NAME_MISMATCH",
     // OF-S2-7: a start's agent node models that do not name agent nodes of the revision, or are not shaped as one.
-    "AGENT_MODELS_INVALID"]);
+    "AGENT_MODELS_INVALID",
+    // Phase 3 I7: re-run arguments that cannot go together, and an auto-pick that needs a named visit.
+    "RERUN_ARGUMENT_REFUSED", "RERUN_VISIT_REQUIRED"]);
 const UNPROCESSABLE = new Set(["WORKFLOW_INPUT_INVALID", "DEFINITION_INVALID", "TEST_RESPONSE_INVALID", "RESPONSE_INVALID", "KV_LIMIT", "WORKFLOW_SCRIPTS_DISABLED",
     // Stage 2.3: a package definition this host cannot run, and A2.
     "PACKAGE_WORKFLOW_UNSUPPORTED", "AGENT_HAS_WORKFLOWS",
     // OF-S2-7: a model the starter cannot use.
-    "AGENT_MODEL_UNAVAILABLE"]);
+    "AGENT_MODEL_UNAVAILABLE",
+    // Phase 3 I7 (design §6.3): a re-run its source, revision or chosen visit cannot take.
+    "RERUN_NOT_A_WORKFLOW", "RERUN_VISIT_NOT_ALLOWED", "RERUN_SUPPLY_NOT_ALLOWED", "RERUN_SUPPLIED_RESULT_INVALID", "RERUN_INCOMPATIBLE",
+    "RERUN_TOO_LARGE"]);
 const LIMITED = new Set(["OPERATION_LIMIT", "TEST_INTERCEPTION_LIMIT", "INBOX_FULL", "INBOX_RATE_LIMITED", "WORKFLOW_REVISION_LIMIT", "REVISION_LIMIT",
     // Stage 2.4: Start keeps spawn_agent's budget of running children.
     "CHILD_LIMIT"]);
@@ -190,11 +201,13 @@ const LIMITED = new Set(["OPERATION_LIMIT", "TEST_INTERCEPTION_LIMIT", "INBOX_FU
  * The HTTP status of a refused workflow command: 404 for what does not exist,
  * 403 forbidden, 400 an invalid command, 422 a value its contract refuses, 429
  * a limit, 500 a corrupt store, 503 a store not available now, and 409 for a command that conflicts with the
- * workflow's current state (a revision, hash, operation id, run or answer).
+ * workflow's current state (a revision, hash, operation id, run or answer; a re-run's source still active or cleaned up,
+ * RERUN_SOURCE_ACTIVE and RERUN_SOURCE_GONE, and a tool grant a Start cannot hand over, WORKFLOW_TOOLS_UNAVAILABLE).
  */
 export function workflowCommandStatus(code: string): number {
     if (NOT_FOUND.has(code)) return 404;
-    if (code === "FORBIDDEN" || code === "WORKFLOW_HUMAN_INPUT_DENIED" || code === WORKFLOW_DEFINITION_TOOLS_REFUSED) return 403;
+    if (code === "FORBIDDEN" || code === "WORKFLOW_HUMAN_INPUT_DENIED" || code === WORKFLOW_DEFINITION_TOOLS_REFUSED
+        || code === "RERUN_APPROVAL_REUSED") return 403;
     if (INVALID.has(code)) return 400;
     if (UNPROCESSABLE.has(code)) return 422;
     if (LIMITED.has(code)) return 429;

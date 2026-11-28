@@ -16,6 +16,7 @@ import {
 import { CompareView, WorkflowDiagnostics, WorkflowNoGraph, WorkflowYamlBox } from "./workflow-panels.js";
 import { WorkflowGraph } from "./workflow-graph.js";
 import { workflowLifecycleAtOf } from "../../core/src/workflow-lifecycle.js";
+import { workflowRerunNumbers } from "../../core/src/workflow-rerun.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { WORKFLOW_RUN_STATE_WORDS, workflowModelFromKey, workflowRefusalText, workflowSessionModelKey, workflowStartModels } from "../../core/src/workflow-words.js";
@@ -661,6 +662,13 @@ function SessionRunView({ controller, ownerId, definition, workflow, tab, setTab
     const decisionBlocked = againModels.some(entry => entry.kind === "decision" && entry.available !== true);
     const [again, setAgain] = React.useState(false);
     const nextNumber = sessionNextWorkflowNumber(definition);
+    // Phase 3 I7: Re-run from here… (its sheet starts #nextNumber), the definition's Workflows by number, and whether the
+    // owning session has ended. A deleted definition starts nothing.
+    const numbersKey = JSON.stringify(definition.workflows.map(item => [item.sessionId, item.number]));
+    const numberOf = React.useMemo(() => workflowRerunNumbers(definition), [numbersKey]);
+    const ownerStatus = useControllerSelector(controller, state => state.sessions.byId?.[ownerId]?.status ?? null);
+    const rerun = definition.deleted ? null
+        : { ownerId, definitionId: definition.definitionId, nextNumber, ownerStatus, locked: definition.locked === true, numberOf };
     const extraActions = h(WorkflowToolButton, { label: "Run again…", glyph: "start-another", "data-action": "run-again-dialog",
         disabled: !control.enabled || decisionBlocked,
         title: decisionBlocked ? "Decision nodes are unavailable for this definition"
@@ -669,7 +677,8 @@ function SessionRunView({ controller, ownerId, definition, workflow, tab, setTab
     return h(React.Fragment, null,
         h("p", { className: "ps-wf-line" },
             h("button", { type: "button", className: "ps-link-button", "data-action": "back-to-workflows", onClick: onBack }, "Back to Workflows")),
-        h(WorkflowRunView, { controller, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen, nodeStateId, sessionRevision: revision, extraActions }),
+        h(WorkflowRunView, { controller, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen, nodeStateId, sessionRevision: revision, extraActions,
+            rerun }),
         again ? h(StartDialog, { controller, sessionId: definition.definitionId, name: definition.name, number: nextNumber,
             source: { number: workflow.number, inputs: workflowRunInputs(workflowChildModel(view)) },
             // UX2D-F9: once its revision is read, its schema is the contract (none: it takes no inputs), as Start's is.

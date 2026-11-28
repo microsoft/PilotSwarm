@@ -254,6 +254,166 @@ test("a later cycle whose earlier cycles were lost after their report is told so
     assert.deepEqual(one.split("\n").slice(1), cycle4.split("\n").slice(1));
 });
 
+test("I7 re-run prompts: K+1 recap wording (singular/reused/supplied/mixed/omitted) + full previousResult, K+2 sentence, restart recap, and S7 lost-memory with pre-cut cycles", () => {
+    // K=1 reused: singular wording, never "(1..1)", includes full previousResult + changedVariables + bounded rerunRecap.
+    const k1Reused = workflowAgentPrompt({
+        ...INVOCATION,
+        continues: true,
+        rerunRecap: {
+            cycle: 2,
+            count: 1,
+            reusedCount: 1,
+            suppliedCount: 0,
+            omitted: 0,
+            visits: [{ visit: 1, source: "reused", outcome: "again", resultKind: "business", output: { fact: "one" } }],
+            variables: CYCLE.variables,
+            changedVariables: ["topic"],
+            previous: CYCLE.previous,
+        },
+    });
+    const [k1Sys, k1Json] = k1Reused.split("\n");
+    assert.ok(k1Sys.includes("Cycle 1 was reused from an earlier Workflow run."));
+    assert.ok(!k1Sys.includes("(1..1)"));
+    assert.ok(!k1Sys.includes("ran in a previous Workflow run"));
+    const k1Parsed = JSON.parse(k1Json);
+    assert.equal(k1Parsed.cycle, 2);
+    assert.deepEqual(k1Parsed.previousResult, CYCLE.previous);
+    assert.deepEqual(k1Parsed.changedVariables, ["topic"]);
+    assert.deepEqual(k1Parsed.rerunRecap, {
+        omitted: 0,
+        visits: [{ visit: 1, source: "reused", outcome: "again", resultKind: "business", output: { fact: "one" } }],
+    });
+
+    // K=1 supplied: never says supplied cycle ran in a previous Workflow run!
+    const k1Supplied = workflowAgentPrompt({
+        ...INVOCATION,
+        continues: true,
+        rerunRecap: {
+            cycle: 2,
+            count: 1,
+            reusedCount: 0,
+            suppliedCount: 1,
+            omitted: 0,
+            visits: [{ visit: 1, source: "supplied", outcome: "again", resultKind: "business", output: { manual: true }, suppliedNote: "Operator override" }],
+            variables: CYCLE.variables,
+            changedVariables: [],
+            previous: { outcome: "again", resultKind: "business", output: { manual: true }, error: null },
+        },
+    });
+    const [k1SupSys] = k1Supplied.split("\n");
+    assert.ok(k1SupSys.includes("Cycle 1's result was supplied by a person without running."));
+    assert.ok(!k1SupSys.includes("ran in a previous Workflow run"));
+
+    // K=2 mixed (cycle 1 reused, cycle 2 supplied): distinguishes reused vs supplied cleanly.
+    const k2Mixed = workflowAgentPrompt({
+        ...INVOCATION,
+        continues: true,
+        rerunRecap: {
+            cycle: 3,
+            count: 2,
+            reusedCount: 1,
+            suppliedCount: 1,
+            omitted: 0,
+            visits: [
+                { visit: 1, source: "reused", outcome: "again", resultKind: "business", output: { n: 1 } },
+                { visit: 2, source: "supplied", outcome: "again", resultKind: "business", output: { n: 2 }, suppliedNote: "Manual rescue" },
+            ],
+            variables: CYCLE.variables,
+            changedVariables: ["topic"],
+            previous: { outcome: "again", resultKind: "business", output: { n: 2 }, error: null },
+        },
+    });
+    const [k2MixSys] = k2Mixed.split("\n");
+    assert.ok(k2MixSys.includes("Cycle 1 was reused from an earlier Workflow run; cycle 2's result was supplied by a person without running."));
+    assert.ok(!k2MixSys.includes("ran in a previous Workflow run"));
+
+    // K+2 normal cycle prompt appends Design §5.4 sentence (plural K=2 and singular K=1).
+    const k2Cycle4 = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 4, preCutCount: 2 });
+    const [c4Sys] = k2Cycle4.split("\n");
+    assert.ok(c4Sys.includes("Cycles 1 to 2 were reused or supplied before this re-run started; their summary is in cycle 3's prompt above."));
+    const k1Cycle3 = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 3, preCutCount: 1 });
+    assert.ok(k1Cycle3.split("\n")[0].includes("Cycle 1 was reused or supplied before this re-run started; its summary is in cycle 2's prompt above."));
+
+    // S7 lost-memory when K+1 (cycle 3) was lost on cycle 4: no "other earlier cycles", replaces K+1-above note, re-carries rerunRecap in JSON!
+    const recapPayload = {
+        omitted: 0,
+        visits: [
+            { visit: 1, source: "reused", outcome: "again", resultKind: "business", output: { n: 1 } },
+            { visit: 2, source: "supplied", outcome: "again", resultKind: "business", output: { n: 2 }, suppliedNote: "Manual rescue" },
+        ],
+    };
+    const lostK1OnC4 = workflowAgentCycleMemoryLostPrompt(k2Cycle4, 4, [3], { firstSessionCycle: 3, preCutCount: 2, rerunRecap: recapPayload });
+    const [lostC4Sys, lostC4Json] = lostK1OnC4.split("\n");
+    assert.ok(lostC4Sys.includes("The conversation of cycle 3 is not available"));
+    assert.ok(!lostC4Sys.includes("other earlier cycles"), "pre-cut cycles 1..2 must not count as other earlier cycles above");
+    assert.ok(!lostC4Sys.includes("in cycle 3's prompt above"), "must not claim summary is in lost cycle 3's prompt above");
+    assert.ok(lostC4Sys.includes("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 3's conversation was lost, rerunRecap in the JSON carries their summary again."));
+    assert.deepEqual(JSON.parse(lostC4Json).rerunRecap, recapPayload);
+
+    // S7 lost-memory on cycle 5 when cycle 3 was lost (cycle 4 IS above): includes "other earlier cycles" AND re-carries rerunRecap.
+    const k2Cycle5 = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 5, preCutCount: 2 });
+    const lostC3OnC5 = workflowAgentCycleMemoryLostPrompt(k2Cycle5, 5, [3], { firstSessionCycle: 3, preCutCount: 2, rerunRecap: recapPayload });
+    assert.ok(lostC3OnC5.split("\n")[0].includes("What you did in the other earlier cycles is above."));
+    assert.deepEqual(JSON.parse(lostC3OnC5.split("\n")[1]).rerunRecap, recapPayload);
+
+    // S7 lost-memory on cycle 5 when cycle 4 was lost (cycle 3 NOT lost): keeps cycle 3 note intact, does not inject rerunRecap.
+    const lostC4OnC5 = workflowAgentCycleMemoryLostPrompt(k2Cycle5, 5, [4], { firstSessionCycle: 3, preCutCount: 2 });
+    assert.ok(lostC4OnC5.split("\n")[0].includes("What you did in the other earlier cycles is above."));
+    assert.ok(lostC4OnC5.split("\n")[0].includes("their summary is in cycle 3's prompt above."));
+    assert.equal(Object.hasOwn(JSON.parse(lostC4OnC5.split("\n")[1]), "rerunRecap"), false);
+
+    // Restart path after S_new ended on its own with pre-cut cycles re-carries bounded rerunRecap in JSON and text.
+    const restartedWithPreCut = workflowAgentPrompt({
+        ...INVOCATION,
+        continues: true,
+        restart: { ...CYCLE, cycle: 4, endedSessionId: "ended-s-new" },
+        rerunRecap: {
+            cycle: 4,
+            count: 2,
+            reusedCount: 1,
+            suppliedCount: 1,
+            omitted: 0,
+            visits: recapPayload.visits,
+            variables: CYCLE.variables,
+            changedVariables: ["topic"],
+            previous: CYCLE.previous,
+        },
+    });
+    const [rstSys, rstJson] = restartedWithPreCut.split("\n");
+    assert.ok(rstSys.includes("This is cycle 4 of this state in this run. The agent session of its earlier cycles ended (session ended-s-new)"));
+    assert.ok(rstSys.includes("Cycle 1 was reused from an earlier Workflow run; cycle 2's result was supplied by a person without running."));
+    assert.deepEqual(JSON.parse(rstJson).rerunRecap, recapPayload);
+
+    // Review I-2: a later cycle of a replacement session points to that session's first cycle (5), not to K+1 (3).
+    const replacedCycle6 = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 6, preCutCount: 2, recapCycle: 5 });
+    assert.ok(replacedCycle6.split("\n")[0].includes("their summary is in cycle 5's prompt above."));
+    assert.ok(!replacedCycle6.includes("cycle 3's prompt above"));
+    assert.equal(Object.hasOwn(JSON.parse(replacedCycle6.split("\n")[1]), "rerunRecap"), false);
+    // Losing cycle 5 there carries the summary again and counts no cycle of the ended session as above.
+    const lostC5OnC6 = workflowAgentCycleMemoryLostPrompt(replacedCycle6, 6, [5], { firstSessionCycle: 5, preCutCount: 2, recapCycle: 5, rerunRecap: recapPayload });
+    assert.ok(lostC5OnC6.split("\n")[0].includes("because cycle 5's conversation was lost, rerunRecap in the JSON carries their summary again."));
+    assert.ok(!lostC5OnC6.includes("other earlier cycles"));
+    assert.deepEqual(JSON.parse(lostC5OnC6.split("\n")[1]).rerunRecap, recapPayload);
+    // When no earlier cycle of this session reached it (cycles 3 and 4 never ran here), cycle 5 carries the summary itself.
+    const notRun = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 5, preCutCount: 2, notRunInSession: { from: 3, to: 4 }, rerunRecap: recapPayload });
+    assert.ok(notRun.split("\n")[0].includes("because cycles 3 and 4 did not finish in this session, rerunRecap in the JSON carries their summary."));
+    // Review R3-M1: no earlier cycle of this session finished, so the prompt does not say their work is above.
+    assert.ok(!notRun.includes("what you did in earlier cycles is above"));
+    assert.ok(notRun.split("\n")[0].includes("in this same agent session, but no earlier cycle of this session finished, so no finished work of theirs is above;"));
+    // I-2 residual: the cycle that carried the summary lost its conversation before this prompt was built: carried again.
+    const recapLost = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 5, preCutCount: 2, recapLostCycle: 4, rerunRecap: recapPayload });
+    assert.ok(recapLost.split("\n")[0].includes("because cycle 4's conversation was lost, rerunRecap in the JSON carries their summary again."));
+    assert.ok(!recapLost.includes("prompt above"));
+    assert.deepEqual(JSON.parse(recapLost.split("\n")[1]).rerunRecap, recapPayload);
+    // I-2 residual: the other earlier cycles are said to be above only when a saved conversation of this session exists.
+    const noneSaved = workflowAgentCycleMemoryLostPrompt(recapLost, 5, [4], { firstSessionCycle: 3, savedEarlier: 0, preCutCount: 2, recapCycle: 4, rerunRecap: recapPayload });
+    assert.ok(noneSaved.split("\n")[0].includes("The conversation of cycle 4 is not available"));
+    assert.ok(!noneSaved.includes("other earlier cycles"));
+    const oneSaved = workflowAgentCycleMemoryLostPrompt(k2Cycle5, 5, [4], { firstSessionCycle: 3, savedEarlier: 1, preCutCount: 2 });
+    assert.ok(oneSaved.split("\n")[0].includes("What you did in the other earlier cycles is above."));
+    assert.deepEqual(JSON.parse(notRun.split("\n")[1]).rerunRecap, recapPayload);
+});
+
 test("the graph shows the mode only when the session continues; the reminder names the cycle; the tool takes node_execution_id", () => {
     const continued = compileWorkflow(LOOP("continue"));
     const plain = compileWorkflow(LOOP("new"));

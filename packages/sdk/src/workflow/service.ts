@@ -14,7 +14,7 @@ import {
 } from "./compiler.js";
 import type { WorkflowAgentDefinition } from "./agent-host.js";
 import { workflowAgentToolOffer, type WorkflowAgentToolOffer } from "./agent-tools.js";
-import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
+import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
 import { redactThenClip, redactWorkflowSecrets } from "./redact.js";
 import { schemaSetFor, WorkflowSchemaError, type WorkflowSchemaSet } from "./schema.js";
@@ -56,6 +56,7 @@ import {
     typedInputRequestSha256,
     WORKFLOW_INBOX_LIMITS, WORKFLOW_INPUT_TTL_SECONDS,
     WorkflowStoreError,
+    type RerunAdmissionSpec,
     type RunAdmission,
     type StoredOperation,
     type WorkflowActor,
@@ -73,6 +74,7 @@ import {
     type WorkflowTestInterception,
     requirePublishable,
 } from "./store.js";
+import type { WorkflowRerunMode } from "./rerun.js";
 
 export { WORKFLOW_INPUT_TTL_SECONDS } from "./store.js";
 
@@ -87,7 +89,7 @@ export { WORKFLOW_INPUT_TTL_SECONDS } from "./store.js";
 export interface WorkflowHost {
     readPackagePins?: (workflowSessionId: string) => Promise<import("./package-pins.js").WorkflowPackagePin[]>;
     catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "createWorkflowSession">
-        & Partial<Pick<SessionCatalog, "getChildOutcome" | "softDeleteSession">>;
+        & Partial<Pick<SessionCatalog, "getChildOutcome" | "softDeleteSession" | "getSessionCapabilities">>;
     store: WorkflowStore;
     duroxideClient: {
         startOrchestrationVersioned(instanceId: string, name: string, input: unknown, version: string): Promise<void>;
@@ -324,6 +326,17 @@ function requireRunsController(run: Pick<WorkflowRunRow, "runId" | "controllerVe
         { runId: run.runId, controllerVersion: run.controllerVersion, hostControllerVersion: WORKFLOW_CONTROLLER_VERSION });
 }
 
+export interface RerunClaimPin {
+    sourceWorkflowId: string;
+    sourceRunId: string;
+    fromExecutionId: string;
+    mode: WorkflowRerunMode;
+    revision: number;
+    reusedCount: number;
+    grant?: "inherited";
+    supplied?: { outcome: string; outputSha256: string; noteSha256: string; note: string };
+}
+
 export interface CreateWorkflowRequest {
     workflowSessionId: string;
     parentSessionId: string | null;
@@ -342,7 +355,13 @@ export interface CreateWorkflowRequest {
         /** Internal: choices read from a previous run for Run again may name every node. */
         agentModelsFromRunAgain?: boolean;
         /** Hashed raw model-request semantics for a Decision Workflow's keyed replay (not a persisted column). */
-        modelRequest?: string } | null;
+        modelRequest?: string;
+        /** Phase 3 I7: pre-allocated runId matching mapped rerun execution IDs. */
+        runId?: string;
+        /** Phase 3 I7: atomic rerun copy + cut admission spec (null/undefined for ordinary Starts). */
+        rerun?: RerunAdmissionSpec | null } | null;
+    /** Phase 3 I7: claim-crash recovery pin written into creation_config.workflow.rerunPin. */
+    rerunPin?: RerunClaimPin | null;
     notifyParent?: boolean;
     /** Host-captured tool grant for scripts; never from YAML or a public payload. */
     binding?: WorkflowToolBinding | null;
@@ -427,11 +446,12 @@ export function workflowRunPayloadTexts(inputs: JsonValue, vars: { [key: string]
 /** A live run's admission, at the controller version (stored with the run), with the agent nodes' models chosen at start, when any. */
 function liveAdmission(workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null,
     agentModels: WorkflowAgentModels | null = null,
-    decisionProviderBindings: WorkflowDecisionProviderBindings | null = null): RunAdmission {
+    decisionProviderBindings: WorkflowDecisionProviderBindings | null = null,
+    runId: string = randomUUID()): RunAdmission {
     const agentModelsText = workflowAgentModelsText(agentModels);
     const decisionProviderBindingsText = workflowDecisionProviderBindingsText(decisionProviderBindings);
     return {
-        runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
+        runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
         ...workflowRunPayloadTexts(inputs, vars), testAgentMode: null,
         controllerVersion: WORKFLOW_CONTROLLER_VERSION,
         ...(agentModelsText ? { agentModelsText } : {}),
@@ -862,9 +882,24 @@ export function workflowCreateRequestSha256(request: CreateWorkflowRequest, yaml
     const modelPart = !request.start
         ? {}
         : modelRequestDigestPart(request.start.agentModels, request.start.modelRequest);
+    const rerunPart = request.start?.rerun ? {
+        rerun: {
+            workflowId: request.start.rerun.sourceWorkflowSessionId,
+            runId: request.start.rerun.sourceRunId,
+            executionId: request.start.rerun.fromExecutionId,
+            mode: request.start.rerun.mode,
+            ...(request.start.rerun.supplied ? {
+                supplied: {
+                    outcome: request.start.rerun.supplied.outcome,
+                    outputSha256: sha256Hex(request.start.rerun.supplied.outputText),
+                    noteSha256: sha256Hex(request.start.rerun.supplied.note),
+                },
+            } : {}),
+        },
+    } : {};
     const content = {
         kind: "create", yamlSha256, publish,
-        start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...modelPart } : null,
+        start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars), ...modelPart, ...rerunPart } : null,
         parentSessionId: request.parentSessionId, notifyParent: request.notifyParent !== false,
         ...(request.workspace !== undefined ? { workspace: request.workspace } : {}),
     };
@@ -981,7 +1016,7 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
     const admission = request.start
         ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null,
-            agentModels, decisionProviderBindings) : null;
+            agentModels, decisionProviderBindings, request.start.runId) : null;
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
     // before anything is written.
     const definitionOwnerId = request.sessionPin?.ownerSessionId ?? request.parentSessionId ?? request.workflowSessionId;
@@ -1026,7 +1061,8 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
                 yamlSha256: compiled.yamlSha256, ...(compiled.irSha256 ? { irSha256: compiled.irSha256 } : {}),
                 // S2RT-F5: a session Start's pin is part of its creation's identity: a replay continues only with this pin.
                 ...(request.sessionPin ? { sessionPin: { ownerSessionId: request.sessionPin.ownerSessionId,
-                    definitionId: request.sessionPin.definitionId, revision: request.sessionPin.revision } } : {}) },
+                    definitionId: request.sessionPin.definitionId, revision: request.sessionPin.revision } } : {}),
+                ...(request.rerunPin ? { rerunPin: request.rerunPin } : {}) },
             ...(request.binding ? { workflowToolBinding: request.binding } : {}),
             ...(request.workspace ? { workflowWorkspace: request.workspace } : {}),
             ...(request.testBench ? { agentTest: { definitionId: request.testBench.definitionId, revision: request.testBench.revision,
@@ -1052,6 +1088,10 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
             host.catalog.getSessionCreationConfig?.(request.workflowSessionId) ?? null,
         ]);
         const marker = creation?.workflow;
+        if ((!row || row.deletedAt) && (request.start?.rerun || request.rerunPin)) {
+            throw new WorkflowStoreError("WORKFLOW_DELETED",
+                "The Workflow for this key was deleted before it started. Use a new key or operationId for another attempt.");
+        }
         if (!row || row.deletedAt || row.sessionKind !== "workflow" || (row.parentSessionId ?? null) !== request.parentSessionId
             || !isJsonObject(marker)) {
             throw new WorkflowStoreError("SESSION_EXISTS",
@@ -1104,10 +1144,21 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
             ...(versionGuard && !claim.created ? { versionGuard: { ...versionGuard, nothingSaved: "Nothing was saved: the claim stays without a definition." } } : {}),
             ...(request.sessionPin ? { sessionPin: request.sessionPin } : {}),
             ...(request.spawn ? { spawn: request.spawn } : {}),
+            ...(request.start?.rerun ? { rerun: request.start.rerun } : {}),
         });
     } catch (error) {
-        if (claim.created && error instanceof WorkflowStoreError && error.code === "RUN_ENDED" && host.catalog.softDeleteSession) {
-            await host.catalog.softDeleteSession(request.workflowSessionId);
+        // RR-4 (S5): a refused admission rolled back; this request's claim shell is removed in a transaction of its own, and
+        // only while it is still bare (an admitted Workflow of a concurrent delivery, or another request's claim, is kept). A
+        // re-run Start removes it after any refusal, whether it made the claim or resumed one; other creations after the
+        // refusals that end their request. An error that is not a refusal (or a lost cleanup) leaves it to the retry or the Sweeper.
+        const rerunStart = Boolean(request.start?.rerun || request.rerunPin);
+        if (error instanceof WorkflowStoreError
+            && (rerunStart || (claim.created && (error.code === "RUN_ENDED" || error.code.startsWith("RERUN_"))))) {
+            try {
+                await host.store.softDeleteRefusedClaimShell({ workflowSessionId: request.workflowSessionId, operationId: request.operationId, requestSha256 });
+            } catch {
+                // The refusal is the answer; a shell this could not remove is collected by the Sweeper after its grace period.
+            }
         }
         throw error;
     }

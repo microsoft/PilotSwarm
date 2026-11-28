@@ -88,6 +88,7 @@ import {
     workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStartAnotherText, workflowStateOf,
 } from "./workflow-owner.js";
 import { sessionDefinitionFailure, sessionDefinitionReadKey } from "./workflow-session-definitions.js";
+import { workflowRerunPlanQuery, workflowRerunStartProblems } from "./workflow-rerun.js";
 import { getTheme, listThemes } from "./themes/index.js";
 
 function preserveNativeTaskProgress(history, current, sessionId) {
@@ -8675,6 +8676,52 @@ export class PilotSwarmUiController {
             this.refreshSessions?.().catch?.(() => {});
         }
         return result;
+    }
+
+    /**
+     * Phase 3 I7 (design §7.2): the plan of a re-run of ended Workflow `sessionId` from one of its visits, as Start would make
+     * it now (readWorkflow's rerunPlan). M6: it names a visit, mode, revision and, in supply, an outcome; never an output.
+     * { ok, plan } or { ok: false, phase, code, message }. Never throws.
+     */
+    async readWorkflowRerunPlan(sessionId, query = {}) {
+        if (!sessionId || typeof this.transport?.readWorkflow !== "function") {
+            return { ok: false, phase: "failed", code: null, message: "This connection cannot read a re-run plan." };
+        }
+        try {
+            const read = await this.transport.readWorkflow(sessionId, { rerunPlan: workflowRerunPlanQuery(query) });
+            const plan = read?.rerunPlan;
+            if (!plan || typeof plan !== "object" || !plan.from || typeof plan.from !== "object" || !plan.revision || typeof plan.revision !== "object") {
+                return { ok: false, phase: "failed", code: null, message: "The re-run plan has an unknown format." };
+            }
+            return { ok: true, plan };
+        } catch (error) {
+            return { ok: false, ...workflowRunCommandFailure(error) };
+        }
+    }
+
+    /**
+     * Phase 3 I7: a person's Start of a re-run (`request`: workflowRerunStartRequest's { definitionId, revision, operationId,
+     * rerunFrom }). The sheet owns the operation id (N5): the same request again is answered with the first receipt. A refused
+     * supplied output's problems come back as `problems` (Start's 422 RERUN_SUPPLIED_RESULT_INVALID). { ok, receipt } or { ok:
+     * false, phase, code, message, problems }. The session's definitions are read again. Never throws.
+     */
+    async startWorkflowRerun(ownerId, request) {
+        if (!ownerId || typeof this.transport?.startSessionWorkflowDefinition !== "function") {
+            return { ok: false, phase: "failed", code: null, message: "This connection cannot start a Workflow.", problems: [] };
+        }
+        if (!request?.rerunFrom || typeof request.operationId !== "string" || !request.operationId) {
+            return { ok: false, phase: "failed", code: null, message: "A re-run needs its source and an operation id.", problems: [] };
+        }
+        try {
+            const receipt = await this.transport.startSessionWorkflowDefinition(ownerId, request);
+            this.dispatch({ type: "ui/status", text: `Started ${receipt?.name ?? "the Workflow"} again from ${request.rerunFrom.mode === "supply" ? "a supplied step" : "a step"}.` });
+            this.refreshSessions?.().catch?.(() => {});
+            return { ok: true, receipt };
+        } catch (error) {
+            return { ok: false, ...sessionDefinitionFailure(error), problems: workflowRerunStartProblems(error), error };
+        } finally {
+            await this.ensureSessionWorkflowDefinitions(ownerId, { force: true }).catch(() => {});
+        }
     }
 
     /**

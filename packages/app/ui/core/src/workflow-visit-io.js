@@ -6,6 +6,7 @@
  * the portal's Node panel and the TUI's details, in the same words. Pure: `now` only decides whether a time shows its date.
  */
 import { workflowNodeResult } from "./workflow-node-summary.js";
+import { workflowVisitProvenance } from "./workflow-rerun.js";
 import { workflowRunsText, workflowShortTime, workflowTimeTitle } from "./workflow-words.js";
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -110,8 +111,10 @@ function outputOf(node, full) {
  * `output`: its recorded output as formatted JSON, a Decision's semantic result, or its error in words ({ kind: output,
  * error, none or pending, label, text, truncated, summary, semantic, error, executionId }), with `recordedAfter` ("Recorded
  * 2026-11-20 15:13:33 UTC, after this point") when a replay shows a moment before the visit ended. Null without a visit.
+ * `provenance` (Phase 3 I7): where a re-run's reused or supplied visit came from (workflowVisitProvenance; `numberOf` and
+ * `workflowNumber` number the Workflows), null for a visit that ran here.
  */
-export function workflowVisitIo(node, visit, { recorded = null, atMs = null, now = Date.now() } = {}) {
+export function workflowVisitIo(node, visit, { recorded = null, atMs = null, now = Date.now(), numberOf = null, workflowNumber = null } = {}) {
     if (!isRecord(visit) || typeof visit.id !== "string") return null;
     const full = isRecord(recorded) && recorded.id === visit.id ? recorded : visit;
     const ended = full.status === "completed";
@@ -132,6 +135,7 @@ export function workflowVisitIo(node, visit, { recorded = null, atMs = null, now
         id: visit.id, ordinal, header,
         input: workflowVisitValueText(visit.inputPreview ?? full.inputPreview),
         output: { ...output, recordedAfter: after ? WORKFLOW_VISIT_WORDS.recordedAfter(workflowTimeTitle(endMs)) : null },
+        provenance: workflowVisitProvenance(full, { numberOf, workflowNumber, now }),
     };
 }
 

@@ -1,7 +1,7 @@
 [
   {
     "path": "src/cms-migrations.ts",
-    "blob": "318e11907b213c9f74a8395ecaa086aa1f8ae965"
+    "blob": "15d52e2ab704f5ed1086d0754231862ec937e416"
   },
   {
     "path": "src/facts-migrations.ts",
@@ -374,5 +374,9 @@
   {
     "path": "src/migrations/workflow-child-workflows-0103.ts",
     "blob": "2b96812d43c204ac811ac574731595adda517af0"
+  },
+  {
+    "path": "src/migrations/workflow-rerun-0104.ts",
+    "blob": "665c5cd5e8983a2d9cd38c3e74dddd35e0290264"
   }
 ]

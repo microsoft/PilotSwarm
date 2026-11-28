@@ -40,7 +40,8 @@ const NODE_GLYPHS = {
  * carries the Start marker (F4); an end is a ring, filled once the Workflow reached it, in its outcome's colour; a node
  * the Workflow did not reach is dimmed (W7). Owner 2026-11-09 (the timeline): `litCount` and `litAge`, how often the last
  * four transitions entered it and how long ago (workflowLitTransitions), and `current`, the step of the visit shown; the
- * stylesheet draws them (data-lit, data-lit-age, data-current) apart from the selection.
+ * stylesheet draws them (data-lit, data-lit-age, data-current) apart from the selection. Phase 3 I7: a re-run's reused step
+ * (data-reused, "Reused from #2", muted) and its supplied step (data-supplied, "✎ Supplied (outcome)", a dashed accent edge).
  */
 export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 0, litAge = null, current = false }) {
     const terminal = node.type === "terminal";
@@ -68,6 +69,8 @@ export function WorkflowStepCard({ node, selected = false, onSelect, litCount = 
             + `${reached ? " is-reached" : ""}${notReached ? " is-not-reached" : ""}${node.initial ? " is-initial" : ""}${label ? " has-label" : ""}`,
         "data-phase": node.phase, "data-kind": kind, ...(terminal ? { "data-outcome": node.outcome ?? "" } : {}), "data-node-id": node.id,
         ...litAttributes(litCount, litAge), ...(current ? { "data-current": "true" } : {}),
+        // Phase 3 I7: a re-run's reused or supplied step (its card's words say which; never as a step that ran).
+        ...(card?.provenance === "reused" || card?.provenance === "supplied" ? { [`data-${card.provenance}`]: "true" } : {}),
         role: "button", tabIndex: 0,
         "aria-label": `Inspect ${node.id}${label ? `: ${label}` : ""}`, "aria-pressed": selected,
         title: card?.title ?? `${node.id} · ${node.label} · ${node.stateLabel}`,
