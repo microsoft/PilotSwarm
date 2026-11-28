@@ -40,6 +40,18 @@ test("released 0091 bytes stay approval-only; 0099 admits Decision interceptions
         !/CHECK \(operation IN [^)]*decision/.test(migration.sql)));
 });
 
+test("the Decision-era migrations 0096-0103 quote-escape the schema name; 0098's SQL is unchanged for a plain name", () => {
+    const quoted = CMS_MIGRATIONS('pilot"swarm').filter(migration => migration.version >= "0096" && migration.version <= "0103");
+    assert.deepEqual(quoted.map(migration => migration.version), ["0096", "0097", "0098", "0099", "0100", "0101", "0102", "0103"]);
+    for (const migration of quoted) {
+        assert.ok(migration.sql.includes('"pilot""swarm".'), `${migration.version} must write the schema as "pilot""swarm"`);
+        assert.ok(!migration.sql.includes('"pilot"swarm"'), `${migration.version} must not write the schema name unescaped`);
+    }
+    const m98 = migrations.find(migration => migration.version === "0098");
+    assert.equal(createHash("sha256").update(m98.sql).digest("hex"),
+        "8652d2f979958aea2f2e18b8f00f3ef660ec71516a55e45960d3f76e3cf48441");
+});
+
 // Extract the RETURNS TABLE column list of a named function from a SQL blob.
 // Matches the LAST definition in the blob (later migrations win).
 function returnsTableColumns(sql, fnName) {

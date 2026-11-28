@@ -170,13 +170,12 @@ function canonicalAgentModels(models: WorkflowAgentModels | null): WorkflowAgent
     return Object.fromEntries(Object.entries(models).map(([id, choice]) => [id, canonicalAgentModelChoice(choice)]));
 }
 
-function parseWorkflowModels(value: unknown, decisionAlias: boolean, max = WORKFLOW_AGENT_MODELS_MAX,
-    allowProvenance = true, stored = false): WorkflowAgentModels | null {
+function parseWorkflowModels(value: unknown, decisionAlias: boolean, limit: number,
+    allowProvenance = true): WorkflowAgentModels | null {
     if (value === undefined || value === null) return null;
     if (!isJsonObject(value)) {
         throw invalid("agentModels must be an object of agent node ids to { model, reasoningEffort?, contextTier? }.");
     }
-    const limit = stored ? WORKFLOW_MAX_NODES : max;
     const entries = Object.entries(value);
     if (entries.length === 0) return null;
     if (entries.length > limit) throw invalid(`agentModels names ${entries.length} nodes; at most ${limit}.`);
@@ -225,12 +224,12 @@ function parseWorkflowModels(value: unknown, decisionAlias: boolean, max = WORKF
 
 /** Parse the canonical start map, which stores Agent and Decision choices in the same run column. */
 export function parseWorkflowAgentModels(value: unknown, options: { stored?: boolean } = {}): WorkflowAgentModels | null {
-    return parseWorkflowModels(value, false, WORKFLOW_AGENT_MODELS_MAX, true, options.stored === true);
+    return parseWorkflowModels(value, false, options.stored === true ? WORKFLOW_MAX_NODES : WORKFLOW_AGENT_MODELS_MAX);
 }
 
 /** Parse the additive tool alias. Decision choices take only model, even when an Agent setting is explicitly null. */
 export function parseWorkflowDecisionModels(value: unknown): WorkflowAgentModels | null {
-    return parseWorkflowModels(value, true);
+    return parseWorkflowModels(value, true, WORKFLOW_AGENT_MODELS_MAX);
 }
 
 /** Merge the two tool maps without changing the canonical Agent-map wire shape. */
@@ -348,7 +347,7 @@ export function readStoredAgentModels(value: unknown): { models: WorkflowAgentMo
     if (value === undefined || value === null) return { models: null };
     try {
         return { models: parseWorkflowModels(typeof value === "string" ? JSON.parse(value) : value, false,
-            WORKFLOW_MAX_NODES, false, true) };
+            WORKFLOW_MAX_NODES, false) };
     } catch (error) {
         return { error: `The agent models stored with this run cannot be read (AGENT_MODELS_INVALID): ${error instanceof Error ? error.message : String(error)}` };
     }
