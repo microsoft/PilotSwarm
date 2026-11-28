@@ -1154,6 +1154,7 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
             expect(k2.prompt).toContain("CYCLE 4");
             expect(k2.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 3 did not finish in this session, "
                 + "rerunRecap in the JSON carries their summary.");
+            expect(k2.prompt).not.toContain("what you did in earlier cycles is above");
             const k2Json = promptJson(k2);
             expect(k2Json.rerunRecap.visits.map(v => [v.visit, v.source])).toEqual([[1, "reused"], [2, "supplied"]]);
             await store.completeNode(k2.nodeExecutionId, { outcome: "more", resultKind: "business", valueText: '{"c":4}', winner: "agent" }, {
@@ -1221,6 +1222,9 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
             expect(q4.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 3 did not finish in this session, "
                 + "rerunRecap in the JSON carries their summary.");
             expect(q4.prompt).not.toContain("cycle 3's prompt above");
+            // Review R3-M1: cycle 3 never reported, so nothing says what it did is above.
+            expect(q4.prompt).not.toContain("what you did in earlier cycles is above");
+            expect(q4.prompt).toContain("no earlier cycle of this session finished, so no finished work of theirs is above");
             expect(recapVisits(promptJson(q4))).toEqual([[1, "reused"], [2, "supplied"]]);
             await finish(queued, q4);
         });

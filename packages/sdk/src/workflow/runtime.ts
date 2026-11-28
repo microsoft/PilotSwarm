@@ -120,7 +120,8 @@ import {
 
 export { promptSafeJson };
 import {
-    COMPLETE_WORKFLOW_NODE_TOOL, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, workflowAgentPreCutMemorySentence, workflowAgentPreCutRecapLostSentence,
+    COMPLETE_WORKFLOW_NODE_TOOL, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, WORKFLOW_AGENT_CYCLE_NOT_RUN_WORDS, workflowAgentPreCutMemorySentence,
+    workflowAgentPreCutRecapLostSentence,
 } from "./agent-node-service.js";
 import {
     matchTestFixture, storedTestFixtures, testResultFor, toolCallResultOf, WORKFLOW_TEST_POLL_MS, workflowTestAnsweredProjection,
@@ -4884,7 +4885,8 @@ export interface WorkflowAgentCycle {
     recapLostCycle?: number;
     /**
      * Phase 3 I7, review I-2: the earlier cycles of this session, none of which finished with its agent's result (its prompt
-     * was refused, or queued and decided without it: review I-2 residual); this cycle's prompt carries the pre-cut summary itself.
+     * was refused, or queued and decided without it: review I-2 residual); this cycle's prompt carries the pre-cut summary itself
+     * and does not say their work is above (review R3-M1).
      */
     notRunInSession?: { from: number; to: number };
 }
@@ -4925,7 +4927,8 @@ export function workflowAgentCyclePrompt(invocation: Omit<Parameters<typeof work
                 : workflowAgentPreCutMemorySentence(preCutCount, invocation.recapCycle ?? preCutCount + 1))
         : "";
     return `[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE ${invocation.cycle}. This is cycle ${invocation.cycle} of the same workflow state in this run, `
-        + WORKFLOW_AGENT_CYCLE_MEMORY_WORDS + preCutSentence + " Work on this cycle's input and the variables as they are now; "
+        + (notRun ? WORKFLOW_AGENT_CYCLE_NOT_RUN_WORDS : WORKFLOW_AGENT_CYCLE_MEMORY_WORDS) + preCutSentence
+        + " Work on this cycle's input and the variables as they are now; "
         + "changedVariables names the variables that changed since your last cycle. Do not repeat earlier work unless the task asks for it. "
         + "Finish this cycle only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool, as before: give outcome and output, or error with code "
         + "needs_input or execution_failed, a new operation_id, and node_execution_id " + invocation.nodeExecutionId + " (this cycle's). "

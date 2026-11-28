@@ -104,6 +104,13 @@ export const WORKFLOW_AGENT_REPLY_SETTLE = { ms: 5 * 60_000 };
 export const WORKFLOW_AGENT_CYCLE_MEMORY_WORDS = "in this same agent session: what you did in earlier cycles is above.";
 
 /**
+ * Review R3-M1: the words used instead of WORKFLOW_AGENT_CYCLE_MEMORY_WORDS in a re-run cycle when no earlier cycle of its
+ * session finished (each prompt was refused, or queued and decided without its result): no work of theirs is said to be above.
+ */
+export const WORKFLOW_AGENT_CYCLE_NOT_RUN_WORDS = "in this same agent session, but no earlier cycle of this session finished, so no "
+    + "finished work of theirs is above; previousResult and the variables in the JSON say where the earlier cycles ended.";
+
+/**
  * Design §5.4 sentence appended to a later cycle's prompt when pre-cut cycles 1..K were reused or supplied before this re-run:
  * their summary is in the prompt of `recapCycle`, the first cycle of this agent session (K+1, or the first cycle of a
  * replacement session; review I-2).

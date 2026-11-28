@@ -397,6 +397,9 @@ test("I7 re-run prompts: K+1 recap wording (singular/reused/supplied/mixed/omitt
     // When no earlier cycle of this session reached it (cycles 3 and 4 never ran here), cycle 5 carries the summary itself.
     const notRun = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 5, preCutCount: 2, notRunInSession: { from: 3, to: 4 }, rerunRecap: recapPayload });
     assert.ok(notRun.split("\n")[0].includes("because cycles 3 and 4 did not finish in this session, rerunRecap in the JSON carries their summary."));
+    // Review R3-M1: no earlier cycle of this session finished, so the prompt does not say their work is above.
+    assert.ok(!notRun.includes("what you did in earlier cycles is above"));
+    assert.ok(notRun.split("\n")[0].includes("in this same agent session, but no earlier cycle of this session finished, so no finished work of theirs is above;"));
     // I-2 residual: the cycle that carried the summary lost its conversation before this prompt was built: carried again.
     const recapLost = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 5, preCutCount: 2, recapLostCycle: 4, rerunRecap: recapPayload });
     assert.ok(recapLost.split("\n")[0].includes("because cycle 4's conversation was lost, rerunRecap in the JSON carries their summary again."));

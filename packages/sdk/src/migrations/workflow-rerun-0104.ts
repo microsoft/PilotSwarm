@@ -5,9 +5,9 @@
  *
  * Uses `steps` (individually autocommitted, idempotent statements) so:
  *   1. Step 1 adds the nullable columns and `CHECK (...) NOT VALID` constraints under a bounded 5 s lock_timeout
- *      (also self-upgrading any pre-supply 3A constraint via pg_get_constraintdef, read only for this schema's own table
- *      so a concurrently dropped schema's same-named constraint is never decompiled) and commits immediately,
- *      releasing ACCESS EXCLUSIVE without a full-table scan.
+ *      (also replacing an earlier form of either CHECK constraint when the steps run over one, via pg_get_constraintdef,
+ *      read only for this schema's own table so a concurrently dropped schema's same-named constraint is never decompiled)
+ *      and commits immediately, releasing ACCESS EXCLUSIVE without a full-table scan.
  *   2. Steps 2 and 3 run `VALIDATE CONSTRAINT` in separate transactions under SHARE UPDATE EXCLUSIVE (allowing concurrent
  *      reads and writes).
  *   3. Steps 4–7 drop any invalid leftover index (`NOT i.indisvalid`, as migration 0088 does) under a 5 s lock_timeout

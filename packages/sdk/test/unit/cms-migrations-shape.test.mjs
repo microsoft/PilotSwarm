@@ -55,7 +55,7 @@ test("the Decision-era and Workflow rerun migrations 0096-0104 quote-escape the 
     assert.ok(m104, "migration 0104 must be registered");
     assert.equal(m104.name, "workflow_rerun");
     assert.ok(Array.isArray(m104.steps) && m104.steps.length === 7, "0104 must use 7 separate steps: NOT VALID, VALIDATE x2, drop-invalid + CONCURRENTLY x2");
-    // The self-upgrade decompiles only this schema's own constraint (conrelid), never a concurrently dropped schema's.
+    // Replacing an earlier constraint decompiles only this schema's own constraint (conrelid), never a concurrently dropped schema's.
     assert.match(m104.steps[0], /SELECT pg_get_constraintdef\(c\.oid\) INTO v_def\s+FROM pg_constraint c\s+WHERE c\.conrelid = v_table AND c\.conname = 'workflow_runs_rerun_check';\s+IF v_def IS NOT NULL AND v_def NOT LIKE '%supply%'/);
     assert.match(m104.steps[0], /SELECT pg_get_constraintdef\(c\.oid\) INTO v_def\s+FROM pg_constraint c\s+WHERE c\.conrelid = v_table AND c\.conname = 'workflow_node_executions_reused_check';\s+IF v_def IS NOT NULL AND v_def NOT LIKE '%supplied_from_execution_id%'/);
     assert.match(m104.steps[0], /ADD CONSTRAINT workflow_runs_rerun_check CHECK \([\s\S]*?'supply'[\s\S]*?\) NOT VALID;/);

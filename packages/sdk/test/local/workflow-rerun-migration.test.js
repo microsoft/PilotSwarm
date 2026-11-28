@@ -173,7 +173,9 @@ describe("migration 0104: workflow_rerun", () => {
             const catalog = ({ data, ...rest }) => rest;
             expect(snapshotDifferences(catalog(afterUpgrade), catalog(await schemaSnapshot(query, fresh)))).toEqual({});
 
-            // 1b. Self-upgrade over a schema created by the pre-supply cf0e203cb 2-mode 0104 (S5).
+            // 1b. 0104's steps are idempotent: run directly over the DDL of the pre-supply cf0e203cb 2-mode 0104 (S5), not recorded
+            // here, they replace its constraints and add the missing columns. This is DDL re-application, not startup: the migrator
+            // skips a recorded 0104, so a dev/test schema that recorded an earlier, unreleased 0104 is dropped and recreated.
             await runMigrations(pool, selfUpgraded, CMS_MIGRATIONS(selfUpgraded).filter(m => m.version < "0104"), SEED);
             const su = qIdent(selfUpgraded);
             await query(`
@@ -212,7 +214,7 @@ describe("migration 0104: workflow_rerun", () => {
                      AND state = 'completed' AND deadline_at IS NULL)
                 );
             `);
-            // Seed existing pre-supply 3A rerun + reused rows BEFORE self-upgrade to prove VALIDATE CONSTRAINT passes over live 3A data (M13c).
+            // Seed existing pre-supply 3A rerun + reused rows BEFORE re-applying 0104 to prove VALIDATE CONSTRAINT passes over live 3A data (M13c).
             const preWf2 = `pre-wf2-${tag}`;
             const preWf3 = `pre-wf3-${tag}`;
             const preRun2 = `pre-run2-${tag}`;
@@ -281,7 +283,7 @@ describe("migration 0104: workflow_rerun", () => {
                     { data_type: "timestamp with time zone", is_nullable: "YES" },
                 ]);
             }
-            // Self-upgraded schema matches fresh schema catalog (tables, columns, constraints, indexes).
+            // The re-applied schema matches the fresh schema catalog (tables, columns, constraints, indexes).
             expect(snapshotDifferences(catalog(await schemaSnapshot(query, selfUpgraded)), catalog(await schemaSnapshot(query, fresh)))).toEqual({});
 
             // 2. Apply 0104 steps on schemas whose names contain a double quote and a single quote.
