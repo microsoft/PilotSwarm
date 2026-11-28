@@ -7,19 +7,21 @@
  * across every I7 re-run lifecycle scenario on PG16 and live HorizonDB:
  *
  *   S1   G-R1 auto-pick cut-back with live 4-resource busy child (wait/receive/approval/request).
- *   S2   G-R2 spawn re-run while old 4-resource busy child winds down asynchronously.
- *   S3   `continue` mode consuming carried `WorkflowEnded@1` child notice (zero new children spawned).
+ *   S2   G-R2 spawn re-run while old 4-resource busy child winds down: its `parent-end:` cancel is held until the
+ *        new child is live, so both children are active together in every iteration.
+ *   S3   `continue` mode consuming carried `WorkflowEnded@1` child notice exactly once (zero new children spawned).
  *   S4   `supply` mode on timed-out / failed agent step (live agent child ends cleanly; #3 spawns 0 agents).
- *   S5   Post-claim refusal immediately soft-deleting claim shell (before Sweeper runs).
+ *   S5   Pre-claim refusal leaves 0 shells; post-claim refusal immediately soft-deletes the claim shell.
  *   S6   Unretried claim crash while owner stays live — Sweeper skips before grace and collects after grace.
  *   S7   Crash + retry with same operationId = 1 reused shell, 0 leaks.
- *   S8   `rerun_diverged` = 0 post-cut work & 0 leaks.
- *   S9   Multi-generation `#1 -> #2 -> #3 -> #4` chain.
+ *   S8   `rerun_diverged` on a fresh coordinate (`predecessor_mismatch`) and on a pre-cut coordinate
+ *        (`pre_cut_coord_mismatch`) = 0 post-cut work & 0 leaks.
+ *   S9   Multi-generation `#1 -> #2 -> #3 (supply) -> #4 (run_again)` chain (supplied V' copied into #4).
  *   S10  Standalone re-run of spawned child + owner end.
  *   S11  Parallel lane child spawns (G-R1 lane cut-back + full parallel re-run).
  *   S12  `pause` (+ `resume`), `stop` (grace 0), and `cancel` during pass-over (all three tested).
  *   S13  Fault-injected transient failure on `parent-end:` cancel retried to terminal.
- *   S14  `#2` deleted while `#3` runs (and `#4` re-runs cleanly from `#3`).
+ *   S14  `#2` deleted through the operator delete path while `#3` runs (and `#4` re-runs cleanly from `#3`).
  *   S15  Unconsumed carried inbox message in `#3`: `listOpenInbox` omits ended run, direct SQL proves
  *        finite `expires_at` and TTL expiry to 0 active rows.
  */
@@ -31,7 +33,9 @@ import { testTime, useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { registerWorkflow, sessionQueueTransport } from "../../src/workflow/runtime.ts";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
-import { controlWorkflowRun, sendTypedWorkflowInput } from "../../src/workflow/service.ts";
+import { applyOperatorCommandToWorkflow, controlWorkflowRun, sendTypedWorkflowInput } from "../../src/workflow/service.ts";
+import { ACTIVE_RUN_STATUSES } from "../../src/workflow/store.ts";
+import { workflowAgentInstanceId } from "../../src/workflow/controller/runtime.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { createSweeperTools } from "../../src/sweeper-tools.ts";
 import { buildPgPoolConfig } from "../../src/pg-pool-factory.ts";
@@ -725,11 +729,24 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
         let h;
         let postClaimDeleteSourceId = null;
         let lastClaimedWorkflowSessionId = null;
+        // S2 (G-R2): holds the old child's `parent-end:` cancel until the re-run's new child is live.
+        let parentEndGate = null; // { childWorkflowId, held, released, release }
 
         beforeAll(async () => {
             h = await startRuntimeHarness(getEnv(), {
                 wrapStore: raw => new Proxy(raw, {
                     get(target, prop) {
+                        if (prop === "recordSessionCommand") {
+                            return async (input) => {
+                                const gate = parentEndGate;
+                                if (gate && input.command === "cancel" && input.workflowSessionId === gate.childWorkflowId
+                                    && typeof input.operationId === "string" && input.operationId.startsWith("parent-end:")) {
+                                    gate.held += 1;
+                                    await gate.released;
+                                }
+                                return target.recordSessionCommand(input);
+                            };
+                        }
                         if (prop === "createDefinition") {
                             return async (input) => {
                                 if (postClaimDeleteSourceId) {
@@ -799,50 +816,76 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
             await h.endOwnerAndSweep(ownerId);
         });
 
-        it("S2: G-R2 spawn re-run started immediately while old busy child winds down asynchronously (3x)", { timeout: TIMEOUT }, async () => {
+        it("S2: G-R2 spawn re-run while the old busy child is still winding down — old child active while the new child is live (3x)", { timeout: TIMEOUT }, async () => {
             const ownerId = await h.createLiveOwner();
             await h.saveDefs(ownerId, [
                 ["busy-child", BUSY_CHILD_YAML],
                 ["parent-spawn-gate", PARENT_SPAWN_GATE_YAML],
             ]);
-            for (let i = 1; i <= ITERATIONS; i += 1) {
-                const r2 = await startSessionWorkflowDefinition(h.host, {
-                    ownerSessionId: ownerId, definition: { name: "parent-spawn-gate" },
-                    inputs: { responder: ownerId }, vars: { failGate: true },
-                    actor: ENGINE, operationId: `s2-r2-${i}`, owner: OWNER,
-                });
-                const [child2] = await h.waitChildren(r2.workflowId, 1);
-                await h.waitBusyChildLive(child2.runId);
-                await sendTypedWorkflowInput(h.host, {
-                    workflowSessionId: r2.workflowId, senderSessionId: ownerId,
-                    contract: "Go@1", payload: { i }, operationId: `s2-r2-go-${i}`,
-                });
-                expect((await h.waitRunTerminal(r2.runId)).status).toBe("failed");
+            try {
+                for (let i = 1; i <= ITERATIONS; i += 1) {
+                    const r2 = await startSessionWorkflowDefinition(h.host, {
+                        ownerSessionId: ownerId, definition: { name: "parent-spawn-gate" },
+                        inputs: { responder: ownerId }, vars: { failGate: true },
+                        actor: ENGINE, operationId: `s2-r2-${i}`, owner: OWNER,
+                    });
+                    const [child2] = await h.waitChildren(r2.workflowId, 1);
+                    await h.waitBusyChildLive(child2.runId);
 
-                // Do NOT wait for child2 to settle before starting #3 from `launch` (G-R2).
-                const r2Nodes = await h.store.listNodeExecutions(r2.runId);
-                const launchVisit = r2Nodes.find(n => n.nodeId === "launch");
-                expect(launchVisit).toBeTruthy();
+                    // Hold child2's `parent-end:` cancel so that #2's old child is deterministically still winding down
+                    // while #3's new child runs (G-R2).
+                    let release;
+                    const gate = {
+                        childWorkflowId: child2.workflowSessionId,
+                        held: 0,
+                        released: new Promise(resolve => { release = resolve; }),
+                        release: () => release(),
+                    };
+                    parentEndGate = gate;
+                    await sendTypedWorkflowInput(h.host, {
+                        workflowSessionId: r2.workflowId, senderSessionId: ownerId,
+                        contract: "Go@1", payload: { i }, operationId: `s2-r2-go-${i}`,
+                    });
+                    expect((await h.waitRunTerminal(r2.runId)).status).toBe("failed");
+                    await until(`#2's parent-end cancel of child2 is in flight and held (${i})`, async () => gate.held >= 1);
 
-                const r3 = await startSessionWorkflowDefinition(h.host, {
-                    ownerSessionId: ownerId, definition: { name: "parent-spawn-gate" },
-                    vars: { failGate: false },
-                    rerunFrom: { workflowId: r2.workflowId, executionId: launchVisit.nodeExecutionId, mode: "run_again" },
-                    actor: ENGINE, operationId: `s2-r3-${i}`, owner: OWNER,
-                });
-                const [child3] = await h.waitChildren(r3.workflowId, 1);
-                expect(child3.workflowSessionId).not.toBe(child2.workflowSessionId);
-                await h.waitBusyChildLive(child3.runId);
-                await sendTypedWorkflowInput(h.host, {
-                    workflowSessionId: r3.workflowId, senderSessionId: ownerId,
-                    contract: "Go@1", payload: { i }, operationId: `s2-r3-go-${i}`,
-                });
-                expect((await h.waitRunTerminal(r3.runId)).status).toBe("completed");
-                expect((await h.waitRunTerminal(child2.runId)).status).toBe("cancelled");
-                expect((await h.waitRunTerminal(child3.runId)).status).toBe("cancelled");
+                    const r2Nodes = await h.store.listNodeExecutions(r2.runId);
+                    const launchVisit = r2Nodes.find(n => n.nodeId === "launch");
+                    expect(launchVisit).toBeTruthy();
 
-                const liveSnap = await h.waitTreeSettled(ownerId, { liveOwner: true });
-                assertNoLeaks(liveSnap, { allow: ["sessions_not_swept"] });
+                    const r3 = await startSessionWorkflowDefinition(h.host, {
+                        ownerSessionId: ownerId, definition: { name: "parent-spawn-gate" },
+                        vars: { failGate: false },
+                        rerunFrom: { workflowId: r2.workflowId, executionId: launchVisit.nodeExecutionId, mode: "run_again" },
+                        actor: ENGINE, operationId: `s2-r3-${i}`, owner: OWNER,
+                    });
+                    const [child3] = await h.waitChildren(r3.workflowId, 1);
+                    expect(child3.workflowSessionId).not.toBe(child2.workflowSessionId);
+                    await h.waitBusyChildLive(child3.runId);
+
+                    // The overlap itself: the old child is still active at the moment the new child is live.
+                    expect(ACTIVE_RUN_STATUSES).toContain((await h.store.readRun(child2.runId))?.status);
+                    expect(ACTIVE_RUN_STATUSES).toContain((await h.store.readRun(child3.runId))?.status);
+
+                    parentEndGate = null;
+                    gate.release();
+                    expect((await h.waitRunTerminal(child2.runId)).status).toBe("cancelled");
+                    expect(ACTIVE_RUN_STATUSES).toContain((await h.store.readRun(child3.runId))?.status);
+
+                    await sendTypedWorkflowInput(h.host, {
+                        workflowSessionId: r3.workflowId, senderSessionId: ownerId,
+                        contract: "Go@1", payload: { i }, operationId: `s2-r3-go-${i}`,
+                    });
+                    expect((await h.waitRunTerminal(r3.runId)).status).toBe("completed");
+                    expect((await h.waitRunTerminal(child3.runId)).status).toBe("cancelled");
+
+                    const liveSnap = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                    assertNoLeaks(liveSnap, { allow: ["sessions_not_swept"] });
+                }
+            } finally {
+                const gate = parentEndGate;
+                parentEndGate = null;
+                gate?.release();
             }
             await h.endOwnerAndSweep(ownerId);
         });
@@ -896,7 +939,15 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
                 const r3Nodes = await h.store.listNodeExecutions(r3.runId);
                 expect(r3Nodes.find(n => n.nodeId === "launch")?.reusedFromExecutionId).toBeTruthy();
                 expect(r3Nodes.find(n => n.nodeId === "prep")?.reusedFromExecutionId).toBeTruthy();
-                expect(r3Nodes.find(n => n.nodeId === "await_child")?.reusedFromExecutionId).toBeNull();
+                const awaitChild = r3Nodes.find(n => n.nodeId === "await_child");
+                expect(awaitChild?.reusedFromExecutionId).toBeNull();
+                // The carried WorkflowEnded@1 notice exists exactly once in #3 and `await_child` consumed it.
+                const notices = await h.q(
+                    "SELECT consumed_by FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND contract = 'WorkflowEnded@1'",
+                    [r3.runId],
+                );
+                expect(notices).toHaveLength(1);
+                expect(notices[0].consumed_by).toBe(awaitChild.nodeExecutionId);
 
                 const liveSnap = await h.waitTreeSettled(ownerId, { liveOwner: true });
                 assertNoLeaks(liveSnap, { allow: ["sessions_not_swept"] });
@@ -940,7 +991,19 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
                 expect(r3Done.terminalOutput).toEqual({ got: `supplied-${i}` });
                 expect(h.agentSpawns.length).toBe(spawnsBeforeR3);
 
+                // V' is supplied, never run: no effect attempt, no agent invocation row, no agent orchestration.
+                const suppliedV = (await h.store.listNodeExecutions(r3.runId)).find(n => n.nodeId === "work_agent");
+                expect(suppliedV?.suppliedFromExecutionId).toBe(agentVisit.nodeExecutionId);
+                expect(suppliedV?.winner).toBe("supplied");
+                expect(suppliedV?.effectAttempts).toBe(0);
+                const r3Invocations = await h.q(
+                    "SELECT count(*)::int AS n FROM SCHEMA.workflow_agent_invocations WHERE run_id = $1",
+                    [r3.runId],
+                );
+                expect(r3Invocations[0].n).toBe(0);
+
                 const liveSnap = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                expect(liveSnap.orchestrationStatuses[workflowAgentInstanceId(suppliedV.nodeExecutionId)]).toBe("NotFound");
                 assertNoLeaks(liveSnap, { allow: ["sessions_not_swept"] });
             }
             await h.endOwnerAndSweep(ownerId);
@@ -959,11 +1022,22 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
                     inputs: {}, actor: ENGINE, operationId: `s5-live-${i}`, owner: OWNER,
                 });
                 await h.waitRunStatus(live.runId, ["running"]);
+                const beforeRefusal = await census({
+                    store: h.store, catalog: h.catalog, duroxideClient: h.client,
+                    rootSessionIds: [ownerId], graceMs: 0, liveOwnerSessionIds: [ownerId],
+                });
                 await expect(startSessionWorkflowDefinition(h.host, {
                     ownerSessionId: ownerId, definition: { name: "slow-live" },
                     rerunFrom: { workflowId: live.workflowId },
                     actor: ENGINE, operationId: `s5-pre-refuse-${i}`, owner: OWNER,
-                })).rejects.toThrow();
+                })).rejects.toMatchObject({ code: "RERUN_SOURCE_ACTIVE" });
+                // Refused before any claim: no shell, and no new session in the tree, immediately.
+                const afterRefusal = await census({
+                    store: h.store, catalog: h.catalog, duroxideClient: h.client,
+                    rootSessionIds: [ownerId], graceMs: 0, liveOwnerSessionIds: [ownerId],
+                });
+                expect(afterRefusal.categories.claim_shells).toEqual({ count: 0, ids: [] });
+                expect([...afterRefusal.treeSessionIds].sort()).toEqual([...beforeRefusal.treeSessionIds].sort());
                 await controlWorkflowRun(h.host, live.workflowId, { operation: "cancel", reason: null }, {
                     actor: ENGINE, operationId: `s5-live-cancel-${i}`,
                 });
@@ -1132,20 +1206,25 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
             await h.endOwnerAndSweep(ownerId);
         });
 
-        it("S8: rerun_diverged = 0 post-cut work & 0 leaks (3x)", { timeout: TIMEOUT }, async () => {
+        it("S8: rerun_diverged on a fresh coordinate AND on a pre-cut coordinate = 0 post-cut work & 0 leaks (3x)", { timeout: TIMEOUT }, async () => {
             const ownerId = await h.createLiveOwner();
             const defs = await h.saveDefs(ownerId, [["three-step", THREE_STEP_YAML]]);
             const defId = defs["three-step"];
-            const divYaml = THREE_STEP_YAML
-                .replace('version: "1.0.0"', 'version: "1.0.1"')
-                .replace("initial: s1", "initial: s3");
-            const savedV2 = await saveSessionWorkflowDefinition(h.host, {
-                ownerSessionId: ownerId, name: "three-step", yaml: divYaml,
-                expected: { definitionId: defId, revision: 1 },
-                actor: { kind: "session", sessionId: ownerId },
-                operationId: `s8-v2-${randomUUID()}`, by: "session",
-            });
-            expect(savedV2.receipt.valid).toBe(true);
+            const saveDivergent = async (initial, version, expectedRevision) => {
+                const saved = await saveSessionWorkflowDefinition(h.host, {
+                    ownerSessionId: ownerId, name: "three-step",
+                    yaml: THREE_STEP_YAML.replace('version: "1.0.0"', `version: "${version}"`).replace("initial: s1", `initial: ${initial}`),
+                    expected: { definitionId: defId, revision: expectedRevision },
+                    actor: { kind: "session", sessionId: ownerId },
+                    operationId: `s8-${initial}-${randomUUID()}`, by: "session",
+                });
+                expect(saved.receipt.valid).toBe(true);
+            };
+            // Rev 2 (initial s3): the controller's first entry is s3#1, a fresh row -> store cut guard (predecessor_mismatch).
+            await saveDivergent("s3", "1.0.1", 1);
+            // Rev 3 (initial s2): the controller re-enters reused s2#1 with predecessorId null against the stored
+            // mapped(s1) -> pass-over coordinate check (pre_cut_coord_mismatch).
+            await saveDivergent("s2", "1.0.2", 2);
 
             for (let i = 1; i <= ITERATIONS; i += 1) {
                 const r2 = await startSessionWorkflowDefinition(h.host, {
@@ -1157,32 +1236,36 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
                 const r2Nodes = await h.store.listNodeExecutions(r2.runId);
                 const s3Visit = r2Nodes.find(n => n.nodeId === "s3");
 
-                const rDiv = await startSessionWorkflowDefinition(h.host, {
-                    ownerSessionId: ownerId, definition: { definitionId: defId }, revision: 2,
-                    inputs: {}, vars: { failAt: 0 },
-                    rerunFrom: {
-                        workflowId: r2.workflowId,
-                        executionId: s3Visit.nodeExecutionId,
-                        mode: "run_again",
-                        _skipFitCheckForTest: true,
-                    },
-                    actor: ENGINE, operationId: `s8-div-${i}`, owner: OWNER,
-                });
-                const divDone = await h.waitRunTerminal(rDiv.runId);
-                expect(divDone.status).toBe("failed");
-                expect(divDone.terminalError?.code).toBe("rerun_diverged");
-                expect(divDone.rerunResumedAt).toBeNull();
-                // Assert 0 post-cut node executions were written.
-                const divNodes = await h.store.listNodeExecutions(rDiv.runId);
-                expect(divNodes.filter(n => n.reusedFromExecutionId === null)).toEqual([]);
+                for (const [revision, reason] of [[2, "predecessor_mismatch"], [3, "pre_cut_coord_mismatch"]]) {
+                    const rDiv = await startSessionWorkflowDefinition(h.host, {
+                        ownerSessionId: ownerId, definition: { definitionId: defId }, revision,
+                        inputs: {}, vars: { failAt: 0 },
+                        rerunFrom: {
+                            workflowId: r2.workflowId,
+                            executionId: s3Visit.nodeExecutionId,
+                            mode: "run_again",
+                            _skipFitCheckForTest: true,
+                        },
+                        actor: ENGINE, operationId: `s8-div-r${revision}-${i}`, owner: OWNER,
+                    });
+                    const divDone = await h.waitRunTerminal(rDiv.runId);
+                    expect(divDone.status).toBe("failed");
+                    expect(divDone.terminalError?.code).toBe("rerun_diverged");
+                    expect(divDone.terminalError?.details?.reason).toBe(reason);
+                    expect(divDone.rerunResumedAt).toBeNull();
+                    // 0 post-cut node executions were written.
+                    const divNodes = await h.store.listNodeExecutions(rDiv.runId);
+                    expect(divNodes.filter(n => n.reusedFromExecutionId === null)).toEqual([]);
+                    expect(divNodes.map(n => n.nodeId).sort()).toEqual(["s1", "s2"]);
 
-                const liveSnap = await h.waitTreeSettled(ownerId, { liveOwner: true });
-                assertNoLeaks(liveSnap, { allow: ["sessions_not_swept"] });
+                    const liveSnap = await h.waitTreeSettled(ownerId, { liveOwner: true });
+                    assertNoLeaks(liveSnap, { allow: ["sessions_not_swept"] });
+                }
             }
             await h.endOwnerAndSweep(ownerId);
         });
 
-        it("S9: multi-generation #1 -> #2 -> #3 -> #4 chain (3x)", { timeout: TIMEOUT }, async () => {
+        it("S9: multi-generation #1 -> #2 -> #3 (supply) -> #4 (run_again) chain (3x)", { timeout: TIMEOUT }, async () => {
             const ownerId = await h.createLiveOwner();
             await h.saveDefs(ownerId, [["three-step", THREE_STEP_YAML]]);
             for (let i = 1; i <= ITERATIONS; i += 1) {
@@ -1200,26 +1283,51 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
                 });
                 expect((await h.waitRunTerminal(g2.runId)).status).toBe("failed");
 
+                // #3 supplies s2#1 of #2 (s3 fails again in #3).
+                const s2OnG2 = (await h.store.listNodeExecutions(g2.runId)).find(n => n.nodeId === "s2");
+                const g3Note = `S9 supplied s2 generation 3 (${i})`;
                 const g3 = await startSessionWorkflowDefinition(h.host, {
                     ownerSessionId: ownerId, definition: { name: "three-step" },
-                    vars: { failAt: 3 }, rerunFrom: { workflowId: g2.workflowId },
+                    vars: { failAt: 3 },
+                    rerunFrom: {
+                        workflowId: g2.workflowId,
+                        executionId: s2OnG2.nodeExecutionId,
+                        mode: "supply",
+                        result: { outcome: "ok", output: { step: 2, supplied: i } },
+                        note: g3Note,
+                    },
                     actor: ENGINE, operationId: `s9-g3-${i}`, owner: OWNER,
                 });
+                expect(g3.rerun?.mode).toBe("supply");
                 expect((await h.waitRunTerminal(g3.runId)).status).toBe("failed");
+                const s2OnG3 = (await h.store.listNodeExecutions(g3.runId)).find(n => n.nodeId === "s2");
+                expect(s2OnG3?.winner).toBe("supplied");
+                expect(s2OnG3?.suppliedFromExecutionId).toBe(s2OnG2.nodeExecutionId);
 
+                // #4 auto-picks run_again from the failed s3 of #3 and copies the supplied V' of #3.
                 const g4 = await startSessionWorkflowDefinition(h.host, {
                     ownerSessionId: ownerId, definition: { name: "three-step" },
                     vars: { failAt: 0 }, rerunFrom: { workflowId: g3.workflowId },
                     actor: ENGINE, operationId: `s9-g4-${i}`, owner: OWNER,
                 });
+                expect(g4.rerun?.mode).toBe("run_again");
                 const g4Done = await h.waitRunTerminal(g4.runId);
                 expect(g4Done.status).toBe("completed");
                 expect(g4Done.terminalOutput).toEqual({ step: 3 });
 
-                // Verify transitive original provenance on #4's reused s1 points back to #1.
+                // Transitive original provenance on #4's reused s1 points back to #1.
                 const g4Nodes = await h.store.listNodeExecutions(g4.runId);
                 const s1OnG4 = g4Nodes.find(n => n.nodeId === "s1");
                 expect(s1OnG4?.reusedFromWorkflowSessionId).toBe(g1.workflowId);
+                // #4's s2 is the supplied V' of #3: reused from #3, with its supplied provenance kept.
+                const s2OnG4 = g4Nodes.find(n => n.nodeId === "s2");
+                expect(s2OnG4?.reusedFromExecutionId).toBe(s2OnG3.nodeExecutionId);
+                expect(s2OnG4?.reusedFromWorkflowSessionId).toBe(g3.workflowId);
+                expect(s2OnG4?.suppliedFromExecutionId).not.toBeNull();
+                expect(s2OnG4?.suppliedFromExecutionId).toBe(s2OnG3.suppliedFromExecutionId);
+                expect(s2OnG4?.suppliedNote).toBe(g3Note);
+                expect(s2OnG4?.winner).toBe("supplied");
+                expect(s2OnG4?.effectAttempts).toBe(0);
 
                 const liveSnap = await h.waitTreeSettled(ownerId, { liveOwner: true });
                 assertNoLeaks(liveSnap, { allow: ["sessions_not_swept"] });
@@ -1522,8 +1630,14 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
                 await h.waitBusyChildLive(child3.runId);
                 expect((await h.store.readRun(r3.runId))?.status).toBe("running");
 
-                // Delete #2 while #3 is actively running!
-                await h.catalog.softDeleteSession(r2.workflowId);
+                // Delete #2 through the product path (the management API's deleteSession) while #3 is actively running.
+                const deleted = await applyOperatorCommandToWorkflow(h.host, {
+                    targetSessionId: r2.workflowId,
+                    command: { type: "cmd", cmd: "delete", id: `s14-delete-r2-${i}`, args: { reason: "S14 delete #2 while #3 runs" } },
+                });
+                expect(deleted.action).toBe("applied");
+                expect((await h.store.readSessionLink(r2.workflowId))?.deleted).toBe(true);
+                expect((await h.store.readDefinition(r2.workflowId))?.state).toBe("deleted");
                 expect((await h.store.readRun(r3.runId))?.status).toBe("running");
 
                 await sendTypedWorkflowInput(h.host, {
@@ -1568,7 +1682,8 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
                 });
                 await h.waitRunStatus(i2.runId, ["running"]);
 
-                // Enqueue BOTH Note@1 messages BEFORE releasing `s1` (Start@1) so msg2.accepted_at <= s2.completedAt is guaranteed!
+                // Enqueue BOTH Note@1 messages BEFORE releasing `s1` (Start@1): `s2` consumes msg1, and msg2 (accepted
+                // before s3 was entered, the run_again cut) is the one carried into #3.
                 await sendTypedWorkflowInput(h.host, {
                     workflowSessionId: i2.workflowId, senderSessionId: ownerId,
                     contract: "Note@1", payload: { n: 1 }, operationId: `s15-msg1-${i}`, ttlSeconds: 60,
@@ -1592,22 +1707,34 @@ describe("I7 Re-run resource-leak census suite (S1–S15, PG16 & HorizonDB)", ()
                     rerunFrom: { workflowId: i2.workflowId, executionId: s3Visit.nodeExecutionId, mode: "run_again" },
                     actor: ENGINE, operationId: `s15-i3-${i}`, owner: OWNER,
                 });
-                expect((await h.waitRunTerminal(i3.runId)).status).toBe("completed");
 
-                // WorkflowStore.listOpenInbox omits ended runs (returns { rows: [], more: false }).
-                const open = await h.store.listOpenInbox(i3.runId, 50);
-                expect(open.rows).toEqual([]);
-
-                // Direct SQL on workflow_inbox proves msg2 was carried with finite expires_at...
+                // First observation, right after admission: the carried row is msg2 (n: 2), its TTL restarted in #3
+                // (accepted again at the copy, so not yet expired), with a finite expires_at.
+                const sourceNotes = await h.q(
+                    "SELECT payload, accepted_at FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND contract = 'Note@1'",
+                    [i2.runId],
+                );
+                const sourceMsg2 = sourceNotes.find(r => JSON.parse(r.payload).n === 2);
+                expect(sourceMsg2).toBeTruthy();
                 const carried = await h.q(
-                    `SELECT message_id, contract, expires_at, isfinite(expires_at) AS is_finite
+                    `SELECT message_id, contract, payload, accepted_at, isfinite(expires_at) AS is_finite,
+                            expires_at > now() AS unexpired
                        FROM SCHEMA.workflow_inbox
                       WHERE run_id = $1 AND consumed_by IS NULL`,
                     [i3.runId],
                 );
                 expect(carried).toHaveLength(1);
                 expect(carried[0].contract).toBe("Note@1");
+                expect(JSON.parse(carried[0].payload)).toEqual({ n: 2 });
                 expect(carried[0].is_finite).toBe(true);
+                expect(carried[0].unexpired).toBe(true);
+                expect(carried[0].accepted_at.getTime()).toBeGreaterThan(sourceMsg2.accepted_at.getTime());
+
+                expect((await h.waitRunTerminal(i3.runId)).status).toBe("completed");
+
+                // WorkflowStore.listOpenInbox omits ended runs (returns { rows: [], more: false }).
+                const open = await h.store.listOpenInbox(i3.runId, 50);
+                expect(open.rows).toEqual([]);
 
                 // ...and expires naturally by its finite TTL (0 active unexpired rows).
                 await until(`carried inbox message expires by TTL on #3 (${i})`, async () => {
