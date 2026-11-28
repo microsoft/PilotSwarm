@@ -1815,7 +1815,7 @@ function detailLines(selection, width, decisionCapability = null) {
         if (decision.model) add(`Model: ${decision.model}`);
         if (decision.questionType) add(`Question: ${decision.questionType === "noul" ? "yes or no" : decision.questionType}`);
         if (decision.threshold !== null) add(`Threshold: ${workflowDecisionPercentage(decision.threshold)}`);
-        add(`Decision outcome: ${decision.outcome}`);
+        add(`Decision outcome: ${decision.supplied ? decision.text : decision.outcome}`);
         if (decision.uncertain !== null) add(`Uncertain: ${decision.uncertain ? "yes" : "no"}`);
         if (decision.confidence) add(`Confidence: ${decision.confidence}`);
         if (decision.probabilities.length) for (const text of wrapped(`Probabilities: ${decision.probabilities

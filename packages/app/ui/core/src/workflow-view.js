@@ -874,7 +874,7 @@ export function workflowExecutionOfRow(row) {
     }
     const decisionInference = workflowDecisionInferenceEvidence(
         row.decisionInference ?? row.inferenceOperations ?? row.inferenceOperation ?? row.inference ?? row);
-    const decisionSummary = workflowDecisionOutputSummary(row.decisionSummary);
+    const decisionSummary = workflowDecisionOutputSummary(row.decisionSummary, isRecord(row.supplied));
     return { id: row.nodeExecutionId, stateId: row.stateId, ordinal: Number.isSafeInteger(row.ordinal) ? row.ordinal : undefined,
         status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
         errorPreview: row.errorPreview, errorWords: text(row.errorWords) ?? undefined, winner: text(row.winner),

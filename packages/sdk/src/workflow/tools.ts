@@ -1640,6 +1640,22 @@ function decisionInferenceReadView(node: WorkflowNodeExecutionRow, rows: readonl
     }));
 }
 
+export function workflowDecisionExecutionReadSummary(node: Pick<WorkflowNodeExecutionRow,
+    "nodeType" | "resultKind" | "outcome" | "output" | "suppliedFromExecutionId" | "suppliedNote">) {
+    if (node.nodeType !== "decision" || node.resultKind !== "business") return null;
+    if (!node.suppliedFromExecutionId) return workflowDecisionReadSummary(node.output);
+    const outcome = decisionReadText(node.outcome);
+    if (!outcome) return null;
+    const note = decisionReadText(node.suppliedNote)?.replace(/\s+/g, " ");
+    const summarize = (outcome: string, note?: string) => ({
+        supplied: true as const, outcome, text: `Supplied · ${outcome}${note ? ` · ${note}` : ""}`,
+    });
+    const summary = summarize(outcome, note);
+    return utf8ByteLength(canonicalJson(summary)) <= DECISION_READ_SUMMARY_MAX_BYTES ? summary
+        : summarize(jsonbSafeText(outcome, DECISION_READ_SUMMARY_TEXT_CHARS),
+            note && jsonbSafeText(note, DECISION_READ_SUMMARY_TEXT_CHARS));
+}
+
 /** Phase 3 I7: the origin Workflows of these visits (and of a re-run's source) that were cleaned up since, for originGone. */
 async function goneRerunOriginsOf(store: WorkflowStore, nodes: readonly WorkflowNodeExecutionRow[], run?: WorkflowRunRow | null)
     : Promise<ReadonlySet<string>> {
@@ -1694,8 +1710,7 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
     : { [key: string]: JsonValue } {
     const agent = agents.get(node.nodeExecutionId);
     const inference = decisionInference.get(node.nodeExecutionId);
-    const decisionSummary = node.nodeType === "decision" && node.resultKind === "business"
-        ? workflowDecisionReadSummary(node.output) : null;
+    const decisionSummary = workflowDecisionExecutionReadSummary(node);
     return {
         nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
         outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
@@ -1819,8 +1834,7 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
             : "This workflow has no live run; name the run whose execution to read (run_id).");
     }
     const inference = (await decisionInferenceOf(store, run.runId, [node])).get(node.nodeExecutionId);
-    const decisionSummary = node.nodeType === "decision" && node.resultKind === "business"
-        ? workflowDecisionReadSummary(node.output) : null;
+    const decisionSummary = workflowDecisionExecutionReadSummary(node);
     return {
         workflowId: workflowSessionId,
         runId: run.runId,

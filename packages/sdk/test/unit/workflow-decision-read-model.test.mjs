@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { workflowDecisionReadSummary } from "../../dist/workflow/tools.js";
+import { workflowDecisionExecutionReadSummary, workflowDecisionReadSummary } from "../../dist/workflow/tools.js";
 
 test("Decision read summaries keep valid long semantic output structured and allow-list their fields", () => {
     const level = `Critical ${"x".repeat(620)}`;
@@ -43,4 +43,20 @@ test("Decision read summaries explicitly truncate bounded semantic text", () => 
     assert.equal(summary.levels.length, 1);
     assert.ok(summary.levels[0].label.endsWith("…"));
     assert.ok(Buffer.byteLength(JSON.stringify(summary), "utf8") <= 4 * 1024);
+});
+
+test("supplied Decision read summaries use the recorded visit outcome and note, not the model output", () => {
+    const visit = {
+        nodeType: "decision", resultKind: "business", outcome: "agent_review",
+        suppliedFromExecutionId: "source-visit", suppliedNote: "Engineering confirmed.",
+        output: { questionType: "choice", model: null },
+    };
+    assert.deepEqual(workflowDecisionExecutionReadSummary(visit), {
+        supplied: true, outcome: "agent_review", text: "Supplied · agent_review · Engineering confirmed.",
+    });
+    assert.equal(workflowDecisionExecutionReadSummary({ ...visit, suppliedNote: null }).text, "Supplied · agent_review");
+    assert.equal(workflowDecisionExecutionReadSummary({ ...visit, suppliedFromExecutionId: null }), null);
+    const bounded = workflowDecisionExecutionReadSummary({ ...visit, suppliedNote: "語".repeat(1_500) });
+    assert.ok(bounded.text.endsWith("…"));
+    assert.ok(Buffer.byteLength(JSON.stringify(bounded), "utf8") <= 4 * 1024);
 });

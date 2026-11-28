@@ -110,6 +110,7 @@ What fit means (C1 to C10):
   for `noul`, `scored` for a score, or `uncertain` if routed. Never `error`.
   Omit `output`. The step uses that route without asking the model.
   A supplied decision has its outcome and selection; its model fields are null.
+  Selection is null for uncertain and is not a field of score output.
 - `note` is required: 1 to 2,000 characters.
 - **Supply only values you checked in the external system; never invent ids; put the evidence in `note`.**
   If the check finds nothing (no server was created), do not supply: use

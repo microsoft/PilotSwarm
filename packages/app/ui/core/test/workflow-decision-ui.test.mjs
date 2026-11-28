@@ -484,6 +484,27 @@ test("Portal node summary and Output view show the semantic result, including un
     assert.doesNotMatch(failureHtml, /request-secret|provider-secret|latencyMs|tokens|usage/i);
 });
 
+test("the Portal Decision result box and TUI show the supplied summary from the read model", async () => {
+    const output = { questionType: "choice", outcome: "engineering", selection: "engineering", model: null };
+    const text = "Supplied · engineering · Engineering confirmed.";
+    const execution = {
+        decisionSummary: { supplied: true, outcome: "engineering", text },
+        supplied: { from: { executionId: "source-visit" }, note: "Engineering confirmed." },
+    };
+    const read = decisionRead({ output, execution });
+    const projection = projectWorkflow({ readModel: read });
+    const selected = projection.nodes.find(node => node.id === "route_ticket");
+    const html = renderToStaticMarkup(React.createElement(WorkflowNodeContent, {
+        tab: "output", selected, nodes: projection.nodes, select() {}, runId: read.run.runId, onReadWholeValue() {},
+    }));
+    assert.match(html, /Decision result/);
+    assert.ok(html.includes(text));
+    assert.doesNotMatch(html, /needs its whole value|Read the whole value/);
+    const tui = await tuiDecisionLines({ output, execution });
+    assert.ok(tui.includes(text));
+    assert.doesNotMatch(tui, /Model:|Confidence:|second provider call/);
+});
+
 test("the mounted Portal summaries render the exact production score object and preserve provider level order", () => {
     const noul = {
         questionType: "noul", outcome: "no", selection: "no", confidence: 0.75,

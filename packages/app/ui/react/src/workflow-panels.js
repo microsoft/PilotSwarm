@@ -714,7 +714,7 @@ export function WorkflowNodeContent({ tab, selected, nodes, select, runOutput, r
                 decision.model ? property("Model", decision.model) : null,
                 decision.questionType ? property("Question", decision.questionType === "noul" ? "Yes or no" : decision.questionType) : null,
                 decision.threshold !== null ? property("Threshold", workflowDecisionPercentage(decision.threshold)) : null,
-                property("Decision outcome", decision.outcome),
+                property("Decision outcome", decision.supplied ? decision.text : decision.outcome),
                 decision.uncertain !== null ? property("Uncertain", decision.uncertain ? "Yes" : "No") : null,
                 decision.confidence ? property("Confidence", decision.confidence) : null,
                 decision.probabilities.length ? property("Probabilities", decision.probabilities
