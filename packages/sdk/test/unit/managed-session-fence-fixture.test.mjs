@@ -36,6 +36,19 @@ test("reopening a partial session fixture cannot revive an old admission", () =>
     assert.throws(newAdmission, refusal);
 });
 
+// complete_workflow_node's onDecided (session-proxy) calls decideWorkflowVisit, then reads getActiveTurn for the report's task cancel.
+test("a partial session fixture decides its visit with the real flag and has no active turn", () => {
+    const handle = managedSessionFence(ManagedSession);
+    assert.equal(handle.workflowVisitIsDecided(), false);
+    assert.equal(handle.getActiveTurn(), null);
+    handle.decideWorkflowVisit();
+    assert.equal(handle.workflowVisitIsDecided(), true);
+    assert.throws(() => handle.assertWorkflowToolsOpen(), refusal);
+    handle.resetWorkflowToolsOpen();
+    assert.equal(handle.workflowVisitIsDecided(), false);
+    handle.assertWorkflowToolsOpen();
+});
+
 test("partial session fixtures do not share admission state", () => {
     const first = managedSessionFence(ManagedSession);
     const second = managedSessionFence(ManagedSession);

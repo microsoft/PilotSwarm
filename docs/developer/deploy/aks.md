@@ -982,12 +982,38 @@ Existing sessions keep replaying on the frozen 1.0.82 and move to 1.0.83 at
 their next continue-as-new. For the GitOps path (Flux), see "Upgrading to
 this release: stop, deploy, start" in `deploy/scripts/README.md`.
 
+### Upgrading to whole child Workflow results (stop, deploy, start)
+
+The release that sends a child Workflow's whole result to its parent must not
+roll the workers either. Stop every worker, deploy, then start them, with the
+same commands as above. There is no CMS migration and no orchestration or
+Workflow controller version change.
+
+Why: the child's `WorkflowEnded@1` notice to its parent has a new form. It
+names the child's `runId` and carries outputs up to 195,584 bytes (was
+16 KiB). An old worker that replays a new-style `WorkflowEnded@1` notice fails
+with `OPERATION_CONFLICT`: the notice that a new worker stored differs from the
+one the old worker builds. The parent still has the message.
+
+Before the upgrade, check fan-out parents: child outputs from about 16 KiB to
+195,584 bytes now arrive whole instead of as metadata only, and can pass a
+later limit that the same definition met before: a parallel join (256 KiB), a
+`send` (16 KiB) or the run's output (256 KiB). See "Keep only what you need
+from each child" in [the Workflows guide](../../user-guide/workflows.md).
+
+Rollback: drain child end notices first. Let running child Workflows finish,
+and keep the new workers up until every ended child has told its parent (no
+child end notice is pending or retrying). Then stop every worker, deploy the
+older release, and start them.
+
 ### Rolling Update
 
 Use a rolling update only for a release that keeps the default session
-orchestration version. A release that changes it, such as the one that makes
-1.0.83 the default, is deployed by stop, deploy, start (above): during a
-rolling update an old worker can take a session of the new version and fail it.
+orchestration version and whose release notes do not ask for stop, deploy,
+start. A release that changes it, such as the one that makes 1.0.83 the
+default, is deployed by stop, deploy, start (above): during a rolling update an
+old worker can take a session of the new version and fail it. The release with
+whole child Workflow results is also stop, deploy, start (above).
 
 ```bash
 # Rebuild and push

@@ -370,6 +370,108 @@ describe("SessionManager.abortWarmSessionTurn", () => {
         expect((await turnPromise).type).toBe("stopped");
     });
 
+    // Issue I1, review R2-2: the stopped turn can end while its Stop waits, and the next turn can then run on the same warm
+    // handle. The Stop's escalation acts only on the run it saw.
+    it("a Stop whose turn ends during its task cancel never settles the next turn on the same handle", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const first = managed.runTurn("reply", { turnIndex: 1 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        let releaseList = null;
+        copilot.rpc = { tasks: {
+            list: () => new Promise((resolve) => { releaseList = () => resolve({ tasks: [] }); }),
+            cancel: async () => ({ cancelled: true }),
+        } };
+        const stopping = manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "reply limit", expectedTurnIndex: 1, unwindGraceMs: 100, cancelTurnTasks: true,
+        });
+        await waitFor(() => releaseList !== null);
+        // The stopped turn ends while the Stop waits on its task list; the next turn starts on the same handle.
+        copilot._emit("session.idle");
+        expect((await first).type).toBe("stopped");
+        const second = managed.runTurn("next visit", { turnIndex: 2 });
+        await waitFor(() => managed.getActiveTurn()?.turnIndex === 2);
+        releaseList();
+
+        expect((await stopping).outcome).toBe("stopped");
+        await sleep(300);
+        expect(managed.getActiveTurn()?.turnIndex).toBe(2);
+        expect(manager.invalidateWarmSessionCalls).toEqual([]);
+        copilot._emit("session.idle");
+        expect((await second).type).toBe("completed");
+    });
+
+    it("a forced settle's own turn drops its handle; the backstop invalidation spares a later run on that handle", async () => {
+        const manager = Object.create(SessionManager.prototype);
+        manager.sessions = new Map();
+        const dropped = [];
+        let lock = Promise.resolve();
+        manager._withSessionLock = (_sessionId, _label, fn) => {
+            const run = lock.then(fn);
+            lock = run.catch(() => {});
+            return run;
+        };
+        manager._cancelWorkspaceShells = async () => {};
+        manager._forgetWarmSession = (sessionId) => { dropped.push(sessionId); manager.sessions.delete(sessionId); };
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        // The stopped turn's activity holds the session lock until the test releases it.
+        let releaseLock = () => {};
+        void manager._withSessionLock(managed.sessionId, "runTurn", () => new Promise((resolve) => { releaseLock = resolve; }));
+        const first = managed.runTurn("hung reply", { turnIndex: 1 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        const result = await manager.abortWarmSessionTurn(managed.sessionId, { reason: "reply limit", expectedTurnIndex: 1, unwindGraceMs: 100 });
+        expect(result.outcome).toBe("stop_forced");
+        expect((await first).type).toBe("stopped");
+        // The stopped turn's activity reads this and drops the handle itself, before it releases the lock.
+        expect(managed.takeUnsettledRun()).toBe(true);
+
+        // Had a later run started on the handle first, the queued backstop invalidation leaves it alone.
+        const second = managed.runTurn("next visit", { turnIndex: 2 });
+        await waitFor(() => managed.getActiveTurn()?.turnIndex === 2);
+        releaseLock();
+        await lock;
+        expect(dropped).toEqual([]);
+        expect(manager.sessions.get(managed.sessionId)).toBe(managed);
+        copilot._emit("session.idle");
+        expect((await second).type).toBe("completed");
+    });
+
+    // Issue I1, review R3-3: a CLI that no longer answers the disconnect never holds the session lock.
+    it("a forced stop's invalidation is bounded: a disconnect that never answers releases the session lock", { timeout: 20_000 }, async () => {
+        const manager = Object.create(SessionManager.prototype);
+        manager.sessions = new Map();
+        const forgotten = [];
+        let lock = Promise.resolve();
+        manager._withSessionLock = (_sessionId, _label, fn) => {
+            const run = lock.then(fn);
+            lock = run.catch(() => {});
+            return run;
+        };
+        manager._cancelWorkspaceShells = async () => {};
+        manager._forgetWarmSession = (sessionId) => { forgotten.push(sessionId); manager.sessions.delete(sessionId); };
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        copilot.disconnect = () => new Promise(() => {});
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        // The forced stop's backstop invalidation takes the lock, and gives it back after its deadline. (The turn's own drop,
+        // in the activity, passes a deadline too: workflow-simplified-turn-fence.test.js, RT-F1.)
+        const first = managed.runTurn("hung reply", { turnIndex: 1 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        expect((await manager.abortWarmSessionTurn(managed.sessionId, { reason: "reply limit", expectedTurnIndex: 1, unwindGraceMs: 100 })).outcome)
+            .toBe("stop_forced");
+        expect((await first).type).toBe("stopped");
+        const next = await Promise.race([manager._withSessionLock(managed.sessionId, "runTurn", async () => "ran"), sleep(15_000).then(() => "held")]);
+        expect(next).toBe("ran");
+        expect(forgotten).toEqual([managed.sessionId]);
+    });
+
     it("never takes the per-session lock (lock-bypass contract)", () => {
         // runTurn holds withRunTurnLock for the entire turn; a lock-taking
         // stop would serialize behind the turn and defeat mid-flight stop.

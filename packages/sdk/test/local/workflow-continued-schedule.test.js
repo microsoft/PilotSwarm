@@ -48,6 +48,8 @@ function harness({ stopped = false, descendant = false, lifecycle = null } = {})
         readAgentRequiredTools: async () => [],
         readAgentMissingTools: async () => [],
         readTurnVisit: async () => invocation.visit,
+        // Issue I1: admission reads the turn's fixed visit again, ordered after a decision in flight; it is open here.
+        readNodeStateAfterWriters: async () => "pending",
         recordAgentReminder: async request => {
             reminders.push(request);
             return { recorded: true, n: 1, max: 3, stateId: "look", cycle: request.visit };

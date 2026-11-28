@@ -113,7 +113,7 @@ Running `deep_analysis` inline as an agent step inside the loop causes three lim
 - **Revision resolution:** A `spawn` state runs the newest valid revision of the named definition when the state is entered, unless an explicit `revision` number is specified. Running children keep the revision they started with.
 - **Child lifecycle:** When a parent run ends for any reason, its active child Workflows are cancelled (Rule 4). A child's own `limits.timeoutSeconds` bounds its maximum lifetime.
 - **Tool operations:** `child_workflows` exposes `list`, `read`, `stop`, and `cancel`.
-- **Tool caller scope:** Only the parent Workflow's script states and direct agent steps can use `child_workflows`, and only on that Workflow's direct children. Chat agents use `read_workflow` and `update_workflow` on Workflows they started; humans inspect any visible session in the portal/TUI.
+- **Tool caller scope:** Only the parent Workflow's script states and direct agent steps can use `child_workflows`, and only on that Workflow's direct children. Chat agents use `read_workflow` and `update_workflow` on Workflows they started and on every Workflow nested below them; an agent step reads its own Workflow with `read_workflow` (see the user guide, "Who may read and control a Workflow"); humans inspect any visible session in the portal/TUI.
 
 ### 4.4 Reused Mechanisms
 
@@ -124,7 +124,7 @@ Running `deep_analysis` inline as an agent step inside the loop causes three lim
 | Child-to-parent addressing | `{ parent: true }` resolves to definition's `parent_session_id` | `workflow/runtime.ts` |
 | Typed inbox delivery | `recipientDecision` and `workflow_inbox` | `workflow/store.ts` |
 | Timed receive preserving loop state | `receive` with `wait` and `carry` | `workflow/compiler.ts` |
-| Parent-only read/control | `authorizeParent` | `workflow/tools.ts` |
+| Read/control by the parent and the sessions above it (I2; its agent step reads) | `decideWorkflowAccess` | `workflow/access.ts` |
 | Running-child cap (50) | Counted by `parent_session_id` | `workflow/child-budget.ts` |
 | Non-blocking effect execution | `workflow-effect` helper orchestration | `workflow/controller/index.ts`, `workflow/effect_1_2_0/index.ts` |
 | Per-step tool grant derivation | Root grant inheritance at Start | `workflow/service.ts` |
@@ -142,9 +142,9 @@ Running `deep_analysis` inline as an agent step inside the loop causes three lim
 | C3 | **Controller 1.3.0** | Dispatches `workflow-effect` `1.2.0` for `spawn` states using the same non-blocking loop as `script` and `decision`. Frozen `1.0.0`, `1.1.0`, and `1.2.0` controllers stay registered for replay and continue-as-new handoff. | `workflow/controller/index.ts`, `workflow/controller/runtime.ts`, `workflow/controller_1_2_0/*`, `workflow/controller-version.ts`, `workflow/controller-registry.ts` |
 | C4 | **`spawnChild` activity & effect `1.2.0`** | `effect_1_2_0` invokes `workflow.spawnChild` with bounded retry (`storeTagged`) for transient failures (such as controller START errors) before mapping exhausted retries to `execution_failed`, maps definite refusals directly to `invalid_input` / `unavailable` / `budget_exceeded` / `forbidden` / `cancelled`, records `started` + handle via `workflow.recordEffectResult`, and wakes the parent controller. | `workflow/effect_1_2_0/index.ts`, `workflow/runtime.ts`, `worker.ts` |
 | C5 | **Start function & parent-run lock** | `startSessionWorkflowDefinition` accepts separate `ownerSessionId` (definition owner) and `parentSessionId` (spawning Workflow) plus an explicit internal `spawn: { nodeExecutionId }` mode. In the child-insert transaction: replay an existing receipt read-only first; otherwise lock the exact spawning run (`SELECT ... FOR UPDATE`), verify it is active, and verify via a plain read that the spawn node execution is still `pending` before inserting child rows. | `workflow/session-definitions.ts`, `workflow/service.ts`, `workflow/store.ts` |
-| C6 | **End notice** | When the parent is a Workflow, `notifyParent` resolves the exact spawning run from the child's start operation and delivers a `WorkflowEnded@1` row to that run's inbox (only while that run is active). Bypasses the 100-message inbox cap only when verified in the store as `WorkflowEnded@1` from a direct child. Requester suppression applies to chat parents only. Outputs over 16 KB (or unwrappable payloads) omit `output` and set `outputTruncated: true`. | `workflow/runtime.ts`, `workflow/store.ts`, `workflow/service.ts` |
+| C6 | **End notice** | When the parent is a Workflow, `notifyParent` resolves the exact spawning run from the child's start operation and delivers a `WorkflowEnded@1` row to that run's inbox (only while that run is active). Bypasses the 100-message inbox cap only when verified in the store as `WorkflowEnded@1` from a direct child. Requester suppression applies to chat parents only. The notice names the child's `runId`. An output whose widest received form exceeds 195,584 bytes (or an unwrappable payload) is omitted with `outputTruncated: true`. | `workflow/runtime.ts`, `workflow/store.ts`, `workflow/service.ts` |
 | C7 | **End-of-run & delete cleanup** | `endAgents` cancels active child Workflows (or deletes them when the parent is deleted), including cleaning up bare claimed sessions that have no run row yet. Per-session deletion in `PilotSwarmClient._deleteOneSession` and `PilotSwarmManagementClient._forceDeleteSession` soft-deletes every reached Workflow (direct or under an ancestor delete) first to block in-flight spawns, then scans and deletes direct child Workflows and bare claims before cancelling the parent controller. The sweeper prune (`cascade: false`) includes one level of child Workflows. | `workflow/runtime.ts`, `workflow/store.ts`, `client.ts`, `management-client.ts` |
-| C8 | **`child_workflows` tool** | Exposed to Workflow script states (`callTool("child_workflows", ...)`) and direct agent steps (`workflowAgentChild`). Supports `list` (SQL-filtered/paged), `read` (`workflow_id`), `stop`, and `cancel` scoped strictly to the calling Workflow's direct children, returning `WORKFLOW_NOT_FOUND` otherwise. | `workflow/tools.ts`, `workflow/runtime.ts`, `workflow/store.ts`, `managed-session.ts`, `reserved-tool-names.ts` |
+| C8 | **`child_workflows` tool** | Exposed to Workflow script states (`callTool("child_workflows", ...)`) and direct agent steps (`workflowAgentChild`). Supports `list` (SQL-filtered/paged), `read` (`workflow_id`, `full_output`), `stop`, and `cancel` scoped strictly to the calling Workflow's direct children, returning `WORKFLOW_NOT_FOUND` otherwise. `read` falls back to the outcome kept with the parent for a cleaned-up child. | `workflow/tools.ts`, `workflow/runtime.ts`, `workflow/store.ts`, `managed-session.ts`, `reserved-tool-names.ts` |
 | C9 | **Read model and UI** | Adds `spawn` node kind, icon, and color token; shows spawned children links in node details and `spawnedBy` in child headers across portal and TUI; walks ancestor sessions to resolve the definition owner for nested Workflows. | `workflow/tools.ts`, `app/ui/core/src/*`, `app/ui/react/src/*`, `app/web/src/index.css` |
 | C10 | **Test mode** | Migration `0103` widens `workflow_test_interceptions_operation_check` to include `spawn`. In test mode, `spawn` is a held call answered by a fixture or tester with a handle without creating a real child session; `WorkflowEnded@1` fixtures feed `receive` directly. | `migrations/workflow-child-workflows-0103.ts`, `workflow/test-mode.ts`, `workflow/definition-test.ts`, `workflow/runtime.ts` |
 | C11 | **Skills** | Updated `workflow-authoring`, `workflow-reference`, `workflow-patterns`, and `workflow-tools` skills and `guidance.ts` to document `spawn`, `WorkflowEnded@1`, and `child_workflows`. | `packages/sdk/plugins/workflow/skills/*/SKILL.md`, `workflow/guidance.ts` |
@@ -200,11 +200,12 @@ spawn_investigation:
 
 ### 6.2 The `WorkflowEnded@1` Ended Message
 
-Sent exclusively by the runtime when a child run ends. User definitions cannot declare it in `contracts:` or send it via `send` or ordinary runtime input. The sender is the child's session id and `correlation` is `{}`, so a `receive` without `correlate` accepts it.
+Sent exclusively by the runtime when a child run ends. User definitions cannot declare it in `contracts:` or send it via `send` or ordinary runtime input. The sender is the child's session id and `correlation` is `{}`, so a `receive` without `correlate` accepts it. Match one child with `from: "${states.<spawn>.output.workflowId}"`, never with `correlate:`: a receive of `WorkflowEnded@1` with a non-empty `correlate` never takes the message, and the compiler warns `WORKFLOW_ENDED_CORRELATE` at save. Give such a receive a `wait`.
 
 ```json
 {
   "workflowId": "c4189a2b-0000-0000-0000-000000009a2b",
+  "runId": "5d0f2e71-0000-0000-0000-00000000e271",
   "definition": "anomaly-investigation",
   "revision": 2,
   "spawnedBy": { "stateId": "spawn_investigation", "visit": 2 },
@@ -219,16 +220,20 @@ Sent exclusively by the runtime when a child run ends. User definitions cannot d
 
 | Field | Meaning |
 |---|---|
+| `runId` | The child's run. Added later: a notice delivered before it has none, so a receiving state reads it as optional. |
 | `status` | Final run status: `completed`, `failed`, `cancelled`, or `stopped`. |
 | `outcome`, `stateId` | Terminal state outcome and id, or `null` if the run did not finish at a terminal state. |
-| `output` | Terminal output, omitted when larger than 16 KB (or not serializable within limits), in which case `outputTruncated: true` and the parent reads the full result via `child_workflows` `read`. |
+| `output` | The whole terminal output. Omitted only when the parent's next state could not take it whole (below), in which case `outputTruncated: true` and the parent reads the whole result with `child_workflows` `read` `full_output: true`. |
+| `outputTruncated` | `true` only when `output` was omitted. |
 | `error` | `{ code, message }` for failed or cancelled runs. Deadline expiration reports `status: "failed"` and `error.code: "timed_out"`. |
+
+The notice limit (`WORKFLOW_ENDED_NOTICE_MAX_BYTES`, 195,584 bytes) is measured on the widest form a receiving state passes on: a list `receive` wraps the payload as `{ contract, from, payload }`, and a `carry` wraps that as `{ carry, result }`. A state's input may be 256 KiB and a carry 64 KiB, and 1 KiB is left for the wrapping keys, so the received value, passed on as is with a carry of up to 64 KiB, fits the next state's 256 KiB input. The next state's own input mapping and later limits (a join, a `send`, the run's output) are still checked as usual: a fan-out parent that passes whole outputs on unchanged can fail a parallel join (256 KiB, `invalid_output`), a `send` (16 KiB, `invalid_input`) or its run output (256 KiB), and saving warns `WORKFLOW_ENDED_WHOLE_OUTPUT` where it can see that. A run's output is at most 256 KiB, so only outputs near that size are omitted. The output must also be wrappable within the 64-level JSON nesting limit.
 
 Rules:
 - Exactly one message per child run, keyed by a fixed operation id (`ended:<runId>`).
 - Exempt from the 100-message inbox cap when verified in the store as `WorkflowEnded@1` from a direct child.
 - Always delivered to a Workflow parent while the spawning run is still active, including when cancelled by `child_workflows` `cancel` (even before the child began executing).
-- Expires from the inbox after 24 hours; the child's result remains readable via `child_workflows` `read`.
+- Expires from the inbox after 24 hours; the child's result remains readable via `child_workflows` `read` (with `full_output: true` for the whole output).
 
 ### 6.3 Messaging Between Parent and Child
 
@@ -248,7 +253,7 @@ Only direct child Workflows of the calling Workflow are visible; any other id re
 | Operation | Arguments | Response |
 |---|---|---|
 | `list` | `status`: `active` (default), `ended`, or `all`; `definition` (optional); `limit` (1–100, default 50); `cursor` | `{ children: [...], nextCursor }`, newest first (filtered and paginated in SQL) |
-| `read` | `workflow_id` | Same shape as `read_workflow` |
+| `read` | `workflow_id`; `full_output` (optional) | Same shape as `read_workflow`, with `run.output` a 2,000-character preview. With `full_output: true`, only the child's result: `{ workflowId, deleted?, run: { runId, status, outcome, terminalState, output, error } }`, `run.output` the whole stored canonical JSON text (`"null"` for JSON null, `null` for none). A child that is gone (cleaned up) is read through the outcome kept with this Workflow; a live Workflow that is not this Workflow's child (both parent records) is `WORKFLOW_NOT_FOUND`. |
 | `stop` | `workflow_id`, `operation_id`, `grace_seconds` (0–3600, default 60), `reason` | Same as `update_workflow` `stop` |
 | `cancel` | `workflow_id`, `operation_id`, `reason` | Same as `update_workflow` `cancel` |
 
@@ -418,7 +423,7 @@ publish_investigation:
 | Child definition updated while parent runs | Next `spawn` uses the newest valid revision (or fixed `revision`); running children keep their started revision. |
 | Parent inbox at 100 waiting messages | Direct-child `WorkflowEnded@1` is still accepted. |
 | Parent never receives `WorkflowEnded@1` | Inbox row expires after 24 hours; child result stays readable via `child_workflows` `read`. |
-| Child output exceeds 16 KB | Notice sets `outputTruncated: true` and omits `output`; parent reads full output via `child_workflows` `read`. |
+| Child output too large for the notice (widest received form over 195,584 bytes) | Notice sets `outputTruncated: true`, omits `output` and keeps `runId`; a parent script reads the whole output with `child_workflows` `read` `full_output: true`, also after the child is cleaned up. |
 | Parent run ends while children run | Active children are cancelled (Rule 4). |
 | Parent run ends while a `spawn` is in flight | Serialized by the parent-run `FOR UPDATE` lock: either child commits first and cleanup cancels it, or parent end commits first and spawn is refused (`RUN_ENDED`) with no child rows. Verified by the TLA+ model. |
 | Parent or ancestor session deleted | Every reached Workflow is soft-deleted first (blocking in-flight spawns), its direct child Workflows and bare claims are scanned and deleted, and then its controller is cancelled. |
@@ -445,7 +450,7 @@ See [`workflow-child-workflows/formal/README.md`](workflow-child-workflows/forma
 | T1–T2 | Level rule | All 6 nesting chains and level-1 agent step spawning level-2 sub-agent |
 | T3–T4 | Compiler | `spawn` fields/errors, `WorkflowEnded@1` built-in receive / rejected send & legacy runtime guard |
 | T5–T7 | Store & Start | Parentage, budget count, idempotent replay & `OPERATION_CONFLICT`, budget/level/input refusals, package definitions, true claim-vs-cancel race, delete barrier |
-| T8–T10 | Inbox & notice | Pending-receive vs queued FIFO delivery, duplicate notifier idempotency, 100-message cap bypass, 16 KB truncation & unwrappable fallback |
+| T8–T10 | Inbox & notice | Pending-receive vs queued FIFO delivery, duplicate notifier idempotency, 100-message cap bypass, whole output within the notice limit (`runId` added), omission beyond it & unwrappable fallback, an older-form notice stored before an upgrade answering the newer retry |
 | T11–T18 | Runtime & faults | Out-of-order (2, 3, 1), poll loop schedule with concurrent child, failed/timed_out/pre-begin tool-cancelled child notices, all 6 parent end modes (complete, fail, cancel, stop, timeout, delete), real chat-end cascade, transient spawn retry, controller 1.2.0 → 1.3.0 handoff |
 | T19–T21 | `child_workflows` tool | `list`/`read`/`stop`/`cancel` from script and agent step, coded `WORKFLOW_NOT_FOUND` outside own children, unavailable to chat/sub-agents |
 | T22 | Test mode | Held `spawn` interception + `WorkflowEnded@1` fixture |

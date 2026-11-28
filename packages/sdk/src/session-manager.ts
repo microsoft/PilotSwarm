@@ -747,6 +747,29 @@ export function withWorkspaceChangeDeny(
     };
 }
 
+/** What a tool call of a Workflow agent step's turn hears after the step's result is recorded (withWorkflowVisitDeny). */
+export const WORKFLOW_VISIT_DECIDED_DENIAL = "The result of this workflow step is recorded, so this cycle is over and no more tools run in "
+    + "this turn. Write a short final reply and stop.";
+
+/**
+ * Issue I1: once a Workflow agent step's turn has reported its result (complete_workflow_node), the turn is not stopped; it
+ * goes on to write its reply, so that its snapshot is committed. The Workflow tools and the wrapped user tools already
+ * refuse then; this hook refuses every other call too (the CLI's own tools: shell, file edits, sub-agents), so the turn only
+ * finishes its reply and the next visit's prompt, which waits behind it, is not held up. Installed only for the session of a
+ * Workflow agent step (`decided` null otherwise). A call made in the same model message as the report is not refused: the
+ * CLI runs the pre-tool hooks of a message's calls before any handler.
+ */
+export function withWorkflowVisitDeny(hooks: SessionConfig["hooks"], decided: (() => boolean) | null): SessionConfig["hooks"] {
+    if (!decided) return hooks;
+    return {
+        ...hooks,
+        onPreToolUse: async (input: any, invocation: any) => {
+            if (decided()) return { permissionDecision: "deny" as const, permissionDecisionReason: WORKFLOW_VISIT_DECIDED_DENIAL };
+            return hooks?.onPreToolUse?.(input, invocation);
+        },
+    };
+}
+
 /**
  * Session workspaces (section 4.10): one folder attached on this worker for a
  * session and not released yet. The working folder has no `attachment`.
@@ -812,10 +835,13 @@ const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
  */
 const WORKSPACE_RELEASE_DEADLINE_MS = 20_000;
 
-/** Bound on the task cancel a V4 Stop runs before it waits for the turn to unwind. */
-const STOP_TASK_CANCEL_DEADLINE_MS = 1_500;
+/** Bound on the task cancel a V4 Stop runs before it waits for the turn to unwind (and the one a Workflow report runs). */
+export const STOP_TASK_CANCEL_DEADLINE_MS = 1_500;
 
-function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
+/** Bound on the disconnect of a session whose turn a Stop settled by force (issue I1, review R3-3). */
+const FORCED_STOP_DESTROY_DEADLINE_MS = 5_000;
+
+export function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms} ms`)), ms);
@@ -2372,25 +2398,33 @@ export class SessionManager {
             }
         }
 
+        // Review R2-2 (issue I1): from here on, only this turn's own run on this handle is settled or dropped. The turn may
+        // end during an await above or below, and the next turn may then run on the same warm handle (the session lock is
+        // free once the stopped turn's activity ends); that next turn is never settled by force or invalidated by this Stop.
+        const stillRunning = () => this.sessions.get(sessionId) === managed && managed.getActiveTurn() === active;
         const graceMs = opts.unwindGraceMs ?? 8_000;
         const deadline = Date.now() + graceMs;
-        while (managed.getActiveTurn() && Date.now() < deadline) {
+        while (stillRunning() && Date.now() < deadline) {
             await sleep(200);
         }
-        if (!managed.getActiveTurn()) {
+        if (!stillRunning()) {
             return { outcome: "stopped", turnIndex: active.turnIndex };
         }
 
         // Escalation: the SDK never fired session.idle. Settle the turn promise
         // ourselves, then drop the warm session so the next turn recreates it.
-        // invalidateWarmSession takes the session lock, so fire-and-forget: the
-        // lock serializes it behind the (now settling) turn's unwind.
+        // The turn's own activity drops it before it releases the session lock
+        // (the unsettled run); the invalidation below is the backstop, and
+        // drops the handle only if no later run started on it.
+        const run = managed.getRunGeneration();
         managed.forceSettleTurn(opts.reason);
+        managed.markRunUnsettled();
         const settleDeadline = Date.now() + 2_000;
-        while (managed.getActiveTurn() && Date.now() < settleDeadline) {
+        while (managed.getActiveTurn() === active && Date.now() < settleDeadline) {
             await sleep(100);
         }
-        void this.invalidateWarmSession(sessionId).catch(() => {});
+        // Review R3-3: bounded, so a disconnect the CLI never answers does not hold the session lock.
+        void this.invalidateWarmSession(sessionId, { onlyRun: { session: managed, run }, destroyDeadlineMs: FORCED_STOP_DESTROY_DEADLINE_MS }).catch(() => {});
         return { outcome: "stop_forced", turnIndex: active.turnIndex };
     }
 
@@ -3412,14 +3446,14 @@ export class SessionManager {
                 skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
             } : config.workspaceCleared ? { enableFileHooks: false } : {}),
             // The CLI's `skill` tool called with `name` is given it as `skill` (withSkillNameArgument).
-            hooks: withSkillNameArgument(withWorkspaceChangeDeny(
+            hooks: withSkillNameArgument(withWorkflowVisitDeny(withWorkspaceChangeDeny(
                 nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
                     () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess, repoAgentAccess, nativeLimit) : config.hooks,
                 workspaceTools ? {
                     state: () => this.sessions.get(sessionId)?.workspaceChangeState() ?? "none",
                     noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
                 } : null,
-            )),
+            ), config.workflowAgentChild === true ? () => this.sessions.get(sessionId)?.workflowVisitIsDecided() === true : null)),
             // Workflow real-agent test runs: a session whose turn ran
             // under such a test refuses MCP tools, which cannot be intercepted; its other requests go to its handler unchanged.
             // Every other session gets its handler as it is.
@@ -3603,8 +3637,9 @@ export class SessionManager {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
+                // A new turn: an earlier turn's decided visit no longer closes its tools (issue I1).
+                existing.resetWorkflowToolsOpen();
                 if (agentBindingRefusal) existing.closeWorkflowTools();
-                else existing.resetWorkflowToolsOpen();
                 existing.setWorkflowDelegationRefusal(agentBindingRefusal);
                 existing.setWorkflowUnavailableTools(workflowUnavailableToolMessages(workflowSnapshot));
                 existing.setLoadedSkillCatalog(resolvedLoads.skillCatalog);
@@ -4374,12 +4409,15 @@ export class SessionManager {
      * it the handle is forgotten anyway and its disconnect settles in the
      * background (issue 329: its runtime connection is gone).
      */
-    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean; destroyDeadlineMs?: number }): Promise<void> {
+    async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean; destroyDeadlineMs?: number;
+        /** Only that handle, and only while its newest run is `run` (no later turn ran on it). */
+        onlyRun?: { session: ManagedSession; run: number } }): Promise<void> {
         if (!options?.lockHeld) {
             return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { ...options, lockHeld: true }));
         }
         const session = this.sessions.get(sessionId);
         if (!session) return;
+        if (options?.onlyRun && (session !== options.onlyRun.session || session.getRunGeneration() !== options.onlyRun.run)) return;
         // Review RT-F1-L1: an invalidated handle is forgotten whatever fails on the way, so it is never reused.
         try {
             await this._cancelWorkspaceShells(sessionId, session, "an invalidation");

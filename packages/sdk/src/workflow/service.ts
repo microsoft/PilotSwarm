@@ -1329,7 +1329,8 @@ export async function controlWorkflowRun(
     host: Pick<WorkflowHost, "store" | "duroxideClient">,
     workflowSessionId: string,
     command: WorkflowRunCommand,
-    context: { actor: WorkflowActor; operationId: string },
+    /** `aboveParent`: the agent caller is a session above the Workflow's parent (I2); its default cancel reason says so. */
+    context: { actor: WorkflowActor; operationId: string; aboveParent?: boolean },
 ): Promise<StoredOperation<WorkflowRunCommandReceipt>> {
     requireOperationId(context.operationId);
     const run = await commandRun(host, workflowSessionId, command.runId);
@@ -1362,9 +1363,11 @@ export async function controlWorkflowRun(
     }
     const requestSha256 = jsonSha256({ kind: command.operation, runId: run.runId, reason: command.reason });
     if (command.operation === "cancel") {
-        // Without a reason, the run's end names who cancelled it: its parent agent, a person (updateWorkflow, R26), or an
-        // operator's own client (a management client without a principal).
-        const reason = command.reason ?? (context.actor.kind === "agent" ? "Cancelled by its parent"
+        // Without a reason, the run's end names who cancelled it: its parent agent, a session above the parent (I2), a person
+        // (updateWorkflow, R26), or an operator's own client (a management client without a principal). Chosen after the
+        // request hash, so a retry of the same operation is a replay whoever cancelled.
+        const reason = command.reason ?? (context.actor.kind === "agent"
+            ? (context.aboveParent ? "Cancelled by a session above it" : "Cancelled by its parent")
             : context.actor.kind === "user" ? "Cancelled by a person" : "Cancelled by an operator");
         const requestedBy = context.actor.kind === "agent" ? context.actor.sessionId : null;
         const stored = await host.store.recordRunCancelRequest({ workflowSessionId, runId: run.runId, operationId: context.operationId, requestSha256,

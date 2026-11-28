@@ -295,7 +295,7 @@ Start/read include `delegated` (`workflow.tools_delegated`, `workflow.agent_tool
 
 ## child_workflows
 
-Workflow scripts (`callTool("child_workflows", ...)`) and direct agent steps only; `WORKFLOW_NOT_FOUND` outside own children. Ops: `list` (`status`: `active`|`ended`|`all`, `definition?`, `limit` 1-100, `cursor`), `read` (`workflow_id`), `stop` (`workflow_id`, `operation_id`, `grace_seconds?`, `reason?`), `cancel` (`workflow_id`, `operation_id`, `reason?`).
+Workflow scripts (`callTool("child_workflows", ...)`) and direct agent steps only; `WORKFLOW_NOT_FOUND` outside own children. Ops: `list` (`status`: `active`|`ended`|`all`, `definition?`, `limit` 1-100, `cursor`), `read` (`workflow_id`, `full_output?`: whole output, also of a cleaned-up child), `stop` (`workflow_id`, `operation_id`, `grace_seconds?`, `reason?`), `cancel` (`workflow_id`, `operation_id`, `reason?`).
 
 ## Refusals you can fix
 
@@ -314,4 +314,4 @@ Workflow scripts (`callTool("child_workflows", ...)`) and direct agent steps onl
 | `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | A script revision's only tool grant could not be handed over; nothing started. Retry Start once; if refused again, tell the person. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
-| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take only this session's Workflows: those started from its definitions, by you or the person. A person changes theirs in the Workflow tab. |
+| `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take this session's Workflows and their child Workflows, at any depth; an agent step only reads its own. A person changes theirs in the Workflow tab. |

@@ -44,7 +44,8 @@ typed messages, requests for an answer, agent steps and fan-out.
 Models learn the details from the Workflow skills in
 `packages/sdk/plugins/workflow/skills/`: `workflow-authoring`,
 `workflow-reference` (every field, and what the engine guarantees on retries,
-restarts, timers, joins and stops), `workflow-tools` and `workflow-patterns`.
+restarts, timers, joins and stops), `workflow-tools`, `workflow-patterns` and
+`workflow-limits` (one table of the size limits a run meets).
 
 How Workflows compare with GitHub Actions, GitHub Agentic Workflows and
 Copilot dynamic workflows: [Workflows and GitHub Copilot](./workflows-and-github-copilot.md).
@@ -179,24 +180,117 @@ A stop that lets started nodes finish reads **Stopped**; **Cancel now** reads
   compiled the same way, so its **Agent session** line says what a Start
   does. Session lifecycle: every completion of a continued agent
   session must name its visit (`node_execution_id`); a missing or foreign id
-  is refused. A decided visit stops the session's running turn, not the
-  session; the session ends when the run ends, and a graceful stop ends an
-  idle one at once. If the session ended on its own, the next open visit
+  is refused. A visit decided by its time limit, a cancel, or a run that is
+  stopping or ended stops the session's running turn, not the session. A
+  visit its agent completed (`complete_workflow_node`) while the run is active
+  sends no Stop (issue I1): the turn that reported goes on to write its reply,
+  ends by itself, and its snapshot is committed, so the next visit remembers
+  it ("what you did in earlier cycles is above" is true for a visit its agent
+  completed; see the known limits for the cases where it is not). A stopped turn
+  commits nothing, so a Stop there would lose the visit's work. Once the
+  visit is decided, the turn's later model messages cannot start a tool: the
+  Workflow tools and wrapped user tools refuse as before, and the CLI's own
+  tools (shell, file edits, sub-agents) are refused by a pre-tool hook
+  (`withWorkflowVisitDeny`); the model can only finish its reply. A call
+  already admitted in the same model message as the report may still
+  run. The background tasks the turn started (a shell or a sub-agent still
+  running, which keep the turn open) are cancelled when the visit is
+  decided, as a Stop cancels them, and again 2 seconds later for work a
+  call in the report's own message started, each pass bounded at 1.5
+  seconds and only while the same turn runs; so the reply can finish and
+  its snapshot be committed. Tasks of earlier turns are kept. All of this
+  applies to every agent step, `session: new` included, as does the reply
+  limit below. A completion whose write
+  failed with anything but a store refusal may have committed: the worker
+  reads the turn's visit under a row lock that waits for a decision still in
+  flight (its COMMIT, up to 10 seconds), and a visit that reads decided, or
+  that cannot be read, closes the turn's tools and arms its reply limit as an
+  acknowledged result does; a visit that reads pending lets the agent complete
+  it again. The next visit's prompt waits behind that
+  turn (a session takes a Workflow prompt only between turns) and starts a
+  new turn bound to the new visit. The reply is bounded: 5 minutes after the
+  report (`WORKFLOW_AGENT_REPLY_SETTLE`, also when `turnTimeoutMs` is 0) a
+  reply still running is stopped as a Stop stops it. Each stage of that stop
+  is bounded on its own: the turn's task cancel (1.5 seconds) and grace (8
+  seconds) before the turn is settled by force, the wait for that settle (2
+  seconds), then, when the warm session
+  is dropped, the workspace-task cancel (20 seconds) and the disconnect (5
+  seconds), so the session lock is released even when the CLI no longer
+  answers. Dropping the handle does not repair a CLI runtime that stopped
+  answering. The abort acts only on that turn's own run, never on the next turn that may have
+  started on the same warm session. A reply lost with its Copilot session (a
+  lost live session, a corrupted transcript) is not run again: each recovery
+  reads the visit before it resets anything and again before its model run,
+  and a decided visit ends the turn. Neither is committed. A turn retried
+  after its visit was decided (a lost runtime, a worker restart, a failed
+  read) is not run either: the turn-start fence below, which for a
+  `session: new` step reads the step's own visit. When a continued visit's
+  conversation is lost after its report all the same (the reply limit, a
+  stop that had to settle the turn by force, a lost Copilot session or
+  worker, a snapshot not committed) while the run is active (a stopping run
+  included: a later visit it started still runs), the turn
+  records it before it ends: the event `workflow.agent_cycle_memory_lost` on
+  the Workflow session, with the visit, its cycle and a reason
+  (`reply_limit`, `forced_stop`, `session_lost`, `stopped`,
+  `not_committed`). `read_workflow` shows it as the visit's
+  `agent.memoryLost` (`cycle`, `reason`, `at`), and the next cycle's prompt
+  says that cycle's conversation is not available instead of "what you did
+  in earlier cycles is above". The worker rewrites that sentence when the
+  next cycle's turn starts, the first point where the loss is known (the
+  prompt is sent while the earlier reply may still run); the session's
+  stored prompt keeps the original words. The session ends when the run ends, and a
+  graceful stop ends an idle one at once; before it sends the session's end,
+  the run's end stops whichever turn still runs (request id
+  `workflow-session-stop:<session>`, which names no visit), except on the
+  later retry of an end that was owed because the session was not visible
+  yet at the run's end (that retry sends no Stop; the reply limit bounds the
+  wait). If the session ended on its own, the next open visit
   starts a new agent session and says so. `workflow_agent_invocations` has one
   row per visit (`child_session_id` is not unique).
   Each turn of a continued agent session works for one visit, its turn visit:
   the open visit its prompt names, or, for a turn a timer or a sub-agent's
   update starts, the visit of the session's newest visit prompt. A turn whose
-  visit is already decided does not run (no model call). A decided visit's
+  visit is already decided does not run (no model call), and neither does a
+  turn of a `session: new` step whose own visit is decided (issue I1). The
+  turn's visit is read again at admission under a row lock that waits for a
+  decision still committing (up to 10 seconds; past it the turn fails and is
+  retried), so a retry on another worker does not run a visit whose result
+  was being written when the first worker was lost. A decided visit's
   Stop (request id `workflow-cycle-stop:<visit>`) is applied only to a turn of
   that visit; a person's Stop applies as always. The step reminder and the
   completion name only the turn's own visit. When the run ends before the
   agent session exists, but a spawn attempt began, the session's end stays
   owed; the next check that finds the session (the spawn's own, the run's
   cleanup, recovery) ends it.
-  **Known limits:** after a visit times out, the next visit's prompt can wait
-  behind the old turn until its abort lands, and the next visit's time limit
-  runs during that wait. Results stay correct: each binds to its own visit.
+  **Known limits:** the next visit's prompt can wait behind the earlier
+  visit's turn: until the abort of a timed-out turn lands, or until a
+  completed visit's turn finishes its reply (usually seconds; past the
+  5-minute reply limit the stop starts, and its bounded stages above add to
+  the wait). The next visit's time limit runs during that wait;
+  that visit's Stop names the next visit and does not end the earlier turn.
+  Results stay correct: each binds to its own visit. A tool call made in the
+  same model message as the report is not refused (the CLI runs a message's
+  pre-tool hooks before any handler), so an agent should call
+  `complete_workflow_node` alone in its message; the tool's description
+  says so. The session remembers a
+  visit once that visit's turn has committed its snapshot: a reply that is
+  stopped (the run's end, the reply limit), lost with its Copilot session, or
+  cut by a worker crash before the commit is not remembered (while the run
+  is active the visit records it, above). A turn whose activity fails for
+  good after the report (its retries spent, for example a store that cannot
+  be reached) records nothing, and the next cycle's prompt then still says
+  the earlier cycles are above. Two older cases are not recorded either, and
+  the prompt says the same: a visit decided by its time limit or a cancel
+  while its turn runs (its cycle Stop ends that turn unsaved, as before I1),
+  and a recovery that starts a fresh conversation (a corrupted transcript's
+  reset, a missing snapshot), which drops every earlier cycle. Accepted by the owner (26 Nov): a visit its
+  agent completes before its spawn is recorded (a very fast finish) gets no
+  Stop from the spawn's re-check either, and its turn ends by itself as any
+  completed visit's does; the run's end stops whichever turn still runs, so
+  it can cut the last visit's reply (after the run ended no later cycle
+  needs it, so nothing is recorded; during a graceful stop it is recorded);
+  and the reply limit is a fixed 5 minutes
+  (`WORKFLOW_AGENT_REPLY_SETTLE`), not configurable.
   An update from a sub-agent or a timer that arrives between visits is
   recorded in the agent session but is not given to the model; the next
   visit's prompt carries the current state.
@@ -789,7 +883,8 @@ states:
 | Data | By default each state's output is the next state's input. With `carry`, every route gets `{ carry, result }` instead. A binding is one whole string, such as `"${input.count}"` or `"${inputs.keyPattern}"`. |
 | Carry | Optional object template on a nonterminal, for example `carry: { loop: "${input.loop}" }`. Admission freezes it before input mapping; replay and later KV changes cannot replace it. All routes retain it, including errors and receipts. |
 | Inputs | `inputs.schema` is a JSON Schema 2020-12 document. A start whose inputs do not match is refused. |
-| Size limits | YAML and a state's output at most 256 KiB. Carry at most 64 KiB; the combined `{ carry, result }` at most 256 KiB of canonical UTF-8 JSON. An oversized wrapper fails the receiver with `invalid_input` before input mapping. Store larger data as a fact or artifact and pass its key. |
+| Size limits | YAML and a state's output at most 256 KiB. Carry at most 64 KiB; the combined `{ carry, result }` at most 256 KiB of canonical UTF-8 JSON. An oversized wrapper fails the receiver with `invalid_input` before input mapping. Store larger data as a fact or artifact and pass its key. The `workflow-limits` skill lists every limit a run meets. |
+| Child results | A child's `WorkflowEnded@1` carries its whole output up to 195,584 bytes (outputs from about 16 KiB up used to arrive as metadata only, `outputTruncated: true`). The received value, passed on as is with a carry of up to 64 KiB, fits the next state's 256 KiB input; the next state's own input mapping and later limits are still checked as usual. A fan-out parent that passes whole outputs on can fail a parallel join (256 KiB, `invalid_output`), a collecting script's output (256 KiB), a `send` (16 KiB, `invalid_input`) or its run output (256 KiB). Keep only what you need from each child; a script reads the whole result with `child_workflows` `read` `full_output: true`. Saving warns `WORKFLOW_ENDED_WHOLE_OUTPUT` (`compiler.ts` `warnWholeChildOutputs`) when a whole output reaches a `send` or `request` message, a branch output joined with others, or (two or more) a root terminal's output with no mapping in between: through waits with no `input:` or carry, and through `${states.<receive>.output}` of a single-contract receive. |
 | Run limits | `limits.maxNodeExecutions` (default 1,000, at most 10,000) bounds the visits of a run, so a loop cannot run forever. `limits.timeoutSeconds` is an optional deadline of up to 30 days. |
 
 The `workflow-reference` skill has every field of every state type. A type
@@ -1316,15 +1411,29 @@ A Workflow belongs to the session that coordinates it, and it cannot move to ano
 
 ### The model: a Workflow belongs to its session
 
-- A Workflow belongs to the session that coordinates it. That session starts it and is told when it ends. Of all sessions, only that one can read it or control it.
+- A Workflow belongs to the session that coordinates it. That session starts it and is told when it ends. Of all sessions, only that one and the sessions above it can read it or control it; its own agent steps can read it.
 - Sessions are meant to be long-lived. When the work is done, leave the session idle. Do not complete it, and do not delete it. An idle session runs no turns, and the Sweeper never cleans it up: it cleans up only a session whose own orchestration ended (`sweeper-tools.ts:170-176, 224-256`, this release).
 - A finished live Workflow records its complete terminal outcome under its owning session before the run can end successfully. The Workflow session is then an ordinary Sweeper candidate after its terminal grace period, like a completed sub-agent. Definition test benches keep their separate retention. The owner-scoped outcome remains readable after the Workflow session is gone and is removed with the owning session (`workflow/store.ts`, `sweeper-tools.ts`, migration 0096).
 
 | Who | Can read or control a Workflow | Source |
 |---|---|---|
-| The parent session | Yes. `read_workflow` gives the status, the output and the record of each step. `update_workflow` changes variables, pauses, resumes, cancels and recovers | `workflow/tools.ts:548-552, 601-606, 1570-1573` |
+| The parent session | Yes. `read_workflow` gives the status, the output and the record of each step. `update_workflow` changes variables, pauses, resumes, stops, cancels and recovers, and changes, tests and starts the definition | `workflow/access.ts` |
+| A session above the parent in the same owner's tree (a grandparent of a child Workflow, and up), when no session between them is deleted | Yes: `read_workflow`, and the `update_workflow` run operations and `recover`. Not the definition operations | `workflow/access.ts` |
+| The Workflow's own agent step, and the sub-agents of that step (owner decision 26 Nov: every session under the step reads the Workflow's definition, variables and step outputs) | Read only: `read_workflow` | `workflow/access.ts` |
 | A person who can use the session | Yes: the Workflow tab of the portal, or `readWorkflow` and `updateWorkflow` of the management API | `management-client.ts:2008, 2079`; `workflow/human-commands.ts:217-249` |
-| Every other session, also one of the same user, also a replacement coordinator | No. The call is refused `FORBIDDEN`: "Only the agent that created this workflow may change or read it with this tool." | `workflow/tools.ts:283-291`; for `read_workflow` in this release, `workflow/tools.ts:1594-1597` |
+| Every other session, also one of the same user, also a replacement coordinator | No. The call is refused `FORBIDDEN`, with a message that names the rule, for example "Only a session above this Workflow (the session that started it, or one above that) may read or control it with this tool; its own agent steps may read it." | `workflow/access.ts` |
+
+"The same owner" compares owner identities exactly: a user's provider and subject, "system" for a system session
+(`is_system`), or "none" for a session without an owner (`ownerIdentity`, `workflow/access.ts`). Two kinds of tree follow
+from that, and they are kept as they are (owner decision 26 Nov):
+
+- **A tree without owners.** Every ownerless session has the identity "none", so in an all-unowned chain a session above
+  a nested Workflow reads and controls it (it may cancel it). Typed input stays with the parent there
+  (`send_workflow_input` allows no one beyond the parent when the owner is unknown or system).
+- **A system tree.** The system root (`is_system`) is "system", but the sessions it spawns carry the System user
+  principal and are not `is_system` (`resolveEffectiveSpawnOwner`). So the root reads and controls only the Workflows it
+  started, and is refused (`otherOwner`) on a Workflow below its direct child, as another owner is; the System-principal
+  sessions between them match one another.
 
 The notice of a run's end carries only a preview of the output, at most 1,000 characters (`workflow/runtime.ts`). The owning session's child-outcome row keeps the exact canonical terminal output/error text (`outputText` and `errorText`), including escaped NUL and lone surrogates. `read_workflow` returns that retained outcome after the Workflow session is swept and gives the whole execution record while it still exists.
 
@@ -1479,7 +1588,7 @@ This is a design principle, not a missing feature.
 - A session's parent is set when the session is created. No update changes it (`cms.ts:258-281` has no parent field).
 - A Workflow's definition, inputs, owner, parent and tool grant are fixed at its first Start (see [Starting a workflow](#starting-a-workflow)). The parent is recorded then in the Workflow's definition, in its tool grant and in each agent step's record, and none of these is updated (`workflow/store.ts:2557-2563, 3972-3979`; `workflow/service.ts:810`).
 - A Workflow's tools are its parent's tools, captured at Start (`session-manager.ts:3862-3896`). Each tool call checks the parent again: a parent that is missing, deleted or ended stops the call (`session-manager.ts:3906-3915`).
-- Only the parent session reads or controls a Workflow with the agent tools. `read_workflow` and `update_workflow` refuse every other session (`workflow/tools.ts:283-291`). A person can do both, in the portal or through the management API.
+- With the agent tools, the parent session and every session above it in the same owner's tree read and control a Workflow, and its own agent step and that step's sub-agents read it (`workflow/access.ts`; the table in [The model: a Workflow belongs to its session](#the-model-a-workflow-belongs-to-its-session)). `read_workflow` and `update_workflow` refuse every other session. A person can do both, in the portal or through the management API.
 - A start key is scoped to the session that starts, so a new session cannot adopt a Workflow by its key.
 - No operation moves a Workflow, an agent session or a sub-agent to another parent.
 
