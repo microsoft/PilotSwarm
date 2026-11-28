@@ -3112,6 +3112,36 @@ export class WorkflowStore {
         return out;
     }
 
+    /**
+     * I7 plan read: the dropped visits (of run `runId`) that delivered a message, and the messages they took, for a plan's
+     * messages_sent and inputs_taken warnings. Ids only; no payload is read. A re-run carries only unread messages, so every
+     * message a dropped visit took stays behind.
+     */
+    async readRerunDroppedTraffic(runId: string, nodeExecutionIds: readonly string[])
+        : Promise<{ deliveredExecIds: Set<string>; consumedMessageIds: Set<string> }> {
+        const ids = [...new Set(nodeExecutionIds)];
+        if (ids.length === 0) return { deliveredExecIds: new Set(), consumedMessageIds: new Set() };
+        const [sent, taken] = await Promise.all([
+            this.pool.query(`SELECT DISTINCT node_execution_id FROM ${this.t.outbox}
+                WHERE run_id = $1 AND state = 'delivered' AND node_execution_id = ANY($2::text[])`, [runId, ids]),
+            this.pool.query(`SELECT message_id FROM ${this.t.inbox} WHERE run_id = $1 AND consumed_by = ANY($2::text[])`, [runId, ids]),
+        ]);
+        return {
+            deliveredExecIds: new Set(sent.rows.map(row => str(row, "node_execution_id"))),
+            consumedMessageIds: new Set(taken.rows.map(row => str(row, "message_id"))),
+        };
+    }
+
+    /** The ids among `sessionIds` whose session no longer exists or was deleted (a swept re-run origin). */
+    async listGoneSessions(sessionIds: readonly string[]): Promise<Set<string>> {
+        const ids = [...new Set(sessionIds)];
+        if (ids.length === 0) return new Set();
+        const { rows } = await this.pool.query(
+            `SELECT session_id FROM ${this.t.sessions} WHERE session_id = ANY($1::text[]) AND deleted_at IS NULL`, [ids]);
+        const live = new Set(rows.map(row => str(row, "session_id")));
+        return new Set(ids.filter(id => !live.has(id)));
+    }
+
     /** Recent re-runs created from `sourceWorkflowSessionId`, newest first (uses partial index workflow_runs_by_rerun_of_workflow). */
     async listWorkflowReruns(sourceWorkflowSessionId: string, limit = 50): Promise<Array<{
         workflowSessionId: string;

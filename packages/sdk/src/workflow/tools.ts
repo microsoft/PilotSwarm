@@ -190,7 +190,8 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
 
 const READ_MILESTONE_WORDS = " It also shows a run's stop, each agent step's session and each branch. Each section holds its newest rows, open "
     + "rows listed apart; limit and cursor (from run.pages) page older rows. execution_id, kv_revision with kv_key, agent_versions, "
-    + "definition_revision and step_input are separate reads (call load_skill with name workflow-tools for each).";
+    + "definition_revision and step_input are separate reads (call load_skill with name workflow-tools for each). rerun_plan, alone, "
+    + "previews a re-run of an ended Workflow from a step (call load_skill with name workflow-rerun).";
 
 /** read_workflow on a 1.0.83 turn while workflow test mode is off: paging and the separate reads (design 04; R01; mock M10). */
 export const READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
@@ -207,6 +208,10 @@ export const READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
             agent_versions: { type: "boolean" },
             definition_revision: { type: "integer" },
             step_input: { type: "object" },
+            rerun_plan: { type: "object", description: "{ execution_id?, mode?: run_again | continue | supply, revision?, outcome? }; never output.",
+                properties: { execution_id: { type: "string" }, mode: { type: "string", enum: ["run_again", "continue", "supply"] },
+                    revision: { type: "integer" }, outcome: { type: "string" } },
+                additionalProperties: false },
         },
         required: ["workflow_id"],
     },
@@ -325,6 +330,13 @@ export function retainedWorkflowReadModel(workflowSessionId: string, row: { outc
     const requestedRunValue = options.run_id ?? options.runId;
     const requestedRun = optionalString({ value: requestedRunValue }, "value");
     if (requestedRun && requestedRun !== runId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${requestedRun} is not a run of this workflow.`);
+    // Phase 3 I7 (design §6.3): a cleaned-up Workflow cannot be re-run from a step; only its result is kept.
+    if ((options.rerun_plan ?? options.rerunPlan) !== undefined && (options.rerun_plan ?? options.rerunPlan) !== null) {
+        throw new WorkflowStoreError("RERUN_SOURCE_GONE", `Workflow ${workflowSessionId} was cleaned up. Only its result is kept. Use Run again.`, {
+            workflowId: workflowSessionId, runId, status: typeof current.status === "string" ? current.status : null, outcome: current.outcome ?? null,
+            completedAt: typeof current.completedAt === "string" ? current.completedAt : null,
+        } as JsonValue);
+    }
     const unsupported = ["execution_id", "executionId", "cursor", "limit", "kv_revision", "kvRevision", "kv_key", "kvKey",
         "agent_versions", "agentVersions", "definition_revision", "definitionRevision", "step_input", "stepInput"]
         .filter(key => options[key] !== undefined && options[key] !== null);
@@ -730,21 +742,36 @@ const readInvalid = (message: string): WorkflowStoreError => new WorkflowStoreEr
 /** A read's options as an adapter received them (read_workflow's arguments, or readWorkflow's options), for readWorkflowModel. */
 export interface WorkflowReadRequest extends Omit<WorkflowViewReadOptions, "includeYaml" | "hideTestRuns" | "callerSessionId"> {
     includeYaml?: unknown; agentVersions?: unknown; definitionRevision?: unknown; stepInput?: unknown;
+    /** Phase 3 I7: a re-run plan (readWorkflowRerunPlan), a read of its own. */
+    rerunPlan?: unknown;
 }
 
 /** Each read option as read_workflow spells it, in the order a refusal names them; readWorkflow's refusals use the option's own name. */
 const READ_TOOL_NAMES: { readonly [K in keyof Required<WorkflowReadRequest>]: string } = {
     runId: "run_id", includeYaml: "include_yaml", cursor: "cursor", limit: "limit", executionId: "execution_id", kvRevision: "kv_revision",
-    kvKey: "kv_key", agentVersions: "agent_versions", definitionRevision: "definition_revision", stepInput: "step_input",
+    kvKey: "kv_key", agentVersions: "agent_versions", definitionRevision: "definition_revision", stepInput: "step_input", rerunPlan: "rerun_plan",
 };
 
 /** Whether a read option is given: an absent or null one is not, nor include_yaml false (the view's default). */
 const readOptionGiven = (request: WorkflowReadRequest, key: keyof WorkflowReadRequest): boolean =>
     request[key] !== undefined && request[key] !== null && !(key === "includeYaml" && request[key] === false);
 
-/** The read of its own asked for, the first given of agent versions (q1), a definition revision (q4), a step's inputs (q6); else null. Pure. */
-export function workflowExclusiveRead(request: WorkflowReadRequest): "agentVersions" | "definitionRevision" | "stepInput" | null {
-    return (["agentVersions", "definitionRevision", "stepInput"] as const).find(key => readOptionGiven(request, key)) ?? null;
+/**
+ * The read of its own asked for, the first given of agent versions (q1), a definition revision (q4), a step's inputs (q6)
+ * and a re-run plan (I7); else null. Pure.
+ */
+export function workflowExclusiveRead(request: WorkflowReadRequest): "agentVersions" | "definitionRevision" | "stepInput" | "rerunPlan" | null {
+    return (["agentVersions", "definitionRevision", "stepInput", "rerunPlan"] as const).find(key => readOptionGiven(request, key)) ?? null;
+}
+
+/**
+ * Who reads, for a re-run plan's `allowed` and `grantSource` (session-definitions.ts readWorkflowRerunPlan): the session whose
+ * read_workflow this is, or a person's or system caller's actor and the session its call comes from (M3).
+ */
+export interface WorkflowModelReader {
+    callerSessionId?: string | null;
+    actor?: WorkflowActor | null;
+    originatingSessionId?: string | null;
 }
 
 /**
@@ -752,8 +779,9 @@ export function workflowExclusiveRead(request: WorkflowReadRequest): "agentVersi
  * of its own, any other given option refused by the caller's name for it, or the view, a page or a value. Who may read
  * is decided before this, and what an adapter adds to the view, after it.
  */
-export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "resolveAgent" | "readPackagePins"> & { testMode?: boolean },
-    workflowSessionId: string, request: WorkflowReadRequest, names: "tool" | "api", reader: { callerSessionId?: string | null } = {})
+export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "resolveAgent" | "readPackagePins"> & Partial<Pick<WorkflowHost, "catalog">>
+    & { testMode?: boolean },
+    workflowSessionId: string, request: WorkflowReadRequest, names: "tool" | "api", reader: WorkflowModelReader = {})
     : Promise<{ [key: string]: JsonValue }> {
     const own = workflowExclusiveRead(request);
     const extra = (Object.keys(READ_TOOL_NAMES) as (keyof WorkflowReadRequest)[])
@@ -761,6 +789,13 @@ export async function readWorkflowModel(host: Pick<WorkflowHost, "store" | "reso
     if (own === "agentVersions") return readWorkflowAgentVersions(host, workflowSessionId, request.agentVersions, extra);
     if (own === "definitionRevision") return readWorkflowDefinitionRevision(host.store, workflowSessionId, request.definitionRevision, extra);
     if (own === "stepInput") return readWorkflowStepInput(host, workflowSessionId, request.stepInput, extra);
+    if (own === "rerunPlan") {
+        readAlone("A re-run plan is a read of its own", extra);
+        if (!host.catalog) throw readInvalid("This host cannot read a re-run plan.");
+        // Loaded at call time: session-definitions.ts imports this module.
+        const { readWorkflowRerunPlan } = await import("./session-definitions.js");
+        return readWorkflowRerunPlan({ store: host.store, catalog: host.catalog }, workflowSessionId, request.rerunPlan, reader);
+    }
     // With test mode off (the host's, or else the deployment flag), test runs are not shown and not found (review SF-5).
     const view = await readWorkflowView(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
         hideTestRuns: !resolveWorkflowTestMode(host.testMode), callerSessionId: reader.callerSessionId ?? null });
@@ -1248,6 +1283,10 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             spawnChildrenByExec.set(child.nodeExecutionId, entry);
         }
     }
+    // Phase 3 I7: where reused and supplied visits came from, and this Workflow's re-runs (a store without re-runs has none).
+    const gone = selected && sections
+        ? await goneRerunOriginsOf(store, [...sections.executions.rows, ...sections.openExecutions], selected) : new Set<string>();
+    const reruns = typeof store.listWorkflowReruns === "function" ? await store.listWorkflowReruns(workflowSessionId) : [];
     return {
         workflowId: workflowSessionId,
         ...(spawnedBy ? { spawnedBy } : {}),
@@ -1271,11 +1310,14 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
         // With the input schema of that revision, its references resolved (batch 7, f-05; null without one).
         graph: ir ? workflowGraphJson(ir, graphRevision) : null,
         runs: runs.map(run => ({ runId: run.runId, mode: run.mode, status: run.status, revision: run.revision, outcome: run.terminalOutcome })),
+        ...(reruns.length ? { reruns: reruns.map(item => ({ workflowId: item.workflowSessionId, runId: item.runId, mode: item.mode,
+            fromExecutionId: item.fromExecutionId, status: item.status, createdAt: item.createdAt.toISOString() })) } : {}),
         // Review UI-5: whether test runs are shown (the deployment's test mode is on), said explicitly and only then;
         // a screen shows test runs only where it reads this (absent: hidden), whatever commands the reader may send.
         ...(options.hideTestRuns === false ? { testMode: true } : {}),
         run: selected && sections ? {
             runId: selected.runId, mode: selected.mode, status: selected.status, outcome: selected.terminalOutcome,
+            ...rerunOfView(selected, gone),
             ...(selected.pausedFrom !== null ? { pausedFrom: selected.pausedFrom, pauseSettled } : {}),
             // A graceful stop (only such a run has one): when it was accepted, its deadline, and while the run is
             // still active, whether its admitted work has settled.
@@ -1303,9 +1345,9 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             ...(agentModelsView(selected.agentModels)),
             ...(spawnChildrenList ? { spawnChildren: spawnChildrenList } : {}),
             nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(
-                node, sections.agents, sections.approvals, sections.decisionInference, spawnChildrenByExec)),
+                node, sections.agents, sections.approvals, sections.decisionInference, spawnChildrenByExec, gone)),
             openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(
-                node, sections.agents, sections.approvals, sections.decisionInference, spawnChildrenByExec)),
+                node, sections.agents, sections.approvals, sections.decisionInference, spawnChildrenByExec, gone)),
             inbox: sections.inbox.rows.map(inboxViewOf),
             openInbox: sections.openInbox.map(inboxViewOf),
             outbox: sections.outbox.rows.map(message => outboxViewOf(message, sections.intakeOutcomes)),
@@ -1598,9 +1640,57 @@ function decisionInferenceReadView(node: WorkflowNodeExecutionRow, rows: readonl
     }));
 }
 
+/** Phase 3 I7: the origin Workflows of these visits (and of a re-run's source) that were cleaned up since, for originGone. */
+async function goneRerunOriginsOf(store: WorkflowStore, nodes: readonly WorkflowNodeExecutionRow[], run?: WorkflowRunRow | null)
+    : Promise<ReadonlySet<string>> {
+    const ids = [...nodes.flatMap(node => [node.reusedFromWorkflowSessionId, node.suppliedFromWorkflowSessionId]), run?.rerunOfWorkflowSessionId]
+        .filter((id): id is string => typeof id === "string" && id.length > 0);
+    return ids.length ? store.listGoneSessions(ids) : new Set();
+}
+
+/** A supplied result's actor as a read shows it: who, never a person's account ids. */
+function suppliedActorView(actor: JsonValue | undefined): JsonValue {
+    if (!isJsonObject(actor)) return null;
+    if (actor.kind === "agent") return { kind: "agent", sessionId: typeof actor.sessionId === "string" ? actor.sessionId : null };
+    const name = typeof actor.name === "string" ? actor.name : typeof actor.display === "string" ? actor.display : null;
+    return actor.kind === "user" ? { kind: "user", ...(name ? { name } : {}) } : { kind: "system", ...(name ? { name } : {}) };
+}
+
+/**
+ * Phase 3 I7 (design §6.4): where a visit of a re-run came from: `reused` (copied from an earlier run) and `supplied` (a
+ * result given at Start, never run), each only on such a visit; `originGone` when the Workflow it came from was cleaned up.
+ */
+function rerunProvenanceOf(node: WorkflowNodeExecutionRow, gone: ReadonlySet<string>): { [key: string]: JsonValue } {
+    const originOf = (workflowId: string | null | undefined, runId: string | null | undefined, executionId: string) => ({
+        workflowId: workflowId ?? null, runId: runId ?? null, executionId, ...(workflowId && gone.has(workflowId) ? { originGone: true } : {}),
+    });
+    return {
+        ...(node.reusedFromExecutionId ? { reused: {
+            ...originOf(node.reusedFromWorkflowSessionId, node.reusedFromRunId, node.reusedFromExecutionId),
+            reusedAt: node.reusedAt ? node.reusedAt.toISOString() : null,
+        } } : {}),
+        ...(node.suppliedFromExecutionId ? { supplied: {
+            from: originOf(node.suppliedFromWorkflowSessionId, node.suppliedFromRunId, node.suppliedFromExecutionId),
+            by: suppliedActorView(node.suppliedActor), note: node.suppliedNote ?? null, at: node.suppliedAt ? node.suppliedAt.toISOString() : null,
+        } } : {}),
+    };
+}
+
+/** Phase 3 I7: a re-run's source as its run shows it (run.rerunOf); nothing for a run that is not a re-run. */
+function rerunOfView(run: WorkflowRunRow, gone: ReadonlySet<string>): { rerunOf?: JsonValue } {
+    if (!run.rerunOfWorkflowSessionId || !run.rerunOfRunId) return {};
+    const resume = run.rerunResume ?? null;
+    return { rerunOf: {
+        workflowId: run.rerunOfWorkflowSessionId, runId: run.rerunOfRunId, executionId: run.rerunFromExecutionId ?? null, mode: run.rerunMode ?? null,
+        stateId: resume?.fromStateId ?? null, visit: resume?.fromVisit ?? null, revision: resume?.sourceRevision ?? null,
+        ...(resume?.supplied ? { supplied: { outcome: resume.supplied.outcome, note: resume.supplied.note, at: resume.supplied.at } } : {}),
+        ...(gone.has(run.rerunOfWorkflowSessionId) ? { originGone: true } : {}),
+    } };
+}
+
 function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, AgentVisitRead>,
     approvals: ReadonlyMap<string, JsonValue>, decisionInference: ReadonlyMap<string, WorkflowDecisionInferenceSummary[]>,
-    spawnChildren?: ReadonlyMap<string, JsonValue>)
+    spawnChildren?: ReadonlyMap<string, JsonValue>, gone: ReadonlySet<string> = new Set())
     : { [key: string]: JsonValue } {
     const agent = agents.get(node.nodeExecutionId);
     const inference = decisionInference.get(node.nodeExecutionId);
@@ -1624,6 +1714,7 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
         ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
         ...(agent !== undefined ? { agent: agentViewOf(agent) } : {}),
         ...(spawnChildren?.has(node.nodeExecutionId) ? { spawnChild: spawnChildren.get(node.nodeExecutionId)! } : {}),
+        ...rerunProvenanceOf(node, gone),
         // The visit's input as it was entered (owner 2026-11-20: a node's details show each visit's input and output), bounded
         // as its output is; an execution read (execution_id) gives it whole. Readers of the output read it under the same gate.
         inputPreview: previewJson(node.input, 500),
@@ -1680,7 +1771,8 @@ async function readSectionPage(store: WorkflowStore, workflowSessionId: string, 
         const agents = await agentInvocationsOf(store, run.runId, read.rows);
         const approvals = await approvalViewsOf(store, run, read.rows);
         const decisionInference = await decisionInferenceOf(store, run.runId, read.rows);
-        return page(read.rows.map(node => nodeExecutionViewOf(node, agents, approvals, decisionInference)), read.nextCursor);
+        const gone = await goneRerunOriginsOf(store, read.rows);
+        return page(read.rows.map(node => nodeExecutionViewOf(node, agents, approvals, decisionInference, undefined, gone)), read.nextCursor);
     }
     if (cursor.section === "outbox" && "createdAt" in after) {
         const read = await outboxPageOf(store, run, limit, after);
@@ -1740,6 +1832,7 @@ async function readExecution(store: WorkflowStore, workflowSessionId: string, ru
             ...(decisionSummary ? { decisionSummary } : {}),
             ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
             enteredAt: node.enteredAt.toISOString(), completedAt: node.completedAt === null ? null : node.completedAt.toISOString(),
+            ...rerunProvenanceOf(node, await goneRerunOriginsOf(store, [node])),
             input: storedValueOf(node.input),
             result: executionResultOf(node),
         },
@@ -1907,7 +2000,7 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
         const view = await readWorkflowModel(context.host, workflowSessionId, {
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml, cursor: args.cursor, limit: args.limit,
             executionId: args.execution_id, kvRevision: args.kv_revision, kvKey: args.kv_key, agentVersions: args.agent_versions,
-            definitionRevision: args.definition_revision, stepInput: args.step_input,
+            definitionRevision: args.definition_revision, stepInput: args.step_input, rerunPlan: args.rerun_plan,
         }, "tool", { callerSessionId: context.callerSessionId });
         // Report (never change) whether an active run's controller can still end it; the view only (a page, an execution's value
         // or a read of its own has no run object).

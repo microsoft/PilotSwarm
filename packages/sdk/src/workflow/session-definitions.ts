@@ -33,8 +33,8 @@ import {
     type WorkflowStore,
 } from "./store.js";
 import {
-    buildRerunResume, checkRerunCompatibility, mapRerunExecutions, mapRerunSuppliedExecution, partitionRerunVisits,
-    pickRerunTarget, rerunCutKvRevision, validateRerunSupply, type WorkflowRerunMode,
+    buildRerunPlan, buildRerunResume, buildRerunWarnings, checkRerunCompatibility, mapRerunExecutions, mapRerunSuppliedExecution, partitionRerunVisits,
+    pickRerunTarget, rerunCutKvRevision, validateRerunSupply, WORKFLOW_RERUN_MAX_COPY_BYTES, type WorkflowRerunMode, type WorkflowRerunProblem,
 } from "./rerun.js";
 import {
     effectiveChildLevel, sessionInsideWorkflow, SESSION_MAX_NESTING_LEVEL, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED,
@@ -1124,6 +1124,214 @@ async function prepareRerunStart(
         } : {}),
     };
     return { newRunId, revision, saved, targetIr, sourceInputs: sourceRun.inputs, rerunSpec, rerunPin };
+}
+
+/** Phase 3 I7: who reads a re-run plan (rerun_plan / rerunPlan), for its allowed and grantSource fields; Start decides again. */
+export interface WorkflowRerunPlanReader {
+    /** An agent session's own read (read_workflow): it starts with its own tool grant, and only as the definition's owner. */
+    callerSessionId?: string | null;
+    /** A person's or system caller's actor (management client, Web API, MCP); absent for an agent session's read. */
+    actor?: WorkflowActor | null;
+    /** M3: the session a person's or MCP call comes from; such a call is agent-proxied. */
+    originatingSessionId?: string | null;
+}
+
+const RERUN_PLAN_KEYS = new Set(["execution_id", "executionId", "mode", "revision", "outcome", "viaMcp"]);
+
+/** A rerun_plan (rerunPlan) value: an outcome-only preview (M6), never a supplied output. Throws WORKFLOW_READ_INVALID. */
+function parseRerunPlanArgs(value: unknown): {
+    executionId: string | null; mode: WorkflowRerunMode | null; revision: number | null; outcome: string | null; viaMcp: boolean;
+} {
+    const invalid = (message: string) => new WorkflowStoreError("WORKFLOW_READ_INVALID", message);
+    if (!isJsonObject(value)) throw invalid("rerun_plan (rerunPlan) must be { execution_id?, mode?, revision?, outcome? }.");
+    const extra = Object.keys(value).filter(key => !RERUN_PLAN_KEYS.has(key));
+    if (extra.length) {
+        throw invalid(`rerun_plan takes execution_id, mode, revision and outcome; leave out ${extra.join(", ")} (only Start takes a supplied output).`);
+    }
+    const given = (key: string) => value[key] !== undefined && value[key] !== null;
+    if (given("execution_id") && given("executionId") && value.execution_id !== value.executionId) {
+        throw invalid("rerun_plan names two different visits (execution_id and executionId).");
+    }
+    const executionId = given("execution_id") ? value.execution_id : given("executionId") ? value.executionId : null;
+    if (executionId !== null && (typeof executionId !== "string" || !executionId.trim() || executionId.length > 256)) {
+        throw invalid("rerun_plan.execution_id must be a node execution id of 1 to 256 characters.");
+    }
+    const mode = given("mode") ? value.mode : null;
+    if (mode !== null && mode !== "run_again" && mode !== "continue" && mode !== "supply") {
+        throw invalid("rerun_plan.mode must be run_again, continue or supply.");
+    }
+    const revision = given("revision") ? value.revision : null;
+    if (revision !== null && (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1)) {
+        throw invalid("rerun_plan.revision must be a positive integer.");
+    }
+    const outcome = given("outcome") ? value.outcome : null;
+    if (outcome !== null && (typeof outcome !== "string" || !outcome.trim() || outcome.length > 256)) {
+        throw invalid("rerun_plan.outcome must be an outcome name of 1 to 256 characters.");
+    }
+    if (given("viaMcp") && typeof value.viaMcp !== "boolean") throw invalid("rerun_plan.viaMcp must be true or false.");
+    return { executionId: executionId as string | null, mode: mode as WorkflowRerunMode | null, revision: revision as number | null,
+        outcome: outcome as string | null, viaMcp: value.viaMcp === true };
+}
+
+/** A session definition revision compiled again in this version; null when it is missing or does not compile. */
+async function compiledSessionRevision(host: Pick<WorkflowHost, "store">, definitionId: string, revision: number)
+    : Promise<{ ir: WorkflowIR; valid: boolean } | null> {
+    const saved = await host.store.sessionDefinitions.readRevision(definitionId, revision);
+    if (!saved) return null;
+    const compiled = compileWorkflow(saved.yaml);
+    return compiled.ir ? { ir: compiled.ir, valid: saved.valid && compiled.valid } : null;
+}
+
+/**
+ * Phase 3 I7: the plan of a re-run of Workflow `workflowSessionId` from one of its visits (design §6.4 read_workflow
+ * rerun_plan), as Start would make it now; reading changes nothing. It reads key columns only (listRerunKeys, the carried
+ * inbox summary, dropped visits' previews and approval provenance), never stored inputs, outputs or message payloads. A
+ * revision that does not fit is 200 with fits: false; an outcome that is not valid is 200 with supply.valid: false. `allowed`
+ * says whether this reader's Start would be taken (OQ1 grant, OQ5 approval reuse, the copy limit, the definition's owner);
+ * Start decides every one again.
+ */
+export async function readWorkflowRerunPlan(host: Pick<WorkflowHost, "store" | "catalog">, workflowSessionId: string, value: unknown,
+    reader: WorkflowRerunPlanReader = {}): Promise<{ [key: string]: JsonValue }> {
+    const args = parseRerunPlanArgs(value);
+    const sourceDef = await host.store.readDefinition(workflowSessionId);
+    if (!sourceDef) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No Workflow ${workflowSessionId}.`);
+    if (sourceDef.state === "deleted") {
+        throw new WorkflowStoreError("RERUN_SOURCE_GONE", `Workflow ${workflowSessionId} was cleaned up. Only its result is kept. Use Run again.`);
+    }
+    const definition = typeof sourceDef.sessionDefinitionId === "string" && Number.isSafeInteger(sourceDef.sessionRevision)
+        ? await host.store.sessionDefinitions.readDefinition(sourceDef.sessionDefinitionId) : null;
+    if (!definition) {
+        throw new WorkflowStoreError("RERUN_NOT_A_WORKFLOW",
+            `Workflow ${workflowSessionId} was not started from a saved Workflow Definition, so it cannot be re-run from a step.`);
+    }
+    const sourceRun = (await host.store.listRuns(workflowSessionId)).find(run => run.mode === "live") ?? null;
+    if (!sourceRun) throw new WorkflowStoreError("RERUN_NOT_A_WORKFLOW", `Workflow ${workflowSessionId} has no live run to re-run.`);
+    if (!sourceRun.finishedAt || sourceRun.status === "admitted" || sourceRun.status === "running" || sourceRun.status === "paused") {
+        throw new WorkflowStoreError("RERUN_SOURCE_ACTIVE", `Workflow ${workflowSessionId} is still ${sourceRun.status}. Stop it first.`);
+    }
+    // Decision 8: the source Workflow's revision unless the read names another.
+    const sourceRevision = sourceDef.sessionRevision as number;
+    const targetRevision = args.revision ?? sourceRevision;
+    const target = await compiledSessionRevision(host, definition.definitionId, targetRevision);
+    if (!target) {
+        if (!await host.store.sessionDefinitions.readRevision(definition.definitionId, targetRevision)) {
+            throw new WorkflowStoreError("DEFINITION_REVISION_NOT_FOUND", `${definition.name} has no revision ${targetRevision}.`);
+        }
+        throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${targetRevision} of ${definition.name} does not compile in this version.`,
+            { revision: targetRevision });
+    }
+    if (!target.valid) {
+        throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${targetRevision} of ${definition.name} is not valid, so a re-run cannot start on it.`,
+            { revision: targetRevision });
+    }
+    const sourceIr = sourceRevision === targetRevision ? target.ir
+        : (await compiledSessionRevision(host, definition.definitionId, sourceRevision))?.ir
+            ?? await host.store.sessionDefinitions.readRevisionIr(definition.definitionId, sourceRevision);
+    if (!sourceIr) {
+        throw new WorkflowStoreError("DEFINITION_INVALID", `Source revision ${sourceRevision} of ${definition.name} cannot be read.`, { revision: sourceRevision });
+    }
+    const keys = await host.store.listRerunKeys(sourceRun.runId);
+    const picked = pickRerunTarget(sourceRun, keys, { executionId: args.executionId, mode: args.mode, sourceIr, targetIr: target.ir });
+    const part = partitionRerunVisits(keys, picked.chosen.nodeExecutionId, picked.mode);
+    const fitOn = (ir: WorkflowIR) => checkRerunCompatibility({ sourceIr, targetIr: ir, reused: part.reused, reusedTop: part.reusedTop,
+        chosen: picked.chosen, mode: picked.mode, sourceControllerVersion: sourceRun.controllerVersion, suppliedOutcome: null });
+    const fit = fitOn(target.ir);
+    const newestValid = await host.store.sessionDefinitions.newestValidRevision(definition.definitionId);
+    let newestValidFit: { fits: boolean; problem: WorkflowRerunProblem | null } | null = null;
+    if (newestValid !== null) {
+        const newest = newestValid === targetRevision ? target : await compiledSessionRevision(host, definition.definitionId, newestValid);
+        const result = newest?.valid ? fitOn(newest.ir) : null;
+        newestValidFit = result ? { fits: result.fits, problem: result.problems[0] ?? null } : { fits: false, problem: null };
+    }
+    const droppedIds = part.dropped.map(visit => visit.nodeExecutionId);
+    const approvalIds = [...part.reused, ...part.dropped].filter(visit => visit.nodeType === "approval").map(visit => visit.nodeExecutionId);
+    const reusedSpawnChildIds = part.reused
+        .filter(visit => visit.nodeType === "spawn" && typeof visit.spawnChildWorkflowId === "string" && visit.spawnChildWorkflowId.length > 0)
+        .map(visit => visit.spawnChildWorkflowId!);
+    // Design §5.4 / §3.5.2: the inbox cut Start uses (prepareRerunStart).
+    const inboxCutAt: RerunInboxCut = picked.mode === "run_again"
+        ? { enteredAtOf: picked.chosen.nodeExecutionId }
+        : (part.firstDroppedTop ? { enteredAtOf: part.firstDroppedTop.nodeExecutionId } : { sourceRunEnd: true });
+    const [approvalRows, traffic, previews, carried] = await Promise.all([
+        host.store.readReusedApprovalsForRerun(sourceRun.runId, approvalIds),
+        host.store.readRerunDroppedTraffic(sourceRun.runId, droppedIds),
+        host.store.readDroppedVisitPreviews(sourceRun.runId, droppedIds),
+        host.store.summarizeRerunCarriedInbox(sourceRun.runId, inboxCutAt, reusedSpawnChildIds),
+    ]);
+    const reusedIds = new Set(part.reused.map(visit => visit.nodeExecutionId));
+    const reusedApprovalKeys = part.reused.filter(visit => visit.nodeType === "approval" && (visit.outcome === "approved" || visit.outcome === "rejected"));
+    const answeredIds = new Set(reusedApprovalKeys.map(visit => visit.nodeExecutionId));
+    const reusedApprovals = approvalRows.filter(row => answeredIds.has(row.executionId));
+    const dropped = part.dropped.map(visit => ({ ...visit, outputPreview: previews.get(visit.nodeExecutionId) ?? null }));
+    const supplyOutcome = picked.mode === "supply" ? args.outcome : null;
+    const warnings = buildRerunWarnings({
+        sourceNumber: null, targetIr: target.ir, reused: part.reused, dropped, chosen: picked.chosen, mode: picked.mode, suppliedOutcome: supplyOutcome,
+        changedReusedSteps: fit.changedReusedSteps, deliveredOutboxExecIds: traffic.deliveredExecIds, droppedSpawnChildren: new Map(),
+        reusedSpawnNoticeChildIds: new Set(part.reused.filter(visit => visit.spawnChildHasNotice && visit.spawnChildWorkflowId)
+            .map(visit => visit.spawnChildWorkflowId!)),
+        droppedConsumedUncarriedExecIds: traffic.consumedMessageIds,
+        reusedApprovals: reusedApprovals.map(row => ({ executionId: row.executionId, stateId: row.stateId, visit: row.visit, question: row.question,
+            outcome: row.outcome, decidedAt: row.decidedAt })),
+        droppedApprovals: approvalRows.filter(row => !reusedIds.has(row.executionId))
+            .map(row => ({ executionId: row.executionId, stateId: row.stateId, visit: row.visit, question: row.question })),
+    });
+    // Whether this reader's Start would be taken, in Start's order of checks; the first reason is the one shown.
+    const blocked: string[] = [];
+    const agentCaller = !reader.actor && typeof reader.callerSessionId === "string";
+    if (definition.deletedAt !== null) blocked.push(`${definition.name} was deleted, so it cannot start again.`);
+    if (agentCaller && definition.ownerSessionId !== reader.callerSessionId) {
+        blocked.push(`Only the session that owns ${definition.name} can re-run its Workflows.`);
+    }
+    if (part.totalBytes > WORKFLOW_RERUN_MAX_COPY_BYTES) {
+        blocked.push(`The reused steps hold ${Math.ceil(part.totalBytes / (1024 * 1024))} MB; the limit is 256 MB. Choose an earlier step or use Run again.`);
+    }
+    if (reusedApprovalKeys.length > 0) {
+        // OQ5 / M3 / R2-N8: only the owning person, directly (not over MCP, not proxied for an agent), reuses approvals they answered.
+        const actor = reader.actor;
+        const owner = actor?.kind === "user" && reader.originatingSessionId == null && !args.viaMcp
+            ? (await host.catalog.getSession(definition.ownerSessionId))?.owner ?? null : null;
+        const mayReuse = actor?.kind === "user" && owner !== null && owner.provider === actor.provider && owner.subject === actor.subject
+            && reusedApprovalKeys.every(visit => {
+                const row = reusedApprovals.find(item => item.executionId === visit.nodeExecutionId);
+                return row?.decidedBy?.provider === actor.provider && row.decidedBy.subject === actor.subject;
+            });
+        if (!mayReuse) {
+            const first = reusedApprovalKeys[0];
+            blocked.push(`Choose ${first.nodeId} · visit ${first.ordinal} or an earlier step. Only the owner in the portal can reuse an approval.`);
+        }
+    }
+    let grantSource: "session" | "inherited" | "none" = "none";
+    if (agentCaller) {
+        grantSource = "session";
+    } else {
+        // OQ1: a person's (or system) Start inherits the source Workflow's direct tool grant only under its five conditions.
+        const creation = await host.catalog.getSessionCreationConfig?.(workflowSessionId) ?? null;
+        const binding = readWorkflowToolBinding(isJsonObject(creation) ? creation.workflowToolBinding : null);
+        const refusal = !binding ? "the source Workflow has no tool grant"
+            : !reader.actor ? "only the owning person may inherit a tool grant"
+                : await inheritedGrantRefusal(host as WorkflowHost, { actor: reader.actor, originatingSessionId: reader.originatingSessionId ?? null,
+                    ownerSessionId: definition.ownerSessionId } as Parameters<typeof startSessionWorkflowDefinition>[1], binding);
+        if (refusal === null) {
+            grantSource = "inherited";
+        } else if (workflowToolDiagnostics(target.ir, null, true, {}).some(item => item.code === "WORKFLOW_TOOL_NOT_GRANTED"
+            || item.code === "WORKFLOW_TOOLS_DYNAMIC" || item.code === "WORKFLOW_TOOLS_UNCHECKED")) {
+            blocked.push(`${definition.name} calls tools in its scripts, and this Start cannot hand them over (${refusal}). Ask the session to re-run it.`);
+        }
+    }
+    const reusedRequests = part.reused.filter(visit => {
+        const node = sourceIr.nodes[visit.nodeId];
+        return node?.type === "messaging" && node.mode === "request";
+    }).map(visit => ({ executionId: visit.nodeExecutionId, stateId: visit.nodeId, visit: visit.ordinal }));
+    const plan = buildRerunPlan({
+        source: { workflowId: workflowSessionId, runId: sourceRun.runId, revision: sourceRevision, status: sourceRun.status, number: null },
+        chosen: picked.chosen, picked: picked.picked, mode: picked.mode, modesAvailable: picked.modesAvailable,
+        revision: { target: targetRevision, newestValid, newestValidFits: newestValidFit?.fits ?? null, newestValidProblem: newestValidFit?.problem ?? null,
+            fits: fit.fits, problems: fit.problems, changedReusedSteps: fit.changedReusedSteps },
+        reused: part.reused, reusedRequests, dropped, sourceIr, targetIr: target.ir, supplyOutcome, carried, warnings,
+        allowed: blocked.length === 0, blockedReason: blocked[0] ?? null, grantSource,
+    });
+    const approvals = reusedApprovalKeys.map(visit => ({ executionId: visit.nodeExecutionId, stateId: visit.nodeId, visit: visit.ordinal, outcome: visit.outcome }));
+    return { workflowId: workflowSessionId, rerunPlan: { ...plan, reused: { ...plan.reused, approvals } } as unknown as JsonValue };
 }
 
 /**
