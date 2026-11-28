@@ -31,3 +31,4 @@ export * from "./workflow-owner.js";
 export * from "./workflow-session-definitions.js";
 export * from "./workflow-lifecycle.js";
 export * from "./workflow-error-words.js";
+export * from "./workflow-rerun.js";

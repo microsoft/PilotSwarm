@@ -16,6 +16,7 @@ import { workflowDecisionInferenceEvidence, workflowDecisionModel, workflowDecis
 import { WORKFLOW_RUN_STATE_WORDS, workflowAgentModel, workflowSpawnedModels, workflowErrorRouteWords, workflowAskAnswerWords, workflowReasonShown,
     workflowDuration, workflowFailureDetail, workflowNodeCardWords, workflowOutcomeWord, workflowRunStateWord, workflowShortTime, workflowTimeTitle, workflowVisitBadge,
 } from "./workflow-words.js";
+import { workflowRerunCardWords, workflowVisitProvenance } from "./workflow-rerun.js";
 
 // Agent and parallel states and stopped runs are read here as every other state and status is.
 const STATE_TYPES = new Set(["script", "wait", "approval", "messaging", "agent", "parallel", "decision", "spawn", "terminal"]);
@@ -308,7 +309,11 @@ function workflowNodeCard(view, node, context) {
     const badge = words.badge ?? (view.itemCounts ? null : workflowVisitBadge(view.runs, view.partial));
     // A For each at work says how many of its items succeeded, as its card does ("Running · 1/2 items").
     if (kind === "parallel" && view.stateLabel === "Running" && /^\d+\/\d+ ok$/.test(words.fact ?? "")) view.stateLabel = `Running · ${words.fact}`;
-    const title = [node.id, view.label, view.stateLabel, badge ? badge.title : null, view.model ? view.model.text : null].filter(Boolean).join(" · ");
+    // Phase 3 I7: a visit a re-run reused or was supplied says so, never as one that ran here.
+    const rerun = view.pending ? null : workflowRerunCardWords(view.current, { numberOf: context.numberOf });
+    const title = [node.id, view.label, view.stateLabel, rerun ? rerun.title : null, badge ? badge.title : null, view.model ? view.model.text : null]
+        .filter(Boolean).join(" · ");
+    if (rerun) return { ...words, fact: rerun.fact, mark: rerun.mark ?? words.mark, row2: true, provenance: rerun.provenance, badge, title };
     return { ...words, badge, title };
 }
 
@@ -886,7 +891,10 @@ export function workflowExecutionOfRow(row) {
         agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
         spawnChild: isRecord(row.spawnChild) && typeof row.spawnChild.workflowId === "string" ? row.spawnChild : undefined,
         scopeId: text(row.scopeId), branch: isRecord(row.branch) ? row.branch : undefined,
-        branches: Number.isSafeInteger(row.branches) ? row.branches : undefined };
+        branches: Number.isSafeInteger(row.branches) ? row.branches : undefined,
+        // Phase 3 I7: a re-run's visit copied from an earlier run, or given at Start (never ran); only on such a visit.
+        ...(isRecord(row.reused) ? { reused: row.reused } : {}),
+        ...(isRecord(row.supplied) ? { supplied: row.supplied } : {}) };
 }
 
 function collectExecutions(events, runId, run, overlay) {
@@ -1328,6 +1336,9 @@ function nodeView(node, executions, context) {
         description: [...describeWorkflowExecution(node, pending || latestDone, context.sessionName), ...branchProgressLines(node, pending || latestDone, context),
             ...(notReachedView ? [workflowNotReachedText(notReachedView)] : [])],
         ...(node.type === "parallel" ? { evidence: workflowBranchEvidence(context.executions, context.states, pending || latestDone, context.complete, node) } : {}),
+        // Phase 3 I7: where the shown visit came from when a re-run reused or was supplied it (workflowVisitProvenance).
+        ...(!pending && latestDone && (latestDone.reused || latestDone.supplied)
+            ? { provenance: workflowVisitProvenance(latestDone, { numberOf: context.numberOf }) } : {}),
     };
     view.card = workflowNodeCard(view, node, context);
     // Owner batch 7 (H2): a parallel step's branch box and join bar; a branch step's visit in each branch, for its picker.
@@ -1372,7 +1383,7 @@ function agentPinSource(shared, run, bound, active) {
  * (epoch milliseconds) decides only whether a waiting reply has expired.
  */
 export function projectWorkflow({ definition = null, readModel = null, workflowModel = null, selectedRunId = null, events = [], readModelAfterSeq = null,
-    olderHistory = null, now = Date.now(), asOf = null, sessionName = null, sessionModel = null } = {}) {
+    olderHistory = null, now = Date.now(), asOf = null, sessionName = null, sessionModel = null, numberOf = null } = {}) {
     const model = readModel ? projectWorkflowReadModel(readModel, { older: olderHistory, now }) : null;
     const wide = model || !workflowModel ? null : projectWorkflowReadModel(workflowModel, { now });
     // The workflow-wide source: the selection's own model, else another selection's model that projects.
@@ -1453,6 +1464,8 @@ export function projectWorkflow({ definition = null, readModel = null, workflowM
         terminalState: bound && !(replaying && status.terminalState === null && asOf < workflowLastMoment(collected.executions))
             ? status.terminalState ?? run?.terminalState ?? null : null,
         complete: Boolean(run && bound && run.history.complete), stateless: !bound && runId ? "Not shown on the graph" : undefined, sessionName,
+        // Phase 3 I7: a Workflow's number by its id, for the words of a re-run's reused and supplied visits ("Reused from #2").
+        numberOf: typeof numberOf === "function" ? numberOf : null,
         // Every open row is listed (R2-UI-7): the branches running now are all known even when older history is not loaded.
         openComplete: Boolean(run && bound && run.history.openComplete),
         pins: agentPinSource(shared, run, bound, active),
@@ -2247,6 +2260,19 @@ const WORKFLOW_EVENT_TEXT = {
         },
     },
     "workflow.state_cancelled": { short: data => ({ text: `⊘ ${nodeOf(data)} canceled`, level: "warning" }) },
+    // Phase 3 I7 (design §7.2): a re-run's visit copied from an earlier run (the Log folds these), and the one given at Start.
+    "workflow.state_reused": {
+        short: data => ({ text: `✓ ${nodeOf(data)}${Number.isSafeInteger(data.ordinal) && data.ordinal > 1 ? ` · visit ${data.ordinal}` : ""} reused` }),
+    },
+    "workflow.state_supplied": {
+        short: data => {
+            // The event records a person by account ids only: a name when it has one, never the ids.
+            const who = isRecord(data.by) && data.by.kind === "user"
+                ? text(data.by.displayName) ?? text(data.by.name) ?? text(data.by.email) ?? "a person" : workflowActorText(data.by);
+            return { text: `✎ ${nodeOf(data)} · visit ${Number.isSafeInteger(data.ordinal) ? data.ordinal : "?"} supplied → ${text(data.outcome) ?? "?"}`
+                + `${who ? ` by ${who}` : ""}${filled(data.note) ? ` (“${clipped(data.note.replace(/\s+/g, " ").trim(), 120)}”)` : ""}`, level: "warning" };
+        },
+    },
     "workflow.agent_spawned": {
         // session: continue (owner decision agent-node-continue-20261106): a later visit's prompt goes to the same session.
         // Review 18:45Z: the agent node Log's own words, with the node first; no raw session id.
@@ -2350,7 +2376,9 @@ export function workflowReplayFrames(executions) {
             ordinal: Number.isSafeInteger(item.ordinal) ? item.ordinal : null,
             branchIndex: isRecord(item.branch) && Number.isSafeInteger(item.branch.index) ? item.branch.index : null,
             // A visit in a named branch, its branch's name.
-            branchName: isRecord(item.branch) && typeof item.branch.name === "string" && item.branch.name ? item.branch.name : null }))
+            branchName: isRecord(item.branch) && typeof item.branch.name === "string" && item.branch.name ? item.branch.name : null,
+            // Phase 3 I7: a re-run's reused or supplied visit (the timeline's band).
+            ...(isRecord(item.supplied) ? { supplied: true } : isRecord(item.reused) ? { reused: true } : {}) }))
         .sort((a, b) => a.atMs - b.atMs || (a.ordinal ?? 0) - (b.ordinal ?? 0) || a.nodeExecutionId.localeCompare(b.nodeExecutionId));
 }
 
@@ -2458,7 +2486,10 @@ export function workflowActivity(events, { runId = null, nodeExecutionId = null,
         rows.push({ seq: Number.isSafeInteger(event.seq) ? event.seq : null, at: workflowShortTime(event.createdAt), atTitle: workflowTimeTitle(event.createdAt), what: line.text,
             who: workflowActorText(data.actor), level: line.level ?? "info", ...(line.title ? { title: line.title } : {}),
             // Stage 2.4: the visit a line is about (the replay moves to it, and it to the replay's visit).
-            eventType: event.eventType, nodeExecutionId: typeof data.nodeExecutionId === "string" ? data.nodeExecutionId : null });
+            eventType: event.eventType, nodeExecutionId: typeof data.nodeExecutionId === "string" ? data.nodeExecutionId : null,
+            // Phase 3 I7: the Workflow a reused visit came from, for the Log's folded row (workflowRerunLogRows).
+            ...(event.eventType === "workflow.state_reused" && isRecord(data.reusedFrom) && text(data.reusedFrom.workflowId)
+                ? { reusedFrom: data.reusedFrom.workflowId } : {}) });
     }
     return rows.reverse().slice(0, Math.max(0, limit));
 }

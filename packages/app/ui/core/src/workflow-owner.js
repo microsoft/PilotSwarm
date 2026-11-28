@@ -1130,6 +1130,8 @@ export function workflowTabButtonTip(kind, { name = null, number = null, revisio
         case "pause": return "no new node starts; started nodes finish";
         case "resume": return "nodes start again where it paused";
         case "stop": return "let started nodes finish, or cancel now";
+        // Phase 3 I7: Re-run from here… starts the next Workflow, reusing this one's steps before the chosen one.
+        case "rerun": return `start Workflow${which} reusing the steps before this one`;
         case "save": return Number.isSafeInteger(revision) ? `save as a new revision after revision ${revision}` : "save as a new revision";
         case "discard": return "go back to the saved revision";
         // Owner, 2026-11-06T19:40Z (F7): full screen's way out, where Full screen was pressed.

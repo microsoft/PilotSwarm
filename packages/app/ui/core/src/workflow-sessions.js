@@ -40,6 +40,9 @@ export const WORKFLOW_EVENT_TYPES = [
     "workflow.cancelled",
     // A run that ended by a graceful stop (R2-UI-6).
     "workflow.stopped",
+    // Phase 3 I7: a re-run's visits copied from an earlier run, and the one whose result was given at Start (store.ts).
+    "workflow.state_reused",
+    "workflow.state_supplied",
     ...WORKFLOW_CONTROL_EVENT_TYPES,
 ];
 
@@ -214,6 +217,12 @@ export function formatWorkflowEventText(event, options = {}) {
             const duration = formatDuration(data.durationMs);
             return `${CANCELED} ${stepName(data)} canceled${duration ? ` after ${duration}` : ""}.`;
         }
+        // Phase 3 I7: never said as a step that ran.
+        case "workflow.state_reused":
+            return `${DONE} ${stepName(data)} reused from an earlier Workflow${nonEmpty(data.outcome) ? ` → **${workflowOutcomeWord(data.outcome)}**` : ""}.`;
+        case "workflow.state_supplied":
+            return `✎ ${stepName(data)} supplied → **${nonEmpty(data.outcome) ? workflowOutcomeWord(data.outcome) : "?"}**; it did not run.`
+                + `${nonEmpty(data.note) ? ` Reason: ${inline(data.note, 300)}` : ""}`;
         case "workflow.cancelled":
             if (data.outcome !== undefined) return endedAtTerminal(data, CANCELED);
             return `${CANCELED} Workflow **${data.name ?? "workflow"}** canceled`
@@ -273,6 +282,10 @@ export function describeWorkflowEvent(event, options = {}) {
             const duration = formatDuration(data.durationMs);
             return { kind: "notice", title: stepTitle, color: "yellow", summary: `${data.stateId ?? "?"} canceled${duration ? ` after ${duration}` : ""}`, text };
         }
+        case "workflow.state_reused":
+            return { kind: "notice", title: stepTitle, color: "gray", summary: `${data.stateId ?? "?"} reused`, text };
+        case "workflow.state_supplied":
+            return { kind: "notice", title: stepTitle, color: "yellow", summary: `${data.stateId ?? "?"} supplied → ${data.outcome ?? "?"}`, text };
         default: {
             const control = controlEventView(event, options);
             return control ? { kind: "notice", title: `${WORKFLOW_SESSION_GLYPH} Workflow`, color: control.color, summary: control.summary, text } : null;
