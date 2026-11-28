@@ -162,8 +162,10 @@ describe("workflow readWorkflow (direct management client)", () => {
             const visit = `${copy.runId}-copied`;
             await catalog.pool.query(`INSERT INTO "${env.cmsSchema}".workflow_node_executions
                 (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input, input_sha256, state, entered_at, completed_at,
+                 outcome, result_kind, output, winner,
                  reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at)
-                VALUES ($1,$2,'root','step',1,'agent','{}','agent-input','completed',now(),now(),$3,$4,$5,now())`,
+                VALUES ($1,$2,'root','step',1,'agent','{}','agent-input','completed',now(),now(),
+                        'ok','business','{}','agent',$3,$4,$5,now())`,
             [visit, copy.runId, older, runId, workflowSessionId]);
             const reused = await readWorkflowView(store, copy.workflowSessionId, { executionId: visit });
             expect(reused.execution.agentModel).toEqual(used);

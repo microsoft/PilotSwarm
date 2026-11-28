@@ -1202,16 +1202,18 @@ async function readKvRevision(store: WorkflowStore, workflowSessionId: string, r
     const head = { workflowId: workflowSessionId, runId: run.runId };
     if (key !== null) {
         const present = Object.hasOwn(values, key);
+        const text = present ? canonicalJson(values[key]) : null;
         return { ...head, kv: { ...revision, key, present,
-            ...(present ? { bytes: utf8ByteLength(canonicalJson(values[key])), value: values[key] } : {}) } };
+            ...(text !== null ? { bytes: utf8ByteLength(text), value: workflowPublicValueView(values[key], text) } : {}) } };
     }
     const names = Object.keys(values).sort();
     const bytes = utf8ByteLength(canonicalJson(values));
     const whole = bytes <= KV_WHOLE_MAX_BYTES;
     const entries = names.map(name => {
         const text = canonicalJson(values[name]);
+        const view = workflowPublicValueView(values[name], text);
         return { key: name, bytes: utf8ByteLength(text), sha256: sha256Hex(text),
-            ...(whole ? { value: values[name] } : { preview: jsonbSafeText(text, KV_ENTRY_PREVIEW_CHARS) }) };
+            ...(whole ? { value: view } : { preview: jsonbSafeText(view === values[name] ? text : canonicalJson(view), KV_ENTRY_PREVIEW_CHARS) }) };
     });
     return { ...head, kv: { ...revision, keys: names.length, bytes, whole, entries } };
 }
@@ -1390,10 +1392,10 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
                 ? workflowTerminalErrorView(selected.terminalError) : selected.terminalError, 2_000),
             ...(selected.terminalError === null ? {} : errorWordsView(selected.terminalError)),
             kvRevision: selected.kvRevision,
-            kv: previewJson(selected.kv, 4_000),
+            kv: previewJson(workflowPublicValueView(selected.kv), 4_000),
             // The run's inputs as it started with them (review UI-13: Start another fills its form with them), bounded as
             // the variables are; a cut preview is not JSON, and a screen then says it cannot read them.
-            inputs: previewJson(selected.inputs, 4_000),
+            inputs: previewJson(workflowPublicValueView(selected.inputs), 4_000),
             // OF-S2-7: the agent node models its start chose (by state id); only a run with any shows them, and every other
             // agent node uses its session's model.
             ...(agentModelsView(selected.agentModels)),
@@ -1831,7 +1833,7 @@ function outboxViewOf(message: WorkflowOutboxMessage, intakeOutcomes: ReadonlyMa
     return {
         exchangeId: message.exchangeId, nodeExecutionId: message.nodeExecutionId, recipientSessionId: message.recipientSessionId,
         recipientKind: message.recipientKind, contract: message.contract, state: message.state, attempts: message.attempts,
-        createdAt: message.createdAt, deliveredAt: message.receipt?.deliveredAt ?? null, payloadPreview: previewJson(message.payload, 300),
+        createdAt: message.createdAt, deliveredAt: message.receipt?.deliveredAt ?? null, payloadPreview: previewJson(workflowPublicValueView(message.payload), 300),
         ...(message.receipt?.input ? { inputMessageId: message.receipt.input.messageId, claimedBy: message.receipt.input.claimedBy?.nodeExecutionId ?? null } : {}),
         ...(message.error !== null ? { errorPreview: previewJson(message.error, 500) } : {}),
         ...(intake !== undefined ? { ...intake } : {}),

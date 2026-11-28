@@ -6,6 +6,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { parseApprovalCommand } from "../../src/workflow/approval.ts";
+import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
 import { readWorkflowFromTool, readWorkflowModel, readWorkflowView } from "../../src/workflow/tools.ts";
 import * as controllerFeatures from "../../src/workflow/controller-features.ts";
 import { workflowTimeTitle } from "../../../app/ui/core/src/workflow-words.js";
@@ -140,6 +141,69 @@ describe("owner-only approval transactions", () => {
             expect(view.run.nodeExecutions[0].approval.owner.by).toBe("a person");
             expect(result).not.toContain(OWNER.subject);
             expect(result).not.toContain("provider");
+        } finally { await h.close(); }
+    });
+
+    it("masks carried identity in variables, inputs, outbox, and stored event previews", async () => {
+        const h = await harness();
+        try {
+            const sender = "person:user:dev:private-sender";
+            const actor = { ...OWNER, subject: 'private"subject' };
+            const legacy = { decidedBy: actor, from: sender };
+            const safe = { decidedBy: { by: "a person", name: OWNER.displayName }, from: { by: "a person" } };
+            const raw = JSON.stringify(legacy);
+            const kv = JSON.stringify({ carried: legacy });
+            const largeKv = JSON.stringify({ carried: legacy, a: "x".repeat(150_000), b: "y".repeat(150_000) });
+            await h.enter();
+            await h.sql.query(`UPDATE ${h.schema}.workflow_runs SET inputs=$2, kv=$3, kv_revision=3 WHERE run_id=$1`,
+                [h.runId, raw, kv]);
+            await h.sql.query(`INSERT INTO ${h.schema}.workflow_kv_revisions (run_id, revision, kv) VALUES ($1, 2, $2), ($1, 3, $3)`,
+                [h.runId, kv, largeKv]);
+            await h.sql.query(`INSERT INTO ${h.schema}.workflow_outbox (exchange_id, node_execution_id, workflow_session_id, run_id, mode,
+                recipient_session_id, recipient_kind, contract, payload, payload_sha256, correlation, created_at)
+                VALUES ($1,$1,$2,$3,'send',$4,'agent','Note@1',$5,'x','{}',now())`,
+            [h.approvalId, h.workflowSessionId, h.runId, h.parent, raw]);
+            const read = options => readWorkflowView(h.store, h.workflowSessionId, options);
+            const run = (await read()).run;
+            expect.soft(JSON.parse(run.inputs)).toEqual(safe);
+            expect.soft(JSON.parse(run.kv)).toEqual({ carried: safe });
+            expect.soft(JSON.parse(run.outbox[0].payloadPreview)).toEqual(safe);
+            expect.soft((await read({ kvRevision: 2 })).kv.entries[0].value).toEqual(safe);
+            expect.soft((await read({ kvRevision: 2, kvKey: "carried" })).kv.value).toEqual(safe);
+            const carried = (await read({ kvRevision: 3 })).kv.entries.find(entry => entry.key === "carried");
+            expect.soft(JSON.parse(carried.preview)).toEqual(safe);
+            expect.soft(carried.sha256).toBe(sha256Hex(canonicalJson(legacy)));
+            expect.soft(carried.bytes).toBe(Buffer.byteLength(canonicalJson(legacy)));
+
+            const cut = raw.slice(0, -4) + "…";
+            const cutSubject = raw.slice(0, raw.indexOf('\\"') + 1);
+            const clean = `{"tail":"${"z".repeat(300)}`;
+            await h.catalog.recordEvents(h.workflowSessionId, [
+                { eventType: "workflow.state_completed", data: { inputPreview: raw, outputPreview: cut } },
+                { eventType: "workflow.completed", data: { inputPreview: clean, outputPreview: cutSubject } },
+            ]);
+            const [completed] = await h.catalog.getSessionEvents(h.workflowSessionId, undefined, undefined, ["workflow.state_completed"]);
+            expect.soft(JSON.parse(completed.data.inputPreview)).toEqual(safe);
+            expect.soft(completed.data.outputPreview).not.toMatch(/private|person:user:/);
+            const [ended] = await h.catalog.getSessionEvents(h.workflowSessionId, undefined, undefined, ["workflow.completed"]);
+            expect.soft(ended.data.inputPreview).toBe(clean);
+            expect.soft(ended.data.outputPreview).not.toContain("private");
+
+            const longOutput = JSON.stringify({ from: sender, tail: "z".repeat(600) });
+            await h.sql.query(`UPDATE ${h.schema}.workflow_node_executions SET node_type='agent', state='completed', deadline_at=NULL,
+                outcome='ok', result_kind='business', output=$2, winner='agent', completed_at=now(),
+                reused_from_execution_id='old-execution', reused_from_run_id='old-run', reused_from_workflow_session_id='old-workflow', reused_at=now()
+                WHERE node_execution_id=$1`, [h.approvalId, raw]);
+            const recap = () => h.store.readReusedAgentVisits(h.runId, "consent");
+            expect.soft((await recap()).visits[0].output).toEqual(safe);
+            await h.sql.query(`UPDATE ${h.schema}.workflow_node_executions SET output=$2 WHERE node_execution_id=$1`, [h.approvalId, longOutput]);
+            const visit = (await recap()).visits[0];
+            expect.soft(visit).toMatchObject({ truncated: true, outputChars: longOutput.length });
+            expect.soft(visit.outputPreview.length).toBeLessThanOrEqual(500);
+            expect.soft(visit.outputPreview).not.toContain("private");
+            const dropped = (await h.store.readDroppedVisitPreviews(h.runId, [h.approvalId])).get(h.approvalId);
+            expect.soft(dropped.length).toBeLessThanOrEqual(300);
+            expect.soft(dropped).not.toContain("private");
         } finally { await h.close(); }
     });
 

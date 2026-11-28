@@ -17,24 +17,59 @@ export function workflowActorView(actor: unknown, callerSessionId: string | null
 }
 
 /** Project legacy engine-carried attribution without mutating values used by the Workflow. */
-export function workflowPublicValueView(value: JsonValue): JsonValue {
+export function workflowPublicValueView(value: JsonValue, canonicalText?: string): JsonValue {
+    if (value !== null && typeof value === "object" && !hasPrivateValueMarker(canonicalText ?? JSON.stringify(value))) return value;
+    return maskPublicValue(value);
+}
+
+function hasPrivateValueMarker(text: string): boolean {
+    return text.includes('"subject"') || text.includes("person:user:");
+}
+
+function maskPublicValue(value: JsonValue): JsonValue {
     if (typeof value === "string" && value.startsWith("person:user:")) return { by: "a person" };
     if (Array.isArray(value)) {
-        const view = value.map(workflowPublicValueView);
+        const view = value.map(maskPublicValue);
         return view.some((item, index) => item !== value[index]) ? view : value;
     }
     if (!isJsonObject(value)) return value;
     if (typeof value.provider === "string" && typeof value.subject === "string") return workflowActorView(value);
-    const view = Object.entries(value).map(([key, item]) => [key, workflowPublicValueView(item)] as const);
+    const view = Object.entries(value).map(([key, item]) => [key, maskPublicValue(item)] as const);
     return view.some(([key, item]) => item !== value[key]) ? Object.fromEntries(view) : value;
 }
 
 /** Preserve the original stored text when it contains no private attribution. */
 export function workflowPublicValueText(text: string | null): string | null {
-    if (text === null) return null;
-    const value = parseStoredJson(text);
-    const view = workflowPublicValueView(value);
+    if (text === null || !hasPrivateValueMarker(text)) return text;
+    return maskPublicValueText(text, parseStoredJson(text));
+}
+
+function maskPublicValueText(text: string, value: JsonValue): string {
+    const view = maskPublicValue(value);
     return view === value ? text : canonicalJson(view);
+}
+
+/** Redact a stored JSON preview even when its last string was cut mid-value. */
+export function workflowPublicValuePreview(text: string, maxCodePoints?: number): string {
+    if (!hasPrivateValueMarker(text) && !text.includes('"provider"')) return text;
+    const view = maskPublicPreview(text);
+    return maxCodePoints === undefined || view === text ? view : [...view].slice(0, maxCodePoints).join("");
+}
+
+function maskPublicPreview(text: string): string {
+    let value: JsonValue;
+    try {
+        value = JSON.parse(text);
+    } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        const suffix = text.endsWith("…") ? "…" : "";
+        const head = suffix ? text.slice(0, -1) : text;
+        return head
+            .replace(/"person:user:(?:[^"\\]|\\.)*(?:"|\\?$)/gs, '{"by":"a person"}')
+            .replace(/("(?:provider|subject)"\s*:\s*)"(?:[^"\\]|\\.)*(?:"|\\?$)/gs, '$1"[redacted]"')
+            + suffix;
+    }
+    return hasPrivateValueMarker(text) ? maskPublicValueText(text, value) : text;
 }
 
 export function workflowTerminalErrorView(error: JsonValue): JsonValue {
@@ -74,14 +109,21 @@ export function workflowInputEventView(data: JsonObject, resolvedSender?: JsonOb
     return { ...view, sender };
 }
 
-/** Historical events predate write-side masking. Only touch the engine's attribution fields. */
+/** Mask Workflow event attribution and engine previews at the shared event read boundary. */
 export function workflowEventActorView(eventType: string, data: unknown): unknown {
     if (!eventType.startsWith("workflow.") || !isJsonObject(data)) return data;
-    if (eventType === "workflow.input_accepted" || (eventType === "workflow.state_completed" && typeof data.messageId === "string")) {
-        return workflowInputEventView(data);
-    }
+    const event = eventType === "workflow.input_accepted" || (eventType === "workflow.state_completed" && typeof data.messageId === "string")
+        ? workflowInputEventView(data) : data;
     const key = eventType === "workflow.state_supplied" ? "by" : eventType === "workflow.state_completed" && data.approval === true
         ? "decidedBy" : "actor";
-    if (!Object.hasOwn(data, key)) return data;
-    return { ...data, [key]: workflowActorView(data[key]) };
+    const hasActor = Object.hasOwn(event, key);
+    const inputPreview = typeof event.inputPreview === "string" ? workflowPublicValuePreview(event.inputPreview) : event.inputPreview;
+    const outputPreview = typeof event.outputPreview === "string" ? workflowPublicValuePreview(event.outputPreview) : event.outputPreview;
+    if (!hasActor && inputPreview === event.inputPreview && outputPreview === event.outputPreview) return event;
+    return {
+        ...event,
+        ...(hasActor ? { [key]: workflowActorView(event[key]) } : {}),
+        ...(typeof inputPreview === "string" && inputPreview !== event.inputPreview ? { inputPreview: jsonbSafeText(inputPreview, 1_000) } : {}),
+        ...(typeof outputPreview === "string" && outputPreview !== event.outputPreview ? { outputPreview: jsonbSafeText(outputPreview, 1_000) } : {}),
+    };
 }

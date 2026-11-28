@@ -16,7 +16,7 @@ import {
     redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets,
     type WorkflowErrorRedaction,
 } from "./redact.js";
-import { workflowActorView, workflowInputEventView, workflowInputSenderActor, workflowPublicValueText } from "./actor-view.js";
+import { workflowActorView, workflowInputEventView, workflowInputSenderActor, workflowPublicValuePreview, workflowPublicValueView } from "./actor-view.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -3110,20 +3110,16 @@ export class WorkflowStore {
         return { count, contracts };
     }
 
-    /** Dropped visits only. Mask before clipping; batch the reads to bound the unprojected values in memory. */
+    /** Read only bounded previews for dropped visits, then mask legacy identity before returning them. */
     async readDroppedVisitPreviews(runId: string, nodeExecutionIds: readonly string[]): Promise<Map<string, string | null>> {
-        const out = new Map<string, string | null>();
-        const ids = [...new Set(nodeExecutionIds)];
-        for (let i = 0; i < ids.length; i += 100) {
-            const { rows } = await this.pool.query(
-                `SELECT node_execution_id, output FROM ${this.t.nodes}
-                  WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`, [runId, ids.slice(i, i + 100)]);
-            for (const row of rows) {
-                const text = workflowPublicValueText(strOrNull(row, "output"));
-                out.set(str(row, "node_execution_id"), text?.match(/^.{0,300}/su)?.[0] ?? null);
-            }
-        }
-        return out;
+        if (nodeExecutionIds.length === 0) return new Map();
+        const { rows } = await this.pool.query(
+            `SELECT node_execution_id, left(output, 300) AS preview FROM ${this.t.nodes}
+              WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`, [runId, [...new Set(nodeExecutionIds)]]);
+        return new Map(rows.map(row => {
+            const text = strOrNull(row, "preview");
+            return [str(row, "node_execution_id"), text === null ? null : workflowPublicValuePreview(text, 300)];
+        }));
     }
 
     /**
@@ -7958,14 +7954,15 @@ export class WorkflowStore {
             const outputHead = typeof row.output_head === "string" ? row.output_head : null;
             if (outputChars !== null && outputHead !== null) {
                 if (outputChars <= WORKFLOW_RERUN_RECAP_PREVIEW_CHARS) {
-                    try { entry.output = JSON.parse(outputHead) as JsonValue; }
-                    catch {
-                        entry.outputPreview = outputHead;
+                    try { entry.output = workflowPublicValueView(JSON.parse(outputHead), outputHead); }
+                    catch (error) {
+                        if (!(error instanceof SyntaxError)) throw error;
+                        entry.outputPreview = workflowPublicValuePreview(outputHead, WORKFLOW_RERUN_RECAP_PREVIEW_CHARS);
                         entry.truncated = true;
                         entry.outputChars = outputChars;
                     }
                 } else {
-                    entry.outputPreview = outputHead;
+                    entry.outputPreview = workflowPublicValuePreview(outputHead, WORKFLOW_RERUN_RECAP_PREVIEW_CHARS);
                     entry.truncated = true;
                     entry.outputChars = outputChars;
                 }
