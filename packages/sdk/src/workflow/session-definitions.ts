@@ -873,6 +873,7 @@ async function prepareRerunStart(
     if (!sourceRun.finishedAt || sourceRun.status === "admitted" || sourceRun.status === "running" || sourceRun.status === "paused") {
         throw new WorkflowStoreError("RERUN_SOURCE_ACTIVE", `Source Workflow ${rf.workflowId} is still ${sourceRun.status}; wait for it to finish before re-running.`);
     }
+    const sourceFinishedAt = sourceRun.finishedAt;
     // Decision 8: default revision is the source run's revision (NOT newestValidRevision).
     const sourceRevision = sourceDef.sessionRevision as number;
     const revision = pinned?.revision ?? (request.revision != null ? request.revision : sourceRevision);
@@ -1000,11 +1001,21 @@ async function prepareRerunStart(
             nextOrdinal,
         };
     }
-    const mappedPredecessorId = picked.mode === "continue"
-        ? (mapped.find(m => m.source.nodeExecutionId === picked.chosen.nodeExecutionId)?.newId ?? null)
-        : picked.chosen.predecessorId === null
+    let mappedPredecessorId: string | null;
+    if (picked.mode === "continue") {
+        // In continue mode V is the last reused top-level visit, so it is always mapped; a miss is a broken partition.
+        const mappedChosen = mapped.find(m => m.source.nodeExecutionId === picked.chosen.nodeExecutionId);
+        if (!mappedChosen) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT",
+                `The chosen visit ${picked.chosen.nodeExecutionId} is missing from the reused visits of a continue re-run.`,
+                { reason: "missing_chosen", executionId: picked.chosen.nodeExecutionId });
+        }
+        mappedPredecessorId = mappedChosen.newId;
+    } else {
+        mappedPredecessorId = picked.chosen.predecessorId === null
             ? null
             : (mapped.find(m => m.source.nodeExecutionId === picked.chosen.predecessorId)?.newId ?? null);
+    }
     const resume = buildRerunResume({
         mode: picked.mode,
         chosen: picked.chosen,
@@ -1015,10 +1026,11 @@ async function prepareRerunStart(
         targetIrSha256: targetCompile.irSha256 ?? "",
         supplied: resumeSupplied,
     });
-    const lastReusedAt = part.reused.length > 0
-        ? (part.reused[part.reused.length - 1].completedAt ?? part.reused[part.reused.length - 1].enteredAt)
-        : (picked.chosen.enteredAt ?? sourceRun.createdAt);
-    const inboxCutAt = new Date(lastReusedAt);
+    // Design §5.4 / §3.5.2: run_again cuts at V's entry; continue and supply cut at the first dropped top-level visit
+    // after V, or at the source run's end when V was its last top-level visit.
+    const inboxCutAt = new Date(picked.mode === "run_again"
+        ? picked.chosen.enteredAt
+        : (part.firstDroppedTop?.enteredAt ?? sourceFinishedAt));
     const reusedSpawnChildIds = part.reused
         .filter(v => v.nodeType === "spawn" && typeof v.spawnChildWorkflowId === "string" && v.spawnChildWorkflowId.length > 0)
         .map(v => v.spawnChildWorkflowId!);

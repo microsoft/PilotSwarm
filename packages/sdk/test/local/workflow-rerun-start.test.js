@@ -7,6 +7,7 @@ import { canonicalJson, sha256Hex } from "../../src/workflow/json.ts";
 import { WORKFLOW_TOOL_POLICY } from "../../src/workflow/tool-policy.ts";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
 import { WorkflowStoreError, nodeExecutionIdFor } from "../../src/workflow/store.ts";
+import { branchScopeId } from "../../src/workflow/parallel.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const OWNER = { provider: "entra", subject: "owner-sub-4d", displayName: "Owner" };
@@ -101,6 +102,51 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
 
+const PARALLEL_INBOX_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: rerun-parallel-inbox-wf, version: "1.0.0" }
+limits: { maxNodeExecutions: 30 }
+initial: setup
+states:
+  setup:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: fan, failure: failed } }
+  fan:
+    type: parallel
+    branches:
+      lane_a:
+        initial: la
+        states:
+          la:
+            type: script
+            source: 'await setResult("ok", {});'
+            transition: { next: { ok: la_done, failure: la_fail } }
+          la_done: { type: terminal, outcome: succeeded }
+          la_fail: { type: terminal, outcome: failed }
+      lane_b:
+        initial: lb
+        states:
+          lb:
+            type: script
+            source: 'await setResult("ok", {});'
+            transition: { next: { ok: lb_done, failure: lb_fail } }
+          lb_done: { type: terminal, outcome: succeeded }
+          lb_fail: { type: terminal, outcome: failed }
+    transition: { next: { joined: mid, blocked: failed, failure: failed } }
+  mid:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: post, failure: failed } }
+  post:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
 function deferHost(client) {
     const store = client._catalog.workflowStore();
     return {
@@ -183,21 +229,26 @@ async function seedEndedSessionWorkflow(host, opts = {}) {
         const baseMs = Date.now() - 30_000;
         for (let i = 0; i < visits.length; i += 1) {
             const v = visits[i];
-            const id = nodeExecutionIdFor(started.runId, "root", v.nodeId, v.ordinal);
+            // A lane visit ({ lane: { parent: "<parallel>#<visit>", index } }) runs in its parallel visit's branch scope.
+            const scopeId = v.lane ? branchScopeId(ids[v.lane.parent], v.lane.index) : "root";
+            const predecessorId = v.lane ? ids[v.lane.parent] : prev;
+            const id = nodeExecutionIdFor(started.runId, scopeId, v.nodeId, v.ordinal);
             const inputText = canonicalJson(v.input ?? {});
             const outputText = v.resultKind === "business" ? canonicalJson(v.output ?? null) : null;
             const errorText = v.resultKind === "runtime_error" ? canonicalJson(v.error ?? { code: v.outcome ?? "err", message: "err" }) : null;
+            const enteredMs = baseMs + (v.enteredMs ?? i * 1000);
+            const completedMs = v.completedMs === undefined ? enteredMs + 400 : baseMs + v.completedMs;
             await pool.query(
                 `INSERT INTO ${s}.workflow_node_executions (
                     node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
                     input, input_sha256, state, outcome, result_kind, output, error, winner,
                     effect_attempts, entered_at, completed_at, kv_revision, deadline_at
-                 ) VALUES ($1,$2,'root',$3,$4,$5,$6,$7,$8,$9,'completed',$10,$11,$12,$13,$14,1,$15::timestamptz,$16::timestamptz,1,NULL)`,
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'completed',$11,$12,$13,$14,$15,1,$16::timestamptz,$17::timestamptz,1,NULL)`,
                 [
-                    id, started.runId, prev, v.nodeId, v.ordinal, v.nodeType, v.arrivalRoute ?? null,
+                    id, started.runId, scopeId, predecessorId, v.nodeId, v.ordinal, v.nodeType, v.arrivalRoute ?? null,
                     inputText, sha256Hex(inputText), v.outcome ?? "ok", v.resultKind ?? "business",
                     outputText, errorText, v.winner ?? "effect",
-                    new Date(baseMs + i * 1000).toISOString(), new Date(baseMs + i * 1000 + 400).toISOString(),
+                    new Date(enteredMs).toISOString(), new Date(completedMs).toISOString(),
                 ],
             );
             ids[`${v.nodeId}#${v.ordinal}`] = id;
@@ -217,12 +268,12 @@ async function seedEndedSessionWorkflow(host, opts = {}) {
                     ],
                 );
             }
-            prev = id;
+            if (!v.lane) prev = id;
         }
         if (!opts.leaveActive) {
             await pool.query(`UPDATE ${s}.workflow_runs SET status = 'failed', finished_at = now() WHERE run_id = $1`, [started.runId]);
         }
-        return { ownerSessionId, definitionId, workflowId: started.workflowId, runId: started.runId, ids };
+        return { ownerSessionId, definitionId, workflowId: started.workflowId, runId: started.runId, ids, baseMs };
     } finally {
         await pool.end();
     }
@@ -678,6 +729,120 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                     note: "tried to bypass supply: never",
                 },
             }), "RERUN_SUPPLY_NOT_ALLOWED");
+        });
+    });
+
+    it("carries waiting inbox messages up to the Design §5.4 cut (P-1: supply while V ran, run_again after a reused parallel, continue on the last top-level visit) and maps a visit-2 continue predecessor to mapped(V) (M-1)", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            const seedNote = async (src, n, acceptedMs) => {
+                const opId = `seed-note-${n}-${randomUUID()}`;
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_inbox (
+                        message_id, workflow_session_id, run_id, sender_session_id, operation_id, request_sha256,
+                        contract, correlation, payload, accepted_at, expires_at
+                     ) VALUES ($1,$2,$3,$4,$5,$6,'Note@1','null',$7,$8::timestamptz,$9::timestamptz)`,
+                    [
+                        `msg-${randomUUID()}`, src.workflowId, src.runId, src.ownerSessionId, opId, sha256Hex(opId),
+                        canonicalJson({ n }), new Date(acceptedMs).toISOString(), new Date(acceptedMs + 3_600_000).toISOString(),
+                    ],
+                );
+            };
+            const carriedNotes = async (runId) => (await pool.query(
+                `SELECT payload FROM ${s}.workflow_inbox WHERE run_id = $1 AND contract = 'Note@1' ORDER BY seq`,
+                [runId],
+            )).rows.map(r => JSON.parse(r.payload).n);
+            try {
+                // (a) supply on the last top-level visit V (step2, ran 1.0 s..1.4 s): cutAt = sourceRun.finishedAt, so a
+                // message accepted WHILE V ran in #2 is carried; one accepted after #2 finished is not.
+                const srcA = await seedEndedSessionWorkflow(h);
+                const runA = await h.store.readRun(srcA.runId);
+                await seedNote(srcA, 1, srcA.baseMs + 200);
+                await seedNote(srcA, 2, srcA.baseMs + 1_200);
+                await seedNote(srcA, 3, runA.finishedAt.getTime() + 5_000);
+                const rA = await startSessionWorkflowDefinition(h, {
+                    ownerSessionId: srcA.ownerSessionId,
+                    definition: { definitionId: srcA.definitionId },
+                    inputs: {},
+                    actor: OWNER_ACTOR,
+                    owner: OWNER,
+                    operationId: "p1-supply-during-v",
+                    rerunFrom: {
+                        workflowId: srcA.workflowId,
+                        executionId: srcA.ids["step2#1"],
+                        mode: "supply",
+                        result: { outcome: "ok", output: { fqdn: "p1.db" } },
+                        note: "P-1 supply carry",
+                    },
+                });
+                expect(rA.rerun?.mode).toBe("supply");
+                expect(await carriedNotes(rA.runId)).toEqual([1, 2]);
+
+                // (b) run_again from `post` after a reused parallel `fan` whose lanes finished at 1.45 s / 1.5 s:
+                // cutAt = post.enteredAt (6.0 s), so a message accepted while `mid` ran (3.0 s) is carried; one
+                // accepted after `post` was entered (6.2 s) is not.
+                const srcB = await seedEndedSessionWorkflow(h, {
+                    yaml: PARALLEL_INBOX_YAML,
+                    visits: [
+                        { nodeId: "setup", ordinal: 1, nodeType: "script", outcome: "ok", resultKind: "business", output: {}, enteredMs: 0, completedMs: 400 },
+                        { nodeId: "fan", ordinal: 1, nodeType: "parallel", arrivalRoute: "ok", outcome: "joined", resultKind: "business", output: [{}, {}], winner: "controller", enteredMs: 1_000, completedMs: 1_600 },
+                        { lane: { parent: "fan#1", index: 0 }, nodeId: "la", ordinal: 1, nodeType: "script", arrivalRoute: "@branch", outcome: "ok", resultKind: "business", output: {}, enteredMs: 1_100, completedMs: 1_500 },
+                        { lane: { parent: "fan#1", index: 1 }, nodeId: "lb", ordinal: 1, nodeType: "script", arrivalRoute: "@branch", outcome: "ok", resultKind: "business", output: {}, enteredMs: 1_100, completedMs: 1_450 },
+                        { nodeId: "mid", ordinal: 1, nodeType: "script", arrivalRoute: "joined", outcome: "ok", resultKind: "business", output: {}, enteredMs: 2_000, completedMs: 5_000 },
+                        { nodeId: "post", ordinal: 1, nodeType: "script", arrivalRoute: "ok", outcome: "execution_failed", resultKind: "runtime_error", enteredMs: 6_000, completedMs: 6_400 },
+                    ],
+                });
+                await seedNote(srcB, 1, srcB.baseMs + 1_300);
+                await seedNote(srcB, 2, srcB.baseMs + 3_000);
+                await seedNote(srcB, 3, srcB.baseMs + 6_200);
+                const rB = await startSessionWorkflowDefinition(h, {
+                    ownerSessionId: srcB.ownerSessionId,
+                    definition: { definitionId: srcB.definitionId },
+                    inputs: {},
+                    actor: OWNER_ACTOR,
+                    owner: OWNER,
+                    operationId: "p1-after-reused-parallel",
+                    rerunFrom: { workflowId: srcB.workflowId, executionId: srcB.ids["post#1"], mode: "run_again" },
+                });
+                expect(rB.rerun?.mode).toBe("run_again");
+                expect(rB.rerun?.reused).toBe(5);
+                expect(await carriedNotes(rB.runId)).toEqual([1, 2]);
+
+                // (c) continue from the last top-level visit V (step2, visit 2 of the root chain, completed at 1.4 s):
+                // cutAt = sourceRun.finishedAt, so a message accepted after V completed (2.0 s) is carried.
+                const srcC = await seedEndedSessionWorkflow(h, {
+                    visits: [
+                        { nodeId: "step1", ordinal: 1, nodeType: "script", outcome: "ok", resultKind: "business", output: { v: 1 }, input: {} },
+                        { nodeId: "step2", ordinal: 1, nodeType: "script", arrivalRoute: "ok", outcome: "ok", resultKind: "business", output: { fqdn: "a.db" }, input: { v: 1 } },
+                    ],
+                });
+                await seedNote(srcC, 1, srcC.baseMs + 2_000);
+                const rC = await startSessionWorkflowDefinition(h, {
+                    ownerSessionId: srcC.ownerSessionId,
+                    definition: { definitionId: srcC.definitionId },
+                    inputs: {},
+                    actor: OWNER_ACTOR,
+                    owner: OWNER,
+                    operationId: "p1-continue-last-visit",
+                    rerunFrom: { workflowId: srcC.workflowId, executionId: srcC.ids["step2#1"], mode: "continue" },
+                });
+                expect(rC.rerun?.mode).toBe("continue");
+                expect(rC.rerun?.reused).toBe(2);
+                expect(await carriedNotes(rC.runId)).toEqual([1]);
+
+                // M-1: on a visit >= 2 the first new visit enters after mapped(V), never after mapped(V.predecessor).
+                const rCRow = await h.store.readRun(rC.runId);
+                const rCNodes = await h.store.listNodeExecutions(rC.runId);
+                const mappedStep1 = rCNodes.find(n => n.nodeId === "step1");
+                const mappedStep2 = rCNodes.find(n => n.nodeId === "step2");
+                expect(mappedStep2?.reusedFromExecutionId).toBe(srcC.ids["step2#1"]);
+                expect(rCRow?.rerunResume?.predecessorId).toBe(mappedStep2?.nodeExecutionId);
+                expect(rCRow?.rerunResume?.predecessorId).not.toBe(mappedStep1?.nodeExecutionId);
+            } finally {
+                await pool.end();
+            }
         });
     });
 });
