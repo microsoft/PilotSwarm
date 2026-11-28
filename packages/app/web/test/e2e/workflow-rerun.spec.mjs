@@ -672,35 +672,35 @@ for (const [label, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
         // The browser logs each refused Start's 422 response itself; nothing else.
         expect(errors).toEqual(Array(2).fill("console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"));
     });
+
+    test(`${label}: decision supply uses the plan outcomes and Why, with no output field or payload`, async ({ page }) => {
+        const errors = watchErrors(page);
+        await page.setViewportSize(viewport);
+        const state = await routeRerun(page, { decision: true });
+        const main = await openWorkflow(page, 2);
+        await main.locator('[data-action="rerun-from-failure"]').click();
+        const sheet = sheetOf(page);
+        await sheet.getByRole("radio", { name: "Supply this step's result and go on", exact: true }).check();
+        const outcome = sheet.getByLabel("Outcome *");
+        const start = sheet.locator('[data-action="rerun-start"]');
+        await expect(outcome.locator("option")).toHaveText(["Choose an outcome…", "engineering → configure · visit 1", "uncertain → failed · visit 1"]);
+        await expect(sheet.locator('[data-field="rerun-output"]')).toHaveCount(0);
+        await expect(start).toBeDisabled();
+        await outcome.selectOption("engineering");
+        await expect.poll(() => state.plans.at(-1).query.outcome).toBe("engineering");
+        await expect(start).toBeDisabled();
+        await sheet.getByLabel("Why *").fill("Engineering confirmed ownership.");
+        await start.click();
+        expect(state.starts[0].rerunFrom).toEqual({ workflowId: W2, executionId: "nx-provision-1", mode: "supply",
+            result: { outcome: "engineering" }, note: "Engineering confirmed ownership." });
+        expect(errors).toEqual([]);
+    });
 }
 
 /**
  * The sheet of #2's failure banner, open on Run this step again with its plan read: { state, sheet, start, failure (the
  * failed read's alert), failed (it with Try again), retry }.
  */
-test("decision supply uses the plan outcomes and Why, with no output field or payload", async ({ page }) => {
-    const errors = watchErrors(page);
-    await page.setViewportSize(DESKTOP);
-    const state = await routeRerun(page, { decision: true });
-    const main = await openWorkflow(page, 2);
-    await main.locator('[data-action="rerun-from-failure"]').click();
-    const sheet = sheetOf(page);
-    await sheet.getByRole("radio", { name: "Supply this step's result and go on", exact: true }).check();
-    const outcome = sheet.getByLabel("Outcome *");
-    const start = sheet.locator('[data-action="rerun-start"]');
-    await expect(outcome.locator("option")).toHaveText(["Choose an outcome…", "engineering → configure · visit 1", "uncertain → failed · visit 1"]);
-    await expect(sheet.locator('[data-field="rerun-output"]')).toHaveCount(0);
-    await expect(start).toBeDisabled();
-    await outcome.selectOption("engineering");
-    await expect.poll(() => state.plans.at(-1).query.outcome).toBe("engineering");
-    await expect(start).toBeDisabled();
-    await sheet.getByLabel("Why *").fill("Engineering confirmed ownership.");
-    await start.click();
-    expect(state.starts[0].rerunFrom).toEqual({ workflowId: W2, executionId: "nx-provision-1", mode: "supply",
-        result: { outcome: "engineering" }, note: "Engineering confirmed ownership." });
-    expect(errors).toEqual([]);
-});
-
 async function openFailureSheet(page) {
     const state = await routeRerun(page);
     const main = await openWorkflow(page, 2);

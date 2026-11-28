@@ -1155,7 +1155,7 @@ CASES = [
         "Spec",
         c(source_kind="decision", mode="supply", supplied_outcome="ok"),
         ALL_SAFE_INVS,
-        [],
+        SAFE_PROPS,
         "PASS",
         True,
         "A supplied decision takes a different declared route without running the visit.",

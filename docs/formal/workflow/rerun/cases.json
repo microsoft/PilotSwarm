@@ -9234,7 +9234,10 @@
    "Inv_TakeOnce",
    "Inv_ReceiveWaitsForInputOrDeadline"
   ],
-  "properties": [],
+  "properties": [
+   "Prop_NoAdmissionAfterTerminal",
+   "Prop_SweepRequiresLockAndNoRun"
+  ],
   "expected": "PASS",
   "deadlock": true,
   "note": "A supplied decision takes a different declared route without running the visit.",
@@ -9347,7 +9350,10 @@
     "Inv_TakeOnce",
     "Inv_ReceiveWaitsForInputOrDeadline"
    ],
-   "properties": [],
+   "properties": [
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_SweepRequiresLockAndNoRun"
+   ],
    "deadlock": true
   }
  },
