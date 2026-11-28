@@ -150,7 +150,7 @@ export interface WorkflowRerunSupplyContract {
     outcomeOnly?: true;
     outputSchemaName: string | null;
     resolvedOutputSchema: JsonValue | null;
-    maxOutputBytes: number;
+    maxOutputBytes?: number;
     nextByOutcome: Record<string, { stateId: string; visit: number } | null>;
 }
 
@@ -904,12 +904,18 @@ function stripCosmeticAndRouting(node: WorkflowIRNode): JsonValue {
     return copy;
 }
 
-/** A supplied decision has no model answer. Keep only the route and the selection it implies. */
+/** A supplied decision has its outcome and selection; its model fields are null. */
 export function suppliedDecisionOutput(questionType: WorkflowIRDecisionQuestion["type"], outcome: string): JsonValue {
+    if (questionType === "score") return { questionType, outcome, score: null, levels: null, model: null };
     return {
         questionType,
         outcome,
-        ...(questionType === "score" ? {} : { selection: outcome === "uncertain" ? null : outcome }),
+        selection: outcome === "uncertain" ? null : outcome,
+        confidence: null,
+        ...(questionType === "noul" ? { probability: null } : {}),
+        probabilities: null,
+        policy: null,
+        model: null,
     };
 }
 
@@ -1012,10 +1018,9 @@ export function validateRerunSupply(input: {
     );
     const contract: WorkflowRerunSupplyContract = {
         outcomes: [...outcomes],
-        ...(decision ? { outcomeOnly: true as const } : {}),
+        ...(decision ? { outcomeOnly: true } : { maxOutputBytes }),
         outputSchemaName: outputSchema,
         resolvedOutputSchema: workflowResolvedSchema(targetIr, outputSchema),
-        maxOutputBytes,
         nextByOutcome,
     };
 
@@ -1052,15 +1057,16 @@ export function validateRerunSupply(input: {
         );
     }
 
-    if (decision && Object.hasOwn(result, "output")) {
-        const message = "A supplied decision takes an outcome only. Omit result.output.";
+    const hasOutput = Object.hasOwn(result, "output") && result.output !== undefined;
+    if (decision && hasOutput) {
+        const message = "Decision supply takes only the outcome. Omit result.output.";
         throw new WorkflowStoreError("RERUN_SUPPLIED_RESULT_INVALID", message, {
             reason: "schema", outputSchema, problems: [{ path: "/output", message }],
         });
     }
     // N4: Omitted output defaults to null and serializes to 'null' JSON text (never SQL NULL)
     const rawOutput: unknown = decision ? suppliedDecisionOutput(decision.question.type, rawOutcome)
-        : Object.hasOwn(result, "output") && result.output !== undefined ? result.output : null;
+        : hasOutput ? result.output : null;
     try {
         assertJsonValue(rawOutput, "result.output");
     } catch (error) {

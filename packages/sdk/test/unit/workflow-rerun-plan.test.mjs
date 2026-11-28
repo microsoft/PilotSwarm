@@ -123,9 +123,9 @@ states:
     }
     for (const [question, routes, outcomes, outcome, output] of [
         ["{ type: noul, instructions: Approve? }\n    confidence: { minimumProbability: 0.8 }", '"yes": done, "no": done, uncertain: failed', ["yes", "no", "uncertain"], "uncertain",
-            { questionType: "noul", outcome: "uncertain", selection: null }],
+            { questionType: "noul", outcome: "uncertain", selection: null, confidence: null, probability: null, probabilities: null, policy: null, model: null }],
         ["{ type: score, instructions: Rank it, criteria: [Low, High] }", "scored: done", ["scored"], "scored",
-            { questionType: "score", outcome: "scored" }],
+            { questionType: "score", outcome: "scored", score: null, levels: null, model: null }],
     ]) {
         const revision = mustCompile(yaml.replace(/question: .*/, `question: ${question}`)
             .replace("agent: done, person: done", routes)).ir;
@@ -133,6 +133,28 @@ states:
         assert.deepEqual(decision.contract.outcomes, outcomes);
         assert.deepEqual(JSON.parse(decision.validated.outputText), output);
     }
+});
+
+test("decision supply treats undefined output as omitted and does not advertise an output size limit", () => {
+    const ir = mustCompile(`
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: yes-no-supply, version: "1.0.0" }
+initial: choose
+states:
+  choose:
+    type: decision
+    question: { type: noul, instructions: Approve? }
+    transition: { next: { "yes": done, "no": done } }
+  done: { type: terminal, outcome: succeeded }
+`).ir;
+    const input = {
+        chosen: makeKey({ nodeType: "decision", nodeId: "choose", outcome: "no" }),
+        reused: [], sourceIr: ir, targetIr: ir, note: "Confirmed route", requireResultAndNote: true,
+    };
+    const omitted = validateRerunSupply({ ...input, result: { outcome: "yes" } });
+    assert.deepEqual(validateRerunSupply({ ...input, result: { outcome: "yes", output: undefined } }), omitted);
+    assert.equal(Object.hasOwn(omitted.contract, "maxOutputBytes"), false);
 });
 
 const SPEC_82_BASE_YAML = `

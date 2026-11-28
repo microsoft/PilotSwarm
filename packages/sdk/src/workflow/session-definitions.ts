@@ -529,7 +529,9 @@ function sameRerunPinRequest(pin: RerunClaimPin, rf: SessionStartRerunFrom | nul
     if (pin.mode === "supply") {
         if (!pin.supplied || !isJsonObject(rf.result) || typeof rf.result.outcome !== "string" || typeof rf.note !== "string") return false;
         if (rf.result.outcome !== pin.supplied.outcome) return false;
-        if (pin.supplied.decisionQuestionType && Object.keys(rf.result).some(key => key !== "outcome")) return false;
+        const result = rf.result;
+        if (pin.supplied.decisionQuestionType
+            && Object.keys(result).some(key => key !== "outcome" && !(key === "output" && result.output === undefined))) return false;
         if (sha256Hex(rerunSupplyReplayOutput(pin, rf.result)) !== pin.supplied.outputSha256) return false;
         if (sha256Hex(rf.note.trim()) !== pin.supplied.noteSha256) return false;
     }

@@ -442,7 +442,7 @@ async function finished(h, runId) {
 const unknownUsage = usage => usage !== undefined && (usage.tokensInput ?? null) === null && (usage.tokensOutput ?? null) === null;
 
 describe("workflow decision states: effect execution, attempts and the terminal compare-and-swap", () => {
-    it("re-runs an uncertain decision with a supplied outcome instead of calling the model again", { timeout: TIMEOUT }, async () => {
+    it("supplies a new decision outcome without inference and resolves downstream bindings to null model fields", { timeout: TIMEOUT }, async () => {
         const fake = fakeDecisionHost();
         fake.scenario.answer = () => ({
             answer: choice("billing", { engineering: 0.3, billing: 0.4, support: 0.3 }),
@@ -453,8 +453,12 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             const owner = { provider: "entra", subject: "rerun-decision-owner" };
             const actor = { kind: "user", ...owner };
             await h.catalog.createSession(ownerSessionId, { owner });
+            const yaml = CHOICE_YAML.replace(
+                'to_engineering: { type: terminal, outcome: succeeded, output: "${input}" }',
+                'to_engineering: { type: terminal, outcome: succeeded, output: { confidence: "${input.confidence}", probabilities: "${states.route.output.probabilities}", decision: "${input}" } }',
+            );
             const { receipt: { definitionId } } = await saveSessionWorkflowDefinition(h.host, {
-                ownerSessionId, name: "decision-route", yaml: CHOICE_YAML, expected: null, actor, operationId: randomUUID(),
+                ownerSessionId, name: "decision-route", yaml, expected: null, actor, operationId: randomUUID(),
             });
             const start = args => startSessionWorkflowDefinition(h.host, {
                 ownerSessionId, definition: { definitionId }, owner, actor, operationId: randomUUID(), ...args,
@@ -486,14 +490,18 @@ describe("workflow decision states: effect execution, attempts and the terminal 
             });
             const rerun = await supply();
             expect(rerun, JSON.stringify(rerun)).toMatchObject({ ok: true, replayed: false });
-            const output = { questionType: "choice", outcome: "engineering", selection: "engineering" };
+            const output = { questionType: "choice", outcome: "engineering", selection: "engineering",
+                confidence: null, probabilities: null, policy: null, model: null };
             const ended = await finished(h, rerun.runId);
-            expect(ended.terminalNodeId).toBe("to_engineering");
-            expect(ended.terminalOutput).toEqual(output);
+            expect(ended).toMatchObject({ status: "completed", terminalNodeId: "to_engineering",
+                terminalOutput: { confidence: null, probabilities: null, decision: output } });
             const visit = await h.store.readNodeExecution(nodeExecutionIdFor(rerun.runId, "root", "route", 1));
             expect(visit).toMatchObject({ outcome: "engineering", suppliedFromExecutionId: executionId, suppliedNote: note });
             expect(visit.output).toEqual(output);
             expect(await supply()).toMatchObject({ ok: true, replayed: true, workflowId: rerun.workflowId });
+            expect(await start({ key: "decision-supply", notifyParent: false, rerunFrom: {
+                workflowId: source.workflowId, executionId, mode: "supply", result: { outcome: "engineering", output: undefined }, note,
+            } })).toMatchObject({ replayed: true, workflowId: rerun.workflowId });
             expect(await supply({ ...rerunFrom, result: { outcome: "billing" } })).toMatchObject({
                 ok: false, error: { code: "OPERATION_CONFLICT" },
             });
