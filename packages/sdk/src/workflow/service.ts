@@ -1808,8 +1808,8 @@ async function wakeRun(host: Pick<WorkflowHost, "duroxideClient">, run: Pick<Wor
 }
 
 export async function respondWorkflowApproval(host: WorkflowHost, workflowSessionId: string,
-    command: import("./approval.js").ApprovalCommand, actor: WorkflowActor): Promise<{ [key: string]: JsonValue }> {
-    const receipt = await host.store.approvals.respond(workflowSessionId, command, actor);
+    command: import("./approval.js").ApprovalCommand, actor: WorkflowActor, viaSessionId: string | null = null): Promise<{ [key: string]: JsonValue }> {
+    const receipt = await host.store.approvals.respond(workflowSessionId, command, actor, viaSessionId);
     const run = await host.store.readRun(command.runId);
     if (run && ACTIVE_RUN_STATUSES.includes(run.status) && run.stop === null) await wakeRun(host, run, "approval");
     return receipt;

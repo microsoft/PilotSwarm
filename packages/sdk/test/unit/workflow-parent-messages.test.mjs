@@ -223,7 +223,8 @@ test("provenance comes from the queued message's server-stamped sender, never fr
     assert.equal(workflowUpdateSender(end, workflowRuntimeSender("message")), null);
     assert.ok(workflowUpdateSender(end, workflowRuntimeSender("ended")));
     // The runtime's senders, and the check.
-    assert.deepEqual(WORKFLOW_RUNTIME_SENDERS, {
+    const { approval, ...original } = WORKFLOW_RUNTIME_SENDERS;
+    assert.deepEqual(original, {
         ended: { kind: "system", display: "child workflow" },
         message: { kind: "system", display: "workflow message" },
         request: { kind: "system", display: "workflow request" },
@@ -235,6 +236,14 @@ test("provenance comes from the queued message's server-stamped sender, never fr
     }
     assert.equal(isWorkflowRuntimeSender(workflowRuntimeSender("ended"), "unknown"), false);
     assert.equal(isWorkflowRuntimeSender(workflowRuntimeSender("ended"), "__proto__"), false);
+});
+
+test("an approval notice's provenance is the runtime's approval sender, for its type only", () => {
+    assert.deepEqual(WORKFLOW_RUNTIME_SENDERS.approval, { kind: "system", display: "workflow approval" });
+    assert.equal(isWorkflowRuntimeSender(workflowRuntimeSender("approval"), "approval"), true);
+    assert.notEqual(workflowRuntimeSender("approval"), WORKFLOW_RUNTIME_SENDERS.approval, "a fresh object for a queue payload");
+    assert.equal(isWorkflowRuntimeSender(workflowRuntimeSender("approval"), "request"), false);
+    assert.equal(isWorkflowRuntimeSender(workflowRuntimeSender("request"), "approval"), false);
 });
 
 test("SF-7: a workflow's name, error message and other free text never reach the instruction sentence", () => {

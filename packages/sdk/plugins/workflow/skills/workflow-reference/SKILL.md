@@ -66,7 +66,7 @@ Script and agent take `supply: never`. So does decision.
 
 ### approval
 
-Owner consent: load `workflow-approval`. Agents cannot answer it.
+Owner consent: load `workflow-approval`.
 
 ### script
 

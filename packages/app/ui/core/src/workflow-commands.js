@@ -1065,10 +1065,13 @@ export function workflowApprovalView(model, execution) {
     if (!approval) return null;
     const command = Array.isArray(model?.personCommands?.approvals)
         ? model.personCommands.approvals.find(item => item.approvalId === approval.approvalId && item.runId === model?.run?.runId) : null;
-    const mayAnswer = command?.mayAnswer === true && model?.personCommands?.operations?.includes("approval_respond") === true
-        && approval.status === "pending";
+    // The row's own answer (mayAnswer, answerReason); personCommands.approvals mirrors it.
+    const given = typeof approval.mayAnswer === "boolean";
+    const mayAnswer = (given ? approval.mayAnswer : command?.mayAnswer === true)
+        && model?.personCommands?.operations?.includes("approval_respond") === true && approval.status === "pending";
     return { ...approval, runId: model?.run?.runId ?? null, mayAnswer,
-        answerReason: mayAnswer ? null : text(command?.reason) ?? "Read and answer this approval directly in the portal as its pinned owner.",
+        answerReason: mayAnswer ? null : text(given ? approval.answerReason : command?.reason)
+            ?? "Only the Workflow owner can answer this approval, directly or through a session that may control the Workflow.",
         ownerLabel: text(approval.owner?.name) ?? text(approval.owner?.displayName) ?? "Workflow owner" };
 }
 

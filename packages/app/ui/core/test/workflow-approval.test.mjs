@@ -40,7 +40,7 @@ for (const mobile of [false, true]) {
         const readOnly = renderToStaticMarkup(React.createElement(WorkflowApprovalDetails, { sessionId: "wf", controller: {},
             approval: workflowApprovalView({ ...model, personCommands: null }, execution) }));
         assert.ok(!readOnly.includes(">Approve<") && !readOnly.includes(">Reject<"));
-        assert.ok(readOnly.includes("directly in the portal"));
+        assert.ok(readOnly.includes("directly or through a session that may control the Workflow"));
     });
 }
 test("approval graphs project as approval nodes and TUI words direct the person to the portal", () => {

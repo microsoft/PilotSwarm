@@ -171,7 +171,7 @@ the answer; no later notification. If still running, read again by `test_id`.
 
 ## update_workflow
 
-`workflow_id`, `operation`, `operation_id` (a new one for each change; a
+`workflow_id`, `operation`, `operation_id` (new for each change; a
 retry reuses it) and the operation's arguments. It controls a Workflow's
 run; to change or start a definition, use `workflow_definition`.
 
@@ -179,35 +179,35 @@ run; to change or start a definition, use `workflow_definition`.
 |---|---|---|
 | `set_vars` | `set?`, `delete?`, `expected_kv_revision`, `run_id?` | One atomic KV change. |
 | `pause`, `resume`, `cancel` | `reason?`, `run_id?` | Run control. |
-| `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; then the run ends `stopped`. |
+| `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; ends `stopped`. |
 | `recover` | `run_id?` | Ends or starts a run that `read_workflow` shows as `needsRecovery`. |
+| `approval_respond` | `run_id`, `approval_id`, `context_sha256`, `decision` (`approved`/`rejected`), `reason?` (to reject) | Answers as the owner; first answer wins. |
 
 - `set_vars`: `set` (`{ key: JSON value }`) and `delete` (keys) make one
-  atomic change; `null` is a value, and deleting is explicit. A step that
-  starts later reads the variables as `context.kv` or `${kv.key}`; a
-  running step keeps the values it started with.
-- `pause`: no new step starts; work already started finishes and keeps its
+  atomic change (`null` is a value). A later step reads them as
+  `context.kv` or `${kv.key}`; a running step keeps its values.
+- `pause`: no new step starts; started work finishes and keeps its
   result. `cancel`: a run that has not begun ends at once; otherwise
-  `read_workflow` shows when it has ended.
+  `read_workflow` shows when it ends.
 - `recover`: a run whose controller stopped without ending it fails
   (`controller_ended`; its parent is told); a run accepted but never
   started starts; otherwise nothing changes.
-- A repeated `operation_id` returns the original receipt; reusing it for
-  another request is refused. A receipt shows the run as the command was
-  accepted; `read_workflow` shows it now.
+- A repeated `operation_id` returns its first receipt; reusing it for
+  another request is refused. A receipt shows the run when accepted;
+  `read_workflow` shows it now.
 
 ## read_workflow
 
 `workflow_id`, `run_id?` (default live), `include_yaml?`, `limit?`, `cursor?`,
 `execution_id?`. Shows `number` (Portal #), graph, runs (`createdAt`,
 `finishedAt`), steps (`agent.childSessionId`, `agentModel` used per visit),
-KV, stop and branches. It is how you follow a run (`workflow-authoring`,
+KV, stop, branches and `approvals`. It is how you follow a run (`workflow-authoring`,
 Follow a run): use it, not `list_sessions`, for a workflow's status.
 
 Each section of a run (step executions, inbox, outbox) holds its newest
 rows, oldest first; open rows are listed apart however old. `limit` sets
-the rows per page (default 200 executions, 50 inputs, 50 sent messages);
-give a section's `run.pages` `nextCursor` back as `cursor` for its next, older page. Separate reads, each alone: `execution_id` (with
+rows per page (default 200 executions, 50 inputs, 50 messages);
+pass a section's `run.pages` `nextCursor` as `cursor` for older rows. Separate reads, each alone: `execution_id` (with
 `run_id`: one step execution's whole input and output or error), `kv_revision`
 (variables at that revision and masked `kv.change` (`by`, `at`) if recorded;
 `kv_key`: one value),
@@ -215,14 +215,14 @@ give a section's `run.pages` `nextCursor` back as `cursor` for its next, older p
 `definition_revision` (one revision's YAML, hash and diagnostics) and
 `step_input` (`{ state, input? }`: an agent step's input fields and where
 each comes from; with `input`, the draft's YAML with only those inputs
-changed). While a run is paused it shows `pausedFrom` and `pauseSettled`. A
-delivered message was accepted by its recipient, not necessarily read.
+changed). A paused run shows `pausedFrom` and `pauseSettled`. A
+delivered message was accepted, not necessarily read.
 
 ## send_workflow_input
 
 `workflow_id`, `contract` (`Name@version`, a message type a receive state
 accepts), `payload` (valid for its schema), `correlation?` (equal to the
-receive's `correlate` values), `run_id?` (default the live run),
+receive's `correlate` values), `run_id?` (default live run),
 `ttl_seconds?` (1 to 86,400, the default), `operation_id`. The input is
 saved once per `operation_id`. A receive state that waits takes it now;
 otherwise it stays, in order, until a receive state takes it or its time

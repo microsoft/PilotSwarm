@@ -47,7 +47,7 @@ test("a frozen 1.0.82 turn's declarations name its operations only", () => {
 test("on a 1.0.83 turn the declarations add the milestone operations and fields", () => {
     assert.deepEqual([...UPDATE_WORKFLOW_MILESTONE_OPERATIONS], MILESTONE_OPERATIONS);
     const update = UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC;
-    assert.deepEqual([...update.parameters.properties.operation.enum], [...DECLARED_OPERATIONS, ...MILESTONE_OPERATIONS]);
+    assert.deepEqual([...update.parameters.properties.operation.enum], [...DECLARED_OPERATIONS, ...MILESTONE_OPERATIONS, "approval_respond"]);
     for (const name of Object.keys(UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties)) assert.ok(Object.hasOwn(update.parameters.properties, name), name);
     for (const name of ["grace_seconds", "agent_mode", "fixtures", "scenario", "interception_id", "response", "seconds"]) {
         assert.ok(Object.hasOwn(update.parameters.properties, name), name);

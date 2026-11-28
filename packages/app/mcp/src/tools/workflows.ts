@@ -167,7 +167,7 @@ async function startedRevisionCallsTools(ctx: ServerContext, ownerSessionId: str
  *   read_workflow_skill          list or read the deployment's packaged Workflow authoring skills
  *
  * Registered when ctx.workflowCommands === true (every production server; false only in tests passing workflowCommands: null):
- *   update_workflow              person command to one running Workflow session (approval_respond refused 403)
+ *   update_workflow              person command to one running Workflow session (approval_respond answers as the owner)
  *   workflow_definition          list | read | save | start | delete | copy | card | validate
  */
 export function registerWorkflowTools(server: McpServer, ctx: ServerContext): void {
@@ -369,12 +369,13 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
 
     // Off, update_workflow names stop and no test operation; with test mode on, the test operations too.
     const operations = testMode
-        ? "operation (set_vars, pause, resume, cancel, stop, test, test_respond and test_advance), operation_id "
+        ? "operation (set_vars, pause, resume, cancel, stop, approval_respond, test, test_respond and test_advance), operation_id "
             + "(repeat it to retry the same command) and the operation's arguments (expected_revision, definition_hash, inputs, vars, "
-            + "set, delete, expected_kv_revision, run_id, reason, grace_seconds, "
+            + "set, delete, expected_kv_revision, run_id, reason, grace_seconds, approval_id, context_sha256, decision, "
             + "agent_mode, fixtures, scenario, interception_id, response, seconds). "
-        : "operation (set_vars, pause, resume, cancel and stop), operation_id "
-            + "(repeat it to retry the same command) and the operation's arguments (set, delete, expected_kv_revision, run_id, reason, grace_seconds). ";
+        : "operation (set_vars, pause, resume, cancel, stop and approval_respond), operation_id "
+            + "(repeat it to retry the same command) and the operation's arguments (set, delete, expected_kv_revision, run_id, reason, grace_seconds, "
+            + "approval_id, context_sha256, decision). ";
     const cmdOpId = z.string().min(1).max(256).describe("New id per change; reuse unchanged only to retry");
     const cmdRunId = z.string().optional().describe("Target run id (default the live run)");
     const cmdReason = z.string().optional().describe("Optional reason");
@@ -397,6 +398,16 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             delete: z.array(z.string()).optional().describe("Variable names to delete"),
             expected_kv_revision: z.number().int().positive().describe("Current kvRevision from read_workflow"),
         }).passthrough(),
+        // The shared parser checks an answer's fields, so a bad one is WORKFLOW_COMMAND_INVALID here as on every surface.
+        z.object({
+            operation: z.literal("approval_respond"),
+            operation_id: z.unknown().optional().describe("New id per change; reuse unchanged only to retry"),
+            run_id: z.unknown().optional().describe("The approval's run id"),
+            approval_id: z.unknown().optional().describe("The approval id from read_workflow"),
+            context_sha256: z.unknown().optional().describe("The approval's contextSha256 from read_workflow"),
+            decision: z.unknown().optional().describe("approved or rejected"),
+            reason: z.unknown().optional().describe("Required to reject; otherwise omit it or send null"),
+        }).passthrough(),
     ] as const;
     const commandSchema = testMode
         ? z.discriminatedUnion("operation", [
@@ -416,7 +427,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             description:
                 "Send one command to a running Workflow, as a person: "
                 + operations
-                + "Persons are refused recover (the parent agent recovers runs); approvals must be answered directly in the portal. "
+                + "Persons are refused recover (the parent agent recovers runs). approval_respond answers an approval as its owner when its read row says mayAnswer; the first answer wins. "
                 + `${updateGapWorkaround} `
                 + "Answers the command's receipt. "
                 + "A workflow started under another workflow's agent step takes only pause, stop and cancel; read a workflow with read_workflow "
@@ -430,10 +441,6 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
         },
         withToolErrors(async ({ session_id, command, originating_session_id }) => {
             try {
-                if ((command as { operation?: unknown }).operation === "approval_respond") {
-                    return errorResult("A person must read and answer this approval directly in the portal. MCP cannot give consent.",
-                        { code: "FORBIDDEN", status: 403, session_id });
-                }
                 // The session this server acts for, when it was started for one, wins over the argument (review SF-2).
                 const originatingSessionId = ctx.originatingSessionId ?? originating_session_id;
                 return jsonResult(await ctx.mgmt.updateWorkflow(session_id, command,

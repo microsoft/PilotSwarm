@@ -1,5 +1,5 @@
 import { WORKFLOW_CONTROLLER_REGISTRY } from "./controller-registry.js";
-import { workflowPublicValueView, workflowTerminalErrorView } from "./actor-view.js";
+import { workflowPublicValuePreview, workflowPublicValueView, workflowTerminalErrorView } from "./actor-view.js";
 // Each frozen effect module keeps its own copy of the error redaction and clipping (about 110 lines) on purpose: a
 // shared helper could change in a later release and alter the error text an old history replays. Do not merge them.
 import {
@@ -1985,6 +1985,32 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         }
     };
     /**
+     * An approval that opened, told to the session that controls the Workflow (its parent, as its other updates): it
+     * may answer for the owner with update_workflow approval_respond. Best effort: a failed notice is recorded and the
+     * approval waits for its answer as before.
+     */
+    const noticeApproval = async (run: WorkflowRunRow, nodeExecutionId: string, stateId: string): Promise<void> => {
+        try {
+            const definition = await store.readDefinition(run.workflowSessionId);
+            if (!definition?.parentSessionId) return;
+            if ((await deps.catalog.getSession(definition.parentSessionId))?.sessionKind === "workflow") return;
+            if (!await deps.authorizeParentNotification(run.workflowSessionId, definition.parentSessionId)) return;
+            const approval = (await store.approvals.readMany([nodeExecutionId])).get(nodeExecutionId);
+            if (!isJsonObject(approval) || approval.status !== "pending") return;
+            const label = await store.readRevisionLabel(run.workflowSessionId, run.revision).catch(() => null);
+            await deps.notifyParent(definition.parentSessionId, workflowApprovalPrompt({ workflowSessionId: run.workflowSessionId, runId: run.runId,
+                approvalId: nodeExecutionId, stateId, question: approval.question ?? null, context: approval.context ?? null,
+                contextSha256: typeof approval.contextSha256 === "string" ? approval.contextSha256 : "",
+                deadlineAt: typeof approval.deadlineAt === "string" ? approval.deadlineAt : "",
+                workflow: label ? { name: label.name ?? null, version: label.semver ?? null } : null }),
+            workflowRuntimeSender("approval"), `workflow-approval:${nodeExecutionId}`);
+        } catch (error) {
+            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.approval_notice_failed", data: {
+                runId: run.runId, approvalId: nodeExecutionId, error: redactThenClip(workflowErrorMessage(error), 1_000),
+            } }]).catch(() => {});
+        }
+    };
+    /**
      * A receive state's sender, correlation and contract, resolved when it
      * is entered. The parent selector names the definition's parent; a
      * named session is the binding's value. Whether that sender is live and
@@ -2617,6 +2643,9 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 projection: projectionFor(immediate),
             });
             if (result.admitted) {
+                if (node.type === "approval" && current.mode === "live" && !immediate && result.node.state === "pending") {
+                    await noticeApproval(current, nodeExecutionId, nodeId);
+                }
                 return { admitted: true, nodeExecutionId, state: result.node.state,
                     deadlineMs: result.node.deadlineAt === null ? null : result.node.deadlineAt.getTime(),
                     ...(node.type === "parallel" ? { branches: manifestSize(result.node) } : {}) };
@@ -4970,6 +4999,38 @@ export function workflowRequestPrompt(message: {
         + `${say(message.deadlineAt)}. Answer it once with the ${RESPOND_SESSION_REQUEST_TOOL} tool: request_id ${say(message.nodeExecutionId)}, an operation_id you choose `
         + "(repeat the same one to retry the same answer), and either response (a value that matches the first schema of responseSchemas) or "
         + "decline ({ \"reason\": ... }). Reply text is not an answer. No notice follows if the request is cancelled.", json);
+}
+
+/**
+ * An approval's context for its notice: at most 1,500 characters with the "…" that marks a cut, a person in it shown as a
+ * person (workflowPublicValuePreview), as the event reads show a cut preview.
+ */
+export function approvalContextPreview(context: JsonValue): string {
+    return jsonbSafeText(workflowPublicValuePreview(previewJson(context, 1_499)), 1_499);
+}
+
+/**
+ * The notice of an approval that opened, to the session that controls the Workflow: the header (type=approval, its
+ * state, approval and deadline), one sentence that says how to answer for the owner, then the approval as untrusted
+ * JSON on one line (promptSafeJson) with its context cut short.
+ */
+export function workflowApprovalPrompt(message: {
+    workflowSessionId: string; runId: string; approvalId: string; stateId: string; question: JsonValue; context: JsonValue;
+    contextSha256: string; deadlineAt: string; workflow?: { name: string | null; version: string | null } | null;
+}): string {
+    const json = promptSafeJson({
+        approvalId: message.approvalId, workflowSessionId: message.workflowSessionId, runId: message.runId, stateId: message.stateId,
+        question: message.question, context: approvalContextPreview(message.context), contextSha256: message.contextSha256, deadline: message.deadlineAt,
+    });
+    const header = workflowUpdateHeader({ from: message.workflowSessionId, workflow: message.workflow ?? null, run: message.runId, type: "approval",
+        fields: [["state", message.stateId], ["approval", message.approvalId], ["deadline", message.deadlineAt]] });
+    const say = (value: unknown): string => workflowUpdateSentenceId(value) ?? "(see the data)";
+    return workflowUpdateMessage(header, `A workflow (session ${workflowUpdateShortId(message.workflowSessionId)}, run `
+        + `${workflowUpdateShortId(message.runId)}) waits for an approval in step ${say(message.stateId)} by ${say(message.deadlineAt)}. `
+        + `You may answer it for its owner with update_workflow: operation approval_respond, workflow_id ${say(message.workflowSessionId)}, `
+        + `run_id ${say(message.runId)}, approval_id ${say(message.approvalId)}, context_sha256 ${say(message.contextSha256)}, `
+        + "decision approved or rejected (a reason is required to reject), and an operation_id you choose (repeat it to retry the same answer). "
+        + "The person may answer first in the portal; the first answer wins.", json);
 }
 
 /**

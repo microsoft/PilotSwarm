@@ -10,8 +10,8 @@
  *     owner's direct (non-MCP) plan may reuse it;
  *   - OQ1: the web owner's token without originating_session_id inherits the source's tool grant (grant: "inherited"); with
  *     originating_session_id, and in direct mode (no person), 409 WORKFLOW_TOOLS_UNAVAILABLE.
- * Sources that need a person's approval or an agent's tool grant are made in this process through the SDK (a person cannot
- * answer an approval over MCP, and only an agent session captures a tool grant).
+ * Sources that need a person's approval or an agent's tool grant are made in this process through the SDK (a direct-mode MCP
+ * server has no person to answer an approval as, and only an agent session captures a tool grant).
  *
  * Usage: DATABASE_URL=... node packages/app/mcp/test/integration/workflows-rerun-mcp.live.mjs
  */

@@ -705,8 +705,8 @@ portal, TUI, or MCP `workflow_definition` `start`) starts a Workflow of a
 session's definition with no captured session tool grant: literal `callTool`
 requirements (other than `child_workflows`) fail at Start with
 `409 WORKFLOW_TOOLS_UNAVAILABLE`, and successful MCP starts of revisions with a
-`script` state calling `callTool` append warning `WORKFLOW_PERSON_START_NO_TOOL_BINDING`. Approvals
-(`approval_respond`) remain portal-only and are refused over MCP (`403 FORBIDDEN`).
+`script` state calling `callTool` append warning `WORKFLOW_PERSON_START_NO_TOOL_BINDING`. MCP `update_workflow`
+`approval_respond` answers an approval as the person, the same as the portal.
 SF-2 (`originatingSessionId`) refuses session-definition mutations/starts and
 `create_session_for_workflow` from inside a Workflow (`403 WORKFLOW_DEFINITION_TOOLS_REFUSED`);
 known limit: `create_session` + `send_message` is not blocked by SF-2.
@@ -954,8 +954,14 @@ An authenticated person uses the existing commands endpoint:
 
 The host stamps the actor; the body cannot. The person must match both the
 pinned owner and current owner under the session lock. Management access,
-administrator status and sharing do not grant consent. Agent provenance,
-anonymous/system actors and MCP forwarding are refused.
+administrator status and sharing do not grant consent; anonymous and system
+actors are refused. MCP forwards the same command. The immediate parent gets
+a `type=approval` notice. Any session that may control the Workflow answers
+with `update_workflow` `approval_respond` as its own owner, and only that path
+records the session as `viaSessionId` in the receipt; a person's command
+records `null`, even with an `originatingSessionId`. `viaSessionId` is not in
+the request digest, so a retry through another surface replays the first
+receipt.
 
 Migration 0091 adds `workflow_approvals` and the test-interception operation.
 Snapshot identity and an accepted decision are immutable. Under one locked
@@ -966,9 +972,11 @@ backstop and deadline processing also recover a lost wake. An exact authorized
 retry returns the original receipt, including after the run ends.
 
 Reads include the approval on execution rows and details, including old open
-executions outside history pages. The human projection adds per-caller
-`personCommands.approvals[].mayAnswer`; an unqualified direct read never
-assumes consent authority. The portal shows the full proposal before its
+executions outside history pages. `workflowApprovalAnswers` sets each row's
+`approval.mayAnswer` for the caller from the same rules as the write path
+(caller, pinned and current owner, control, live run, stop, branch, deadline);
+`personCommands.approvals` and the agent's `approvals` mirror it. An
+unqualified direct read never assumes consent authority. The portal shows the full proposal before its
 controls. The TUI directs the person to the portal. Test answers are simulated
 interceptions and create no live consent audit. Consent does not grant
 permission for downstream protected operations.

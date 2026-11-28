@@ -43,7 +43,7 @@ import { parseApprovalCommand } from "./approval.js";
 export const WORKFLOW_HUMAN_BRAKE_OPERATIONS: readonly string[] = ["pause", "stop", "cancel"];
 
 /** A person's operations on every host: the update_workflow tool's, without recover (the agent's path). */
-export const WORKFLOW_HUMAN_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run, "approval_respond"];
+export const WORKFLOW_HUMAN_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run, ...UPDATE_WORKFLOW_OPERATIONS.approval];
 
 /** A person's further operations: stop and the test operations. */
 export const WORKFLOW_HUMAN_MILESTONE_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.milestone];
@@ -275,10 +275,11 @@ export async function updateWorkflowForPerson(command: unknown,
     }
     if (absent) throw absent;
     if (args.operation === "approval_respond") {
-        if (actor.kind !== "user" || context.originatingSessionId !== undefined && context.originatingSessionId !== null) {
-            throw new WorkflowStoreError("FORBIDDEN", "An approval must be answered directly by its owner, not through an agent session.");
-        }
-        return respondWorkflowApproval(host, workflowSessionId, parseApprovalCommand(args), actor);
+        // Parsed first, so a malformed answer is WORKFLOW_COMMAND_INVALID on every surface. A caller-supplied originating
+        // session is not verified here: only the agent's update_workflow records viaSessionId.
+        const parsed = parseApprovalCommand(args);
+        if (actor.kind !== "user") throw new WorkflowStoreError("FORBIDDEN", "Only the owner can answer this approval.");
+        return respondWorkflowApproval(host, workflowSessionId, parsed, actor);
     }
     return await runUpdateWorkflowCommand({ ...args, workflow_id: workflowSessionId }, host, actor, async () => {});
 }

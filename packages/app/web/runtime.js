@@ -1,5 +1,5 @@
 import { NodeSdkTransport } from "pilotswarm/host";
-import { systemSessionSharingError, workflowReaderView } from "pilotswarm-sdk";
+import { systemSessionSharingError, workflowApprovalAnswers, workflowReaderView } from "pilotswarm-sdk";
 import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION, getOperation, isOwnerOnlyArtifact, normalizeCanvasSlot, CANVAS_SLOT_ERROR } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
@@ -895,22 +895,10 @@ export class PortalRuntime {
                     : readerView;
                 if (!view.personCommands || typeof view.personCommands !== "object") return view;
                 const { draft, ...personCommands } = view.personCommands;
-                const approvalRows = new Map([...(view.run?.nodeExecutions ?? []), ...(view.run?.openExecutions ?? [])]
-                    .filter((execution) => execution?.approval?.approvalId).map((execution) => [execution.approval.approvalId, execution.approval]));
-                const approvals = (personCommands.approvals ?? []).map((command) => {
-                    const approval = approvalRows.get(command.approvalId);
-                    let reason = null;
-                    if (!personCommands.operations?.includes("approval_respond") || personCommands.restriction) {
-                        reason = "This Workflow does not accept a person's approval answer.";
-                    } else if (!viewer.allowed || gate.snapshot?.viewerIsOwner !== true || approval?.viewerIsPinnedOwner !== true) {
-                        reason = "Only the pinned owner, while still the Workflow's owner, can answer.";
-                    } else if (view.run?.mode !== "live" || view.run?.stop || !["admitted", "running", "paused"].includes(view.run?.status)
-                        || approval?.status !== "pending") reason = "This approval no longer accepts a new answer.";
-                    else if (!Number.isFinite(Date.parse(approval.deadlineAt)) || Date.parse(approval.deadlineAt) <= Date.now()) {
-                        reason = "The approval deadline has passed.";
-                    }
-                    return { ...command, mayAnswer: reason === null, reason };
-                });
+                // The SDK's answer rules (workflowApprovalAnswers), for this viewer: the owner who may change the Workflow.
+                const approvals = workflowApprovalAnswers(view, {
+                    acceptsAnswer: personCommands.operations?.includes("approval_respond") === true && !personCommands.restriction,
+                    callerIsOwner: viewer.allowed && gate.snapshot?.viewerIsOwner === true });
                 return { ...view, personCommands: { ...personCommands, ...(Array.isArray(personCommands.approvals) ? { approvals } : {}),
                     ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
             }

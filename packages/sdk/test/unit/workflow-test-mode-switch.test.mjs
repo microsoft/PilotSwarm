@@ -79,7 +79,7 @@ test("the flag is on only when it is exactly `on`, separate from the test enviro
 
 test("agent tool: with test mode off, a 1.0.83 turn is declared stop and no test operation, argument or field", () => {
     const update = UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
-    assert.deepEqual([...update.parameters.properties.operation.enum], [...PRODUCTION, "stop"]);
+    assert.deepEqual([...update.parameters.properties.operation.enum], [...PRODUCTION, "stop", "approval_respond"]);
     assert.ok(update.description.includes("stop (grace_seconds 0 to 3600, default 60"));
     assert.ok(!/\btest/i.test(update.description), update.description);
     for (const name of TEST_ARGUMENTS) assert.equal(Object.hasOwn(update.parameters.properties, name), false, name);
