@@ -112,7 +112,7 @@ Code checks, failing first on PG16 at `ba1c37bec`:
 | `DelWfLock` / `DelWfCommit` (`srcLock = "delwf_excl"`) | `management-client.ts › deleteSession / _forceDeleteSession` -> `cms.ts › softDeleteSession` -> `cms_soft_delete_session`: blocking `UPDATE` on `#2`'s `sessions` row (preceded by a separate autocommit `updateSession(state: "failed")` before the soft delete; only the blocking soft-delete lock is modeled here). |
 | `OwnerEndLockOwner` -> `OwnerEndLockDef` -> `OwnerEndCommit` (`ownerLock`, then `defLock`, then `srcLock`, `newLock`) | `migrations/workflow-outcome-retention-0096.ts › workflow_on_owner_session_ended` (owner-deleted branch): locks owner row (`UPDATE sessions`), updates `session_workflow_definitions` (`defLock`), then locks child Workflow rows (`#2`, `#3`) in ascending `session_id` order. *(The owner-completed/failed branch cancels active child runs without soft-deleting ended `#2`; only the stronger owner-deleted branch is modeled here. The owner-completed branch, the definition delete (`deleteDefinition`: owner `FOR NO KEY UPDATE`, then the definition `FOR UPDATE`) and a second re-run of the same source are in `RerunStartRaces.tla`, with every session id order.)* |
 
-*(Full symbol-and-line correspondence against the engine implementation will be recorded in `CORRESPONDENCE-<head8>.md` in Unit 3B.)*
+Full symbol-and-line correspondence of all five modules (every action, property, witness and deliberate fault, the lock order, supply, G-R1, the carried inbox, the receive wait, RR-4 and the Sweeper, quiescence, CS-6, and the modeled boundaries) to the engine code: [`CORRESPONDENCE-50abf087.md`](CORRESPONDENCE-50abf087.md) (batch `rr9`; code identical to `d44e9ab47`).
 
 ## Mechanism-level vs specification-level invariants
 
