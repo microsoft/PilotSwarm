@@ -366,8 +366,8 @@ on from the failed step without doing that work again.
      next step runs.
    - **Supply this step's result and go on:** the step does not run; you give
      its result. Choose its **Outcome** and write your reason in **Why**.
-     For a decision, that's all: the new Workflow takes that route without
-     asking the model again. For a script or agent, also supply any required
+     Decision supply takes only the outcome. The new Workflow takes that
+     route without asking the model again. For a script or agent, also supply any required
      **Output**. Supply only values you checked, such as the ID of a server
      created before a script timed out.
 3. Check the revision. The re-run uses the revision of the Workflow that

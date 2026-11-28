@@ -1223,11 +1223,11 @@ the source never changes. Three modes:
 - `supply`: a completed top-level `script`, `agent` or `decision` step
   (without `supply: never`) does not run; the caller gives its
   `{ outcome, output? }` and a required `note`, recorded as **supplied**.
-  A decision takes only `{ outcome }`: a declared choice label, `yes` or
-  `no` for `noul`, `scored` for `score`, or `uncertain` if explicitly
-  routed. It never accepts `error` or caller output. The saved output has
-  `questionType` and `outcome`, plus `selection` for choice and noul
-  (`null` for `uncertain`). No model answer, score or confidence is stored.
+  Decision supply takes only the outcome. Use a declared choice label,
+  `yes` or `no` for `noul`, `scored` for `score`, or `uncertain` if routed.
+  Never give `error` or caller output.
+  A supplied decision has its outcome and selection; its model fields are null.
+  Selection is `null` for `uncertain` and is not a field of score output.
 
 The surfaces take the same arguments:
 
@@ -1242,8 +1242,8 @@ The surfaces take the same arguments:
   are refused (`400 RERUN_ARGUMENT_REFUSED`): a re-run takes the source's
   inputs and workspace.
 - A plan takes an `outcome` only, never an `output`, and is a read of its own.
-  A decision's `supplyContract` lists its allowed outcomes without an output
-  schema.
+  For a decision, `supplyContract.outcomeOnly` is `true`; its contract lists
+  the allowed outcomes, with no output schema or `maxOutputBytes`.
 - Omitting `execution_id` auto-picks the visit and mode from how the source
   ended (never `supply`). A reused `spawn` whose child was cancelled when the
   source ended moves the cut back to that `spawn` (or its `parallel` step),

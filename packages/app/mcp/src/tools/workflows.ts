@@ -85,7 +85,7 @@ function rerunFromArg(args: Record<string, unknown>)
     }
     if (value.mode === "supply") {
         const result = value.result;
-        if (!result || typeof result !== "object" || Array.isArray(result)) throw refused("mode 'supply' requires result: { outcome, output? }.");
+        if (!result || typeof result !== "object" || Array.isArray(result)) throw refused("mode 'supply' requires result: { outcome, output? }. Decision supply takes only the outcome.");
         const extraResult = Object.keys(result).filter(key => key !== "outcome" && key !== "output");
         if (extraResult.length) throw refused(`rerun_from.result takes outcome and output; leave out ${extraResult.join(", ")}.`);
         const outcome = (result as Record<string, unknown>).outcome;
@@ -494,10 +494,10 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     workflow_id: z.string().describe("The ended Workflow to re-run"),
                     execution_id: z.string().optional().describe("The visit to re-run from; omit to re-run from the failed step"),
                     mode: z.enum(["run_again", "continue", "supply"]).optional()
-                        .describe("run_again: run the step again; continue: keep the result and go on; supply: give a script, agent or decision result (decision: outcome only)"),
+                        .describe("run_again: run the step again; continue: keep the result and go on; supply: give a script, agent or decision result"),
                     // Review H3: result and note pass the wire as given; the handler checks them as Start does (400 RERUN_ARGUMENT_REFUSED).
                     result: z.unknown().optional()
-                        .describe("supply: the step's result { outcome, output? }, checked in the external system"),
+                        .describe("supply: the step's result { outcome, output? }, checked in the external system. Decision supply takes only the outcome."),
                     note: z.unknown().optional().describe("supply only: the evidence you checked (at most 2,000 characters)"),
                 }).passthrough().optional()
                     .describe("start: re-run an ended Workflow from a step, reusing the steps before it. Omit inputs and workspace; the "
