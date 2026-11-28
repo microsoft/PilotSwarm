@@ -88,14 +88,43 @@ describe("owner-only approval transactions", () => {
         const h = await harness();
         try {
             await h.enter();
-            await h.store.approvals.respond(h.workflowSessionId, answer(h, (await proposal(h)).contextSha256), ACTOR);
+            const command = answer(h, (await proposal(h)).contextSha256);
+            const receipt = await h.store.approvals.respond(h.workflowSessionId, command, ACTOR);
             const actor = { by: "a person", name: OWNER.displayName };
+            expect(receipt.decidedBy).toEqual(actor);
+            expect((await h.store.readNodeExecution(h.approvalId)).output.decidedBy).toEqual(actor);
+            const audit = await h.sql.query(`SELECT decided_by FROM ${h.schema}.workflow_approvals WHERE node_execution_id=$1`, [h.approvalId]);
+            expect(JSON.parse(audit.rows[0].decided_by)).toEqual(OWNER);
+            expect((await h.store.readReusedApprovalsForRerun(h.runId, [h.approvalId]))[0].decidedBy)
+                .toEqual({ provider: OWNER.provider, subject: OWNER.subject });
+            await h.sql.query(`UPDATE ${h.schema}.workflow_operations SET receipt=$3 WHERE workflow_session_id=$1 AND operation_id=$2`,
+                [h.workflowSessionId, command.operationId, JSON.stringify({ ...receipt, decidedBy: OWNER })]);
+            expect(await h.store.approvals.respond(h.workflowSessionId, command, ACTOR)).toEqual({ ...receipt, replayed: true });
             const detail = await readWorkflowView(h.store, h.workflowSessionId, { executionId: h.approvalId });
             const { rows } = await h.sql.query(`SELECT data FROM ${h.schema}.session_events
                 WHERE session_id=$1 AND event_type='workflow.state_completed'`, [h.workflowSessionId]);
             expect((await proposal(h)).decision.decidedBy).toEqual(actor);
             expect(detail.execution.result.value.decidedBy).toEqual(actor);
             expect(rows[0].data.decidedBy).toEqual(actor);
+        } finally { await h.close(); }
+    });
+
+    it("hides legacy identity carried into the next visit, the run result and dropped output previews", async () => {
+        const h = await harness();
+        try {
+            const legacy = { decidedBy: OWNER, received: { from: "person:user:dev:private", payload: [1, null] } };
+            const safe = { decidedBy: { by: "a person", name: OWNER.displayName }, received: { from: { by: "a person" }, payload: [1, null] } };
+            const id = nodeExecutionIdFor(h.runId, "root", "done", 2);
+            await h.store.enterNode({ runId: h.runId, nodeExecutionId: id, scopeId: "root", nodeId: "done", ordinal: 2,
+                nodeType: "terminal", predecessorId: null, arrivalRoute: null, inputText: JSON.stringify(legacy), kvRevision: 1, waitSeconds: null,
+                immediate: { outcome: "succeeded", resultKind: "business", valueText: JSON.stringify(legacy), winner: "controller" } });
+            await h.sql.query(`UPDATE ${h.schema}.workflow_runs SET terminal_output=$2 WHERE run_id=$1`, [h.runId, JSON.stringify(legacy)]);
+            const overview = await readWorkflowView(h.store, h.workflowSessionId);
+            expect(JSON.parse(overview.run.nodeExecutions[0].inputPreview)).toEqual(safe);
+            expect(JSON.parse(overview.run.output)).toEqual(safe);
+            const detail = await readWorkflowView(h.store, h.workflowSessionId, { executionId: id });
+            expect(detail.execution.input.value).toEqual(safe);
+            expect(JSON.parse((await h.store.readDroppedVisitPreviews(h.runId, [id])).get(id))).toEqual(safe);
         } finally { await h.close(); }
     });
 
@@ -169,6 +198,11 @@ describe("owner-only approval transactions", () => {
                 .toMatchObject({ approvalId: h.approvalId, context: { proposal: 1 }, status: "pending" });
             const detail = await readWorkflowView(h.store, h.workflowSessionId, { runId: h.runId, executionId: h.approvalId });
             expect(detail.execution.approval).toMatchObject({ approvalId: h.approvalId, question: "Approve this exact proposal?" });
+            for (const [actor, matches] of [[ACTOR, true], [{ ...ACTOR, subject: "not-owner" }, false]]) {
+                const read = options => readWorkflowModel({ store: h.store }, h.workflowSessionId, options, "api", { actor });
+                expect((await read({ executionId: h.approvalId })).execution.approval.viewerIsPinnedOwner).toBe(matches);
+                expect((await read({ cursor: overview.run.pages.executions.nextCursor, limit: 1 })).items[0].approval.viewerIsPinnedOwner).toBe(matches);
+            }
         } finally { await h.close(); }
     });
 

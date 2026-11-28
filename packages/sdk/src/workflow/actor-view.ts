@@ -1,19 +1,40 @@
-import { canonicalJson, isJsonObject, jsonbSafeText, type JsonObject, type JsonValue } from "./json.js";
+import { canonicalJson, isJsonObject, jsonbSafeText, parseStoredJson, type JsonObject, type JsonValue } from "./json.js";
+import type { WorkflowActor } from "./store.js";
 
 /** Project attribution only. Never use this view to decide authority. */
 export function workflowActorView(actor: unknown, callerSessionId: string | null = null, displayName?: string | null): JsonObject | null {
-    if (!isJsonObject(actor)) return null;
+    if (actor == null) return null;
+    if (!isJsonObject(actor)) return { by: "a person" };
     if ((actor.kind === "agent" || actor.by === "another session" || actor.by === "this session") && typeof actor.sessionId === "string") {
         return actor.sessionId === callerSessionId ? { by: "this session" } : { by: "another session", sessionId: actor.sessionId };
     }
-    if ((actor.kind === "system" || actor.by === "system") && typeof actor.name === "string") {
-        return { by: "system", name: actor.name };
+    if (actor.by === "this session") return { by: "this session" };
+    if (actor.kind === "system" || actor.by === "system") {
+        return { by: "system", ...(typeof actor.name === "string" && actor.name ? { name: actor.name } : {}) };
     }
-    if (actor.by === "a person" || (typeof actor.provider === "string" && typeof actor.subject === "string")) {
-        const name = displayName ?? actor.displayName ?? actor.name;
-        return { by: "a person", ...(typeof name === "string" && name.trim() ? { name: jsonbSafeText(name.trim(), 200) } : {}) };
+    const name = displayName ?? actor.display ?? actor.displayName ?? actor.name;
+    return { by: "a person", ...(typeof name === "string" && name.trim() ? { name: jsonbSafeText(name.trim(), 200) } : {}) };
+}
+
+/** Project legacy engine-carried attribution without mutating values used by the Workflow. */
+export function workflowPublicValueView(value: JsonValue): JsonValue {
+    if (typeof value === "string" && value.startsWith("person:user:")) return { by: "a person" };
+    if (Array.isArray(value)) {
+        const view = value.map(workflowPublicValueView);
+        return view.some((item, index) => item !== value[index]) ? view : value;
     }
-    return null;
+    if (!isJsonObject(value)) return value;
+    if (typeof value.provider === "string" && typeof value.subject === "string") return workflowActorView(value);
+    const view = Object.entries(value).map(([key, item]) => [key, workflowPublicValueView(item)] as const);
+    return view.some(([key, item]) => item !== value[key]) ? Object.fromEntries(view) : value;
+}
+
+/** Preserve the original stored text when it contains no private attribution. */
+export function workflowPublicValueText(text: string | null): string | null {
+    if (text === null) return null;
+    const value = parseStoredJson(text);
+    const view = workflowPublicValueView(value);
+    return view === value ? text : canonicalJson(view);
 }
 
 export function workflowTerminalErrorView(error: JsonValue): JsonValue {
@@ -21,17 +42,23 @@ export function workflowTerminalErrorView(error: JsonValue): JsonValue {
     return { ...error, details: { ...error.details, actor: workflowActorView(error.details.actor) } };
 }
 
-export function workflowInputSenderView(senderId: string): JsonObject | null {
-    if (senderId.startsWith("person:user:")) return workflowActorView({ by: "a person" });
+export function workflowInputSenderActor(senderId: string): WorkflowActor | null {
+    const person = /^person:user:([^:]+):([^:]+)$/.exec(senderId);
+    if (person) {
+        const decode = (value: string) => new URLSearchParams(`v=${value}`).get("v") ?? "";
+        return { kind: "user", provider: decode(person[1]), subject: decode(person[2]) };
+    }
     const system = "person:system:";
-    return senderId.startsWith(system)
-        ? workflowActorView({ kind: "system", name: new URLSearchParams(`name=${senderId.slice(system.length)}`).get("name") })
-        : null;
+    return senderId.startsWith(system) ? { kind: "system", name: new URLSearchParams(`name=${senderId.slice(system.length)}`).get("name") ?? "" } : null;
 }
 
-export function workflowInputEventView(data: JsonObject): JsonObject {
+export function workflowInputSenderView(senderId: string): JsonObject | null {
+    return senderId.startsWith("person:user:") ? { by: "a person" } : workflowActorView(workflowInputSenderActor(senderId));
+}
+
+export function workflowInputEventView(data: JsonObject, resolvedSender?: JsonObject | null): JsonObject {
     const id = data.senderSessionId;
-    const sender = typeof id === "string" ? workflowInputSenderView(id) : null;
+    const sender = typeof id === "string" ? (resolvedSender ?? workflowInputSenderView(id)) : null;
     if (!sender || typeof id !== "string") return data;
     const { senderSessionId, ...view } = data;
     if (typeof view.outputPreview === "string" && typeof view.contract === "string") {

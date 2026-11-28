@@ -109,7 +109,7 @@ test("a person's refusals map to HTTP statuses: not found, invalid, unprocessabl
 test("words and digests: who saved a revision, the session's ended states, a save's request digest", () => {
     assert.equal(sessionActorWords({ kind: "session", sessionId: "c" }), "the session");
     assert.equal(sessionActorWords({ kind: "user", provider: "p", subject: "s", display: "Ada Lovelace" }), "Ada Lovelace");
-    assert.equal(sessionActorWords({ kind: "user", provider: "p", subject: "s" }), "s");
+    assert.equal(sessionActorWords({ kind: "user", provider: "p", subject: "s" }), "a person");
     assert.equal(sessionActorWords({ kind: "system", name: "imported" }), "the import of stage 1 Workflows");
     assert.deepEqual([...OWNER_SESSION_ENDED_STATES], ["completed", "cancelled", "failed"]);
     const digest = sessionSaveRequestSha256({ name: "n", yamlSha256: "h", expected: { definitionId: "d", revision: 2 } });

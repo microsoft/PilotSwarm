@@ -1,4 +1,5 @@
 import { WORKFLOW_CONTROLLER_REGISTRY } from "./controller-registry.js";
+import { workflowPublicValueView, workflowTerminalErrorView } from "./actor-view.js";
 // Each frozen effect module keeps its own copy of the error redaction and clipping (about 110 lines) on purpose: a
 // shared helper could change in a later release and alter the error text an old history replays. Do not merge them.
 import {
@@ -3118,7 +3119,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                 // otherwise, or when it cannot be wrapped, it is left out and the parent reads it with child_workflows read.
                 let payloadText: string;
                 try {
-                    const candidateObj = { ...basePayload, output: run.terminalOutput };
+                    const candidateObj = { ...basePayload, output: workflowPublicValueView(run.terminalOutput) };
                     payloadText = workflowEndedNoticeFits(run.workflowSessionId, candidateObj)
                         ? canonicalJson(candidateObj)
                         : canonicalJson({ ...basePayload, outputTruncated: true });
@@ -3163,8 +3164,8 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             const data: { [key: string]: JsonValue } = {
                 sessionId: run.workflowSessionId, runId: run.runId, name, version,
                 status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId,
-                output: run.terminalOutput === null ? null : previewJson(run.terminalOutput, 1_000),
-                error: run.terminalError === null ? null : previewJson(run.terminalError, 1_000),
+                output: run.terminalOutput === null ? null : previewJson(workflowPublicValueView(run.terminalOutput), 1_000),
+                error: run.terminalError === null ? null : previewJson(workflowTerminalErrorView(run.terminalError), 1_000),
             };
             if (failure) data.failure = failure;
             // Its brackets and angle brackets are escaped inside its strings only: its own arrays stay JSON (G: a failure's

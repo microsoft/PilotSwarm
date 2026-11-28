@@ -141,6 +141,11 @@ describe("a definition belongs to the session (stage 2.1)", () => {
             ]);
             expect((await readWorkflowView(h.store, second.workflowId)).number).toBe(2);
             expect((await readWorkflowView(h.store, draftId)).number).toBeNull();
+            await h.catalog.softDeleteSession(first.workflowId);
+            expect((await listSessionWorkflowDefinitions(host, session))[0].workflows).toMatchObject([
+                { workflowSessionId: draftId, number: null }, { workflowSessionId: second.workflowId, number: 1 },
+            ]);
+            expect((await readWorkflowView(h.store, second.workflowId)).number).toBe(1);
         } finally {
             await h.stop();
         }
