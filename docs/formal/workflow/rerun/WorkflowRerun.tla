@@ -12,7 +12,9 @@
 (*     & creates claim shell) + crash/new-rev/retry-payload-change +       *)
 (*     AdmitRerunCopy (owner FOR SHARE -> def FOR SHARE -> #2 FOR SHARE    *)
 (*     -> #3 FOR NO KEY UPDATE in ascending session_id order);             *)
-(*   - Immediate refusal cleanup of claim shell (Inv_RefusedClaimDeleted-  *)
+(*   - Refusal cleanup of the claim shell in a transaction of its own     *)
+(*     after the refusal's rollback, which a crash can lose (RR-4:         *)
+(*     RefusalCleanup / RefusalCleanupLost, Inv_RefusedClaimDeleted-       *)
 (*     AtOnce) and Sweeper collection of stale bare claim shells after     *)
 (*     grace on its own without OwnerEnd (R2-M1, SweeperReadBareShell +    *)
 (*     SweeperCollectClaimShell, Inv_AdmittedNotSwept,                     *)
@@ -105,7 +107,11 @@ CONSTANTS
     CutVisitCopied,               \* TRUE = (Generations = 2) #3's cut is a visit #2 copied from #1, and #2's inbox rows were carried from #1
     CarryComparesCopyTime,        \* fault (RR-1): the cut is compared with a carried row's accepted_at (its copy time), not its first acceptance
     SourceEndRace,                \* TRUE = #3 cuts at #2's end, and an acceptance into #2 races #2's end transaction (MSG-1)
-    EndClock                      \* "locked" = #2's end reads the clock after its locks; "begin" (fault, MSG-1) = now(), the transaction's start
+    EndClock,                     \* "locked" = #2's end reads the clock after its locks; "begin" (fault, MSG-1) = now(), the transaction's start
+    \* ---- Task 6a-TLA+2 additions (RR-4, RR-9) ----
+    AllowCleanupCrash,            \* RR-4: a crash between a refusal and its cleanup transaction loses the cleanup
+    RetryAfterCut,                \* RR-9: an enterNode result is lost and re-run after the cut too (not only in the pass-over)
+    TakeIgnoresTaken              \* fault (RR-9): a re-run enterNode of a receive that took a carried message takes it again
 
 ASSUME SourceKind \in {"loop", "catchall", "parallel", "approval", "inbox", "supply_first", "spawn", "spawn_lane"}
 ASSUME Mode \in {"run_again", "continue", "supply"}
@@ -125,7 +131,7 @@ ASSUME {StartVars, InputHashMismatch, AllowDeleters, AllowOwnerEnd, AllowClaimCr
         AllowUndeclaredSupplyOutcome, IgnoreSupplyNever, IgnoreMissingSupplyNote,
         RepickSuppliedOnRetry, SkipGr1CutBack, SkipParentEndCancel, SkipImmediateRefusalCleanup,
         SweeperSkipsNewLockOrRecheck, StrayNotice, CarryNoticeByTime, CutVisitCopied, CarryComparesCopyTime,
-        SourceEndRace} \subseteq BOOLEAN
+        SourceEndRace, AllowCleanupCrash, RetryAfterCut, TakeIgnoresTaken} \subseteq BOOLEAN
 ASSUME EndClock \in {"begin", "locked"}
 ASSUME (StrayNotice \/ CutVisitCopied \/ SourceEndRace) => SourceKind = "inbox"
 ASSUME CutVisitCopied => (Generations = 2 /\ ~StrayNotice)
@@ -462,6 +468,7 @@ VARIABLES
     everSweptShell,       \* witness tracker: Sweeper collected a stale bare claim shell (without OwnerEnd)
     ownerEndedNew,        \* TRUE if OwnerEnd soft-deleted an admitted #3
     freshStartAfterSweep, \* bounds fresh Start (new key/opId) after sweep to at most 1
+    refusalCleanup,       \* RR-4: "none" | "owed" (a refusal rolled back; its cleanup transaction has not run) | "done" | "lost"
 
     \* Re-run #3 store state
     runStatus,          \* "none" | Active | Terminal
@@ -531,7 +538,8 @@ VARIABLES
 lockVars == <<ownerLock, defLock, srcLock, newLock>>
 sessionVars == <<ownerLive, srcLive, srcNodes, deleterWaitedOnCopy, srcDeletedAfterCopy, latestRev>>
 startVars == <<startPhase, rerunPin, admittedRev, admittedSupplied, retrySupplyVer, copySawSrcLive, copiedFromLive, pinnedResumed>>
-shellVars == <<claimShellState, sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep>>
+shellVars == <<claimShellState, sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
+               refusalCleanup>>
 runVars == <<runStatus, failCode, nState, nPred, nRoute, nWinner, nOutcome, nResultKind, nOrigin, nDeadline,
              reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
              copyHitMismatch, downstreamReadSupplied, events>>
@@ -569,6 +577,7 @@ TypeOK ==
     /\ sessionVersion \in 0..2 /\ sweeperSnapVersion \in 0..2
     /\ claimGraceElapsed \in BOOLEAN
     /\ everSweptShell \in BOOLEAN /\ ownerEndedNew \in BOOLEAN /\ freshStartAfterSweep \in BOOLEAN
+    /\ refusalCleanup \in {"none", "owed", "done", "lost"}
     /\ runStatus \in {"none"} \cup Active \cup Terminal
     /\ failCode \in {"none", "rerun_diverged", "unhandled_error", "limit_exceeded"}
     /\ nState \in [AllNodes -> {"absent", "pending", "completed"}]
@@ -644,6 +653,7 @@ Init ==
     /\ everSweptShell = FALSE
     /\ ownerEndedNew = FALSE
     /\ freshStartAfterSweep = FALSE
+    /\ refusalCleanup = "none"
     /\ runStatus = "none"
     /\ failCode = "none"
     /\ nState = [x \in AllNodes |-> "absent"]
@@ -761,8 +771,12 @@ TargetInbox ==
     {m \in InboxMsgs : MsgPresent(m) /\ CodeNotConsumedByKept(m)
                        /\ (CarryLateMessage \/ CodeTimeArm(m) \/ m \in ReusedNoticeMsgs)}
 
-RefusalShellState ==
-    IF SkipImmediateRefusalCleanup THEN "live_unadmitted" ELSE "soft_deleted"
+\* RR-4: a refusal rolls the admission transaction back and changes nothing: the claim shell is left as it is, and its
+\* cleanup is owed to a transaction of its own (service.ts createWorkflow catch -> store.ts softDeleteRefusedClaimShell,
+\* RefusalCleanup below), which a crash can lose (RefusalCleanupLost; the Sweeper collects the shell after its grace).
+RefuseClaim ==
+    /\ UNCHANGED claimShellState
+    /\ refusalCleanup' = "owed"
 
 ReleaseCopyLocks ==
     /\ ownerLock' = IF ownerLock = "copy_share" THEN "free" ELSE ownerLock
@@ -828,6 +842,8 @@ ClaimRerun ==
        \/ (AllowPostSweepStart /\ ~freshStartAfterSweep
            /\ (startPhase = "crashed" \/ startPhase = "refused_workflow_deleted")
            /\ claimShellState = "soft_deleted" /\ sweeperSnapVersion = 0)
+    /\ refusalCleanup # "owed"     \* RR-4: an earlier refusal's own cleanup transaction has run (or was lost)
+    /\ refusalCleanup' = "none"
     /\ LET isPostSweep == (startPhase # "idle")
            supPin == IF Mode = "supply" THEN [outcome |-> SuppliedOutcome, payloadVer |-> 1] ELSE EmptySuppliedPin
        IN
@@ -882,15 +898,16 @@ ResumeAfterClaimCrash ==
                    copySawSrcLive, copiedFromLive, shellVars,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
-\* R2-M1: wall-clock grace (sessions.updated_at age) can elapse in ANY pre-admission phase (claimed, crashed, lock_*).
+\* R2-M1: wall-clock grace (sessions.updated_at age) can elapse in ANY pre-admission phase (claimed, crashed, lock_*), and
+\* (RR-4) after a refusal whose cleanup has not removed the shell (owed, or lost in a crash).
 AdvanceClaimGrace ==
     /\ AllowShellSweeper
-    /\ startPhase \in {"claimed", "crashed", "lock_step1", "lock_src", "lock_step2"}
+    /\ startPhase \in {"claimed", "crashed", "lock_step1", "lock_src", "lock_step2"} \cup Refused
     /\ claimShellState = "live_unadmitted"
     /\ ~claimGraceElapsed
     /\ claimGraceElapsed' = TRUE
     /\ UNCHANGED <<lockVars, sessionVars, startVars, claimShellState, sessionVersion, sweeperSnapVersion,
-                   everSweptShell, ownerEndedNew, freshStartAfterSweep,
+                   everSweptShell, ownerEndedNew, freshStartAfterSweep, refusalCleanup,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 \* R2-M1 step 1 (sweeper-tools.ts): unlocked candidate read observes bare shell older than grace (NO startPhase oracle).
@@ -902,7 +919,7 @@ SweeperReadBareShell ==
     /\ sweeperSnapVersion = 0
     /\ sweeperSnapVersion' = sessionVersion
     /\ UNCHANGED <<lockVars, sessionVars, startVars, claimShellState, sessionVersion, claimGraceElapsed,
-                   everSweptShell, ownerEndedNew, freshStartAfterSweep,
+                   everSweptShell, ownerEndedNew, freshStartAfterSweep, refusalCleanup,
                    runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 \* R2-M1 step 2 (store.ts sweeperSoftDelete): acquires newLock (FOR NO KEY UPDATE), re-checks version & no run under lock,
@@ -923,7 +940,7 @@ SweeperCollectClaimShell ==
                         /\ everSweptShell' = TRUE
                    ELSE UNCHANGED <<claimShellState, everSweptShell>>
     /\ UNCHANGED <<lockVars, sessionVars, startVars, sessionVersion, claimGraceElapsed, ownerEndedNew, freshStartAfterSweep,
-                   runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+                   refusalCleanup, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
 
 CopyLockStep1 ==
     /\ startPhase = "claimed"
@@ -1002,7 +1019,7 @@ CopyCommit ==
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF ~ownerLive
          THEN /\ startPhase' = "refused_owner_ended"
-              /\ claimShellState' = RefusalShellState
+              /\ RefuseClaim
               /\ ReleaseCopyLocks
               /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                              copySawSrcLive, copiedFromLive, pinnedResumed,
@@ -1010,7 +1027,7 @@ CopyCommit ==
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF ~effectiveSrcLive
          THEN /\ startPhase' = "refused_source_gone"
-              /\ claimShellState' = RefusalShellState
+              /\ RefuseClaim
               /\ ReleaseCopyLocks
               /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                              copySawSrcLive, copiedFromLive, pinnedResumed,
@@ -1018,7 +1035,7 @@ CopyCommit ==
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF supplyRetryConflict
          THEN /\ startPhase' = "refused_conflict"
-              /\ claimShellState' = RefusalShellState
+              /\ RefuseClaim
               /\ ReleaseCopyLocks
               /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                              copySawSrcLive, copiedFromLive, pinnedResumed,
@@ -1026,7 +1043,7 @@ CopyCommit ==
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF supplyStepBad \/ supplyNeverBad
          THEN /\ startPhase' = "refused_supply_not_allowed"
-              /\ claimShellState' = RefusalShellState
+              /\ RefuseClaim
               /\ ReleaseCopyLocks
               /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                              copySawSrcLive, copiedFromLive, pinnedResumed,
@@ -1034,7 +1051,7 @@ CopyCommit ==
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF supplyOutcomeBad \/ supplyNoteBad
          THEN /\ startPhase' = "refused_supplied_invalid"
-              /\ claimShellState' = RefusalShellState
+              /\ RefuseClaim
               /\ ReleaseCopyLocks
               /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                              copySawSrcLive, copiedFromLive, pinnedResumed,
@@ -1042,7 +1059,7 @@ CopyCommit ==
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF FitCheck /\ incompatible
          THEN /\ startPhase' = "refused_incompatible"
-              /\ claimShellState' = RefusalShellState
+              /\ RefuseClaim
               /\ ReleaseCopyLocks
               /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                              copySawSrcLive, copiedFromLive, pinnedResumed,
@@ -1050,7 +1067,7 @@ CopyCommit ==
                              runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE IF ApprovalGate /\ HasApproval /\ Actor # "owner"
          THEN /\ startPhase' = "refused_approval"
-              /\ claimShellState' = RefusalShellState
+              /\ RefuseClaim
               /\ ReleaseCopyLocks
               /\ UNCHANGED <<sessionVars, rerunPin, admittedRev, admittedSupplied, retrySupplyVer,
                              copySawSrcLive, copiedFromLive, pinnedResumed,
@@ -1068,7 +1085,7 @@ CopyCommit ==
               /\ ReleaseCopyLocks
               /\ UNCHANGED <<sessionVars, rerunPin, retrySupplyVer, copySawSrcLive, pinnedResumed,
                              sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
-                             failCode, nState, nPred, nRoute, nWinner, nOutcome, nResultKind, nOrigin, nDeadline,
+                             refusalCleanup, failCode, nState, nPred, nRoute, nWinner, nOutcome, nResultKind, nOrigin, nDeadline,
                              reusedSet, suppliedSet, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
                              firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events, inboxVars, ctrlVars, effCmdVars, delVars>>
        ELSE \* Normal atomic commit of run row + copied prefix (+ optional supplied visit V') + carried inbox
@@ -1114,7 +1131,7 @@ CopyCommit ==
             /\ UNCHANGED <<ownerLive, srcLive, deleterWaitedOnCopy, srcDeletedAfterCopy, latestRev,
                            rerunPin, retrySupplyVer, copySawSrcLive, pinnedResumed,
                            sweeperSnapVersion, claimGraceElapsed, everSweptShell, ownerEndedNew, freshStartAfterSweep,
-                           failCode, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
+                           refusalCleanup, failCode, newVisits, resumedAtCut, firstNew, firstNewPred, firstNewRoute,
                            firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events,
                            srcInbox, inboxTaken, raceVars, curNode, curPred, curRoute, curPending, curCaught, curSteps,
                            planMaxSteps, actRes, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
@@ -1157,6 +1174,31 @@ CopyFinishPartial ==
                    firstNewHashOk, copyHitMismatch, downstreamReadSupplied, events, srcInbox, inboxTaken, raceVars,
                    curNode, curPred, curRoute, curPending, curCaught, curSteps, planMaxSteps, actRes,
                    retriedInPassOver, canInPassOver, effCmdVars, delVars>>
+
+\* RR-4: the refusal's cleanup, a transaction of its own after the rollback (store.ts softDeleteRefusedClaimShell): the
+\* shell's row FOR NO KEY UPDATE (newLock), then a soft delete only while the shell is still bare (live, unadmitted). Fault
+\* SkipImmediateRefusalCleanup: the cleanup removes nothing (the code before RR-4 for refusals other than RUN_ENDED /
+\* RERUN_*, and for a resumed claim). RefusalCleanupLost: a crash between the refusal and the cleanup.
+RefusalCleanup ==
+    /\ refusalCleanup = "owed"
+    /\ newLock = "free"
+    /\ refusalCleanup' = "done"
+    /\ claimShellState' = IF claimShellState = "live_unadmitted" /\ ~SkipImmediateRefusalCleanup
+                            THEN "soft_deleted" ELSE claimShellState
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell,
+                   ownerEndedNew, freshStartAfterSweep, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+
+RefusalCleanupLost ==
+    /\ AllowCleanupCrash
+    /\ refusalCleanup = "owed"
+    /\ refusalCleanup' = "lost"
+    /\ UNCHANGED <<lockVars, sessionVars, startVars, claimShellState, sessionVersion, sweeperSnapVersion, claimGraceElapsed,
+                   everSweptShell, ownerEndedNew, freshStartAfterSweep, runVars, inboxVars, ctrlVars, effCmdVars, delVars>>
+
+\* A refusal is settled once its cleanup ran, or, lost, once the shell is gone (the Sweeper, or the owner's deletion).
+RefusalSettled ==
+    \/ refusalCleanup \in {"none", "done"}
+    \/ (refusalCleanup = "lost" /\ claimShellState # "live_unadmitted")
 
 -----------------------------------------------------------------------------
 (* Phase 2: Three Deleters (SweeperDirect, DeleteWorkflow, OwnerEnded)     *)
@@ -1252,7 +1294,7 @@ OwnerEndCommit ==
          ELSE UNCHANGED <<runStatus, nState, nWinner, nOutcome, nResultKind>>
     /\ UNCHANGED <<srcLock, newLock, srcNodes, deleterWaitedOnCopy, srcDeletedAfterCopy, latestRev,
                    startVars, sessionVersion, sweeperSnapVersion, claimGraceElapsed, everSweptShell, freshStartAfterSweep,
-                   failCode, nPred, nRoute, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits,
+                   refusalCleanup, failCode, nPred, nRoute, nOrigin, nDeadline, reusedSet, suppliedSet, newVisits,
                    resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk, copyHitMismatch,
                    downstreamReadSupplied, events, inboxVars, ctrlVars, effCmdVars, sweeperPc, delWfPc>>
 
@@ -1379,7 +1421,14 @@ AdmitExec ==
                                            resumedAtCut, firstNew, firstNewPred, firstNewRoute, firstNewHashOk,
                                            downstreamReadSupplied, events, inboxVars>>
                 ELSE /\ actRes' = nState[x]
-                     /\ UNCHANGED <<runVars, inboxVars>>
+                     \* Fault TakeIgnoresTaken (RR-9): a re-run enterNode of a receive that took a carried message (its row
+                     \* answered as it is) takes that message again.
+                     /\ IF TakeIgnoresTaken /\ x[1] = "R" /\ x \in newVisits /\ nOutcome[x] = "msg"
+                             /\ \E m \in carriedInbox : inboxTaken[m] = 1
+                          THEN LET m == CHOOSE msg \in carriedInbox : inboxTaken[msg] = 1
+                               IN /\ inboxTaken' = [inboxTaken EXCEPT ![m] = @ + 1]
+                                  /\ UNCHANGED <<runVars, srcInbox, carriedInbox, unexpiredCarriedInbox, raceVars>>
+                          ELSE UNCHANGED <<runVars, inboxVars>>
        ELSE IF runStatus = "paused"
          THEN /\ actRes' = "paused"
               /\ UNCHANGED <<runVars, inboxVars>>
@@ -1444,11 +1493,13 @@ AdmitExec ==
     /\ UNCHANGED <<lockVars, sessionVars, startVars, shellVars, pc, curNode, curPred, curRoute, curPending, curCaught,
                    curSteps, planMaxSteps, retriedInPassOver, canInPassOver, effCmdVars, delVars>>
 
+\* An enterNode activity's result is lost and the activity runs again: in the pass-over, and (RR-9, RetryAfterCut) after the
+\* cut as well (the first new admission, a receive that took a carried message, any later admission).
 AdmitRetry ==
     /\ AllowRetry
     /\ pc = "admit"
     /\ actRes # "none"
-    /\ ~resumedAtCut
+    /\ (RetryAfterCut \/ ~resumedAtCut)
     /\ ~retriedInPassOver
     /\ actRes' = "none"
     /\ retriedInPassOver' = TRUE
@@ -1685,7 +1736,7 @@ Quiescent ==
     /\ SweeperSettled
     /\ delWfPc \in {"idle", "done"}
     /\ ownerEndPc \in {"idle", "done"}
-    /\ (startPhase \in Refused
+    /\ ((startPhase \in Refused /\ RefusalSettled)
         \/ (startPhase = "crashed" /\ ~AllowResumeAfterCrash /\ claimShellState = "soft_deleted")
         \/ (startPhase = "admitted" /\ pc = "done"))
     /\ \A x \in WorkNodes : eff[x] \in {"absent", "done"}
@@ -1703,7 +1754,7 @@ Done ==
 StartProgress ==
     \/ SourceEndRaceStep
     \/ ClaimRerun \/ ResumeAfterClaimCrash \/ CopyLockStep1 \/ CopyLockSrc \/ CopyLockStep2
-    \/ CopyCommit \/ CopyFinishPartial
+    \/ CopyCommit \/ CopyFinishPartial \/ RefusalCleanup
 
 DeleterCommit ==
     \/ SweeperCommit \/ DelWfCommit \/ OwnerEndLockDef \/ OwnerEndCommit
@@ -1721,7 +1772,7 @@ EffProgress == \E x \in WorkNodes : EffFinish(x)
 
 Next ==
     \/ StartProgress
-    \/ SaveNewRevision \/ MutateRetrySupply \/ ClaimCrash
+    \/ SaveNewRevision \/ MutateRetrySupply \/ ClaimCrash \/ RefusalCleanupLost
     \/ DeleterObservesCopyLock \/ SweeperLockTarget \/ DelWfLock \/ OwnerEndLockOwner \/ DeleterCommit
     \/ CtrlProgress \/ ControllerCan \/ AdmitRetry \/ EffProgress
     \/ LifecycleProgress
@@ -1767,8 +1818,10 @@ Inv_AutoPickNoCancelledReuse ==
     (AutoPicked /\ ~ReqModeContinue /\ startPhase = "admitted") =>
         \A x \in reusedSet : ~IsCancelledOrNoticelessSpawn(x)
 
+\* RR-4: once a refusal's own cleanup transaction ran, the claim shell is not left bare (the refusal step itself changes
+\* nothing; a cleanup lost in a crash is the Sweeper's: Live_Quiesces).
 Inv_RefusedClaimDeletedAtOnce ==
-    (startPhase \in Refused) => (claimShellState # "live_unadmitted")
+    (startPhase \in Refused /\ refusalCleanup = "done") => (claimShellState # "live_unadmitted")
 
 \* R2-M1 safety invariant: a run is never admitted onto a swept shell, and an admitted shell is never swept
 \* while owner is alive (replaces sticky-flag check so legal crash -> grace -> sweep -> late retry -> refused_workflow_deleted passes).
@@ -1971,6 +2024,10 @@ Wit_NoSupplyRefusedStepType ==
 Wit_NoLeakQuiescence ==
     ~(Quiescent /\ ~AllowOwnerEnd /\ everSweptShell /\ Gr1Active /\ oldChildStatus = "cancelled"
       /\ newSpawnChildStatus = "completed" /\ carriedInbox # {} /\ Inv_QuiescentNoLive)
+
+\* RR-4: a refusal's cleanup transaction was lost in a crash, and the Sweeper collected the bare shell after its grace.
+Wit_NoLostRefusalCleanupSwept ==
+    ~(startPhase \in Refused /\ refusalCleanup = "lost" /\ everSweptShell /\ claimShellState = "soft_deleted")
 
 Wit_NoLateRetryAfterSweep ==
     ~(pinnedResumed /\ everSweptShell /\ startPhase = "refused_workflow_deleted"

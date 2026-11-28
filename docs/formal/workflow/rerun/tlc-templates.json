@@ -1,4 +1,91 @@
 {
+  "RerunContinuedSession": {
+    "indent": 4,
+    "constants": [
+      "PreCuts",
+      "Live",
+      "AllowSessionEnd",
+      "AllowLoss",
+      "RanMeansSpawned",
+      "IgnoreLostRecap",
+      "RestartWithoutRecap",
+      "ContinueSourceSession"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RerunPassOver": {
+    "indent": 4,
+    "constants": [
+      "Reused",
+      "Chains",
+      "Msgs",
+      "ExpChoices",
+      "RunLimits",
+      "WaitLimits",
+      "ParLimits",
+      "MaxClk",
+      "MaxRetries",
+      "AllowCtrl",
+      "AllowOwnerEnd",
+      "StampSeparateTx",
+      "TakeNotIdempotent",
+      "TakeAtExpiry",
+      "CopyKeepsRunDeadline",
+      "DeadlineEarly",
+      "SkipChildCancelWhen",
+      "SkipAgentEndWhen",
+      "NoCleanupOnOwnerEnd",
+      "StopKeepsPending"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RerunPlanGate": {
+    "indent": 4,
+    "constants": [
+      "MaxTop",
+      "TopKinds",
+      "LaneKinds",
+      "WithBumps",
+      "AutoPick",
+      "Modes",
+      "WithGate",
+      "SplitOffByOne",
+      "LanesByIndex",
+      "KvUsesChosenPin",
+      "Gr1PicksLatest",
+      "Gr1TopOnly",
+      "Gr1CutsBefore",
+      "GateIgnoresMcp",
+      "GateIgnoresProxy",
+      "GateIgnoresDecider",
+      "GateIgnoresOwner",
+      "GateTopLevelOnly"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
+  "RerunStartRaces": {
+    "indent": 4,
+    "constants": [
+      "Starts",
+      "ApprovalVaries",
+      "AllowCrash",
+      "AllowOwnerComplete",
+      "AllowOwnerDelete",
+      "AllowDefDelete",
+      "AllowSourceDelete",
+      "AllowSweeper",
+      "CleanupCodeFilter",
+      "CleanupUnconditional",
+      "PairBeforeOwner",
+      "DefDeleteDefFirst",
+      "SweeperNoRecheck"
+    ],
+    "lists": "block",
+    "deadlockFirst": false
+  },
   "WorkflowRerun": {
     "indent": 4,
     "constants": [
@@ -62,7 +149,10 @@
       "CutVisitCopied",
       "CarryComparesCopyTime",
       "SourceEndRace",
-      "EndClock"
+      "EndClock",
+      "AllowCleanupCrash",
+      "RetryAfterCut",
+      "TakeIgnoresTaken"
     ],
     "lists": "block",
     "deadlockFirst": false
