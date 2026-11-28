@@ -33,6 +33,7 @@ import { workflowAgentSessionContinues } from "./agent-ids.js";
 import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
 import { workflowControllerFeatures } from "./controller-features.js";
 import { effectiveLevelDetail } from "./input-policy.js";
+import { promptSafeJson } from "./parent-messages.js";
 import {
     WORKFLOW_RERUN_MAX_COPY_BYTES,
     type MappedRerunExecution,
@@ -362,14 +363,39 @@ export interface WorkflowNodeExecutionRow {
     suppliedAt?: Date | null;
 }
 
+/** Phase 3 I7: caps for the bounded K+1 rerunRecap carried into a continued agent session. */
+export const WORKFLOW_RERUN_RECAP_MAX_VISITS = 20;
+export const WORKFLOW_RERUN_RECAP_PREVIEW_CHARS = 500;
+export const WORKFLOW_RERUN_RECAP_MAX_BYTES = 24 * 1024;
+
 /** Phase 3 I7: summary of a pre-cut reused or supplied visit of a continued agent state (for K+1 rerunRecap). */
 export interface WorkflowReusedAgentVisit {
     visit: number;
     source: "reused" | "supplied";
     outcome: string | null;
     resultKind: string | null;
-    outputPreview: JsonValue;
-    suppliedNote?: string | null;
+    output?: JsonValue;
+    outputPreview?: string;
+    truncated?: true;
+    outputChars?: number;
+    error?: { code: string };
+    suppliedNote?: string;
+}
+
+/** Bounded JSON payload embedded in a continued agent prompt's `rerunRecap` field. */
+export interface WorkflowRerunRecapPayload {
+    omitted: number;
+    visits: WorkflowReusedAgentVisit[];
+}
+
+/** Store summary returned by `WorkflowStore.readReusedAgentVisits`. */
+export interface WorkflowReusedAgentVisitsSummary {
+    count: number;
+    reusedCount: number;
+    suppliedCount: number;
+    omitted: number;
+    lastNodeExecutionId: string | null;
+    visits: WorkflowReusedAgentVisit[];
 }
 
 export interface RerunAdmissionSpec {
@@ -7648,42 +7674,117 @@ export class WorkflowStore {
     }
 
     /**
-     * Phase 3 I7: pre-cut reused and supplied visits of `stateId` in a re-run, ordered by `(COALESCE(p.ordinal, 0), n.ordinal)`
-     * so I8 named-branch continued agents see visits in execution order. Leaves `readAgentVisitsBefore` untouched.
+     * Phase 3 I7: lightweight count of pre-cut reused and supplied agent visits for `stateId` in `runId` (avoids reading
+     * output payloads on count-only hot paths such as S7 memory-loss numbering and normal K+2+ cycles).
      */
-    async readReusedAgentVisits(runId: string, stateId: string)
-        : Promise<{ count: number; visits: WorkflowReusedAgentVisit[] }> {
+    async countReusedAgentVisits(runId: string, stateId: string): Promise<number> {
         const { rows } = await this.pool.query(
-            `SELECT n.ordinal, n.reused_from_execution_id, n.supplied_from_execution_id,
-                    n.outcome, n.result_kind, n.output, n.supplied_note
+            `SELECT count(*)::int AS cnt
                FROM ${this.t.nodes} n
-               ${this.parallelJoinSql("n", "p")}
-              WHERE n.run_id = $1 AND n.node_id = $2
-                AND (n.reused_from_execution_id IS NOT NULL OR n.supplied_from_execution_id IS NOT NULL)
-              ORDER BY COALESCE(p.ordinal, 0) ASC, n.ordinal ASC, n.entered_at ASC, n.node_execution_id ASC`,
+              WHERE n.run_id = $1 AND n.node_id = $2 AND n.node_type = 'agent'
+                AND (n.reused_from_execution_id IS NOT NULL OR n.supplied_from_execution_id IS NOT NULL)`,
             [runId, stateId],
         );
-        const visits: WorkflowReusedAgentVisit[] = rows.map((row, idx) => {
+        return rows[0] ? int(rows[0], "cnt") : 0;
+    }
+
+    /**
+     * Phase 3 I7: bounded summary of pre-cut reused and supplied agent visits of `stateId` in a re-run, ordered by
+     * `(COALESCE(p.ordinal, 0), n.ordinal)` so I8 named-branch continued agents see visits in execution order. Keeps at most
+     * the last `WORKFLOW_RERUN_RECAP_MAX_VISITS` visits, selects only a 500-char preview in SQL (never fetching huge output
+     * TEXT blobs), includes `error: { code }` for `runtime_error` visits, and trims oldest visits into `omitted` so the
+     * prompt-safe serialized payload stays within `WORKFLOW_RERUN_RECAP_MAX_BYTES` (24 KiB). Leaves `readAgentVisitsBefore`
+     * untouched.
+     */
+    async readReusedAgentVisits(runId: string, stateId: string): Promise<WorkflowReusedAgentVisitsSummary> {
+        const { rows } = await this.pool.query(
+            `WITH ranked AS (
+                 SELECT n.node_execution_id,
+                        n.reused_from_execution_id,
+                        n.supplied_from_execution_id,
+                        n.outcome,
+                        n.result_kind,
+                        length(n.output)::int AS output_chars,
+                        left(n.output, $3) AS output_head,
+                        left(n.error, $3) AS error_head,
+                        n.supplied_note,
+                        row_number() OVER (
+                            ORDER BY COALESCE(p.ordinal, 0) ASC, n.ordinal ASC, n.entered_at ASC, n.node_execution_id ASC
+                        )::int AS visit_num,
+                        count(*) OVER ()::int AS total_count,
+                        sum(CASE WHEN n.supplied_from_execution_id IS NOT NULL THEN 1 ELSE 0 END) OVER ()::int AS supplied_count
+                   FROM ${this.t.nodes} n
+                   ${this.parallelJoinSql("n", "p")}
+                  WHERE n.run_id = $1 AND n.node_id = $2 AND n.node_type = 'agent'
+                    AND (n.reused_from_execution_id IS NOT NULL OR n.supplied_from_execution_id IS NOT NULL)
+             )
+             SELECT *
+               FROM ranked
+              WHERE visit_num > total_count - $4
+              ORDER BY visit_num ASC`,
+            [runId, stateId, WORKFLOW_RERUN_RECAP_PREVIEW_CHARS, WORKFLOW_RERUN_RECAP_MAX_VISITS],
+        );
+        if (rows.length === 0) {
+            return { count: 0, reusedCount: 0, suppliedCount: 0, omitted: 0, lastNodeExecutionId: null, visits: [] };
+        }
+        const totalCount = int(rows[0], "total_count");
+        const suppliedCount = int(rows[0], "supplied_count");
+        const lastNodeExecutionId = str(rows[rows.length - 1], "node_execution_id");
+        const visits: WorkflowReusedAgentVisit[] = rows.map((row) => {
             const isSupplied = typeof row.supplied_from_execution_id === "string" && row.supplied_from_execution_id.length > 0;
-            let outputPreview: JsonValue = null;
-            if (typeof row.output === "string") {
-                if (row.output.length <= 2_000) {
-                    try { outputPreview = JSON.parse(row.output) as JsonValue; }
-                    catch { outputPreview = row.output.slice(0, 500); }
-                } else {
-                    outputPreview = `${row.output.slice(0, 500)}… (${row.output.length} chars)`;
-                }
-            }
-            return {
-                visit: idx + 1,
+            const resultKind = typeof row.result_kind === "string" ? row.result_kind : null;
+            const entry: WorkflowReusedAgentVisit = {
+                visit: int(row, "visit_num"),
                 source: isSupplied ? "supplied" : "reused",
                 outcome: typeof row.outcome === "string" ? row.outcome : null,
-                resultKind: typeof row.result_kind === "string" ? row.result_kind : null,
-                outputPreview,
-                ...(isSupplied && typeof row.supplied_note === "string" ? { suppliedNote: row.supplied_note } : {}),
+                resultKind,
             };
+            const outputChars = typeof row.output_chars === "number" ? row.output_chars
+                : typeof row.output_chars === "string" ? Number.parseInt(row.output_chars, 10) : null;
+            const outputHead = typeof row.output_head === "string" ? row.output_head : null;
+            if (outputChars !== null && outputHead !== null) {
+                if (outputChars <= WORKFLOW_RERUN_RECAP_PREVIEW_CHARS) {
+                    try { entry.output = JSON.parse(outputHead) as JsonValue; }
+                    catch {
+                        entry.outputPreview = outputHead;
+                        entry.truncated = true;
+                        entry.outputChars = outputChars;
+                    }
+                } else {
+                    entry.outputPreview = outputHead;
+                    entry.truncated = true;
+                    entry.outputChars = outputChars;
+                }
+            }
+            if (resultKind === "runtime_error" && typeof row.error_head === "string") {
+                let code: string | null = null;
+                try {
+                    const parsed = JSON.parse(row.error_head) as unknown;
+                    if (isJsonObject(parsed) && typeof parsed.code === "string" && parsed.code.length > 0) code = parsed.code;
+                } catch {
+                    const m = /"code"\s*:\s*"([^"]+)"/.exec(row.error_head);
+                    if (m) code = m[1];
+                }
+                if (code) entry.error = { code };
+            }
+            if (isSupplied && typeof row.supplied_note === "string") {
+                entry.suppliedNote = row.supplied_note;
+            }
+            return entry;
         });
-        return { count: visits.length, visits };
+        let omitted = Math.max(0, totalCount - visits.length);
+        while (visits.length > 0 && utf8ByteLength(promptSafeJson({ omitted, visits } as unknown as JsonValue)) > WORKFLOW_RERUN_RECAP_MAX_BYTES) {
+            visits.shift();
+            omitted += 1;
+        }
+        return {
+            count: totalCount,
+            reusedCount: Math.max(0, totalCount - suppliedCount),
+            suppliedCount,
+            omitted,
+            lastNodeExecutionId,
+            visits,
+        };
     }
 
     /**
@@ -7702,13 +7803,13 @@ export class WorkflowStore {
         const run = await this.readRun(invocation.runId);
         if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return { recorded: false };
         if ((await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).has(input.nodeExecutionId)) return { recorded: false };
-        const [{ count }, preCut] = await Promise.all([
+        const [{ count }, preCutCount] = await Promise.all([
             this.readAgentVisitsBefore(invocation.runId, node.nodeId, input.nodeExecutionId),
-            this.readReusedAgentVisits(invocation.runId, node.nodeId),
+            this.countReusedAgentVisits(invocation.runId, node.nodeId),
         ]);
         await this.recordSessionEvents(invocation.workflowSessionId, [{ eventType: WORKFLOW_AGENT_MEMORY_LOST_EVENT, data: {
             runId: invocation.runId, nodeExecutionId: input.nodeExecutionId, stateId: node.nodeId, childSessionId: input.childSessionId,
-            cycle: preCut.count + count + 1, reason: input.reason,
+            cycle: preCutCount + count + 1, reason: input.reason,
         } }]);
         return { recorded: true };
     }
@@ -7732,9 +7833,12 @@ export class WorkflowStore {
 
     /**
      * Review D-2: for the turn of visit `nodeExecutionId` of continued session `childSessionId`, its cycle and the earlier cycles
-     * of that session whose conversation was lost after their report. Null when the visit is not that session's.
+     * of that session whose conversation was lost after their report. Null when the visit is not that session's. When this run
+     * has pre-cut reused/supplied cycles (`firstSessionCycle = K + 1`), also returns `firstSessionCycle` (and `rerunRecap` if
+     * cycle `K + 1` itself was lost so the prompt can re-carry the pre-cut summary).
      */
-    async readAgentCyclesLostBefore(childSessionId: string, nodeExecutionId: string): Promise<{ cycle: number; lost: number[] } | null> {
+    async readAgentCyclesLostBefore(childSessionId: string, nodeExecutionId: string)
+        : Promise<{ cycle: number; lost: number[]; firstSessionCycle?: number; rerunRecap?: WorkflowRerunRecapPayload } | null> {
         const invocation = await this.readAgentInvocation(nodeExecutionId);
         if (!invocation || invocation.childSessionId !== childSessionId) return null;
         const lost = [...(await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).entries()]
@@ -7742,11 +7846,19 @@ export class WorkflowStore {
         if (lost.length === 0) return { cycle: 0, lost };
         const node = await this.readNodeExecution(nodeExecutionId);
         if (!node) return null;
-        const [{ count }, preCut] = await Promise.all([
+        const [{ count }, preCutCount] = await Promise.all([
             this.readAgentVisitsBefore(invocation.runId, node.nodeId, nodeExecutionId),
-            this.readReusedAgentVisits(invocation.runId, node.nodeId),
+            this.countReusedAgentVisits(invocation.runId, node.nodeId),
         ]);
-        return { cycle: preCut.count + count + 1, lost };
+        const cycle = preCutCount + count + 1;
+        if (preCutCount === 0) return { cycle, lost };
+        const firstSessionCycle = preCutCount + 1;
+        let rerunRecap: WorkflowRerunRecapPayload | undefined;
+        if (lost.includes(firstSessionCycle)) {
+            const preCut = await this.readReusedAgentVisits(invocation.runId, node.nodeId);
+            rerunRecap = { omitted: preCut.omitted, visits: preCut.visits };
+        }
+        return { cycle, lost, firstSessionCycle, ...(rerunRecap ? { rerunRecap } : {}) };
     }
 
     /**

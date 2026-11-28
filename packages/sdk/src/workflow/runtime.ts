@@ -119,7 +119,9 @@ import {
 } from "./parent-messages.js";
 
 export { promptSafeJson };
-import { COMPLETE_WORKFLOW_NODE_TOOL, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS } from "./agent-node-service.js";
+import {
+    COMPLETE_WORKFLOW_NODE_TOOL, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, workflowAgentPreCutMemorySentence,
+} from "./agent-node-service.js";
 import {
     matchTestFixture, storedTestFixtures, testResultFor, toolCallResultOf, WORKFLOW_TEST_POLL_MS, workflowTestAnsweredProjection,
     workflowTestNoticePrompt, type WorkflowTestFixture,
@@ -137,6 +139,7 @@ import {
     type SessionProjection,
     type WorkflowNodeExecutionRow,
     type WorkflowOutboxMessage,
+    type WorkflowRerunRecapPayload,
     type WorkflowReusedAgentVisit,
     type WorkflowRunRow,
     type WorkflowRunStatus,
@@ -1761,11 +1764,12 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
      * revisions), and the earlier session when this visit's is a new one (the earlier session ended on its own).
      */
     const agentSessionCycle = async (runId: string, invocation: WorkflowAgentInvocation, node: WorkflowNodeExecutionRow)
-        : Promise<{ cycle: WorkflowAgentCycle | null; rerunRecap: { cycle: number; visits: WorkflowReusedAgentVisit[]; variables: { [key: string]: JsonValue } } | null }> => {
+        : Promise<{ cycle: WorkflowAgentCycle | null; rerunRecap: WorkflowAgentRerunRecap | null }> => {
         // The visits before this one, counted, and the one right before it (review RT-5: no cap on a run's visits).
-        const [{ count: earlier, previous: last }, preCut] = await Promise.all([
+        // Use the lightweight count-only query first so normal K+2+ cycles never read pre-cut output text.
+        const [{ count: earlier, previous: last }, preCutCount] = await Promise.all([
             store.readAgentVisitsBefore(runId, node.nodeId, invocation.nodeExecutionId),
-            store.readReusedAgentVisits(runId, node.nodeId),
+            store.countReusedAgentVisits(runId, node.nodeId),
         ]);
         const pinnedKv = async (revision: number | null | undefined): Promise<{ [key: string]: JsonValue } | null> => {
             if (revision === null || revision === undefined) return null;
@@ -1773,12 +1777,33 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             if (!isJsonObject(kv)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId}'s KV revision ${revision} is not an object.`);
             return kv;
         };
+        const diffKeys = (now: { [key: string]: JsonValue }, before: { [key: string]: JsonValue }): string[] =>
+            [...new Set([...Object.keys(now), ...Object.keys(before)])]
+                .filter(key => canonicalJson(now[key] ?? null) !== canonicalJson(before[key] ?? null) || Object.hasOwn(now, key) !== Object.hasOwn(before, key))
+                .sort();
+        const previousSummary = (row: WorkflowNodeExecutionRow | null) => row
+            ? { outcome: row.outcome, resultKind: row.resultKind, output: row.hasOutput ? row.output : null,
+                error: row.resultKind === "runtime_error" ? row.error : null }
+            : null;
         if (earlier === 0 || last === null) {
-            if (preCut.count === 0) return { cycle: null, rerunRecap: null };
+            if (preCutCount === 0) return { cycle: null, rerunRecap: null };
+            const preCut = await store.readReusedAgentVisits(runId, node.nodeId);
+            const lastPreCut = preCut.lastNodeExecutionId ? await store.readNodeExecution(preCut.lastNodeExecutionId) : null;
             const now = (await pinnedKv(node.kvRevision)) ?? {};
+            const before = (lastPreCut ? await pinnedKv(lastPreCut.kvRevision) : null) ?? {};
             return {
                 cycle: null,
-                rerunRecap: { cycle: preCut.count + 1, visits: preCut.visits, variables: now },
+                rerunRecap: {
+                    cycle: preCut.count + 1,
+                    count: preCut.count,
+                    reusedCount: preCut.reusedCount,
+                    suppliedCount: preCut.suppliedCount,
+                    omitted: preCut.omitted,
+                    visits: preCut.visits,
+                    variables: now,
+                    changedVariables: diffKeys(now, before),
+                    previous: previousSummary(lastPreCut),
+                },
             };
         }
         const previous = await store.readNodeExecution(last.nodeExecutionId);
@@ -1787,16 +1812,28 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         // revision (null) has no variables to read: it counts as none.
         const now = (await pinnedKv(node.kvRevision)) ?? {};
         const before = (previous ? await pinnedKv(previous.kvRevision) : null) ?? {};
-        const changed = [...new Set([...Object.keys(now), ...Object.keys(before)])]
-            .filter(key => canonicalJson(now[key] ?? null) !== canonicalJson(before[key] ?? null) || Object.hasOwn(now, key) !== Object.hasOwn(before, key))
-            .sort();
+        const endedSessionId = last.childSessionId !== invocation.childSessionId ? last.childSessionId : null;
+        const firstCycleNotSpawned = preCutCount > 0 && earlier === 1 && last.spawnedAt === null;
+        let preCutSummary: Pick<WorkflowAgentRerunRecap, "count" | "reusedCount" | "suppliedCount" | "omitted" | "visits"> | null = null;
+        if (preCutCount > 0 && (endedSessionId !== null || firstCycleNotSpawned)) {
+            const preCut = await store.readReusedAgentVisits(runId, node.nodeId);
+            preCutSummary = {
+                count: preCut.count, reusedCount: preCut.reusedCount, suppliedCount: preCut.suppliedCount,
+                omitted: preCut.omitted, visits: preCut.visits,
+            };
+        }
         return {
             cycle: {
-                cycle: preCut.count + earlier + 1,
-                previous: previous ? { outcome: previous.outcome, resultKind: previous.resultKind, output: previous.hasOutput ? previous.output : null,
-                    error: previous.resultKind === "runtime_error" ? previous.error : null } : null,
-                variables: now, changedVariables: changed,
-                endedSessionId: last.childSessionId !== invocation.childSessionId ? last.childSessionId : null,
+                cycle: preCutCount + earlier + 1,
+                previous: previousSummary(previous),
+                variables: now, changedVariables: diffKeys(now, before),
+                endedSessionId,
+                ...(preCutCount > 0 ? { preCutCount } : {}),
+                ...(preCutSummary ? {
+                    rerunRecap: { omitted: preCutSummary.omitted, visits: preCutSummary.visits },
+                    rerunRecapSummary: preCutSummary,
+                } : {}),
+                ...(firstCycleNotSpawned ? { firstCycleNotSpawned: true } : {}),
             },
             rerunRecap: null,
         };
@@ -1806,13 +1843,15 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
      * agent-node-continue-20261106; formal Q4), chosen at its admission and frozen in its invocation: the session of the
      * state's previous visit in this run while that session goes on (or was never created); the state's first session for its
      * first visit; and, when the previous session ended on its own (deleted, failed, or ended by a person), a new session whose
-     * id also names this visit's number among the state's visits, so it is derived too.
+     * id also names this visit's cycle number (including any pre-cut reused/supplied visits), so it is derived too.
      */
     const continuedSessionOf = async (client: WorkflowAgentEndClient | null, runId: string, stateId: string): Promise<string> => {
         const { count: visits, previous: last } = await store.readAgentVisitsBefore(runId, stateId, null);
         if (!last || !workflowAgentSessionContinues(last)) return workflowAgentSessionId(runId, stateId);
         const ended = (await agentSessionEndedOnItsOwn(client, last)) !== null;
-        return ended ? workflowAgentSessionId(runId, stateId, visits + 1) : last.childSessionId;
+        if (!ended) return last.childSessionId;
+        const preCutCount = await store.countReusedAgentVisits(runId, stateId);
+        return workflowAgentSessionId(runId, stateId, preCutCount + visits + 1);
     };
     /**
      * How the session of `last` (a visit of a state that continues its session) ended on its own, or null while it goes on or
@@ -2128,8 +2167,13 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     rerunOf: {
                         workflowId: run.rerunOfWorkflowSessionId,
                         runId: run.rerunOfRunId ?? null,
-                        fromExecutionId: run.rerunFromExecutionId ?? null,
+                        executionId: run.rerunFromExecutionId ?? null,
+                        stateId: run.rerunResume?.fromStateId ?? null,
+                        visit: run.rerunResume?.fromVisit ?? null,
                         mode: run.rerunMode ?? null,
+                        reused: run.rerunReused ?? 0,
+                        ...(run.rerunMode === "supply" && run.rerunResume?.supplied?.outcome
+                            ? { suppliedOutcome: run.rerunResume.supplied.outcome } : {}),
                     },
                 } : {}),
             } }],
@@ -3817,7 +3861,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
             return { wake: true };
         };
         let cycle: WorkflowAgentCycle | null = null;
-        let rerunRecap: { cycle: number; visits: WorkflowReusedAgentVisit[]; variables: { [key: string]: JsonValue } } | null = null;
+        let rerunRecap: WorkflowAgentRerunRecap | null = null;
         // OF-S2-7 review OF7-R8: the model, effort and tier this visit's session runs on, as its session row says after the spawn.
         let used: WorkflowAgentModelUsed | null = null;
         if (begun.action === "spawn") {
@@ -4674,13 +4718,18 @@ export function workflowAgentPrompt(invocation: {
      */
     restart?: WorkflowAgentCycle & { endedSessionId: string };
     /**
-     * Phase 3 I7: first post-cut visit (K+1) of a continued agent state in a re-run; carries a recap of earlier reused and
-     * supplied visits (1..K) from the previous Workflow run so the fresh session starts informed without touching #2's session.
+     * Phase 3 I7: first post-cut visit (K+1) of a continued agent state in a re-run; carries a bounded recap of earlier
+     * reused and supplied visits (1..K) plus full `previousResult` and `changedVariables` from the last pre-cut visit so the
+     * fresh session starts informed without touching the source run's session.
      */
-    rerunRecap?: { cycle: number; visits: WorkflowReusedAgentVisit[]; variables: { [key: string]: JsonValue } };
+    rerunRecap?: WorkflowAgentRerunRecap;
 }): string {
     const restart = invocation.continues === true && invocation.restart ? invocation.restart : null;
     const rerunRecap = invocation.continues === true && !restart && invocation.rerunRecap ? invocation.rerunRecap : null;
+    const restartRecapSummary = restart ? (restart.rerunRecapSummary ?? invocation.rerunRecap ?? null) : null;
+    const restartRecapPayload: WorkflowRerunRecapPayload | null = restart
+        ? (restart.rerunRecap ?? (restartRecapSummary ? { omitted: restartRecapSummary.omitted, visits: restartRecapSummary.visits } : null))
+        : null;
     const json = promptSafeJson({
         ...(restart ? { cycle: restart.cycle } : rerunRecap ? { cycle: rerunRecap.cycle } : {}),
         workflowSessionId: invocation.workflowSessionId, runId: invocation.runId, nodeExecutionId: invocation.nodeExecutionId,
@@ -4688,13 +4737,26 @@ export function workflowAgentPrompt(invocation: {
         taskSource: invocation.task.source === "prompt" ? "inline prompt"
             : { agent: invocation.task.name, package: invocation.task.package, version: invocation.task.version },
         input: invocation.input, inputSchema: invocation.inputSchema,
-        ...(restart ? { variables: restart.variables, changedVariables: restart.changedVariables, previousResult: restart.previous } : {}),
-        ...(rerunRecap ? { variables: rerunRecap.variables, rerunRecap: rerunRecap.visits as unknown as JsonValue } : {}),
+        ...(restart ? {
+            variables: restart.variables, changedVariables: restart.changedVariables, previousResult: restart.previous,
+            ...(restartRecapPayload ? { rerunRecap: restartRecapPayload as unknown as JsonValue } : {}),
+        } : {}),
+        ...(rerunRecap ? {
+            variables: rerunRecap.variables, changedVariables: rerunRecap.changedVariables, previousResult: rerunRecap.previous,
+            rerunRecap: { omitted: rerunRecap.omitted, visits: rerunRecap.visits } as unknown as JsonValue,
+        } : {}),
         outcomes: invocation.outcomes, outputSchema: invocation.outputSchema,
         schemas: invocation.schemas, deadline: invocation.deadlineAt,
     });
     const task = invocation.task.source === "prompt" ? invocation.task.prompt
         : `Apply your role (agent ${invocation.task.name}${invocation.task.package ? ` from package ${invocation.task.package}` : ""}) to the input above.`;
+    const restartPreCutNote = restartRecapSummary && restartRecapSummary.count > 0
+        ? `${describeRerunPreCutCycles(restartRecapSummary)} rerunRecap in the JSON carries ${restartRecapSummary.count === 1 ? "its" : "their"} summary. `
+        : restart?.preCutCount && restart.preCutCount > 0
+            ? (restart.preCutCount === 1
+                ? "Cycle 1 was reused or supplied before this re-run started; rerunRecap in the JSON carries its summary. "
+                : `Cycles 1 to ${restart.preCutCount} were reused or supplied before this re-run started; rerunRecap in the JSON carries their summary. `)
+            : "";
     return `[SYSTEM: WORKFLOW NODE INVOCATION. You are an ordinary agent session running one state of a workflow. Use your normal tools, `
         + "and delegate within your real limits. Finish the state only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool: give outcome (one of "
         + "the outcomes below) and output (a value that matches outputSchema, when one is given), or error with code needs_input or "
@@ -4711,15 +4773,70 @@ export function workflowAgentPrompt(invocation: {
                 + (restart
                     ? `This is cycle ${restart.cycle} of this state in this run. The agent session of its earlier cycles ended (session `
                         + `${restart.endedSessionId}), so this is a new agent session and their work is not here: previousResult, `
-                        + "variables and changedVariables in the JSON say where they ended. "
+                        + "variables and changedVariables in the JSON say where they ended. " + restartPreCutNote
                     : rerunRecap
-                        ? `This is cycle ${rerunRecap.cycle} of this state in a re-run. Earlier cycles (1..${rerunRecap.cycle - 1}) ran in a `
-                            + "previous Workflow run and their conversation is not in this session: rerunRecap and variables in the JSON "
-                            + "summarize those earlier cycles (including any suppliedNote). "
+                        ? `This is cycle ${rerunRecap.cycle} of this state in a re-run. ${describeRerunPreCutCycles(rerunRecap)} `
+                            + "Their conversation is not in this session: previousResult, variables, changedVariables and rerunRecap "
+                            + "in the JSON summarize those earlier cycles (including any suppliedNote). "
                         : "")
             : "The workflow cancels this session at the deadline. ")
         + WORKFLOW_AGENT_SLEEP_WORDS + WORKFLOW_AGENT_INPUT_WORDS + "]\n"
         + json + "\n[SYSTEM: The task of this state, from the workflow's definition:]\n" + task;
+}
+
+/** Phase 3 I7: K+1 pre-cut recap input passed into `workflowAgentPrompt`. */
+export interface WorkflowAgentRerunRecap {
+    cycle: number;
+    count: number;
+    reusedCount: number;
+    suppliedCount: number;
+    omitted: number;
+    visits: WorkflowReusedAgentVisit[];
+    variables: { [key: string]: JsonValue };
+    changedVariables: string[];
+    previous: { outcome: string | null; resultKind: string | null; output: JsonValue; error: JsonValue } | null;
+}
+
+function formatCycleNumbers(nums: readonly number[]): string {
+    if (nums.length === 0) return "";
+    if (nums.length === 1) return `${nums[0]}`;
+    let contiguous = true;
+    for (let i = 1; i < nums.length; i += 1) {
+        if (nums[i] !== nums[i - 1] + 1) { contiguous = false; break; }
+    }
+    if (contiguous && nums.length >= 3) return `${nums[0]} to ${nums[nums.length - 1]}`;
+    return `${nums.slice(0, -1).join(", ")} and ${nums[nums.length - 1]}`;
+}
+
+function describeRerunPreCutCycles(recap: Pick<WorkflowAgentRerunRecap, "count" | "reusedCount" | "suppliedCount" | "omitted" | "visits">): string {
+    const { count, reusedCount, suppliedCount, omitted, visits } = recap;
+    let base: string;
+    if (suppliedCount === 0) {
+        base = count === 1
+            ? "Cycle 1 was reused from an earlier Workflow run."
+            : `Cycles 1 to ${count} were reused from an earlier Workflow run.`;
+    } else if (reusedCount === 0) {
+        base = count === 1
+            ? "Cycle 1's result was supplied by a person without running."
+            : `Cycles 1 to ${count} had their results supplied by a person without running.`;
+    } else if (omitted === 0) {
+        const reusedNums = visits.filter(v => v.source === "reused").map(v => v.visit);
+        const suppliedNums = visits.filter(v => v.source === "supplied").map(v => v.visit);
+        const reusedPart = reusedNums.length === 1
+            ? `Cycle ${reusedNums[0]} was reused from an earlier Workflow run`
+            : `Cycles ${formatCycleNumbers(reusedNums)} were reused from an earlier Workflow run`;
+        const suppliedPart = suppliedNums.length === 1
+            ? `cycle ${suppliedNums[0]}'s result was supplied by a person without running`
+            : `cycles ${formatCycleNumbers(suppliedNums)} had their results supplied by a person without running`;
+        base = `${reusedPart}; ${suppliedPart}.`;
+    } else {
+        base = `Of cycles 1 to ${count}, ${reusedCount} ${reusedCount === 1 ? "was" : "were"} reused from an earlier Workflow run `
+            + `and ${suppliedCount} had ${suppliedCount === 1 ? "its result" : "their results"} supplied by a person without running.`;
+    }
+    if (omitted > 0) {
+        base += ` (${omitted} oldest ${omitted === 1 ? "cycle is" : "cycles are"} omitted from rerunRecap to stay within size limits.)`;
+    }
+    return base;
 }
 
 /**
@@ -4733,6 +4850,14 @@ export interface WorkflowAgentCycle {
     variables: { [key: string]: JsonValue };
     changedVariables: string[];
     endedSessionId?: string | null;
+    /** Phase 3 I7: number of pre-cut reused/supplied visits (K) before this continued session started. */
+    preCutCount?: number;
+    /** Phase 3 I7: bounded pre-cut recap re-carried on restart or when cycle K+1 never spawned. */
+    rerunRecap?: WorkflowRerunRecapPayload;
+    /** Phase 3 I7: full pre-cut recap counts used to phrase reused vs supplied on the restart path. */
+    rerunRecapSummary?: Pick<WorkflowAgentRerunRecap, "count" | "reusedCount" | "suppliedCount" | "omitted" | "visits">;
+    /** Phase 3 I7: cycle K+1 was admitted in this session but never spawned (e.g. cancelled/timed out before spawn). */
+    firstCycleNotSpawned?: boolean;
 }
 
 /**
@@ -4742,18 +4867,28 @@ export interface WorkflowAgentCycle {
  * the previous visit's result, the outcomes, schemas and this visit's deadline; then the state's task again. The typed
  * completion is per visit, as for the first.
  */
-export function workflowAgentCyclePrompt(invocation: Parameters<typeof workflowAgentPrompt>[0] & WorkflowAgentCycle): string {
+export function workflowAgentCyclePrompt(invocation: Omit<Parameters<typeof workflowAgentPrompt>[0], "rerunRecap"> & WorkflowAgentCycle): string {
+    const preCutCount = invocation.preCutCount && invocation.preCutCount > 0 ? invocation.preCutCount : 0;
     const json = promptSafeJson({
         cycle: invocation.cycle, workflowSessionId: invocation.workflowSessionId, runId: invocation.runId, nodeExecutionId: invocation.nodeExecutionId,
         stateId: invocation.stateId, controllingParentSessionId: invocation.controllingSessionId,
         input: invocation.input, inputSchema: invocation.inputSchema, variables: invocation.variables, changedVariables: invocation.changedVariables,
-        previousResult: invocation.previous, outcomes: invocation.outcomes, outputSchema: invocation.outputSchema, schemas: invocation.schemas,
+        previousResult: invocation.previous,
+        ...(invocation.firstCycleNotSpawned && invocation.rerunRecap ? { rerunRecap: invocation.rerunRecap as unknown as JsonValue } : {}),
+        outcomes: invocation.outcomes, outputSchema: invocation.outputSchema, schemas: invocation.schemas,
         deadline: invocation.deadlineAt,
     });
     const task = invocation.task.source === "prompt" ? invocation.task.prompt
         : `Apply your role (agent ${invocation.task.name}${invocation.task.package ? ` from package ${invocation.task.package}` : ""}) to the input above.`;
+    const preCutSentence = preCutCount > 0
+        ? (invocation.firstCycleNotSpawned
+            ? (preCutCount === 1
+                ? " Cycle 1 was reused or supplied before this re-run started; because cycle 2 did not run in this session, rerunRecap in the JSON carries its summary."
+                : ` Cycles 1 to ${preCutCount} were reused or supplied before this re-run started; because cycle ${preCutCount + 1} did not run in this session, rerunRecap in the JSON carries their summary.`)
+            : workflowAgentPreCutMemorySentence(preCutCount))
+        : "";
     return `[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE ${invocation.cycle}. This is cycle ${invocation.cycle} of the same workflow state in this run, `
-        + WORKFLOW_AGENT_CYCLE_MEMORY_WORDS + " Work on this cycle's input and the variables as they are now; "
+        + WORKFLOW_AGENT_CYCLE_MEMORY_WORDS + preCutSentence + " Work on this cycle's input and the variables as they are now; "
         + "changedVariables names the variables that changed since your last cycle. Do not repeat earlier work unless the task asks for it. "
         + "Finish this cycle only with the " + COMPLETE_WORKFLOW_NODE_TOOL + " tool, as before: give outcome and output, or error with code "
         + "needs_input or execution_failed, a new operation_id, and node_execution_id " + invocation.nodeExecutionId + " (this cycle's). "

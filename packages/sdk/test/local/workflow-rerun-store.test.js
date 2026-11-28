@@ -810,4 +810,155 @@ describe("Task 4c: 3-mode enterNode cut guard (run_again, continue, supply) & fa
             expect(ended.terminalError?.code).toBe("rerun_diverged");
         });
     });
+
+    it("bounds readReusedAgentVisits (last 20, <=500 preview + truncated/outputChars, runtime_error code, <=24 KiB cap, M-1 agent-only filter, M-2 countReusedAgentVisits, I8 parallel ordinal ordering)", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const store = client._catalog.workflowStore();
+            const src = await seedEndedSourceWorkflow(client, { visits: [] });
+            const rerunId = src.runId;
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            try {
+                // Insert 1 non-agent reused row sharing the same node_id (M-1 defense-in-depth: node_type='script' must be ignored!)
+                const base = Date.now() - 100_000;
+                const fakeSrcRunId = randomUUID();
+                const fakeSrcWfId = randomUUID();
+                const actorJson = JSON.stringify(ACTOR);
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_node_executions (
+                        node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                        input, input_sha256, state, outcome, result_kind, output, error, winner,
+                        effect_attempts, entered_at, completed_at, kv_revision, deadline_at,
+                        reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at
+                     ) VALUES ($1,$2,'root',NULL,'agent_loop',999,'script',NULL,'{}',$3,'completed','ok','business','{"not":"agent"}',NULL,'effect',1,$4::timestamptz,$4::timestamptz,1,NULL,$5,$6,$7,$4::timestamptz)`,
+                    [randomUUID(), rerunId, sha256Hex("{}"), new Date(base).toISOString(), randomUUID(), fakeSrcRunId, fakeSrcWfId],
+                );
+
+                // Insert 25 pre-cut agent visits:
+                // - Visits 1..23: reused business (small JSON)
+                // - Visit 24: reused runtime_error with error code "timed_out" (M-6)
+                // - Visit 25: supplied with 50 KB output + suppliedNote (I-4)
+                let lastId = null;
+                for (let i = 1; i <= 25; i += 1) {
+                    const nid = randomUUID();
+                    lastId = nid;
+                    const srcId = randomUUID();
+                    const isErr = i === 24;
+                    const isSup = i === 25;
+                    const ts = new Date(base + i * 1000).toISOString();
+                    const outputText = isErr ? null : isSup ? JSON.stringify({ big: "x".repeat(50_000) }) : JSON.stringify({ n: i });
+                    const errText = isErr ? JSON.stringify({ code: "timed_out", message: "step timed out" }) : null;
+                    await pool.query(
+                        `INSERT INTO ${s}.workflow_node_executions (
+                            node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                            input, input_sha256, state, outcome, result_kind, output, error, winner,
+                            effect_attempts, entered_at, completed_at, kv_revision, deadline_at,
+                            reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at,
+                            supplied_from_execution_id, supplied_from_run_id, supplied_from_workflow_session_id, supplied_actor, supplied_note, supplied_at
+                         ) VALUES ($1,$2,'root',NULL,'agent_loop',$3,'agent',NULL,'{}',$4,'completed',$5,$6,$7,$8,$9,$10,$11::timestamptz,$11::timestamptz,1,NULL,$12,$13,$14,$15::timestamptz,$16,$17,$18,$19,$20,$21::timestamptz)`,
+                        [
+                            nid, rerunId, i, sha256Hex("{}"),
+                            isErr ? "timed_out" : "more",
+                            isErr ? "runtime_error" : "business",
+                            outputText, errText,
+                            isSup ? "supplied" : "agent",
+                            isSup ? 0 : 1,
+                            ts,
+                            isSup ? null : srcId,
+                            isSup ? null : fakeSrcRunId,
+                            isSup ? null : fakeSrcWfId,
+                            isSup ? null : ts,
+                            isSup ? srcId : null,
+                            isSup ? fakeSrcRunId : null,
+                            isSup ? fakeSrcWfId : null,
+                            isSup ? actorJson : null,
+                            isSup ? "Operator supplied huge payload" : null,
+                            isSup ? ts : null,
+                        ],
+                    );
+                }
+
+                // M-1 & M-2: countReusedAgentVisits excludes the non-agent row and returns 25 cleanly.
+                expect(await store.countReusedAgentVisits(rerunId, "agent_loop")).toBe(25);
+
+                // I-4 & M-6: readReusedAgentVisits keeps last 20, reports omitted=5, marks 50KB truncated + outputChars, includes error.code on runtime_error.
+                const summary = await store.readReusedAgentVisits(rerunId, "agent_loop");
+                expect(summary.count).toBe(25);
+                expect(summary.reusedCount).toBe(24);
+                expect(summary.suppliedCount).toBe(1);
+                expect(summary.omitted).toBe(5);
+                expect(summary.visits.length).toBe(20);
+                expect(summary.visits[0].visit).toBe(6);
+                expect(summary.visits[19].visit).toBe(25);
+                expect(summary.lastNodeExecutionId).toBe(lastId);
+                // Visit 24 (index 18): runtime_error with error: { code: "timed_out" }
+                expect(summary.visits[18].resultKind).toBe("runtime_error");
+                expect(summary.visits[18].error).toEqual({ code: "timed_out" });
+                // Visit 25 (index 19): truncated 50KB output preview
+                expect(summary.visits[19].source).toBe("supplied");
+                expect(summary.visits[19].suppliedNote).toBe("Operator supplied huge payload");
+                expect(summary.visits[19].truncated).toBe(true);
+                expect(summary.visits[19].outputChars).toBeGreaterThan(50_000);
+                expect(summary.visits[19].outputPreview.length).toBe(500);
+                expect(summary.visits[19].output).toBeUndefined();
+                expect(Buffer.byteLength(JSON.stringify({ omitted: summary.omitted, visits: summary.visits }), "utf8")).toBeLessThanOrEqual(24 * 1024);
+
+                // Hard 24 KiB serialized budget trim test: 20 visits each with 500 '[' chars (promptSafeJson expands '[' -> '\u005b' = ~3 KB/visit -> trims oldest into omitted!)
+                for (let i = 1; i <= 20; i += 1) {
+                    const nid = randomUUID();
+                    const srcId = randomUUID();
+                    const ts = new Date(base + i * 1000).toISOString();
+                    await pool.query(
+                        `INSERT INTO ${s}.workflow_node_executions (
+                            node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                            input, input_sha256, state, outcome, result_kind, output, error, winner,
+                            effect_attempts, entered_at, completed_at, kv_revision, deadline_at,
+                            reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at
+                         ) VALUES ($1,$2,'root',NULL,'heavy_agent',$3,'agent',NULL,'{}',$4,'completed','more','business',$5,NULL,'agent',1,$6::timestamptz,$6::timestamptz,1,NULL,$7,$8,$9,$6::timestamptz)`,
+                        [nid, rerunId, i, sha256Hex("{}"), JSON.stringify("[".repeat(600)), ts, srcId, fakeSrcRunId, fakeSrcWfId],
+                    );
+                }
+                const heavy = await store.readReusedAgentVisits(rerunId, "heavy_agent");
+                expect(heavy.count).toBe(20);
+                expect(heavy.omitted).toBeGreaterThan(0);
+                expect(heavy.visits.length + heavy.omitted).toBe(20);
+                expect(heavy.visits[heavy.visits.length - 1].visit).toBe(20);
+
+                // I8 named-branch ordering: two parallel visits (p.ordinal=1 and p.ordinal=2), each containing a_agent ordinal=1.
+                // Deliberately insert p.ordinal=2 with an EARLIER entered_at so only (COALESCE(p.ordinal, 0), n.ordinal) puts p.ordinal=1 first!
+                const p1 = randomUUID();
+                const p2 = randomUUID();
+                const b1 = `${p1}#alpha`;
+                const b2 = `${p2}#alpha`;
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_node_executions (
+                        node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                        input, input_sha256, state, outcome, result_kind, output, error, winner,
+                        effect_attempts, entered_at, completed_at, kv_revision, deadline_at,
+                        reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at
+                     ) VALUES
+                     ($1,$2,'root',NULL,'fan',1,'parallel',NULL,'{}',$3,'completed','joined','business','{}',NULL,'controller',1,$4::timestamptz,$4::timestamptz,1,NULL,$5,$9,$10,$4::timestamptz),
+                     ($6,$2,'root',NULL,'fan',2,'parallel',NULL,'{}',$3,'completed','joined','business','{}',NULL,'controller',1,$7::timestamptz,$7::timestamptz,1,NULL,$8,$9,$10,$7::timestamptz)`,
+                    [p1, rerunId, sha256Hex("{}"), new Date(base + 50_000).toISOString(), randomUUID(), p2, new Date(base + 10_000).toISOString(), randomUUID(), fakeSrcRunId, fakeSrcWfId],
+                );
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_node_executions (
+                        node_execution_id, run_id, scope_id, predecessor_id, node_id, ordinal, node_type, arrival_route,
+                        input, input_sha256, state, outcome, result_kind, output, error, winner,
+                        effect_attempts, entered_at, completed_at, kv_revision, deadline_at,
+                        reused_from_execution_id, reused_from_run_id, reused_from_workflow_session_id, reused_at
+                     ) VALUES
+                     ($1,$2,$3,NULL,'a_agent',1,'agent',NULL,'{}',$4,'completed','done','business','{"round":1}',NULL,'agent',1,$5::timestamptz,$5::timestamptz,1,NULL,$6,$11,$12,$5::timestamptz),
+                     ($7,$2,$8,NULL,'a_agent',1,'agent',NULL,'{}',$4,'completed','done','business','{"round":2}',NULL,'agent',1,$9::timestamptz,$9::timestamptz,1,NULL,$10,$11,$12,$9::timestamptz)`,
+                    [randomUUID(), rerunId, b1, sha256Hex("{}"), new Date(base + 60_000).toISOString(), randomUUID(),
+                        randomUUID(), b2, new Date(base + 20_000).toISOString(), randomUUID(), fakeSrcRunId, fakeSrcWfId],
+                );
+                const i8 = await store.readReusedAgentVisits(rerunId, "a_agent");
+                expect(i8.count).toBe(2);
+                expect(i8.visits.map(v => v.output)).toEqual([{ round: 1 }, { round: 2 }]);
+            } finally {
+                await pool.end();
+            }
+        });
+    });
 });

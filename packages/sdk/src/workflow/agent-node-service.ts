@@ -2,11 +2,13 @@ import { WORKFLOW_COMMAND_QUEUE } from "./commands.js";
 import { AGENT_REPORTED_ERROR_CODES, WORKFLOW_AGENT_COMPLETION_TOOL } from "./compiler.js";
 import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
+import { promptSafeJson } from "./parent-messages.js";
 import { redactWorkflowErrorValue } from "./redact.js";
 import {
     WORKFLOW_AGENT_MAX_INVALID_COMPLETIONS,
     WorkflowStoreError,
     type WorkflowAgentCompletionRefusal,
+    type WorkflowRerunRecapPayload,
     type WorkflowStore,
 } from "./store.js";
 
@@ -101,21 +103,69 @@ export const WORKFLOW_AGENT_REPLY_SETTLE = { ms: 5 * 60_000 };
 /** A later cycle's prompt says the earlier cycles' conversation is in the session (issue I1: it is, once committed). */
 export const WORKFLOW_AGENT_CYCLE_MEMORY_WORDS = "in this same agent session: what you did in earlier cycles is above.";
 
+/** Design §5.4 sentence appended to K+2+ cycle prompts when pre-cut cycles 1..K were reused or supplied before this re-run. */
+export function workflowAgentPreCutMemorySentence(preCutCount: number): string {
+    if (!Number.isSafeInteger(preCutCount) || preCutCount <= 0) return "";
+    if (preCutCount === 1) {
+        return " Cycle 1 was reused or supplied before this re-run started; its summary is in cycle 2's prompt above.";
+    }
+    return ` Cycles 1 to ${preCutCount} were reused or supplied before this re-run started; their summary is in cycle ${preCutCount + 1}'s prompt above.`;
+}
+
 /**
  * Issue I1, review D-2: a later cycle's prompt when the conversation of earlier cycles `lost` of its session was not saved
  * after they reported their result (a reply stopped at its limit or by force, a lost Copilot session or worker, a snapshot
  * not committed). It says plainly that their conversation is not available instead of saying it is above. The worker applies
  * it as the cycle's turn starts, the first point where a loss is known (the prompt is sent while the earlier reply may still run).
+ * When a re-run has pre-cut cycles `1..(firstSessionCycle - 1)`, excludes them from "other earlier cycles above", and when
+ * cycle `firstSessionCycle` (K+1) itself was lost, replaces the "summary is in cycle K+1's prompt above" note and re-carries
+ * `rerunRecap` in the JSON line.
  */
-export function workflowAgentCycleMemoryLostPrompt(prompt: string, cycle: number, lost: readonly number[]): string {
-    const cycles = [...new Set(lost)].filter(n => Number.isSafeInteger(n) && n >= 1 && n < cycle).sort((a, b) => a - b);
+export function workflowAgentCycleMemoryLostPrompt(
+    prompt: string,
+    cycle: number,
+    lost: readonly number[],
+    options?: { firstSessionCycle?: number; rerunRecap?: WorkflowRerunRecapPayload | null },
+): string {
+    const firstSessionCycle = options?.firstSessionCycle !== undefined
+        && Number.isSafeInteger(options.firstSessionCycle) && options.firstSessionCycle >= 1
+        ? options.firstSessionCycle : 1;
+    const preCutCount = firstSessionCycle - 1;
+    const cycles = [...new Set(lost)]
+        .filter(n => Number.isSafeInteger(n) && n >= firstSessionCycle && n < cycle)
+        .sort((a, b) => a - b);
     if (cycles.length === 0 || !prompt.includes(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS)) return prompt;
     const one = cycles.length === 1;
     const named = one ? `cycle ${cycles[0]}` : `cycles ${cycles.slice(0, -1).join(", ")} and ${cycles[cycles.length - 1]}`;
-    const others = cycle - 1 > cycles.length ? " What you did in the other earlier cycles is above." : "";
-    return prompt.replace(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, `in this same agent session. The conversation of ${named} is not available: it `
+    const sessionEarlier = Math.max(0, cycle - firstSessionCycle);
+    const others = sessionEarlier > cycles.length ? " What you did in the other earlier cycles is above." : "";
+    let out = prompt.replace(WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, `in this same agent session. The conversation of ${named} is not available: it `
         + `was lost after ${one ? "that cycle" : "those cycles"} reported ${one ? "its" : "their"} result, before it was saved, so it is not `
         + `above. previousResult and the variables in the JSON say where the earlier cycles ended.${others}`);
+    if (preCutCount > 0 && cycles.includes(firstSessionCycle)) {
+        const preCutAbove = workflowAgentPreCutMemorySentence(preCutCount);
+        const replacement = preCutCount === 1
+            ? ` Cycle 1 was reused or supplied before this re-run started; because cycle ${firstSessionCycle}'s conversation was lost, rerunRecap in the JSON carries its summary again.`
+            : ` Cycles 1 to ${preCutCount} were reused or supplied before this re-run started; because cycle ${firstSessionCycle}'s conversation was lost, rerunRecap in the JSON carries their summary again.`;
+        if (preCutAbove && out.includes(preCutAbove)) {
+            out = out.replace(preCutAbove, replacement);
+        }
+        if (options?.rerunRecap) {
+            const lines = out.split("\n");
+            if (lines.length >= 2) {
+                try {
+                    const parsed = JSON.parse(lines[1]) as Record<string, JsonValue>;
+                    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                        lines[1] = promptSafeJson({ ...parsed, rerunRecap: options.rerunRecap as unknown as JsonValue });
+                        out = lines.join("\n");
+                    }
+                } catch {
+                    // Leave JSON line untouched if caller passed a non-standard test prompt.
+                }
+            }
+        }
+    }
+    return out;
 }
 
 export async function completeWorkflowNodeFromTool(args: Record<string, unknown>, context: {
