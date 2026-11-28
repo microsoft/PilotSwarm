@@ -478,6 +478,112 @@ async function main() {
         await client.close();
     }
 
+    // ── 9. Task 4: list_sessions projects session_kind (unpaged + paged) & initialize instructions ─
+    {
+        const calls = [];
+        const ctx = makeCtx(calls);
+        ctx.mgmt.listSessions = async () => [
+            { sessionId: "s-agent", title: "Agent", status: "idle", isSystem: false, createdAt: 1 },
+            { sessionId: "s-wf", sessionKind: "workflow", title: "Workflow: ping", status: "completed", isSystem: false, parentSessionId: "s-agent", createdAt: 2 },
+        ];
+        ctx.mgmt.listSessionsPage = async () => ({
+            sessions: [
+                { sessionId: "s-wf", sessionKind: "workflow", title: "Workflow: ping", status: "completed", isSystem: false, createdAt: 2 },
+                { sessionId: "s-agent", sessionKind: "agent", title: "Agent", status: "idle", isSystem: false, createdAt: 1 },
+            ],
+            hasMore: false,
+            nextCursor: null,
+        });
+        const client = await connect(ctx);
+        const unpaged = parse(await client.callTool({ name: "list_sessions", arguments: {} }));
+        record("list_sessions (unpaged) → session_kind projected",
+            unpaged.sessions?.[0]?.session_kind === "agent" && unpaged.sessions?.[1]?.session_kind === "workflow");
+
+        const paged = parse(await client.callTool({ name: "list_sessions", arguments: { limit: 10 } }));
+        record("list_sessions (paged) → session_kind projected",
+            paged.sessions?.[0]?.session_kind === "workflow" && paged.sessions?.[1]?.session_kind === "agent");
+
+        const instructions = client.getInstructions() ?? "";
+        record("server instructions mention read_workflow_skill and workflow_definition",
+            instructions.includes("read_workflow_skill")
+            && instructions.includes("workflow_definition")
+            && instructions.includes("list_creatable_workflows")
+            && instructions.includes("create_session_for_workflow")
+            && instructions.includes("workflow_definition start creates a Workflow session as a child of owner_session_id")
+            && instructions.includes("send_workflow_input")
+            && instructions.includes("send_and_wait"));
+
+        // get_agent_tree accepts session_id and keeps root_session_id as an alias
+        const treeBySessionId = await client.callTool({ name: "get_agent_tree", arguments: { session_id: "s-agent" } });
+        const treeBySessionBody = parse(treeBySessionId);
+        record("get_agent_tree accepts session_id",
+            !treeBySessionId.isError && treeBySessionBody?.root_session_id === "s-agent" && treeBySessionBody?.total_nodes === 2);
+
+        const treeByRootAlias = await client.callTool({ name: "get_agent_tree", arguments: { root_session_id: "s-agent" } });
+        const treeByRootBody = parse(treeByRootAlias);
+        record("get_agent_tree keeps root_session_id alias",
+            !treeByRootAlias.isError && treeByRootBody?.root_session_id === "s-agent" && treeByRootBody?.total_nodes === 2);
+
+        const treeMismatch = await client.callTool({ name: "get_agent_tree", arguments: { session_id: "s-agent", root_session_id: "s-wf" } });
+        record("get_agent_tree rejects mismatched session_id and root_session_id", treeMismatch.isError === true);
+
+        const treeMissing = await client.callTool({ name: "get_agent_tree", arguments: {} });
+        record("get_agent_tree rejects missing session_id and root_session_id", treeMissing.isError === true);
+
+        await client.close();
+    }
+
+    // ── 10. update_workflow typed discriminated union schema ────────────
+    {
+        const calls = [];
+        const ctx = makeCtx(calls, { workflowCommands: true });
+        ctx.mgmt.updateWorkflow = async (...args) => { calls.push(["updateWorkflow", ...args]); return { ok: true, status: "running" }; };
+        const client = await connect(ctx);
+        const { tools } = await client.listTools();
+        const updTool = tools.find((t) => t.name === "update_workflow");
+        const variants = updTool?.inputSchema?.properties?.command?.oneOf;
+        const ops = Array.isArray(variants) ? variants.map((v) => v?.properties?.operation?.const) : [];
+        record("update_workflow command schema is typed oneOf per operation",
+            JSON.stringify(ops) === JSON.stringify(["pause", "resume", "cancel", "stop", "set_vars"]),
+            JSON.stringify(ops));
+
+        const svOk = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "set_vars", operation_id: "sv-1", expected_kv_revision: 2, set: { flag: "go" } } },
+        });
+        record("update_workflow accepts typed set_vars",
+            !svOk.isError && calls.some(([n, sid, cmd]) => n === "updateWorkflow" && sid === UUID && cmd.operation === "set_vars" && cmd.expected_kv_revision === 2));
+
+        const stopOk = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "stop", operation_id: "st-1", grace_seconds: 30 } },
+        });
+        record("update_workflow accepts typed stop with grace_seconds",
+            !stopOk.isError && calls.some(([n, sid, cmd]) => n === "updateWorkflow" && sid === UUID && cmd.operation === "stop" && cmd.grace_seconds === 30));
+
+        const callsBeforeApp = calls.length;
+        const appDenied = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "approval_respond", approval_id: "a1", decision: "approve" } },
+        });
+        record("update_workflow refuses approval_respond without advertising it",
+            appDenied.isError === true && calls.length === callsBeforeApp);
+
+        const recRejected = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "recover", operation_id: "r-1" } },
+        });
+        record("update_workflow rejects recover at schema level", recRejected.isError === true);
+
+        const svMissingRev = await client.callTool({
+            name: "update_workflow",
+            arguments: { session_id: UUID, command: { operation: "set_vars", operation_id: "sv-bad", set: { a: 1 } } },
+        });
+        record("update_workflow rejects set_vars without expected_kv_revision", svMissingRev.isError === true);
+
+        await client.close();
+    }
+
     const failed = results.filter((r) => !r.ok);
     console.log(`\n${results.length - failed.length}/${results.length} passed`);
     process.exit(failed.length ? 1 : 0);

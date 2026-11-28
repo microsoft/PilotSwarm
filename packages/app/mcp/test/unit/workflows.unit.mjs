@@ -38,9 +38,18 @@ function toolsWith(ctx) {
 // 1. Absent unless the context enables it.
 assert.equal(toolsWith({ mgmt: {} }).has("update_workflow"), false, "absent by default");
 assert.equal(toolsWith({ mgmt: {}, workflowCommands: false }).has("update_workflow"), false, "absent when off");
-// Always the read; the command only with the test-only option.
-assert.deepEqual([...toolsWith({ mgmt: {} }).keys()], ["read_workflow"], "the read, always");
-assert.deepEqual([...toolsWith({ mgmt: {}, workflowCommands: true }).keys()].sort(), ["read_workflow", "update_workflow"], "and the command with the option");
+assert.equal(toolsWith({ mgmt: {} }).has("workflow_definition"), false, "workflow_definition absent by default");
+// Always discovery/read/skills/session-for-workflow; command & definition tools only with workflowCommands: true.
+assert.deepEqual(
+    [...toolsWith({ mgmt: {} }).keys()].sort(),
+    ["create_session_for_workflow", "list_creatable_workflows", "read_workflow", "read_workflow_skill"],
+    "always-registered workflow tools",
+);
+assert.deepEqual(
+    [...toolsWith({ mgmt: {}, workflowCommands: true }).keys()].sort(),
+    ["create_session_for_workflow", "list_creatable_workflows", "read_workflow", "read_workflow_skill", "update_workflow", "workflow_definition"],
+    "all workflow tools with workflowCommands",
+);
 
 // 2. The command goes to the management client as it is; the receipt is the answer.
 {
@@ -139,8 +148,8 @@ const webClient = (bootstrap) => new WebPilotSwarmManagementClient({ api: { getB
     const { tool, resource } = await describedBy(capabilityCtx(mgmt));
     assert.deepEqual(tool.workflows, advertised, "the management client's own answer, which a bootstrap carries");
     assert.deepEqual(resource.workflows, advertised);
-    assert.deepEqual(tool.workflow_tools, { read: true, commands: false });
-    assert.deepEqual(resource.workflow_tools, { read: true, commands: false });
+    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false });
+    assert.deepEqual(resource.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false });
     assert.equal(toolsWith({ mgmt }).has("update_workflow"), false);
 }
 
@@ -154,7 +163,7 @@ for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.3.0", true]])
     assert.equal(tool.workflows.commands.available, true);
     assert.equal(tool.workflows.commands.controllerVersion, controllerVersion);
     assert.equal(tool.workflows.commands.operations.includes("stop"), stop);
-    assert.deepEqual(tool.workflow_tools, { read: true, commands: true });
+    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true });
     assert.equal(toolsWith({ mgmt, workflowCommands: true }).has("update_workflow"), true);
 }
 
@@ -171,7 +180,7 @@ for (const [workflowCommands, controllerVersion, stop] of [[{}, "1.3.0", true]])
     assert.equal(tool.mode, "web");
     assert.deepEqual(tool.workflows, advertised);
     assert.deepEqual(resource.workflows, advertised);
-    assert.deepEqual(tool.workflow_tools, { read: true, commands: true });
+    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true });
     assert.equal(tool.workflows.commands.available, false);
     assert.equal(tool.workflows.read, true);
 }
@@ -190,7 +199,7 @@ for (const mgmt of [
     assert.equal(tool.workflows, null);
     assert.equal(resource.workflows, null);
     assert.equal(tool.mode, "web");
-    assert.deepEqual(tool.workflow_tools, { read: true, commands: false });
+    assert.deepEqual(tool.workflow_tools, { read: true, catalog: true, session_for_workflow: true, skills: true, commands: false, definitions: false });
 }
 
 // 5e. A host that cannot be asked now, or whose answer is not an advertisement, is not an older host: get_capabilities
@@ -270,11 +279,16 @@ console.log("✅ read_workflow: always registered, arguments as given, the read'
 //    refusals generically: the codes below are arbitrary on purpose, no product code is claimed.
 {
     const updateWith = updateWorkflow => toolsWith({ workflowCommands: true, mgmt: { updateWorkflow } }).get("update_workflow");
-    // M0: only an option exactly true registers the command tool (the read tool is always there).
+    // M0: only an option exactly true registers the command/definition tools (discovery/read/skills are always there).
     for (const workflowCommands of ["true", 1, undefined]) {
         const tools = toolsWith({ workflowCommands, mgmt: {} });
         assert.equal(tools.has("update_workflow"), false, String(workflowCommands));
-        assert.deepEqual([...tools.keys()], ["read_workflow"], String(workflowCommands));
+        assert.equal(tools.has("workflow_definition"), false, String(workflowCommands));
+        assert.deepEqual(
+            [...tools.keys()].sort(),
+            ["create_session_for_workflow", "list_creatable_workflows", "read_workflow", "read_workflow_skill"],
+            String(workflowCommands),
+        );
     }
     // M1: a duplicate delivery is forwarded unchanged; the receipt text is the server's, byte for byte.
     const seen = new Map();
@@ -341,14 +355,17 @@ console.log("✅ every server registers update_workflow unless a test passes nul
     delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
     try {
         for (const off of [descriptions({ workflowCommands: true, mgmt: {} }), descriptions({ workflowCommands: true, workflowTestMode: false, mgmt: {} })]) {
-            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,"]) assert.ok(!off.includes(word), word);
-            // Stop is named without a condition.
-            assert.ok(off.includes("operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel and stop),"), off);
+            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,", "replace_definition", "publish_and_start", "publish", "approval_respond"]) assert.ok(!off.includes(word), word);
+            // Stop is named without a condition; legacy definition operations are removed; recover refusal is stated.
+            assert.ok(off.includes("operation (set_vars, pause, resume, cancel and stop),"), off);
+            assert.ok(/persons are refused recover/i.test(off), off);
             assert.ok(!/controller 1\.9\.0|when the workers run/.test(off), off);
             assert.ok(off.includes("grace_seconds"));
         }
         const on = descriptions({ workflowCommands: true, workflowTestMode: true, mgmt: {} });
-        for (const word of ["test_respond", "test_advance", "agent_mode", "interception_id"]) assert.ok(on.includes(word), word);
+        for (const word of ["test_respond", "test_advance", "agent_mode", "interception_id", "expected_revision", "inputs", "vars"]) assert.ok(on.includes(word), word);
+        assert.ok(!on.includes("approval_respond"), on);
+        assert.ok(!on.includes("no test"), on);
         assert.ok(on.includes("cancel, stop, test, test_respond and test_advance),"), on);
         assert.ok(!/controller 1\.9\.0|when the workers run/.test(on), on);
         // read_workflow (review SF-5): off, its description names no test run's part either.
@@ -371,3 +388,430 @@ console.log("✅ every server registers update_workflow unless a test passes nul
     }
 }
 console.log("✅ update_workflow names the test operations, and read_workflow a test run's part, only with workflow test mode on");
+
+// 10. Phase 4 (Task 4): approval_respond 403 refusal pinned; list_creatable_workflows; create_session_for_workflow;
+//     read_workflow_skill; and workflow_definition (all 8 ops, operation_id, script warning, update:true, SF-2).
+{
+    const upd = toolsWith({
+        workflowCommands: true,
+        mgmt: { updateWorkflow: async () => { throw new Error("must not call mgmt for approval_respond"); } },
+    }).get("update_workflow");
+    const appRes = await upd({ session_id: SID, command: { operation: "approval_respond", approval_id: "a1", decision: "approve" } });
+    assert.equal(appRes.isError, true);
+    assert.deepEqual(JSON.parse(appRes.content[0].text), {
+        error: "A person must read and answer this approval directly in the portal. MCP cannot give consent.",
+        code: "FORBIDDEN",
+        status: 403,
+        session_id: SID,
+    });
+}
+
+{
+    const calls = [];
+    const handlers = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        mgmt: {
+            listCreatableWorkflows: async (viewer) => {
+                calls.push(["listCreatable", viewer]);
+                return [{ ref: "demo/echo", name: "echo", package: "demo", semver: "1.0.0" }];
+            },
+            createSessionForWorkflow: async (ref, opts) => {
+                calls.push(["createForWf", ref, opts]);
+                if (ref === "demo/skew") {
+                    throw Object.assign(new Error("changed"), { code: "PACKAGE_VERSION_CHANGED", status: 409 });
+                }
+                return { sessionId: "coord-1", workflowRef: ref, title: "echo · demo", model: "azure:gpt-5", reasoningEffort: "high" };
+            },
+            readWorkflowSkills: async (opts) => {
+                calls.push(["skills", opts]);
+                if (!opts?.name) return { skills: [{ name: "workflow-authoring", description: "d" }] };
+                if (opts.name === "workflow-authoring") return { name: "workflow-authoring", description: "d", content: "# Authoring" };
+                throw Object.assign(new Error("No Workflow skill"), { code: "WORKFLOW_SKILL_NOT_FOUND", status: 404 });
+            },
+        },
+    });
+
+    const listRes = JSON.parse((await handlers.get("list_creatable_workflows")({})).content[0].text);
+    assert.equal(listRes.count, 1);
+    assert.equal(listRes.workflows[0].ref, "demo/echo");
+    assert.deepEqual(calls[0], ["listCreatable", null]);
+
+    const createRes = JSON.parse((await handlers.get("create_session_for_workflow")({
+        ref: "demo/echo", model: "azure:gpt-5", reasoning_effort: "high", context_tier: "default", group_id: "g1",
+    })).content[0].text);
+    assert.deepEqual(createRes, {
+        session_id: "coord-1",
+        workflow_ref: "demo/echo",
+        title: "echo · demo",
+        model: "azure:gpt-5",
+        reasoning_effort: "high",
+        status: "created",
+        kickoff_sent: true,
+    });
+
+    const skewRes = await handlers.get("create_session_for_workflow")({ ref: "demo/skew" });
+    assert.equal(skewRes.isError, true);
+    const skewBody = JSON.parse(skewRes.content[0].text);
+    assert.equal(skewBody.code, "PACKAGE_VERSION_CHANGED");
+    assert.equal(skewBody.status, 409);
+    assert.equal("session_id" in skewBody, false);
+
+    const skillList = JSON.parse((await handlers.get("read_workflow_skill")({})).content[0].text);
+    assert.equal(skillList.count, 1);
+    assert.equal(skillList.skills[0].name, "workflow-authoring");
+
+    const skillRaw = (await handlers.get("read_workflow_skill")({ name: "workflow-authoring" })).content[0].text;
+    assert.ok(skillRaw.indexOf('"note"') >= 0 && skillRaw.indexOf('"note"') < skillRaw.indexOf('"content"'), "read_workflow_skill note must appear before content");
+    const skillBody = JSON.parse(skillRaw);
+    assert.equal(skillBody.name, "workflow-authoring");
+    assert.equal(skillBody.content, "# Authoring");
+    assert.match(skillBody.note, /load_skill\(name\) is read_workflow_skill \{ name \}/);
+    assert.match(skillBody.note, /poll read_workflow/);
+    assert.match(skillBody.note, /send_and_wait/);
+    assert.match(skillBody.note, /messaging/);
+
+    // B1, B3, B4: tool descriptions & schema text for workflow_definition, update_workflow, create_session_for_workflow
+    {
+        const specs = new Map();
+        registerWorkflowTools({ registerTool: (name, spec) => { specs.set(name, spec); } }, { workflowCommands: true, workflowTestMode: false, mgmt: {} });
+        const wdSpec = specs.get("workflow_definition");
+        const uwSpec = specs.get("update_workflow");
+        const csfwSpec = specs.get("create_session_for_workflow");
+        for (const [label, desc] of [["workflow_definition", wdSpec.description], ["update_workflow", uwSpec.description]]) {
+            assert.match(desc, /no .*test.*send_workflow_input/i, `${label} must state missing test and send_workflow_input`);
+            assert.match(desc, /send_and_wait/, `${label} must mention send_and_wait workaround`);
+            assert.match(desc, /messaging/, `${label} must mention messaging send workaround`);
+        }
+        assert.match(csfwSpec.description, /chat/i, "create_session_for_workflow must explain it starts a chat, not a run");
+        assert.match(csfwSpec.description, /workflow_definition.*start/i, "create_session_for_workflow must explain direct workflow_definition start");
+        assert.match(wdSpec.inputSchema.name.description, /Required for save/i, "workflow_definition.name must mark required for save");
+        assert.match(wdSpec.inputSchema.yaml.description, /metadata\.version.*quoted semver.*"1\.0\.0"/i, "workflow_definition.yaml must document quoted semver metadata.version");
+    }
+
+    const skill404 = await handlers.get("read_workflow_skill")({ name: "nope" });
+    assert.equal(skill404.isError, true);
+    assert.equal(JSON.parse(skill404.content[0].text).code, "WORKFLOW_SKILL_NOT_FOUND");
+}
+
+{
+    const calls = [];
+    const OWNER_SID = "b7f23cda-5cfd-4f0e-aff1-d6b0400b8da5";
+    const mgmt = {
+        validateWorkflowDefinition: async (yaml) => { calls.push(["validate", yaml]); return { valid: true, name: "sum", errors: [], warnings: [], graph: { initial: "a", states: [] }, inputsSchema: null }; },
+        listSessionWorkflowDefinitions: async (sid, opts) => { calls.push(["list", sid, opts]); return [{ definitionId: "d1", name: "sum" }]; },
+        readSessionWorkflowDefinition: async (sid, ref) => {
+            calls.push(["read", sid, ref]);
+            if (ref.name === "unattached/pkg") throw Object.assign(new Error("missing"), { code: "DEFINITION_NOT_FOUND", status: 404 });
+            if (ref.name === "own-wf") return { definitionId: "d-own", name: "own-wf", locked: false, graph: { states: [{ id: "w", type: "wait" }] } };
+            if (ref.definitionId === "d-script" || ref.name === "script-wf") {
+                return {
+                    definitionId: "d-script", name: "script-wf", locked: false,
+                    revision: { yaml: 'apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: script-wf, version: "1.0.0" }\ninitial: compute\nstates:\n  compute:\n    type: script\n    outcomes: [ok]\n    source: |\n      await callTool(context.inputs.tool, {});\n      await setResult("ok", {});\n    transition: { next: { ok: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n' },
+                    graph: { states: [{ id: "compute", type: "script" }] },
+                };
+            }
+            if (ref.definitionId === "d-pure-script" || ref.name === "pure-script-wf") {
+                return {
+                    definitionId: "d-pure-script", name: "pure-script-wf", locked: false,
+                    revision: { yaml: 'apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: pure-script-wf, version: "1.0.0" }\ninitial: compute\nstates:\n  compute:\n    type: script\n    outcomes: [ok]\n    source: |\n      await setResult("ok", { n: 1 });\n    transition: { next: { ok: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n' },
+                    graph: { states: [{ id: "compute", type: "script" }] },
+                };
+            }
+            if (ref.definitionId === "d-child-wf-script" || ref.name === "child-wf-script") {
+                return {
+                    definitionId: "d-child-wf-script", name: "child-wf-script", locked: false,
+                    revision: { yaml: 'apiVersion: pilotswarm.dev/v1\nkind: Workflow\nmetadata: { name: child-wf-script, version: "1.0.0" }\ninitial: compute\nstates:\n  compute:\n    type: script\n    outcomes: [ok]\n    source: |\n      await callTool("child_workflows", { operation: "list" });\n      await setResult("ok", {});\n    transition: { next: { ok: done, failure: done } }\n  done: { type: terminal, outcome: succeeded }\n' },
+                    graph: { states: [{ id: "compute", type: "script" }] },
+                };
+            }
+            if (ref.definitionId === "d-wait" || ref.name === "wait-wf") {
+                return { definitionId: "d-wait", name: "wait-wf", locked: false, graph: { states: [{ id: "hold", type: "wait" }] } };
+            }
+            return { definitionId: "d-pkg", name: "demo/pkg", locked: true, graph: { states: [{ id: "hold", type: "wait" }] } };
+        },
+        readSessionWorkflowCard: async (sid, ref) => { calls.push(["card", sid, ref]); return { name: ref.name, version: "1.0.0", card: "card text" }; },
+        saveSessionWorkflowDefinition: async (sid, req, opts) => { calls.push(["save", sid, req, opts]); return { definitionId: "d1", name: req.name, revision: 1, valid: true, replayed: false }; },
+        startSessionWorkflowDefinition: async (sid, req, opts) => {
+            calls.push(["start", sid, req, opts]);
+            const defId = req.definitionId ?? (
+                req.name === "script-wf" ? "d-script"
+                : req.name === "pure-script-wf" ? "d-pure-script"
+                : req.name === "child-wf-script" ? "d-child-wf-script"
+                : req.name === "wait-wf" ? "d-wait"
+                : "d-pkg"
+            );
+            return { operation: "start", definitionId: defId, name: req.name ?? "script-wf", revision: req.revision ?? 1, workflowId: "wf-1", runId: "r-1", replayed: false };
+        },
+        updateSessionWorkflowPackage: async (sid, req, opts) => { calls.push(["updatePkg", sid, req, opts]); return { operation: "attach", definitionId: "d-pkg", name: "demo/pkg", revision: 3, replayed: false }; },
+        deleteSessionWorkflowDefinition: async (sid, req, opts) => { calls.push(["delete", sid, req, opts]); return { operation: "delete", definitionId: "d1", name: req.name ?? "sum", deletedAt: "2026-11-27T00:00:00Z", replayed: false }; },
+        copySessionWorkflowDefinition: async (sid, req, opts) => { calls.push(["copy", sid, req, opts]); return { operation: "save", definitionId: "d-copy", name: "pkg", revision: 1, replayed: false }; },
+    };
+    const wfDef = toolsWith({ workflowCommands: true, originatingSessionId: "bound-orig", mgmt }).get("workflow_definition");
+
+    // validate without owner_session_id
+    const vRes = JSON.parse((await wfDef({ operation: "validate", yaml: "apiVersion: pilotswarm.dev/v1" })).content[0].text);
+    assert.equal(vRes.operation, "validate");
+    assert.equal(vRes.valid, true);
+
+    // missing owner_session_id on list
+    const missingOwner = await wfDef({ operation: "list" });
+    assert.equal(missingOwner.isError, true);
+    assert.equal(JSON.parse(missingOwner.content[0].text).code, "WORKFLOW_COMMAND_INVALID");
+
+    // missing operation_id on save/delete/copy/unkeyed start
+    for (const [op, extra] of [
+        ["save", { name: "x", yaml: "y" }],
+        ["delete", { name: "x" }],
+        ["copy", { name: "demo/pkg" }],
+        ["start", { name: "wait-wf" }],
+    ]) {
+        const res = await wfDef({ operation: op, owner_session_id: OWNER_SID, ...extra });
+        assert.equal(res.isError, true, `${op} without operation_id must fail`);
+        const body = JSON.parse(res.content[0].text);
+        assert.equal(body.code, "WORKFLOW_COMMAND_INVALID");
+        assert.equal(body.status, 400);
+        assert.equal(body.error, `operation_id is required for ${op}: choose a new id for this change and reuse it unchanged only to retry this same call.`);
+    }
+
+    // list, read, card, save, delete, copy + ctx.originatingSessionId wins over arg
+    const listOut = JSON.parse((await wfDef({ operation: "list", owner_session_id: OWNER_SID, include_deleted: true })).content[0].text);
+    assert.equal(listOut.operation, "list");
+    assert.equal(listOut.owner_session_id, OWNER_SID);
+
+    const cardOut = JSON.parse((await wfDef({ operation: "card", owner_session_id: OWNER_SID, name: "demo/pkg" })).content[0].text);
+    assert.equal(cardOut.operation, "card");
+    assert.equal(cardOut.name, "demo/pkg");
+
+    await wfDef({ operation: "save", owner_session_id: OWNER_SID, name: "sum", yaml: "y", operation_id: "op-s1", originating_session_id: "spoofed" });
+    assert.equal(calls.at(-1)[3].originatingSessionId, "bound-orig");
+
+    // start with script state calling callTool -> appends WORKFLOW_PERSON_START_NO_TOOL_BINDING; keyed start without operation_id derives key:<k>
+    const scriptStart = JSON.parse((await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "script-wf", key: "k1", workspace: "none",
+    })).content[0].text);
+    assert.equal(scriptStart.operation, "start");
+    assert.ok(scriptStart.warnings?.some(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING"));
+    const startCall = calls.find(c => c[0] === "start");
+    assert.equal(startCall[2].operationId, "key:k1");
+    assert.equal(startCall[2].key, "k1");
+
+    // start with pure script state (no callTool) or child_workflows-only script -> no WORKFLOW_PERSON_START_NO_TOOL_BINDING warning
+    const pureScriptStart = JSON.parse((await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "pure-script-wf", operation_id: "op-ps1", workspace: "none",
+    })).content[0].text);
+    assert.equal(Boolean(pureScriptStart.warnings?.some(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")), false);
+
+    const childWfScriptStart = JSON.parse((await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "child-wf-script", operation_id: "op-cw1", workspace: "none",
+    })).content[0].text);
+    assert.equal(Boolean(childWfScriptStart.warnings?.some(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")), false);
+
+    // start without script state -> no WORKFLOW_PERSON_START_NO_TOOL_BINDING warning
+    const waitStart = JSON.parse((await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "wait-wf", operation_id: "op-w1", workspace: "none",
+    })).content[0].text);
+    assert.equal(Boolean(waitStart.warnings?.some(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")), false);
+
+    // start { update: true } on attached locked pkg -> calls updateSessionWorkflowPackage with ${opId}:update and pins revision: 3
+    calls.length = 0;
+    const updStart = JSON.parse((await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, operation_id: "op-u1", workspace: "none",
+    })).content[0].text);
+    assert.equal(updStart.revision, 3);
+    const updCall = calls.find(c => c[0] === "updatePkg");
+    assert.equal(updCall[2].operationId, "op-u1:update");
+    assert.equal(updCall[3].originatingSessionId, "bound-orig");
+    const stCall = calls.find(c => c[0] === "start");
+    assert.equal(stCall[2].revision, 3);
+
+    // start { update: true } on unattached or non-locked definition -> 400 WORKFLOW_COMMAND_INVALID
+    for (const badName of ["unattached/pkg", "own-wf"]) {
+        const badUpd = await wfDef({ operation: "start", owner_session_id: OWNER_SID, name: badName, update: true, operation_id: "op-bad" });
+        assert.equal(badUpd.isError, true);
+        const body = JSON.parse(badUpd.content[0].text);
+        assert.equal(body.code, "WORKFLOW_COMMAND_INVALID");
+        assert.equal(body.status, 400);
+        assert.match(body.error, /create_session_for_workflow/);
+    }
+
+    // SF-1: keyed start { update: true } retried with a different operation_id derives key:<k>:update so update replays
+    calls.length = 0;
+    const updSeen = new Map();
+    const keyedMgmt = {
+        readSessionWorkflowDefinition: async () => ({ definitionId: "d-pkg", name: "demo/pkg", locked: true, graph: { states: [{ id: "hold", type: "wait" }] } }),
+        updateSessionWorkflowPackage: async (_sid, req) => {
+            calls.push(["updatePkg", req.operationId]);
+            if (updSeen.has(req.operationId)) return { ...updSeen.get(req.operationId), replayed: true };
+            const receipt = { operation: "attach", definitionId: "d-pkg", name: "demo/pkg", revision: updSeen.size + 2 };
+            updSeen.set(req.operationId, receipt);
+            return { ...receipt, replayed: false };
+        },
+        startSessionWorkflowDefinition: async (_sid, req) => {
+            calls.push(["start", req.revision, req.operationId, req.key]);
+            return { operation: "start", definitionId: "d-pkg", name: "demo/pkg", revision: req.revision, workflowId: "wf-k", runId: "r-k", replayed: false };
+        },
+    };
+    const keyedWfDef = toolsWith({ workflowCommands: true, mgmt: keyedMgmt }).get("workflow_definition");
+    const kRun1 = JSON.parse((await keyedWfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, key: "k-upd", operation_id: "op-a", workspace: "none",
+    })).content[0].text);
+    const kRun2 = JSON.parse((await keyedWfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, key: "k-upd", operation_id: "op-b", workspace: "none",
+    })).content[0].text);
+    assert.equal(kRun1.revision, 2);
+    assert.equal(kRun2.revision, 2, "keyed retry with different operation_id must reuse key-derived update op id and pin original revision");
+    assert.deepEqual(calls.filter(c => c[0] === "updatePkg"), [["updatePkg", "key:k-upd:update"], ["updatePkg", "key:k-upd:update"]]);
+
+    // N-2: 256-char operation_id with update:true produces <=256-char hashed update operationId
+    calls.length = 0;
+    const longOpId = "x".repeat(256);
+    await keyedWfDef({ operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, operation_id: longOpId, workspace: "none" });
+    const longUpdCall = calls.find(c => c[0] === "updatePkg");
+    assert.ok(longUpdCall && longUpdCall[1].length <= 256, `update operationId exceeded 256 chars: ${longUpdCall?.[1]?.length}`);
+
+    // N-3: PERSON_START_TOOL_BINDING_WARNING carries severity: "warning"
+    assert.equal(scriptStart.warnings.find(w => w.code === "WORKFLOW_PERSON_START_NO_TOOL_BINDING")?.severity, "warning");
+
+    // N-10: update: true combined with run_again_of is refused 400 WORKFLOW_COMMAND_INVALID
+    const badCombo = await wfDef({
+        operation: "start", owner_session_id: OWNER_SID, name: "demo/pkg", update: true, run_again_of: "wf-old", operation_id: "op-combo",
+    });
+    assert.equal(badCombo.isError, true);
+    assert.equal(JSON.parse(badCombo.content[0].text).code, "WORKFLOW_COMMAND_INVALID");
+
+    // delete & copy
+    const delOut = JSON.parse((await wfDef({ operation: "delete", owner_session_id: OWNER_SID, name: "sum", operation_id: "op-d1" })).content[0].text);
+    assert.equal(delOut.operation, "delete");
+    const copyOut = JSON.parse((await wfDef({ operation: "copy", owner_session_id: OWNER_SID, name: "demo/pkg", operation_id: "op-c1" })).content[0].text);
+    assert.equal(copyOut.operation, "copy");
+
+    // Proposed Q1: ctx.originatingSessionId overrides caller arg on create_session_for_workflow
+    let seenCsfwOpts = null;
+    const csfw = toolsWith({
+        webMode: true,
+        workflowsAdvert: { validate: true, card: true, skills: true },
+        originatingSessionId: "bound-wf-child",
+        mgmt: {
+            createSessionForWorkflow: async (_ref, opts) => {
+                seenCsfwOpts = opts;
+                throw Object.assign(new Error("Sessions inside a Workflow cannot create or change workflow definitions."), {
+                    code: "WORKFLOW_DEFINITION_TOOLS_REFUSED",
+                    status: 403,
+                });
+            },
+        },
+    }).get("create_session_for_workflow");
+    const csfwDenied = await csfw({ ref: "demo/echo", originating_session_id: "spoofed" });
+    assert.equal(seenCsfwOpts.originatingSessionId, "bound-wf-child");
+    assert.equal(csfwDenied.isError, true);
+    assert.equal(JSON.parse(csfwDenied.content[0].text).code, "WORKFLOW_DEFINITION_TOOLS_REFUSED");
+
+    // Proposed Q3: older-portal advert reflection in buildCapabilities & 501 WORKFLOW_API_UNAVAILABLE on missing route
+    const olderAdvert = { schema: 1, enabled: true, apiVersion: "pilotswarm.dev/v1", read: true };
+    const { tool: olderTool } = await describedBy({
+        ...capabilityCtx(webClient({ ok: true, workflows: olderAdvert }), { workflowCommands: true, webMode: true }),
+        workflowsAdvert: olderAdvert,
+    });
+    assert.deepEqual(olderTool.workflow_tools, {
+        read: true, catalog: true, session_for_workflow: true, skills: false, commands: true, definitions: false,
+    });
+    const newerAdvert = { schema: 1, enabled: true, apiVersion: "pilotswarm.dev/v1", read: true, validate: true, skills: true, card: true };
+    const { tool: newerTool } = await describedBy({
+        ...capabilityCtx(webClient({ ok: true, workflows: newerAdvert }), { workflowCommands: true, webMode: true }),
+        workflowsAdvert: newerAdvert,
+    });
+    assert.deepEqual(newerTool.workflow_tools, {
+        read: true, catalog: true, session_for_workflow: true, skills: true, commands: true, definitions: true,
+    });
+
+    const missingRouteErr = () => Object.assign(new Error("Unknown API route: POST /api/v1/workflow-definitions/validate"), {
+        code: "NOT_FOUND",
+        status: 404,
+    });
+    const olderTools = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        mgmt: {
+            readWorkflowSkills: async () => { throw missingRouteErr(); },
+            validateWorkflowDefinition: async () => { throw missingRouteErr(); },
+            readSessionWorkflowCard: async () => { throw missingRouteErr(); },
+        },
+    });
+    const sk501 = JSON.parse((await olderTools.get("read_workflow_skill")({})).content[0].text);
+    assert.equal(sk501.code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(sk501.status, 501);
+    const val501 = JSON.parse((await olderTools.get("workflow_definition")({ operation: "validate", yaml: "x" })).content[0].text);
+    assert.equal(val501.code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(val501.status, 501);
+    const card501 = JSON.parse((await olderTools.get("workflow_definition")({ operation: "card", owner_session_id: OWNER_SID, name: "demo/echo" })).content[0].text);
+    assert.equal(card501.code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(card501.status, 501);
+    assert.equal(card501.session_id, OWNER_SID);
+
+    // SF-3: older-portal advert fails closed (501 WORKFLOW_API_UNAVAILABLE) for originatingSessionId and name-only start/delete/copy
+    let skewReachedMgmt = false;
+    const skewTools = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        workflowsAdvert: olderAdvert,
+        originatingSessionId: "inside-wf-1",
+        mgmt: {
+            createSessionForWorkflow: async () => { skewReachedMgmt = true; return {}; },
+            saveSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            startSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            deleteSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            copySessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+        },
+    });
+    const skewCsfw = await skewTools.get("create_session_for_workflow")({ ref: "demo/echo" });
+    assert.equal(skewCsfw.isError, true);
+    assert.equal(JSON.parse(skewCsfw.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(JSON.parse(skewCsfw.content[0].text).status, 501);
+
+    const skewSave = await skewTools.get("workflow_definition")({
+        operation: "save", owner_session_id: OWNER_SID, name: "w", yaml: "y", operation_id: "op-1",
+    });
+    assert.equal(skewSave.isError, true);
+    assert.equal(JSON.parse(skewSave.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+
+    const skewNoOrigTools = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        workflowsAdvert: olderAdvert,
+        mgmt: {
+            startSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            deleteSessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+            copySessionWorkflowDefinition: async () => { skewReachedMgmt = true; return {}; },
+        },
+    });
+    for (const op of ["start", "delete", "copy"]) {
+        const res = await skewNoOrigTools.get("workflow_definition")({
+            operation: op, owner_session_id: OWNER_SID, name: "by-name-only", operation_id: `op-${op}`,
+        });
+        assert.equal(res.isError, true, `older portal must fail closed for name-only ${op}`);
+        assert.equal(JSON.parse(res.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+        assert.equal(JSON.parse(res.content[0].text).status, 501);
+    }
+    assert.equal(skewReachedMgmt, false, "older-portal fail-closed guard must stop before hitting mgmt");
+
+    // Missing (null) advert in web mode fails closed (501 WORKFLOW_API_UNAVAILABLE) on mutations
+    let nullAdvertReachedMgmt = false;
+    const nullAdvertTools = toolsWith({
+        webMode: true,
+        workflowCommands: true,
+        workflowsAdvert: null,
+        mgmt: {
+            deleteSessionWorkflowDefinition: async () => { nullAdvertReachedMgmt = true; return {}; },
+        },
+    });
+    const nullAdvertDel = await nullAdvertTools.get("workflow_definition")({
+        operation: "delete", owner_session_id: OWNER_SID, name: "by-name-only", operation_id: "op-null-advert",
+    });
+    assert.equal(nullAdvertDel.isError, true, "null advert in web mode must fail closed on mutation");
+    assert.equal(JSON.parse(nullAdvertDel.content[0].text).code, "WORKFLOW_API_UNAVAILABLE");
+    assert.equal(JSON.parse(nullAdvertDel.content[0].text).status, 501);
+    assert.equal(nullAdvertReachedMgmt, false);
+}
+
+console.log("✅ Phase 4 MCP workflow tools unit suite passed");

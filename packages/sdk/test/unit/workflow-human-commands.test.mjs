@@ -105,15 +105,18 @@ test("advertises the workflow support the host was configured with: a person's c
         schema: WORKFLOW_CAPABILITIES_SCHEMA,
         enabled: true,
         decision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
-        apiVersion: WORKFLOW_API_VERSION, read: true, create: false, input: false,
+        apiVersion: WORKFLOW_API_VERSION, read: true, validate: true, skills: true, card: true, create: false, input: false,
         commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
     });
     assert.equal(off.apiVersion, "pilotswarm.dev/v1");
     assert.deepEqual(workflowCapabilities({ read: true, commands: undefined }), off);
     // Workflows are always on (owner 2026-11-08T08:03Z): `enabled` is always true, kept for an older client.
     assert.equal(workflowCapabilities({ read: false, commands: {} }).enabled, true);
-    // Without a workflow store, reads are not advertised.
+    // Without a workflow store, reads (and card) are not advertised.
     assert.equal(workflowCapabilities({ read: false, commands: null }).read, false);
+    assert.equal(workflowCapabilities({ read: false, commands: null }).card, false);
+    assert.equal(workflowCapabilities({ read: false, commands: null }).validate, true);
+    assert.equal(workflowCapabilities({ read: false, commands: null }).skills, true);
     // On: the controller and the operations every host takes: stop and, with workflow test mode on, the test operations
     // (Workflow Simplified, spec 16: test mode is hidden unless it is on).
     const milestone = workflowCapabilities({ read: true, commands: { testMode: true } }).commands;

@@ -270,6 +270,8 @@
     "test/local/workflow-start-limits.test.js",
     "test/local/workflow-start-review.test.js",
     "test/local/workflow-stop.test.js",
+    "test/local/workflow-surface-sdk.test.js",
+    "test/local/workflow-surface-webapi.test.js",
     "test/local/workflow-test-agents.test.js",
     "test/local/workflow-test-mode.test.js",
     "test/local/workflow-version-fence.test.js",

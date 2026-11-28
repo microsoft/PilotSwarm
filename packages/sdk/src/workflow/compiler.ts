@@ -742,6 +742,8 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
             "This script is too deeply nested to analyze. Its module syntax and tool requirements could not be checked; run-time checks still apply.");
         if (analysis.concurrent) diagnostics.warning("WORKFLOW_TOOLS_CONCURRENT", `${path}.source`,
             `Promise.all or Promise.allSettled may overlap this script's tool calls. ${WORKFLOW_TOOL_CONCURRENCY_MESSAGE}`);
+        if (analysis.contextVars) diagnostics.warning("WORKFLOW_SCRIPT_CONTEXT_VARS", `${path}.source`,
+            "The script context has context.kv, not context.vars (context.vars is undefined at run time). Use context.kv instead.");
     }
     let timeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS;
     if (raw.timeoutSeconds !== undefined) {

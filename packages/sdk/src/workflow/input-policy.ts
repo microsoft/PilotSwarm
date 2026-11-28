@@ -135,6 +135,12 @@ export function effectiveChildLevel(
  */
 export const WORKFLOW_DEFINITION_TOOLS: readonly string[] = ["spawn_workflow", "update_workflow", "workflow_definition"];
 
+/**
+ * MCP-only A1 tool list (proposed; owner to confirm): adds create_session_for_workflow without widening
+ * WORKFLOW_DEFINITION_TOOLS (which also filters built-in tools).
+ */
+export const WORKFLOW_DEFINITION_MCP_TOOLS: readonly string[] = [...WORKFLOW_DEFINITION_TOOLS, "create_session_for_workflow"];
+
 /** The code of the A1 refusal. */
 export const WORKFLOW_DEFINITION_TOOLS_REFUSED = "WORKFLOW_DEFINITION_TOOLS_REFUSED";
 
@@ -161,7 +167,7 @@ export async function sessionInsideWorkflow(store: Pick<WorkflowStore, "readWork
 export function workflowDefinitionMcpToolFilters(serverNames: Iterable<string>): string[] {
     const filters: string[] = [];
     for (const server of serverNames) {
-        for (const tool of WORKFLOW_DEFINITION_TOOLS) filters.push(`mcp:${server}-${tool}`, `${server}-${tool}`);
+        for (const tool of WORKFLOW_DEFINITION_MCP_TOOLS) filters.push(`mcp:${server}-${tool}`, `${server}-${tool}`);
     }
     return filters;
 }
@@ -172,7 +178,7 @@ export function workflowDefinitionMcpToolFilters(serverNames: Iterable<string>):
  */
 export function workflowDefinitionMcpPermission<A extends unknown[], R>(base: (request: { kind?: string; toolName?: string } | undefined, ...rest: A) => R)
     : (request: { kind?: string; toolName?: string } | undefined, ...rest: A) => R | { kind: "reject"; feedback: string } {
-    return (request, ...rest) => (request?.kind === "mcp" && typeof request.toolName === "string" && WORKFLOW_DEFINITION_TOOLS.includes(request.toolName)
+    return (request, ...rest) => (request?.kind === "mcp" && typeof request.toolName === "string" && WORKFLOW_DEFINITION_MCP_TOOLS.includes(request.toolName)
         ? { kind: "reject", feedback: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT }
         : base(request, ...rest));
 }

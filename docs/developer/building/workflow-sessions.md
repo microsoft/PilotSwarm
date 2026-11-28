@@ -700,10 +700,16 @@ whether the caller may change it); a person's changes are
 `deleteSessionWorkflowDefinition` (see the [API reference](../../api/reference.md)).
 
 **Known limits:** the terminal UI still groups a session's Workflows by name, as
-in stage 1, and has no revision picker, save or Compare; the MCP server has no
-definition tools. A person starts a Workflow of a session's definition with no
-tool binding of the session's, so its scripts' `callTool` finds no permitted
-tool.
+in stage 1, and has no revision picker, save or Compare. A person (via Web API,
+portal, TUI, or MCP `workflow_definition` `start`) starts a Workflow of a
+session's definition with no captured session tool grant: literal `callTool`
+requirements (other than `child_workflows`) fail at Start with
+`409 WORKFLOW_TOOLS_UNAVAILABLE`, and successful MCP starts of revisions with a
+`script` state calling `callTool` append warning `WORKFLOW_PERSON_START_NO_TOOL_BINDING`. Approvals
+(`approval_respond`) remain portal-only and are refused over MCP (`403 FORBIDDEN`).
+SF-2 (`originatingSessionId`) refuses session-definition mutations/starts and
+`create_session_for_workflow` from inside a Workflow (`403 WORKFLOW_DEFINITION_TOOLS_REFUSED`);
+known limit: `create_session` + `send_message` is not blocked by SF-2.
 
 The rest of this page describes the workflow child underneath, its graph and
 the workflow screen a Master of Agents panel still shows.
@@ -1651,8 +1657,12 @@ and a person can send workflow commands.
   Base V1 session's index, and Base V2's), and not while they are off.
 - The portal and the terminal UI always show the Workflow button, tab, pane,
   `w` key and Workflow rows.
-- MCP always registers `read_workflow` and `update_workflow`; the portal and
-  MCP take a person's workflow commands.
+- MCP always registers `read_workflow`, `list_creatable_workflows`,
+  `create_session_for_workflow`, and `read_workflow_skill`, projects
+  `session_kind` on `list_sessions`, and registers `update_workflow` and
+  `workflow_definition` (`list`, `read`, `save`, `start`, `delete`, `copy`,
+  `card`, `validate`) unless `workflowCommands: null` is passed in tests; the
+  portal and MCP take a person's workflow commands.
 - The bootstrap's `workflows` keeps its `enabled` field and always says
   `true`, so an older portal or client keeps working; today's clients do not
   read it.

@@ -495,8 +495,8 @@ an MCP client and from the terminal. Two facts hold everywhere:
 
 | | Portal | SDK and HTTP API | MCP server | Terminal UI |
 |---|---|---|---|---|
-| Write and save a definition | Ask the session, or edit the YAML | Ask the session, or `saveSessionWorkflowDefinition` | Ask the session (`send_and_wait`) | Ask the session, or `e` |
-| Start it | **Start…** | Ask the session, or `startSessionWorkflowDefinition` | Ask the session | `S` |
+| Write and save a definition | Ask the session, or edit the YAML | Ask the session, or `saveSessionWorkflowDefinition` | `read_workflow_skill` + `workflow_definition` (`validate`, `save`), or ask the session | Ask the session, or `e` |
+| Start it | **Start…** | Ask the session, or `startSessionWorkflowDefinition` | `list_creatable_workflows` + `create_session_for_workflow`, or `workflow_definition` `start` | `S` |
 | Watch it | Graph, Log, timeline | `readWorkflow`, `getSessionEvents` | `read_workflow` | `w` |
 | Pause, resume, stop, cancel, variables | Header buttons, **Variables** | `updateWorkflow` | `update_workflow` | `p` `r` `s` `c`, `v` `V` |
 | Answer its request | Answer the session | Send the session a prompt | `send_and_wait` to the session | Answer the session |
@@ -663,22 +663,28 @@ pilotswarm auth login --api-url https://portal.example.com   # on an Entra deplo
 pilotswarm-mcp --api-url https://portal.example.com
 ```
 
-It has two Workflow tools:
+It exposes six Workflow tools (and projects `session_kind: "agent" | "workflow"` on every `list_sessions` row):
 
 | Tool | What it does |
 |---|---|
+| `list_creatable_workflows` | List ready-made packaged Workflows (`<package>/<name>`) available to start on this deployment. |
+| `create_session_for_workflow` | Create a coordinating chat agent session for a packaged `<package>/<name>` Workflow (greets and asks for inputs; call `workflow_definition` `start` with `name: "<package>/<name>"` and `inputs` on the returned session to start directly). |
+| `read_workflow_skill` | List packaged Workflow authoring skills (omit `name`) or read one skill's Markdown guide by `name` (start with `workflow-authoring`). |
+| `workflow_definition` | Validate (`validate`, no session or DB write needed), `list`, `read`, inspect package `card`, `save`, `start`, `delete`, or `copy` session Workflow Definitions on an `owner_session_id` (created via `create_session`). Pass `key` (preferred) or `operation_id` on `start`, a fresh `operation_id` on `save`/`delete`/`copy`, and `workspace: "none"` when starting on a fresh 0-turn session. |
 | `read_workflow` | Read a Workflow: `session_id` (the Workflow's), and optionally `run_id`, `limit` and `cursor` for older pages. |
-| `update_workflow` | A person's control: `session_id` and `command` (`{ operation, operation_id, ... }`, as for `updateWorkflow` above). Owner or admin only. |
+| `update_workflow` | A person's control: `session_id` and `command` (`{ operation, operation_id, ... }`, as for `updateWorkflow` above). Owner or admin only. Approval steps (`approval_respond`) remain portal-only and are refused over MCP. |
 
-The MCP server has no tools to list, save or start definitions, or to answer
-a request. Do those by talking to the owning session with `send_and_wait`.
-For example, to start a Workflow, check on it and stop it:
+To run a packaged Workflow, call `list_creatable_workflows` and then
+`create_session_for_workflow { ref: "<package>/<name>" }`, then talk to the
+coordinating session with `send_and_wait`.
 
-1. `send_and_wait` with the owner's `session_id` and the message "Start
-   release-readiness and tell me its Workflow id."
-2. `read_workflow` with that id as `session_id`: the run's status and steps.
-3. `update_workflow` with `session_id` and `command: { operation: "stop",
-   operation_id: "stop-1", grace_seconds: 60 }`.
+To write and run your own Workflow directly from an MCP client:
+
+1. Call `read_workflow_skill { name: "workflow-authoring" }` for the YAML guide.
+2. Call `create_session {}` to create a top-level `owner_session_id`.
+3. Call `workflow_definition { operation: "validate", yaml }` to check the YAML without writing a revision.
+4. Call `workflow_definition { operation: "save", owner_session_id, name, yaml, operation_id }` and then `workflow_definition { operation: "start", owner_session_id, name, inputs, workspace: "none", key }`. Note that person starts have no captured session tool grant (literal `callTool` requirements fail with `409 WORKFLOW_TOOLS_UNAVAILABLE` and scripts that call `callTool` emit `WORKFLOW_PERSON_START_NO_TOOL_BINDING`; have the session's agent start definitions whose scripts need session tools).
+5. Poll `read_workflow { session_id: "<workflowId>" }` for progress and output, and control runs with `update_workflow`. To answer a Workflow `request` step, message `owner_session_id` with `send_and_wait`.
 
 ## 2.4 The terminal UI
 
