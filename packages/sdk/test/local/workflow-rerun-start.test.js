@@ -1147,4 +1147,89 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
             }
         });
     });
+
+    it("removes its own unadmitted claim shell after any admission refusal, fresh or resumed, and never a concurrent delivery's admitted Workflow (RR-4)", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            const shellRow = async (id) => (await pool.query(`SELECT deleted_at FROM ${s}.sessions WHERE session_id = $1`, [id])).rows[0] ?? null;
+            // A host whose admission runs `before` (between the claim and createDefinition), then the real admission.
+            const hookHost = (before) => ({ ...h, store: Object.assign(Object.create(h.store), {
+                createDefinition: async (arg) => { await before(arg); return h.store.createDefinition(arg); },
+            }) });
+            const rerunOf = (src, extra) => ({
+                ownerSessionId: src.ownerSessionId, definition: { definitionId: src.definitionId }, inputs: {}, actor: OWNER_ACTOR, owner: OWNER,
+                rerunFrom: { workflowId: src.workflowId, executionId: src.ids["step2#1"], mode: "run_again" }, ...extra,
+            });
+            try {
+                // (a) Fresh claim; the owner session completes (not deleted) before the admission: SESSION_NOT_LIVE.
+                const srcA = await seedEndedSessionWorkflow(h);
+                let shellA = null;
+                await expectCode(startSessionWorkflowDefinition(hookHost(async (arg) => {
+                    shellA = arg.workflowSessionId;
+                    await pool.query(`UPDATE ${s}.sessions SET state = 'completed' WHERE session_id = $1`, [srcA.ownerSessionId]);
+                }), rerunOf(srcA, { operationId: "rr4-owner-completed" })), "SESSION_NOT_LIVE");
+                expect(shellA).toBeTruthy();
+                expect((await shellRow(shellA))?.deleted_at ?? null).not.toBeNull();
+
+                // (b) Fresh claim; the session's definition is deleted before the admission: DEFINITION_DELETED.
+                const srcB = await seedEndedSessionWorkflow(h);
+                let shellB = null;
+                await expectCode(startSessionWorkflowDefinition(hookHost(async (arg) => {
+                    shellB = arg.workflowSessionId;
+                    await pool.query(`UPDATE ${s}.session_workflow_definitions SET deleted_at = now() WHERE definition_id = $1`, [srcB.definitionId]);
+                }), rerunOf(srcB, { operationId: "rr4-definition-deleted" })), "DEFINITION_DELETED");
+                expect((await shellRow(shellB))?.deleted_at ?? null).not.toBeNull();
+
+                // (c) A claim left by a crash (kept for its retry); the retry resumes it and is refused in its admission.
+                const srcC = await seedEndedSessionWorkflow(h);
+                const keyC = `rr4-resumed-${randomUUID()}`;
+                let shellC = null;
+                const crashHost = { ...h, store: Object.assign(Object.create(h.store), {
+                    createDefinition: async (arg) => { shellC = arg.workflowSessionId; throw new Error("simulated crash after claim"); },
+                }) };
+                await expect(startSessionWorkflowDefinition(crashHost, rerunOf(srcC, { operationId: "rr4-resumed-1", key: keyC })))
+                    .rejects.toThrow("simulated crash after claim");
+                expect((await shellRow(shellC))?.deleted_at).toBeNull();
+                await expectCode(startSessionWorkflowDefinition(hookHost(async () => {
+                    await pool.query(`UPDATE ${s}.sessions SET state = 'failed' WHERE session_id = $1`, [srcC.ownerSessionId]);
+                }), rerunOf(srcC, { operationId: "rr4-resumed-2", key: keyC })), "SESSION_NOT_LIVE");
+                expect((await shellRow(shellC))?.deleted_at ?? null).not.toBeNull();
+
+                // (d) Two deliveries of one keyed Start: A claims and is refused (RERUN_APPROVAL_REUSED, for another actor) only
+                // after B, which resumed A's claim, committed its admission. A's cleanup must leave B's admitted Workflow.
+                const srcD = await seedEndedSessionWorkflow(h);
+                const keyD = `rr4-concurrent-${randomUUID()}`;
+                let claimedD = null;
+                let releaseA;
+                const aMayRefuse = new Promise(resolve => { releaseA = resolve; });
+                let aEntered;
+                const aInAdmission = new Promise(resolve => { aEntered = resolve; });
+                const refusingHost = { ...h, store: Object.assign(Object.create(h.store), {
+                    createDefinition: async (arg) => {
+                        claimedD = arg.workflowSessionId;
+                        aEntered();
+                        await aMayRefuse;
+                        throw new WorkflowStoreError("RERUN_APPROVAL_REUSED", "simulated: another actor may not reuse the answered approval");
+                    },
+                }) };
+                const startA = startSessionWorkflowDefinition(refusingHost, rerunOf(srcD, { operationId: "rr4-a", key: keyD }));
+                const settledA = startA.then(() => null, error => error);
+                await aInAdmission;
+                const b = await startSessionWorkflowDefinition(h, rerunOf(srcD, { operationId: "rr4-b", key: keyD }));
+                expect(b.workflowId).toBe(claimedD);
+                expect(b.runId).toBeTruthy();
+                releaseA();
+                const errorA = await settledA;
+                expect(errorA).toBeInstanceOf(WorkflowStoreError);
+                expect(errorA.code).toBe("RERUN_APPROVAL_REUSED");
+                expect((await shellRow(b.workflowId))?.deleted_at).toBeNull();
+                const { rows: runsD } = await pool.query(`SELECT run_id FROM ${s}.workflow_runs WHERE workflow_session_id = $1`, [b.workflowId]);
+                expect(runsD.map(r => r.run_id)).toEqual([b.runId]);
+            } finally {
+                await pool.end();
+            }
+        });
+    });
 });

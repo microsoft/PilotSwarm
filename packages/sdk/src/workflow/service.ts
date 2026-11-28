@@ -1147,10 +1147,18 @@ export async function createWorkflow(host: WorkflowHost, request: CreateWorkflow
             ...(request.start?.rerun ? { rerun: request.start.rerun } : {}),
         });
     } catch (error) {
-        if (claim.created && error instanceof WorkflowStoreError
-            && (error.code === "RUN_ENDED" || error.code.startsWith("RERUN_"))
-            && host.catalog.softDeleteSession) {
-            await host.catalog.softDeleteSession(request.workflowSessionId);
+        // RR-4 (S5): a refused admission rolled back; this request's claim shell is removed in a transaction of its own, and
+        // only while it is still bare (an admitted Workflow of a concurrent delivery, or another request's claim, is kept). A
+        // re-run Start removes it after any refusal, whether it made the claim or resumed one; other creations after the
+        // refusals that end their request. An error that is not a refusal (or a lost cleanup) leaves it to the retry or the Sweeper.
+        const rerunStart = Boolean(request.start?.rerun || request.rerunPin);
+        if (error instanceof WorkflowStoreError
+            && (rerunStart || (claim.created && (error.code === "RUN_ENDED" || error.code.startsWith("RERUN_"))))) {
+            try {
+                await host.store.softDeleteRefusedClaimShell({ workflowSessionId: request.workflowSessionId, operationId: request.operationId, requestSha256 });
+            } catch {
+                // The refusal is the answer; a shell this could not remove is collected by the Sweeper after its grace period.
+            }
         }
         throw error;
     }

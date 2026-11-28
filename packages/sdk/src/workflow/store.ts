@@ -4610,6 +4610,31 @@ export class WorkflowStore {
     }
 
     /**
+     * RR-4: after its admission was refused (and rolled back), a Start soft-deletes the claim shell it holds, in a transaction
+     * of its own, under the shell's row lock (FOR NO KEY UPDATE: the lock an admission and the Sweeper take). Only a bare shell
+     * of this request is deleted: a live Workflow session with no definition and no run, whose claim records this operation and
+     * request hash. A concurrent delivery of the same request that committed its admission first keeps its Workflow, and a
+     * claim of another request is never touched. Returns whether it deleted the shell.
+     */
+    async softDeleteRefusedClaimShell(input: { workflowSessionId: string; operationId: string; requestSha256: string | null }): Promise<boolean> {
+        return this.transaction(async client => {
+            const { rows } = await client.query(
+                `SELECT session_kind, is_system, deleted_at, creation_config->'workflow'->>'operationId' AS operation_id,
+                        creation_config->'workflow'->>'requestSha256' AS request_sha256
+                   FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [input.workflowSessionId]);
+            const row = rows[0];
+            if (!row || row.deleted_at !== null || row.is_system === true || row.session_kind !== "workflow") return false;
+            if (row.operation_id !== input.operationId || (row.request_sha256 ?? null) !== input.requestSha256) return false;
+            const { rows: [held] } = await client.query(
+                `SELECT EXISTS (SELECT 1 FROM ${this.t.definitions} WHERE workflow_session_id = $1) AS has_def,
+                        EXISTS (SELECT 1 FROM ${this.t.runs} WHERE workflow_session_id = $1) AS has_run`, [input.workflowSessionId]);
+            if (held?.has_def === true || held?.has_run === true) return false;
+            await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.workflowSessionId]);
+            return true;
+        });
+    }
+
+    /**
      * UXP-AD-01: a run's latest control action that names who took it: the newest of its Workflow's workflow.paused,
      * workflow.resumed, workflow.vars_set, workflow.stop_requested and workflow.cancelled events (a cancel command's; a
      * "done" is no control action) whose data names an actor, with the reason as it was stored and, for a person, the
