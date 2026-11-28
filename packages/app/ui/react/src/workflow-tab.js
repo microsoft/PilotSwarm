@@ -1434,7 +1434,7 @@ export function WorkflowApprovalDetails({ controller, sessionId, approval }) {
         h("h4", null, "Proposal context"),
         h("pre", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, JSON.stringify(approval.context, null, 2)),
         h("p", { className: "ps-wf-muted" }, "This answer applies only to this proposal. It grants no permission for later Azure, Git or Azure DevOps actions."),
-        approval.decision ? h("p", null, `Answered by ${approval.decision.decidedBy?.displayName ?? "Workflow owner"} at `
+        approval.decision ? h("p", null, `Answered by ${approval.decision.decidedBy?.name ?? approval.decision.decidedBy?.displayName ?? "Workflow owner"} at `
             + `${workflowTimeTitle(approval.decision.decidedAt)}${approval.decision.reason ? `: ${approval.decision.reason}` : ""}`) : null,
         approval.mayAnswer ? h("div", null,
             h("label", null, "Reason (required to reject)",

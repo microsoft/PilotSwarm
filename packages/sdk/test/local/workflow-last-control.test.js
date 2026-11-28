@@ -93,6 +93,18 @@ async function nameThePerson(catalog, env, person, displayName) {
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 describe("read_workflow run.lastControl (UXP-AD-01)", () => {
+    it("stores masked person attribution in the variables event itself", async () => {
+        const h = await sessionWorkflow(getEnv(), "mask-vars-event");
+        try {
+            const actor = { kind: "user", provider: "private-provider", subject: "private-subject" };
+            await nameThePerson(h.catalog, h.env, actor, "Ada");
+            await h.command(actor, { operation: "set_vars", set: { mode: "fast" }, delete: [], expectedKvRevision: 1 });
+            const { rows } = await h.catalog.pool.query(`SELECT data FROM "${h.env.cmsSchema}".session_events
+                WHERE session_id = $1 AND event_type = 'workflow.vars_set'`, [h.workflowSessionId]);
+            expect(rows[0].data.actor).toEqual({ by: "a person", name: "Ada" });
+        } finally { await h.catalog.close(); }
+    });
+
     it("attributes each variable revision to its own masked actor and time", { timeout: TIMEOUT }, async () => {
         const h = await sessionWorkflow(getEnv(), "kv-history-actor");
         try {
@@ -180,7 +192,7 @@ describe("read_workflow run.lastControl (UXP-AD-01)", () => {
         const run = await cancelling.read();
         expect(run.status).toBe("cancelled");
         const storedCancel = await cancelling.stored("workflow.cancelled");
-        expect(storedCancel.actor).toEqual({ kind: "agent", sessionId: cancelling.session });
+        expect(storedCancel.actor).toEqual({ by: "another session", sessionId: cancelling.session });
         expect(run.lastControl).toEqual({ operation: "cancel", by: "this session", at: expect.stringMatching(ISO), reason: storedCancel.reason });
         expect(run.lastControl.reason).not.toContain("abcdefgh12345");
         expect(run.lastControl.reason.startsWith("The person said stop; token=")).toBe(true);

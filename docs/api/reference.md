@@ -146,7 +146,10 @@ the model used for that visit: `{ model, reasoningEffort, contextTier,
 source }`. This is not the start-time model choice. Variable history reads
 (`kvRevision`, with or without `kvKey`) include `kv.change` when a variable
 update produced the revision. Like `run.lastControl`, it gives the actor
-and timestamp without giving a person's sign-in identity.
+and timestamp without giving a person's sign-in identity. Approval owners,
+approval answers and Workflow event actors use the same public attribution:
+`{ by: "a person", name? }`. The signed-in owner can still answer; the
+server checks ownership against the private approval record.
 
 ### Session sharing
 

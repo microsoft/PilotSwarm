@@ -118,6 +118,19 @@ async function stopFixture(env) {
 }
 
 describe("workflow graceful stop: the store", () => {
+    it("masks a person in the terminal result but keeps the private stop actor", { timeout: TIMEOUT }, async () => {
+        const h = await stopFixture(getEnv());
+        try {
+            const run = await h.workflow(WORKFLOW_CONTROLLER_VERSION);
+            const actor = { kind: "user", provider: "test", subject: "private-stop-subject" };
+            await h.store.requestRunStop(stopRequest(run, { actor, graceSeconds: 0 }));
+            const ended = await h.store.finishStoppedRun({ runId: run.runId, projection: stoppedProjection });
+            expect(ended.run.stop.actor).toEqual(actor);
+            expect(ended.run.terminalError.details.actor).toEqual({ by: "a person" });
+        } finally {
+            await h.stop();
+        }
+    });
     it("accepts a stop once per operation; a stopping run admits nothing and is neither paused nor resumed", { timeout: TIMEOUT }, async () => {
         const h = await stopFixture(getEnv());
         try {

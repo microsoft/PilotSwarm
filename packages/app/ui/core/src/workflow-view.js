@@ -2079,6 +2079,9 @@ const parsedJson = value => {
 /** Who acted, from an event's actor record, in plain words; null when the event names nobody. Pure. */
 export function workflowActorText(actor) {
     if (!isRecord(actor)) return null;
+    if (actor.by === "a person") return text(actor.name) ?? "a person";
+    if (actor.by === "this session" || actor.by === "another session") return "an agent";
+    if (actor.by === "system") return text(actor.name) ?? "the system";
     if (actor.kind === "user") return text(actor.displayName) ?? text(actor.email) ?? text(actor.subject) ?? "a person";
     // Review 18:45Z: no raw session id where a person reads it.
     if (actor.kind === "agent") return "an agent";

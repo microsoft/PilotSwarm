@@ -6,7 +6,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflow } from "../../src/workflow/compiler.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/store.ts";
 import { parseApprovalCommand } from "../../src/workflow/approval.ts";
-import { readWorkflowView } from "../../src/workflow/tools.ts";
+import { readWorkflowFromTool, readWorkflowModel, readWorkflowView } from "../../src/workflow/tools.ts";
 import * as controllerFeatures from "../../src/workflow/controller-features.ts";
 import { workflowTimeTitle } from "../../../app/ui/core/src/workflow-words.js";
 
@@ -62,13 +62,58 @@ async function harness({ owner = OWNER, controllerVersion = "1.1.0", forbidden =
         ...(mode === "live" ? { approval: { question: compiled.ir.nodes.consent.question, timeoutSeconds, forbidden } }
             : { intercept: { operation: "approval", argumentsText: '{"question":"Approve?","context":{"proposal":1}}', responseSchema: null } }) });
     const close = async () => { await sql.end(); await catalog.close(); };
-    return { store, catalog, sql, schema, workflowSessionId, runId, approvalId, enter, close };
+    return { store, catalog, sql, schema, parent, workflowSessionId, runId, approvalId, enter, close };
 }
 const answer = (h, contextSha256, overrides = {}) => parseApprovalCommand({ operation: "approval_respond", operation_id: "answer",
     run_id: h.runId, approval_id: h.approvalId, context_sha256: contextSha256, decision: "approved", ...overrides });
 const proposal = async h => (await h.store.approvals.readMany([h.approvalId])).get(h.approvalId);
 
 describe("owner-only approval transactions", () => {
+    it("masks the pinned owner on reads while retaining their identity in audit", async () => {
+        const h = await harness();
+        try {
+            await h.enter();
+            expect((await proposal(h)).owner).toEqual({ by: "a person", name: OWNER.displayName });
+            const { rows } = await h.sql.query(`SELECT owner_provider, owner_subject FROM ${h.schema}.workflow_approvals WHERE node_execution_id=$1`,
+                [h.approvalId]);
+            expect(rows[0]).toEqual({ owner_provider: OWNER.provider, owner_subject: OWNER.subject });
+            for (const [actor, matches] of [[ACTOR, true], [{ ...ACTOR, subject: "not-owner" }, false]]) {
+                const view = await readWorkflowModel({ store: h.store }, h.workflowSessionId, {}, "api", { actor });
+                expect(view.run.nodeExecutions[0].approval.viewerIsPinnedOwner).toBe(matches);
+            }
+        } finally { await h.close(); }
+    });
+
+    it("masks the answering person in the proposal, execution output and completion event", async () => {
+        const h = await harness();
+        try {
+            await h.enter();
+            await h.store.approvals.respond(h.workflowSessionId, answer(h, (await proposal(h)).contextSha256), ACTOR);
+            const actor = { by: "a person", name: OWNER.displayName };
+            const detail = await readWorkflowView(h.store, h.workflowSessionId, { executionId: h.approvalId });
+            const { rows } = await h.sql.query(`SELECT data FROM ${h.schema}.session_events
+                WHERE session_id=$1 AND event_type='workflow.state_completed'`, [h.workflowSessionId]);
+            expect((await proposal(h)).decision.decidedBy).toEqual(actor);
+            expect(detail.execution.result.value.decidedBy).toEqual(actor);
+            expect(rows[0].data.decidedBy).toEqual(actor);
+        } finally { await h.close(); }
+    });
+
+    it("does not give the coordinating agent sign-in identity in an approval read", async () => {
+        const h = await harness();
+        try {
+            await h.enter();
+            await h.store.approvals.respond(h.workflowSessionId, answer(h, (await proposal(h)).contextSha256), ACTOR);
+            const result = await readWorkflowFromTool({ workflow_id: h.workflowSessionId },
+                { callerSessionId: h.parent, host: { catalog: h.catalog, store: h.store, duroxideClient: { getStatus: async () => ({ status: "Running" }) } } });
+            const view = JSON.parse(result);
+            expect(view.ok, result).toBe(true);
+            expect(view.run.nodeExecutions[0].approval.owner.by).toBe("a person");
+            expect(result).not.toContain(OWNER.subject);
+            expect(result).not.toContain("provider");
+        } finally { await h.close(); }
+    });
+
     it("renders real approval dates as portable UTC ISO even with a non-UTC store timezone", { timeout: 120000 }, async () => {
         const h = await harness({ timezone: "Pacific/Kiritimati" });
         try {
@@ -165,12 +210,13 @@ describe("owner-only approval transactions", () => {
             const entered = await h.enter();
             expect(entered).toMatchObject({ admitted: true, node: { nodeType: "approval", state: "pending" } });
             const snapshot = await proposal(h);
-            expect(snapshot).toMatchObject({ question: "Approve this exact proposal?", context: { proposal: 1 }, owner: OWNER, status: "pending" });
+            expect(snapshot).toMatchObject({ question: "Approve this exact proposal?", context: { proposal: 1 },
+                owner: { by: "a person", name: OWNER.displayName }, status: "pending" });
             expect(snapshot.contextSha256).toMatch(/^[a-f0-9]{64}$/);
             const command = answer(h, snapshot.contextSha256);
             const receipt = await h.store.approvals.respond(h.workflowSessionId, command, ACTOR);
             expect(receipt).toMatchObject({ decision: "approved", replayed: false, contextSha256: snapshot.contextSha256 });
-            expect(await proposal(h)).toMatchObject({ status: "approved", decision: { decidedBy: OWNER } });
+            expect(await proposal(h)).toMatchObject({ status: "approved", decision: { decidedBy: { by: "a person", name: OWNER.displayName } } });
             expect(await h.store.readNodeExecution(h.approvalId)).toMatchObject({ state: "completed", outcome: "approved", winner: "approval_owner" });
             expect((await h.sql.query(`SELECT kind FROM ${h.schema}.workflow_operations WHERE workflow_session_id=$1 AND operation_id='answer'`,
                 [h.workflowSessionId])).rows).toEqual([{ kind: "approval_respond" }]);

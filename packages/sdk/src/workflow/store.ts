@@ -16,6 +16,7 @@ import {
     redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets,
     type WorkflowErrorRedaction,
 } from "./redact.js";
+import { workflowActorView } from "./actor-view.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -65,7 +66,7 @@ export type WorkflowActor =
  */
 export interface WorkflowRunControl {
     operation: "pause" | "resume" | "stop" | "cancel" | "set_vars";
-    actor: WorkflowActor;
+    actor: WorkflowActor | JsonObject;
     displayName: string | null;
     at: Date;
     reason: string | null;
@@ -3463,7 +3464,7 @@ export class WorkflowStore {
                         runId: rerun.sourceRunId,
                         executionId: sup.sourceExecutionId,
                     },
-                    by: actorJson(rerun.actor),
+                    by: await this.eventActorIn(client, rerun.actor),
                     note: sup.note,
                     suppliedAt: sup.at.toISOString(),
                 })) as JsonObject,
@@ -3738,7 +3739,7 @@ export class WorkflowStore {
             await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, $2, $3, $4)`,
                 [run.runId, revision, kvText, input.operationId]);
             await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.vars_set", data: {
-                runId: run.runId, kvRevision: revision, set: Object.keys(input.set), deleted: input.delete, actor: actorJson(input.actor),
+                runId: run.runId, kvRevision: revision, set: Object.keys(input.set), deleted: input.delete, actor: await this.eventActorIn(client, input.actor),
             } }], update: { touch: true } });
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "set_vars", runId: run.runId, status: run.status, kvRevision: revision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "set_vars", input.requestSha256, receipt);
@@ -3791,7 +3792,7 @@ export class WorkflowStore {
             const updated = runFrom(rows[0]);
             await this.project(client, { sessionId: input.workflowSessionId, events: [{
                 eventType: input.pause ? "workflow.paused" : "workflow.resumed",
-                data: { runId: run.runId, actor: actorJson(input.actor), ...(input.reason ? { reason: redactThenClip(input.reason, 500) } : {}) },
+                data: { runId: run.runId, actor: await this.eventActorIn(client, input.actor), ...(input.reason ? { reason: redactThenClip(input.reason, 500) } : {}) },
             }], update: { state: updated.status === "paused" ? "waiting" : updated.status === "admitted" ? "pending" : "running", touch: true } }, run);
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: kind, runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
@@ -3852,7 +3853,7 @@ export class WorkflowStore {
                 [run.runId, input.graceSeconds, request]);
             const updated = runFrom(rows[0]);
             await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.stop_requested", data: {
-                runId: run.runId, actor: actorJson(input.actor), graceSeconds: input.graceSeconds, deadlineAt: updated.stop!.deadlineAt.toISOString(),
+                runId: run.runId, actor: await this.eventActorIn(client, input.actor), graceSeconds: input.graceSeconds, deadlineAt: updated.stop!.deadlineAt.toISOString(),
                 ...(input.reason ? { reason: redactThenClip(input.reason, 500) } : {}),
             } }], update: { touch: true } });
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "stop", runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
@@ -3952,7 +3953,8 @@ export class WorkflowStore {
             [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." }), at]);
         await this.recordLiveTerminalOutcomeIn(client, run.runId);
         await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
-            runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks, ...(input.actor ? { actor: actorJson(input.actor) } : {}),
+            runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks,
+            ...(input.actor ? { actor: await this.eventActorIn(client, input.actor) } : {}),
         } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } }, run);
         return runFrom(rows[0]);
     }
@@ -4695,12 +4697,17 @@ export class WorkflowStore {
         const row = rows[0];
         if (!row) return null;
         const data = isJsonObject(row.data) ? row.data : {};
-        const actor = storedActor(data.actor);
+        const displayName = typeof row.display_name === "string" ? row.display_name : null;
+        const actor = workflowActorView(data.actor, null, displayName);
         const operation = RUN_CONTROL_EVENTS[str(row, "event_type")];
         if (!actor || !operation) return null;
-        const displayName = actor.kind === "user" && typeof row.display_name === "string" && row.display_name.trim()
-            ? jsonbSafeText(row.display_name.trim(), 200) : null;
         return { operation, actor, displayName, at: new Date(row.created_at), reason: typeof data.reason === "string" ? data.reason : null };
+    }
+
+    private async eventActorIn(client: PoolClient, actor: WorkflowActor | JsonValue): Promise<JsonObject | null> {
+        const { rows } = isJsonObject(actor) && actor.kind === "user" ? await client.query(
+            `SELECT display_name FROM ${this.t.users} WHERE provider = $1 AND subject = $2`, [actor.provider, actor.subject]) : { rows: [] };
+        return workflowActorView(actor, null, rows[0]?.display_name ?? null);
     }
 
     /**
@@ -8837,7 +8844,7 @@ export class WorkflowStore {
             endPending: { winner: "cancel", message: "The workflow run was cancelled." },
             projection: { sessionId: run.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
                 runId: run.runId, reason: redactThenClip(input.reason, 500), command: input.command, ...marks,
-                ...(input.actor ? { actor: actorJson(input.actor) } : {}),
+                ...(input.actor ? { actor: await this.eventActorIn(client, input.actor) } : {}),
             } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } },
         });
     }
@@ -8896,7 +8903,7 @@ export class WorkflowStore {
             const stop = run.stop;
             // SF-6 verification: the stop's reason is stored with its secrets hidden.
             const errorText = redactWorkflowErrorText(canonicalJson({ code: "stopped", message: redactThenClip(stop.reason ?? "Stopped", 4_000), details: {
-                operationId: stop.operationId, actor: stop.actor, graceSeconds: stop.graceSeconds,
+                operationId: stop.operationId, actor: await this.eventActorIn(client, stop.actor), graceSeconds: stop.graceSeconds,
                 requestedAt: stop.requestedAt.toISOString(), deadlineAt: stop.deadlineAt.toISOString(),
                 graceExpired, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 100),
             } }), canonicalJson);
@@ -9996,16 +10003,6 @@ const RUN_CONTROL_EVENTS: Readonly<Record<string, WorkflowRunControl["operation"
     "workflow.cancelled": "cancel",
     "workflow.vars_set": "set_vars",
 });
-
-/** An actor as actorJson stored it; null for any other shape. */
-function storedActor(value: unknown): WorkflowActor | null {
-    if (!isJsonObject(value)) return null;
-    const text = (key: string) => (typeof value[key] === "string" && value[key] ? value[key] as string : null);
-    if (value.kind === "agent" && text("sessionId")) return { kind: "agent", sessionId: text("sessionId")! };
-    if (value.kind === "user" && text("provider") && text("subject")) return { kind: "user", provider: text("provider")!, subject: text("subject")! };
-    if (value.kind === "system" && text("name")) return { kind: "system", name: text("name")! };
-    return null;
-}
 
 function actorJson(actor: WorkflowActor): JsonValue {
     if (actor.kind === "agent") return { kind: "agent", sessionId: actor.sessionId };

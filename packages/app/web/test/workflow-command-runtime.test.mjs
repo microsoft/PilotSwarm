@@ -77,20 +77,45 @@ function runtimeWith({ enforce }) {
 
 const as = (subject, role = "user") => ({ principal: { provider: "dev", subject }, authorization: { role } });
 
+test("the Portal still offers and sends an owner answer after approval owner masking", async () => {
+    const { runtime, calls } = runtimeWith({ enforce: true });
+    const { workflowApprovalView } = await import("../../ui/core/src/workflow-commands.js");
+    const { NodeSdkTransport } = await import("../../tui/src/node-sdk-transport.js");
+    const approval = { approvalId: "visit", status: "pending", owner: { by: "a person", name: "Alice" },
+        deadlineAt: new Date(Date.now() + 172800000).toISOString() };
+    const mgmt = { readWorkflow: async (_id, _options, context) => ({
+        run: { runId: "run", mode: "live", status: "running",
+            nodeExecutions: [{ approval: { ...approval, viewerIsPinnedOwner: context?.principal?.subject === "alice" } }] },
+        personCommands: { operations: ["approval_respond"], approvals: [{ approvalId: "visit", runId: "run", mayAnswer: false }] },
+    }) };
+    runtime.transport.readWorkflow = NodeSdkTransport.prototype.readWorkflow.bind({ mgmt });
+    const view = await runtime.call("readWorkflow", { sessionId: "shared" }, as("alice"));
+    const shown = workflowApprovalView(view, view.run.nodeExecutions[0]);
+    assert.equal(shown.mayAnswer, true);
+    assert.equal(shown.ownerLabel, "Alice");
+    assert.deepEqual(shown.owner, approval.owner);
+    const command = { operation: "approval_respond", approval_id: "visit", decision: "approved" };
+    await runtime.call("updateWorkflow", { sessionId: "shared", command }, as("alice"));
+    assert.deepEqual(calls, [["shared", command, { principal: { provider: "dev", subject: "alice" } }]]);
+});
+
 test("approval reads distinguish owner consent from admin management and shared writing", async () => {
     const { runtime } = runtimeWith({ enforce: true });
-    const approval = { approvalId: "visit", status: "pending", owner: { provider: "dev", subject: "alice" },
+    let pinnedSubject = "alice";
+    const approval = { approvalId: "visit", status: "pending", owner: { by: "a person" },
         deadlineAt: new Date(Date.now() + 172800000).toISOString() };
-    const run = { runId: "run", mode: "live", status: "running", nodeExecutions: [{ approval }] };
-    runtime.transport.readWorkflow = async () => ({ run, personCommands: { operations: ["approval_respond"], restriction: null,
+    const run = { runId: "run", mode: "live", status: "running" };
+    runtime.transport.readWorkflow = async (_id, _options, context) => ({ run: { ...run, nodeExecutions: [{ approval: {
+        ...approval, viewerIsPinnedOwner: context?.principal?.subject === pinnedSubject,
+    } }] }, personCommands: { operations: ["approval_respond"], restriction: null,
         approvals: [{ approvalId: "visit", runId: "run", mayAnswer: false, reason: "No caller supplied." }] } });
     const read = async (subject, role = "user") => (await runtime.call("readWorkflow", { sessionId: "shared" }, as(subject, role))).personCommands.approvals[0];
     assert.equal((await read("alice")).mayAnswer, true);
     assert.equal((await read("ada", "admin")).mayAnswer, false);
     assert.equal((await read("bob")).mayAnswer, false);
-    approval.owner.subject = "previous-owner";
+    pinnedSubject = "previous-owner";
     assert.equal((await read("alice")).mayAnswer, false);
-    approval.owner.subject = "alice";
+    pinnedSubject = "alice";
     approval.deadlineAt = "2020-01-01T00:00:00Z";
     assert.equal((await read("alice")).mayAnswer, false);
     approval.deadlineAt = new Date(Date.now() + 172800000).toISOString();

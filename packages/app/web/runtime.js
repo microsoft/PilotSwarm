@@ -878,10 +878,9 @@ export class PortalRuntime {
                     const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
                     if (!viewer.allowed) throw forbiddenError(`${viewer.reason ?? "You cannot change this workflow."} Its versions' YAML is for those who can.`);
                 }
-                // Phase 3 I7: a re-run plan's allowed and grant fields are the signed-in caller's (OQ1, OQ5).
+                // Re-run grants and pinned approval ownership are evaluated against the signed-in caller.
                 const read = await this.transport.readWorkflow(safeParams.sessionId, readOptions,
-                    ...(readOptions.rerunPlan !== undefined ? [{ principal: owner ? { provider: owner.provider, subject: owner.subject,
-                        displayName: owner.displayName ?? null } : null }] : []));
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? null } : null });
                 const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
                 if (readOptions.rerunPlan !== undefined && !viewer.allowed) return rerunPlanForReader(read);
                 const readerView = viewer.allowed ? read : workflowReaderView(read);
@@ -903,8 +902,7 @@ export class PortalRuntime {
                     let reason = null;
                     if (!personCommands.operations?.includes("approval_respond") || personCommands.restriction) {
                         reason = "This Workflow does not accept a person's approval answer.";
-                    } else if (!viewer.allowed || gate.snapshot?.viewerIsOwner !== true || !owner
-                        || approval?.owner?.provider !== owner.provider || approval?.owner?.subject !== owner.subject) {
+                    } else if (!viewer.allowed || gate.snapshot?.viewerIsOwner !== true || approval?.viewerIsPinnedOwner !== true) {
                         reason = "Only the pinned owner, while still the Workflow's owner, can answer.";
                     } else if (view.run?.mode !== "live" || view.run?.stop || !["admitted", "running", "paused"].includes(view.run?.status)
                         || approval?.status !== "pending") reason = "This approval no longer accepts a new answer.";

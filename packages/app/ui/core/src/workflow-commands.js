@@ -1069,7 +1069,7 @@ export function workflowApprovalView(model, execution) {
         && approval.status === "pending";
     return { ...approval, runId: model?.run?.runId ?? null, mayAnswer,
         answerReason: mayAnswer ? null : text(command?.reason) ?? "Read and answer this approval directly in the portal as its pinned owner.",
-        ownerLabel: text(approval.owner?.displayName) ?? "Workflow owner" };
+        ownerLabel: text(approval.owner?.name) ?? text(approval.owner?.displayName) ?? "Workflow owner" };
 }
 
 /**

@@ -1121,8 +1121,9 @@ export class NodeSdkTransport {
      * caller), else this transport's user.
      */
     async readWorkflow(sessionId, options = {}, context = undefined) {
+        if (context !== undefined) return this.mgmt.readWorkflow(sessionId, options, context);
         if (options?.rerunPlan === undefined || options?.rerunPlan === null) return this.mgmt.readWorkflow(sessionId, options);
-        return this.mgmt.readWorkflow(sessionId, options, context ?? { principal: this._definitionPrincipal({}) });
+        return this.mgmt.readWorkflow(sessionId, options, { principal: this._definitionPrincipal({}) });
     }
 
     /** Stage 2.1: a session's Workflow Definitions (list, read; a person's save, start and delete with its principal). */
