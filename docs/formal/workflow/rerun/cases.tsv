@@ -5,6 +5,9 @@ rr.design-parallel	rr.design-parallel.cfg	WorkflowRerun
 rr.design-approval-owner	rr.design-approval-owner.cfg	WorkflowRerun
 rr.design-approval-agent	rr.design-approval-agent.cfg	WorkflowRerun
 rr.design-inbox	rr.design-inbox.cfg	WorkflowRerun
+rr.design-inbox-notices	rr.design-inbox-notices.cfg	WorkflowRerun
+rr.design-inbox-gen2-copied	rr.design-inbox-gen2-copied.cfg	WorkflowRerun
+rr.design-inbox-run-end-race	rr.design-inbox-run-end-race.cfg	WorkflowRerun
 rr.design-gen2	rr.design-gen2.cfg	WorkflowRerun
 rr.design-reroute-refused	rr.design-reroute-refused.cfg	WorkflowRerun
 rr.design-diverge-guard	rr.design-diverge-guard.cfg	WorkflowRerun
@@ -40,6 +43,9 @@ wit.rr-no-carried-take	wit.rr-no-carried-take.cfg	WorkflowRerun
 wit.rr-no-carry-at-cut	wit.rr-no-carry-at-cut.cfg	WorkflowRerun
 wit.rr-no-carry-dropped-reader	wit.rr-no-carry-dropped-reader.cfg	WorkflowRerun
 wit.rr-no-expired-at-cut-left	wit.rr-no-expired-at-cut-left.cfg	WorkflowRerun
+wit.rr-no-stray-notice-left	wit.rr-no-stray-notice-left.cfg	WorkflowRerun
+wit.rr-no-carry-across-generations	wit.rr-no-carry-across-generations.cfg	WorkflowRerun
+wit.rr-no-raced-accept-carried	wit.rr-no-raced-accept-carried.cfg	WorkflowRerun
 wit.rr-no-pinned-resume	wit.rr-no-pinned-resume.cfg	WorkflowRerun
 wit.rr-no-copy-coord-diverge	wit.rr-no-copy-coord-diverge.cfg	WorkflowRerun
 wit.rr-no-hash-diverge	wit.rr-no-hash-diverge.cfg	WorkflowRerun
@@ -60,6 +66,9 @@ rr-df-carry-late-message	rr-df-carry-late-message.cfg	WorkflowRerun
 rr-df-inbox-drops-dropped-reader	rr-df-inbox-drops-dropped-reader.cfg	WorkflowRerun
 rr-df-inbox-drops-equal-cut	rr-df-inbox-drops-equal-cut.cfg	WorkflowRerun
 rr-df-inbox-keeps-expired-at-cut	rr-df-inbox-keeps-expired-at-cut.cfg	WorkflowRerun
+rr-df-inbox-notice-by-time	rr-df-inbox-notice-by-time.cfg	WorkflowRerun
+rr-df-inbox-carry-compares-copy-time	rr-df-inbox-carry-compares-copy-time.cfg	WorkflowRerun
+rr-df-run-end-clock-at-begin	rr-df-run-end-clock-at-begin.cfg	WorkflowRerun
 rr-df-lock-new-before-owner	rr-df-lock-new-before-owner.cfg	WorkflowRerun
 rr-df-copy-hit-ignores-pred	rr-df-copy-hit-ignores-pred.cfg	WorkflowRerun
 rr-df-ignores-input-hash	rr-df-ignores-input-hash.cfg	WorkflowRerun

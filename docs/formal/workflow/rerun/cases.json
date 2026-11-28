@@ -35,6 +35,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -44,10 +46,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Run-again loop with all 3 deleters (incl. defLock), claim crash + new revision, pause/stop/cancel, retry and CAN in pass-over.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-loop-run-again (rr5; expected PASS): Run-again loop with all 3 deleters (incl. defLock), claim crash + new revision, pause/stop/cancel, retry and CAN in pass-over.",
+   "comment": "rr.design-loop-run-again (rr6; expected PASS): Run-again loop with all 3 deleters (incl. defLock), claim crash + new revision, pause/stop/cancel, retry and CAN in pass-over.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -104,7 +106,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -136,6 +144,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -181,6 +191,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -190,10 +202,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Continue mode over 2 reused loop visits hitting MaxVisits exhaustion at cut, with deleters and pass-over retry/CAN.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-loop-continue (rr5; expected PASS): Continue mode over 2 reused loop visits hitting MaxVisits exhaustion at cut, with deleters and pass-over retry/CAN.",
+   "comment": "rr.design-loop-continue (rr6; expected PASS): Continue mode over 2 reused loop visits hitting MaxVisits exhaustion at cut, with deleters and pass-over retry/CAN.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -250,7 +262,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -282,6 +300,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -327,6 +347,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -336,10 +358,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Reused catch-all visit: subsequent unhandled error fails run without re-entering catch-all.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-catchall (rr5; expected PASS): Reused catch-all visit: subsequent unhandled error fails run without re-entering catch-all.",
+   "comment": "rr.design-catchall (rr6; expected PASS): Reused catch-all visit: subsequent unhandled error fails run without re-entering catch-all.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -396,7 +418,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -428,6 +456,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -473,6 +503,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -482,10 +514,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Reused parallel step with 1 unwalked lane visit; plan budget subtracts rerun_unwalked so total visits never exceed StepLimit.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-parallel (rr5; expected PASS): Reused parallel step with 1 unwalked lane visit; plan budget subtracts rerun_unwalked so total visits never exceed StepLimit.",
+   "comment": "rr.design-parallel (rr6; expected PASS): Reused parallel step with 1 unwalked lane visit; plan budget subtracts rerun_unwalked so total visits never exceed StepLimit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"parallel\"",
@@ -542,7 +574,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -574,6 +612,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -619,6 +659,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -628,10 +670,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Owner re-run past an answered approval is allowed and reuses the approval without re-asking.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-approval-owner (rr5; expected PASS): Owner re-run past an answered approval is allowed and reuses the approval without re-asking.",
+   "comment": "rr.design-approval-owner (rr6; expected PASS): Owner re-run past an answered approval is allowed and reuses the approval without re-asking.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -688,7 +730,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -720,6 +768,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -765,6 +815,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -774,10 +826,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Agent re-run past an answered approval is refused cleanly with zero work admitted.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-approval-agent (rr5; expected PASS): Agent re-run past an answered approval is refused cleanly with zero work admitted.",
+   "comment": "rr.design-approval-agent (rr6; expected PASS): Agent re-run past an answered approval is refused cleanly with zero work admitted.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -834,7 +886,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -866,6 +924,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -911,6 +971,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -920,10 +982,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Generated #2 inbox (m1, m2 + reused spawn notice, every accept/expire/reader shape: 1,728 inboxes): #3 carries exactly the messages a fresh run at the cut would see; total wait anchor resets.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-inbox (rr5; expected PASS): Generated #2 inbox (m1, m2 + reused spawn notice, every accept/expire/reader shape: 1,728 inboxes): #3 carries exactly the messages a fresh run at the cut would see; total wait anchor resets.",
+   "comment": "rr.design-inbox (rr6; expected PASS): Generated #2 inbox (m1, m2 + reused spawn notice, every accept/expire/reader shape: 1,728 inboxes): #3 carries exactly the messages a fresh run at the cut would see; total wait anchor resets.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -980,7 +1042,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -1012,6 +1080,476 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
+    "Inv_TakeOnce"
+   ],
+   "properties": [
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_SweepRequiresLockAndNoRun"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rr.design-inbox-notices",
+  "module": "WorkflowRerun",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rr.design-inbox-notices.cfg",
+  "invariants": [
+   "CoreSafety",
+   "Inv_TerminalNoPending",
+   "Inv_ReusedNeverRuns",
+   "Inv_SuppliedNeverRuns",
+   "Inv_SuppliedSingleton",
+   "Inv_SupplyAllowedStepOnly",
+   "Inv_SuppliedOutcomeDeclared",
+   "Inv_AutoPickNoCancelledReuse",
+   "Inv_RefusedClaimDeletedAtOnce",
+   "Inv_AdmittedNotSwept",
+   "Inv_QuiescentNoLive",
+   "Inv_ReusedImmutable",
+   "Inv_SourceUntouched",
+   "Inv_CopyAtomic",
+   "Inv_OriginRan",
+   "Inv_NoCopyFromDeleted",
+   "Inv_PinnedChoice",
+   "Inv_NoConsentReuse",
+   "Inv_FirstNewAtCut",
+   "Inv_PassOverOnChain",
+   "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
+   "Inv_OrdinalsContinue",
+   "Inv_CatchAllOnce",
+   "Inv_VisitLimit",
+   "Inv_StepLimit",
+   "Inv_TotalFromFirstNew",
+   "Inv_CarriedWereWaiting",
+   "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
+   "Inv_TakeOnce"
+  ],
+  "properties": [
+   "Prop_NoAdmissionAfterTerminal",
+   "Prop_SweepRequiresLockAndNoRun"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Fix wave R3 (I-INBOX): generated #2 inbox of m1, the reused spawn's notice and a stray child's WorkflowEnded@1 notice (1,728 inboxes): a notice is carried only for a reused spawn, whatever its times, never through the ordinary time window.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "rr.design-inbox-notices (rr6; expected PASS): Fix wave R3 (I-INBOX): generated #2 inbox of m1, the reused spawn's notice and a stray child's WorkflowEnded@1 notice (1,728 inboxes): a notice is carried only for a reused spawn, whatever its times, never through the ordinary time window.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "1",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "TRUE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "TRUE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_ReusedNeverRuns",
+    "Inv_SuppliedNeverRuns",
+    "Inv_SuppliedSingleton",
+    "Inv_SupplyAllowedStepOnly",
+    "Inv_SuppliedOutcomeDeclared",
+    "Inv_AutoPickNoCancelledReuse",
+    "Inv_RefusedClaimDeletedAtOnce",
+    "Inv_AdmittedNotSwept",
+    "Inv_QuiescentNoLive",
+    "Inv_ReusedImmutable",
+    "Inv_SourceUntouched",
+    "Inv_CopyAtomic",
+    "Inv_OriginRan",
+    "Inv_NoCopyFromDeleted",
+    "Inv_PinnedChoice",
+    "Inv_NoConsentReuse",
+    "Inv_FirstNewAtCut",
+    "Inv_PassOverOnChain",
+    "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
+    "Inv_OrdinalsContinue",
+    "Inv_CatchAllOnce",
+    "Inv_VisitLimit",
+    "Inv_StepLimit",
+    "Inv_TotalFromFirstNew",
+    "Inv_CarriedWereWaiting",
+    "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
+    "Inv_TakeOnce"
+   ],
+   "properties": [
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_SweepRequiresLockAndNoRun"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rr.design-inbox-gen2-copied",
+  "module": "WorkflowRerun",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rr.design-inbox-gen2-copied.cfg",
+  "invariants": [
+   "CoreSafety",
+   "Inv_TerminalNoPending",
+   "Inv_ReusedNeverRuns",
+   "Inv_SuppliedNeverRuns",
+   "Inv_SuppliedSingleton",
+   "Inv_SupplyAllowedStepOnly",
+   "Inv_SuppliedOutcomeDeclared",
+   "Inv_AutoPickNoCancelledReuse",
+   "Inv_RefusedClaimDeletedAtOnce",
+   "Inv_AdmittedNotSwept",
+   "Inv_QuiescentNoLive",
+   "Inv_ReusedImmutable",
+   "Inv_SourceUntouched",
+   "Inv_CopyAtomic",
+   "Inv_OriginRan",
+   "Inv_NoCopyFromDeleted",
+   "Inv_PinnedChoice",
+   "Inv_NoConsentReuse",
+   "Inv_FirstNewAtCut",
+   "Inv_PassOverOnChain",
+   "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
+   "Inv_OrdinalsContinue",
+   "Inv_CatchAllOnce",
+   "Inv_VisitLimit",
+   "Inv_StepLimit",
+   "Inv_TotalFromFirstNew",
+   "Inv_CarriedWereWaiting",
+   "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
+   "Inv_TakeOnce"
+  ],
+  "properties": [
+   "Prop_NoAdmissionAfterTerminal",
+   "Prop_SweepRequiresLockAndNoRun"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Fix wave R3 (RR-1): #3 cuts at a visit #2 copied from #1; #2's rows were carried from #1 (stored accepted_at = copy time, origin_accepted_at = first acceptance; 216 inboxes): #3 carries exactly the messages that waited at that cut in #1's history.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "rr.design-inbox-gen2-copied (rr6; expected PASS): Fix wave R3 (RR-1): #3 cuts at a visit #2 copied from #1; #2's rows were carried from #1 (stored accepted_at = copy time, origin_accepted_at = first acceptance; 216 inboxes): #3 carries exactly the messages that waited at that cut in #1's history.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "2",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "TRUE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "TRUE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_ReusedNeverRuns",
+    "Inv_SuppliedNeverRuns",
+    "Inv_SuppliedSingleton",
+    "Inv_SupplyAllowedStepOnly",
+    "Inv_SuppliedOutcomeDeclared",
+    "Inv_AutoPickNoCancelledReuse",
+    "Inv_RefusedClaimDeletedAtOnce",
+    "Inv_AdmittedNotSwept",
+    "Inv_QuiescentNoLive",
+    "Inv_ReusedImmutable",
+    "Inv_SourceUntouched",
+    "Inv_CopyAtomic",
+    "Inv_OriginRan",
+    "Inv_NoCopyFromDeleted",
+    "Inv_PinnedChoice",
+    "Inv_NoConsentReuse",
+    "Inv_FirstNewAtCut",
+    "Inv_PassOverOnChain",
+    "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
+    "Inv_OrdinalsContinue",
+    "Inv_CatchAllOnce",
+    "Inv_VisitLimit",
+    "Inv_StepLimit",
+    "Inv_TotalFromFirstNew",
+    "Inv_CarriedWereWaiting",
+    "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
+    "Inv_TakeOnce"
+   ],
+   "properties": [
+    "Prop_NoAdmissionAfterTerminal",
+    "Prop_SweepRequiresLockAndNoRun"
+   ],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rr.design-inbox-run-end-race",
+  "module": "WorkflowRerun",
+  "group": "design",
+  "spec": "Spec",
+  "config": "rr.design-inbox-run-end-race.cfg",
+  "invariants": [
+   "CoreSafety",
+   "Inv_TerminalNoPending",
+   "Inv_ReusedNeverRuns",
+   "Inv_SuppliedNeverRuns",
+   "Inv_SuppliedSingleton",
+   "Inv_SupplyAllowedStepOnly",
+   "Inv_SuppliedOutcomeDeclared",
+   "Inv_AutoPickNoCancelledReuse",
+   "Inv_RefusedClaimDeletedAtOnce",
+   "Inv_AdmittedNotSwept",
+   "Inv_QuiescentNoLive",
+   "Inv_ReusedImmutable",
+   "Inv_SourceUntouched",
+   "Inv_CopyAtomic",
+   "Inv_OriginRan",
+   "Inv_NoCopyFromDeleted",
+   "Inv_PinnedChoice",
+   "Inv_NoConsentReuse",
+   "Inv_FirstNewAtCut",
+   "Inv_PassOverOnChain",
+   "Inv_NoWorkOnDiverge",
+   "Inv_ValidNeverDiverges",
+   "Inv_OrdinalsContinue",
+   "Inv_CatchAllOnce",
+   "Inv_VisitLimit",
+   "Inv_StepLimit",
+   "Inv_TotalFromFirstNew",
+   "Inv_CarriedWereWaiting",
+   "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
+   "Inv_TakeOnce"
+  ],
+  "properties": [
+   "Prop_NoAdmissionAfterTerminal",
+   "Prop_SweepRequiresLockAndNoRun"
+  ],
+  "expected": "PASS",
+  "deadlock": true,
+  "note": "Fix wave R3 (MSG-1): #2's end transaction races an acceptance into #2 for #2's session lock; the end reads the clock after its locks, so an input #2 accepted is not after #2's end and the run-end cut carries it.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "rr.design-inbox-run-end-race (rr6; expected PASS): Fix wave R3 (MSG-1): #2's end transaction races an acceptance into #2 for #2's session lock; the end reads the clock after its locks, so an input #2 accepted is not after #2's end and the run-end cut carries it.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "1",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "FALSE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "TRUE",
+    "EndClock": "\"locked\""
+   },
+   "invariants": [
+    "CoreSafety",
+    "Inv_TerminalNoPending",
+    "Inv_ReusedNeverRuns",
+    "Inv_SuppliedNeverRuns",
+    "Inv_SuppliedSingleton",
+    "Inv_SupplyAllowedStepOnly",
+    "Inv_SuppliedOutcomeDeclared",
+    "Inv_AutoPickNoCancelledReuse",
+    "Inv_RefusedClaimDeletedAtOnce",
+    "Inv_AdmittedNotSwept",
+    "Inv_QuiescentNoLive",
+    "Inv_ReusedImmutable",
+    "Inv_SourceUntouched",
+    "Inv_CopyAtomic",
+    "Inv_OriginRan",
+    "Inv_NoCopyFromDeleted",
+    "Inv_PinnedChoice",
+    "Inv_NoConsentReuse",
+    "Inv_FirstNewAtCut",
+    "Inv_PassOverOnChain",
+    "Inv_NoWorkOnDiverge",
+    "Inv_ValidNeverDiverges",
+    "Inv_OrdinalsContinue",
+    "Inv_CatchAllOnce",
+    "Inv_VisitLimit",
+    "Inv_StepLimit",
+    "Inv_TotalFromFirstNew",
+    "Inv_CarriedWereWaiting",
+    "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -1057,6 +1595,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -1066,10 +1606,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Second-generation re-run (#1 -> #2 -> #3) flattens origin via COALESCE to #1.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-gen2 (rr5; expected PASS): Second-generation re-run (#1 -> #2 -> #3) flattens origin via COALESCE to #1.",
+   "comment": "rr.design-gen2 (rr6; expected PASS): Second-generation re-run (#1 -> #2 -> #3) flattens origin via COALESCE to #1.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1126,7 +1666,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -1158,6 +1704,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -1203,6 +1751,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -1212,10 +1762,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Incompatible target revision (reroute_taken) refused by FitCheck before copy.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-reroute-refused (rr5; expected PASS): Incompatible target revision (reroute_taken) refused by FitCheck before copy.",
+   "comment": "rr.design-reroute-refused (rr6; expected PASS): Incompatible target revision (reroute_taken) refused by FitCheck before copy.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1272,7 +1822,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -1304,6 +1860,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -1349,6 +1907,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -1358,10 +1918,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Run-again with FitCheck disabled: cut guard catches divergence and fails rerun_diverged with zero new rows or effects.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-diverge-guard (rr5; expected PASS): Run-again with FitCheck disabled: cut guard catches divergence and fails rerun_diverged with zero new rows or effects.",
+   "comment": "rr.design-diverge-guard (rr6; expected PASS): Run-again with FitCheck disabled: cut guard catches divergence and fails rerun_diverged with zero new rows or effects.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1418,7 +1978,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -1450,6 +2016,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -1495,6 +2063,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -1504,10 +2074,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Continue mode with FitCheck disabled: predecessor-only cut guard catches divergence and fails rerun_diverged.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-continue-diverge (rr5; expected PASS): Continue mode with FitCheck disabled: predecessor-only cut guard catches divergence and fails rerun_diverged.",
+   "comment": "rr.design-continue-diverge (rr6; expected PASS): Continue mode with FitCheck disabled: predecessor-only cut guard catches divergence and fails rerun_diverged.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1564,7 +2134,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -1596,6 +2172,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -1641,6 +2219,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -1650,10 +2230,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "S1 copied-coordinate divergence (reachable catchall route mismatch: explicit 'error' route hits copied H1 recorded with '@catchAll').",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-copy-coord-diverge (rr5; expected PASS): S1 copied-coordinate divergence (reachable catchall route mismatch: explicit 'error' route hits copied H1 recorded with '@catchAll').",
+   "comment": "rr.design-copy-coord-diverge (rr6; expected PASS): S1 copied-coordinate divergence (reachable catchall route mismatch: explicit 'error' route hits copied H1 recorded with '@catchAll').",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -1710,7 +2290,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -1742,6 +2328,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -1787,6 +2375,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -1796,10 +2386,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Decision 3 same-IR byte check: mismatched input/carry hash with same IR & same KV rev fails rerun_diverged before insert.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-same-ir-hash-diverge (rr5; expected PASS): Decision 3 same-IR byte check: mismatched input/carry hash with same IR & same KV rev fails rerun_diverged before insert.",
+   "comment": "rr.design-same-ir-hash-diverge (rr6; expected PASS): Decision 3 same-IR byte check: mismatched input/carry hash with same IR & same KV rev fails rerun_diverged before insert.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -1856,7 +2446,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -1888,6 +2484,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -1933,6 +2531,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -1942,10 +2542,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Decision 3: Target=fix_chosen (sameIr=FALSE) skips byte check and admits the fixed chosen visit.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-fix-chosen-skips-hash (rr5; expected PASS): Decision 3: Target=fix_chosen (sameIr=FALSE) skips byte check and admits the fixed chosen visit.",
+   "comment": "rr.design-fix-chosen-skips-hash (rr6; expected PASS): Decision 3: Target=fix_chosen (sameIr=FALSE) skips byte check and admits the fixed chosen visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2002,7 +2602,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -2034,6 +2640,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -2079,6 +2687,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -2088,10 +2698,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Decision 3: Start vars (kvRev=R+1 != cutKvRev) skips same-IR byte check and admits the chosen visit.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-start-vars-skips-hash (rr5; expected PASS): Decision 3: Start vars (kvRev=R+1 != cutKvRev) skips same-IR byte check and admits the chosen visit.",
+   "comment": "rr.design-start-vars-skips-hash (rr6; expected PASS): Decision 3: Start vars (kvRev=R+1 != cutKvRev) skips same-IR byte check and admits the chosen visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2148,7 +2758,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -2180,6 +2796,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -2205,10 +2823,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Liveness (run_again with all deleters/commands): eventually refused or reaches cut and terminates.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-run-again (rr5; expected PASS): Liveness (run_again with all deleters/commands): eventually refused or reaches cut and terminates.",
+   "comment": "rr.live-run-again (rr6; expected PASS): Liveness (run_again with all deleters/commands): eventually refused or reaches cut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2265,7 +2883,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -2293,10 +2917,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Liveness (continue with deleters): pass-over reaches cut and terminates.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-continue (rr5; expected PASS): Liveness (continue with deleters): pass-over reaches cut and terminates.",
+   "comment": "rr.live-continue (rr6; expected PASS): Liveness (continue with deleters): pass-over reaches cut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2353,7 +2977,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -2383,10 +3013,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (run_again): valid same-IR re-run MUST reach resumedAtCut (never rerun_diverged).",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-clean-reaches-cut (rr5; expected PASS): Strong liveness (run_again): valid same-IR re-run MUST reach resumedAtCut (never rerun_diverged).",
+   "comment": "rr.live-clean-reaches-cut (rr6; expected PASS): Strong liveness (run_again): valid same-IR re-run MUST reach resumedAtCut (never rerun_diverged).",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2443,7 +3073,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -2475,10 +3111,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (continue): valid continue re-run MUST reach resumedAtCut (catches overly-restrictive continue guard).",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-continue-reaches-cut (rr5; expected PASS): Strong liveness (continue): valid continue re-run MUST reach resumedAtCut (catches overly-restrictive continue guard).",
+   "comment": "rr.live-continue-reaches-cut (rr6; expected PASS): Strong liveness (continue): valid continue re-run MUST reach resumedAtCut (catches overly-restrictive continue guard).",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2535,7 +3171,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -2567,10 +3209,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness: Target=fix_chosen with changed input hash MUST reach resumedAtCut (verifies fix_chosen exemption).",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-fix-chosen (rr5; expected PASS): Strong liveness: Target=fix_chosen with changed input hash MUST reach resumedAtCut (verifies fix_chosen exemption).",
+   "comment": "rr.live-fix-chosen (rr6; expected PASS): Strong liveness: Target=fix_chosen with changed input hash MUST reach resumedAtCut (verifies fix_chosen exemption).",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2627,7 +3269,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -2659,10 +3307,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness: same-IR with StartVars (kvRev R+1) MUST reach resumedAtCut (verifies StartVars exemption).",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-start-vars (rr5; expected PASS): Strong liveness: same-IR with StartVars (kvRev R+1) MUST reach resumedAtCut (verifies StartVars exemption).",
+   "comment": "rr.live-start-vars (rr6; expected PASS): Strong liveness: same-IR with StartVars (kvRev R+1) MUST reach resumedAtCut (verifies StartVars exemption).",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -2719,7 +3367,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -2750,10 +3404,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (reused catch-all): reaches resumedAtCut and terminates.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-catchall (rr5; expected PASS): Strong liveness (reused catch-all): reaches resumedAtCut and terminates.",
+   "comment": "rr.live-catchall (rr6; expected PASS): Strong liveness (reused catch-all): reaches resumedAtCut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -2810,7 +3464,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -2840,10 +3500,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (reused parallel with unwalked lane): reaches resumedAtCut and terminates.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-parallel (rr5; expected PASS): Strong liveness (reused parallel with unwalked lane): reaches resumedAtCut and terminates.",
+   "comment": "rr.live-parallel (rr6; expected PASS): Strong liveness (reused parallel with unwalked lane): reaches resumedAtCut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"parallel\"",
@@ -2900,7 +3560,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -2930,10 +3596,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (owner past answered approval): reaches resumedAtCut and terminates.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-approval-owner (rr5; expected PASS): Strong liveness (owner past answered approval): reaches resumedAtCut and terminates.",
+   "comment": "rr.live-approval-owner (rr6; expected PASS): Strong liveness (owner past answered approval): reaches resumedAtCut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -2990,7 +3656,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -3020,10 +3692,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (generated #2 inbox, 1,728 inboxes incl. an empty carry): reaches resumedAtCut, takes a carried or new message, and terminates.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-inbox (rr5; expected PASS): Strong liveness (generated #2 inbox, 1,728 inboxes incl. an empty carry): reaches resumedAtCut, takes a carried or new message, and terminates.",
+   "comment": "rr.live-inbox (rr6; expected PASS): Strong liveness (generated #2 inbox, 1,728 inboxes incl. an empty carry): reaches resumedAtCut, takes a carried or new message, and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -3080,7 +3752,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -3110,10 +3788,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (generation 2): reaches resumedAtCut and terminates.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-gen2 (rr5; expected PASS): Strong liveness (generation 2): reaches resumedAtCut and terminates.",
+   "comment": "rr.live-gen2 (rr6; expected PASS): Strong liveness (generation 2): reaches resumedAtCut and terminates.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3170,7 +3848,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -3200,10 +3884,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (S1 catchall route-mismatch divergence): MUST reach rerun_diverged and terminate cleanly.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-diverge (rr5; expected PASS): Strong liveness (S1 catchall route-mismatch divergence): MUST reach rerun_diverged and terminate cleanly.",
+   "comment": "rr.live-diverge (rr6; expected PASS): Strong liveness (S1 catchall route-mismatch divergence): MUST reach rerun_diverged and terminate cleanly.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -3260,7 +3944,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -3286,10 +3976,10 @@
   "expected": "VIOLATION:Wit_NeverResumes",
   "deadlock": true,
   "note": "Witness 1: pass-over reaches the cut and admits a new visit.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-never-resumes (rr5; expected VIOLATION:Wit_NeverResumes): Witness 1: pass-over reaches the cut and admits a new visit.",
+   "comment": "wit.rr-never-resumes (rr6; expected VIOLATION:Wit_NeverResumes): Witness 1: pass-over reaches the cut and admits a new visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3346,7 +4036,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NeverResumes"
@@ -3368,10 +4064,10 @@
   "expected": "VIOLATION:Wit_NoReusedCatchAll",
   "deadlock": true,
   "note": "Witness 2: a re-run copies and passes over a reused catch-all visit.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-reused-catchall (rr5; expected VIOLATION:Wit_NoReusedCatchAll): Witness 2: a re-run copies and passes over a reused catch-all visit.",
+   "comment": "wit.rr-no-reused-catchall (rr6; expected VIOLATION:Wit_NoReusedCatchAll): Witness 2: a re-run copies and passes over a reused catch-all visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -3428,7 +4124,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoReusedCatchAll"
@@ -3450,10 +4152,10 @@
   "expected": "VIOLATION:Wit_NoFailAfterReusedCatchAll",
   "deadlock": true,
   "note": "Witness 3: an unhandled error after a reused catch-all fails the run.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-fail-after-reused-catchall (rr5; expected VIOLATION:Wit_NoFailAfterReusedCatchAll): Witness 3: an unhandled error after a reused catch-all fails the run.",
+   "comment": "wit.rr-no-fail-after-reused-catchall (rr6; expected VIOLATION:Wit_NoFailAfterReusedCatchAll): Witness 3: an unhandled error after a reused catch-all fails the run.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -3510,7 +4212,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoFailAfterReusedCatchAll"
@@ -3532,10 +4240,10 @@
   "expected": "VIOLATION:Wit_NoExhausted",
   "deadlock": true,
   "note": "Witness 4: a step reaches exhausted because reused visits counted toward MaxVisits.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-exhausted (rr5; expected VIOLATION:Wit_NoExhausted): Witness 4: a step reaches exhausted because reused visits counted toward MaxVisits.",
+   "comment": "wit.rr-no-exhausted (rr6; expected VIOLATION:Wit_NoExhausted): Witness 4: a step reaches exhausted because reused visits counted toward MaxVisits.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3592,7 +4300,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoExhausted"
@@ -3614,10 +4328,10 @@
   "expected": "VIOLATION:Wit_NoRetryInPassOver",
   "deadlock": true,
   "note": "Witness 5: an admission activity is retried during pass-over.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-retry-in-passover (rr5; expected VIOLATION:Wit_NoRetryInPassOver): Witness 5: an admission activity is retried during pass-over.",
+   "comment": "wit.rr-no-retry-in-passover (rr6; expected VIOLATION:Wit_NoRetryInPassOver): Witness 5: an admission activity is retried during pass-over.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3674,7 +4388,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoRetryInPassOver"
@@ -3696,10 +4416,10 @@
   "expected": "VIOLATION:Wit_NoContinueAsNewInPassOver",
   "deadlock": true,
   "note": "Witness 6: continue-as-new occurs during pass-over before the cut.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-can-in-passover (rr5; expected VIOLATION:Wit_NoContinueAsNewInPassOver): Witness 6: continue-as-new occurs during pass-over before the cut.",
+   "comment": "wit.rr-no-can-in-passover (rr6; expected VIOLATION:Wit_NoContinueAsNewInPassOver): Witness 6: continue-as-new occurs during pass-over before the cut.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3756,7 +4476,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoContinueAsNewInPassOver"
@@ -3778,10 +4504,10 @@
   "expected": "VIOLATION:Wit_NoSecondGeneration",
   "deadlock": true,
   "note": "Witness 7: a generation-2 re-run (#1 -> #2 -> #3) completes with origin flattened to wf1.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-second-generation (rr5; expected VIOLATION:Wit_NoSecondGeneration): Witness 7: a generation-2 re-run (#1 -> #2 -> #3) completes with origin flattened to wf1.",
+   "comment": "wit.rr-no-second-generation (rr6; expected VIOLATION:Wit_NoSecondGeneration): Witness 7: a generation-2 re-run (#1 -> #2 -> #3) completes with origin flattened to wf1.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3838,7 +4564,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoSecondGeneration"
@@ -3860,10 +4592,10 @@
   "expected": "VIOLATION:Wit_NoDiverge",
   "deadlock": true,
   "note": "Witness 8: with FitCheck=FALSE, the cut guard is reached and fails the run rerun_diverged.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-diverge (rr5; expected VIOLATION:Wit_NoDiverge): Witness 8: with FitCheck=FALSE, the cut guard is reached and fails the run rerun_diverged.",
+   "comment": "wit.rr-no-diverge (rr6; expected VIOLATION:Wit_NoDiverge): Witness 8: with FitCheck=FALSE, the cut guard is reached and fails the run rerun_diverged.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -3920,7 +4652,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoDiverge"
@@ -3942,10 +4680,10 @@
   "expected": "VIOLATION:Wit_NoSourceGone",
   "deadlock": true,
   "note": "Witness 9: a deleter commits before copy and Start refuses RERUN_SOURCE_GONE.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-source-gone (rr5; expected VIOLATION:Wit_NoSourceGone): Witness 9: a deleter commits before copy and Start refuses RERUN_SOURCE_GONE.",
+   "comment": "wit.rr-no-source-gone (rr6; expected VIOLATION:Wit_NoSourceGone): Witness 9: a deleter commits before copy and Start refuses RERUN_SOURCE_GONE.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4002,7 +4740,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoSourceGone"
@@ -4024,10 +4768,10 @@
   "expected": "VIOLATION:Wit_NoDeleteAfterCopy",
   "deadlock": true,
   "note": "Witness 10: a deleter observes copy_share, waits, deletes source #2 after copy, and re-run #3 completes.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-delete-after-copy (rr5; expected VIOLATION:Wit_NoDeleteAfterCopy): Witness 10: a deleter observes copy_share, waits, deletes source #2 after copy, and re-run #3 completes.",
+   "comment": "wit.rr-no-delete-after-copy (rr6; expected VIOLATION:Wit_NoDeleteAfterCopy): Witness 10: a deleter observes copy_share, waits, deletes source #2 after copy, and re-run #3 completes.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4084,7 +4828,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoDeleteAfterCopy"
@@ -4106,10 +4856,10 @@
   "expected": "VIOLATION:Wit_NoApprovalRefusal",
   "deadlock": true,
   "note": "Witness 11: non-owner Start is refused at an answered approval.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-approval-refusal (rr5; expected VIOLATION:Wit_NoApprovalRefusal): Witness 11: non-owner Start is refused at an answered approval.",
+   "comment": "wit.rr-no-approval-refusal (rr6; expected VIOLATION:Wit_NoApprovalRefusal): Witness 11: non-owner Start is refused at an answered approval.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -4166,7 +4916,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoApprovalRefusal"
@@ -4188,10 +4944,10 @@
   "expected": "VIOLATION:Wit_NoCarriedTake",
   "deadlock": true,
   "note": "Witness 12: a new receive visit takes a carried inbox message.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-carried-take (rr5; expected VIOLATION:Wit_NoCarriedTake): Witness 12: a new receive visit takes a carried inbox message.",
+   "comment": "wit.rr-no-carried-take (rr6; expected VIOLATION:Wit_NoCarriedTake): Witness 12: a new receive visit takes a carried inbox message.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -4248,7 +5004,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoCarriedTake"
@@ -4270,10 +5032,10 @@
   "expected": "VIOLATION:Wit_NoCarryAtCut",
   "deadlock": true,
   "note": "Task 6a-TLA+ witness: a message accepted exactly at the cut is carried, taken by #3's new receive, and the run completes.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-carry-at-cut (rr5; expected VIOLATION:Wit_NoCarryAtCut): Task 6a-TLA+ witness: a message accepted exactly at the cut is carried, taken by #3's new receive, and the run completes.",
+   "comment": "wit.rr-no-carry-at-cut (rr6; expected VIOLATION:Wit_NoCarryAtCut): Task 6a-TLA+ witness: a message accepted exactly at the cut is carried, taken by #3's new receive, and the run completes.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -4330,7 +5092,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoCarryAtCut"
@@ -4352,10 +5120,10 @@
   "expected": "VIOLATION:Wit_NoCarryDroppedReader",
   "deadlock": true,
   "note": "Task 6a-TLA+ witness: a waiting message read by #2's dropped receive is carried, taken by #3's new receive, and the run completes.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-carry-dropped-reader (rr5; expected VIOLATION:Wit_NoCarryDroppedReader): Task 6a-TLA+ witness: a waiting message read by #2's dropped receive is carried, taken by #3's new receive, and the run completes.",
+   "comment": "wit.rr-no-carry-dropped-reader (rr6; expected VIOLATION:Wit_NoCarryDroppedReader): Task 6a-TLA+ witness: a waiting message read by #2's dropped receive is carried, taken by #3's new receive, and the run completes.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -4412,7 +5180,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoCarryDroppedReader"
@@ -4434,10 +5208,10 @@
   "expected": "VIOLATION:Wit_NoExpiredAtCutLeft",
   "deadlock": true,
   "note": "Task 6a-TLA+ witness: an admitted re-run leaves behind an unconsumed message that expires exactly at the cut.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-expired-at-cut-left (rr5; expected VIOLATION:Wit_NoExpiredAtCutLeft): Task 6a-TLA+ witness: an admitted re-run leaves behind an unconsumed message that expires exactly at the cut.",
+   "comment": "wit.rr-no-expired-at-cut-left (rr6; expected VIOLATION:Wit_NoExpiredAtCutLeft): Task 6a-TLA+ witness: an admitted re-run leaves behind an unconsumed message that expires exactly at the cut.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -4494,10 +5268,280 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoExpiredAtCutLeft"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rr-no-stray-notice-left",
+  "module": "WorkflowRerun",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rr-no-stray-notice-left.cfg",
+  "invariants": [
+   "Wit_NoStrayNoticeLeft"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_NoStrayNoticeLeft",
+  "deadlock": true,
+  "note": "Fix wave R3 witness (I-INBOX): an admitted re-run leaves behind an unread stray child's WorkflowEnded@1 notice inside the ordinary time window.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rr-no-stray-notice-left (rr6; expected VIOLATION:Wit_NoStrayNoticeLeft): Fix wave R3 witness (I-INBOX): an admitted re-run leaves behind an unread stray child's WorkflowEnded@1 notice inside the ordinary time window.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "1",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "FALSE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "TRUE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
+   },
+   "invariants": [
+    "Wit_NoStrayNoticeLeft"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rr-no-carry-across-generations",
+  "module": "WorkflowRerun",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rr-no-carry-across-generations.cfg",
+  "invariants": [
+   "Wit_NoCarryAcrossGenerations"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_NoCarryAcrossGenerations",
+  "deadlock": true,
+  "note": "Fix wave R3 witness (RR-1): with #3's cut inside #2's copied prefix, a message carried through two generations is carried, taken by #3's new receive, and the run completes.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rr-no-carry-across-generations (rr6; expected VIOLATION:Wit_NoCarryAcrossGenerations): Fix wave R3 witness (RR-1): with #3's cut inside #2's copied prefix, a message carried through two generations is carried, taken by #3's new receive, and the run completes.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "2",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "FALSE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "TRUE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
+   },
+   "invariants": [
+    "Wit_NoCarryAcrossGenerations"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "wit.rr-no-raced-accept-carried",
+  "module": "WorkflowRerun",
+  "group": "witness",
+  "spec": "Spec",
+  "config": "wit.rr-no-raced-accept-carried.cfg",
+  "invariants": [
+   "Wit_NoRacedAcceptCarried"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Wit_NoRacedAcceptCarried",
+  "deadlock": true,
+  "note": "Fix wave R3 witness (MSG-1): #2's end begins before m_late's acceptance reads the clock, and m_late is still carried, taken by #3's new receive, and the run completes.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "wit.rr-no-raced-accept-carried (rr6; expected VIOLATION:Wit_NoRacedAcceptCarried): Fix wave R3 witness (MSG-1): #2's end begins before m_late's acceptance reads the clock, and m_late is still carried, taken by #3's new receive, and the run completes.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "1",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "FALSE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "TRUE",
+    "EndClock": "\"locked\""
+   },
+   "invariants": [
+    "Wit_NoRacedAcceptCarried"
    ],
    "properties": [],
    "deadlock": true
@@ -4516,10 +5560,10 @@
   "expected": "VIOLATION:Wit_NoPinnedResume",
   "deadlock": true,
   "note": "Witness 13: claim crashes, a newer revision is saved, and resumed Start uses rerunPin.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-pinned-resume (rr5; expected VIOLATION:Wit_NoPinnedResume): Witness 13: claim crashes, a newer revision is saved, and resumed Start uses rerunPin.",
+   "comment": "wit.rr-no-pinned-resume (rr6; expected VIOLATION:Wit_NoPinnedResume): Witness 13: claim crashes, a newer revision is saved, and resumed Start uses rerunPin.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4576,7 +5620,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoPinnedResume"
@@ -4598,10 +5648,10 @@
   "expected": "VIOLATION:Wit_NoDiverge",
   "deadlock": true,
   "note": "Witness 14 (B1/m1): realistic catchall route mismatch hits failRerunDiverged cleanly.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-copy-coord-diverge (rr5; expected VIOLATION:Wit_NoDiverge): Witness 14 (B1/m1): realistic catchall route mismatch hits failRerunDiverged cleanly.",
+   "comment": "wit.rr-no-copy-coord-diverge (rr6; expected VIOLATION:Wit_NoDiverge): Witness 14 (B1/m1): realistic catchall route mismatch hits failRerunDiverged cleanly.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -4658,7 +5708,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoDiverge"
@@ -4680,10 +5736,10 @@
   "expected": "VIOLATION:Wit_NoDiverge",
   "deadlock": true,
   "note": "Witness 15 (B1): same-IR input/carry hash mismatch triggers rerun_diverged.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-hash-diverge (rr5; expected VIOLATION:Wit_NoDiverge): Witness 15 (B1): same-IR input/carry hash mismatch triggers rerun_diverged.",
+   "comment": "wit.rr-no-hash-diverge (rr6; expected VIOLATION:Wit_NoDiverge): Witness 15 (B1): same-IR input/carry hash mismatch triggers rerun_diverged.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4740,7 +5796,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoDiverge"
@@ -4762,10 +5824,10 @@
   "expected": "VIOLATION:Inv_ReusedNeverRuns",
   "deadlock": true,
   "note": "Fault 1: controller starts an effect for a completed reused visit.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-starts-decided (rr5; expected VIOLATION:Inv_ReusedNeverRuns): Fault 1: controller starts an effect for a completed reused visit.",
+   "comment": "rr-df-starts-decided (rr6; expected VIOLATION:Inv_ReusedNeverRuns): Fault 1: controller starts an effect for a completed reused visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4822,7 +5884,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_ReusedNeverRuns"
@@ -4844,10 +5912,10 @@
   "expected": "VIOLATION:Inv_SourceUntouched",
   "deadlock": true,
   "note": "Fault 2: copy mutates source visit rows.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-copy-keeps-ids (rr5; expected VIOLATION:Inv_SourceUntouched): Fault 2: copy mutates source visit rows.",
+   "comment": "rr-df-copy-keeps-ids (rr6; expected VIOLATION:Inv_SourceUntouched): Fault 2: copy mutates source visit rows.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4904,7 +5972,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_SourceUntouched"
@@ -4926,10 +6000,10 @@
   "expected": "VIOLATION:Inv_FirstNewAtCut",
   "deadlock": true,
   "note": "Fault 3: reroute_taken with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-no-fit-no-guard (rr5; expected VIOLATION:Inv_FirstNewAtCut): Fault 3: reroute_taken with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
+   "comment": "rr-df-no-fit-no-guard (rr6; expected VIOLATION:Inv_FirstNewAtCut): Fault 3: reroute_taken with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -4986,7 +6060,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_FirstNewAtCut"
@@ -5008,10 +6088,10 @@
   "expected": "VIOLATION:Inv_StepLimit",
   "deadlock": true,
   "note": "Fault 4: plan budget ignores rerun_unwalked lane visits and exceeds StepLimit.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-plan-ignores-unwalked (rr5; expected VIOLATION:Inv_StepLimit): Fault 4: plan budget ignores rerun_unwalked lane visits and exceeds StepLimit.",
+   "comment": "rr-df-plan-ignores-unwalked (rr6; expected VIOLATION:Inv_StepLimit): Fault 4: plan budget ignores rerun_unwalked lane visits and exceeds StepLimit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"parallel\"",
@@ -5068,7 +6148,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_StepLimit"
@@ -5090,10 +6176,10 @@
   "expected": "VIOLATION:Inv_OrdinalsContinue",
   "deadlock": true,
   "note": "Fault 5: new visit restarts at ordinal 1 instead of continuing past reused ordinals.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-ordinals-restart (rr5; expected VIOLATION:Inv_OrdinalsContinue): Fault 5: new visit restarts at ordinal 1 instead of continuing past reused ordinals.",
+   "comment": "rr-df-ordinals-restart (rr6; expected VIOLATION:Inv_OrdinalsContinue): Fault 5: new visit restarts at ordinal 1 instead of continuing past reused ordinals.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -5150,7 +6236,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_OrdinalsContinue"
@@ -5172,10 +6264,10 @@
   "expected": "VIOLATION:Inv_CatchAllOnce",
   "deadlock": true,
   "note": "Fault 6: pass-over drops catchAllEntered on reused catch-all, allowing a second catch-all visit.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-drops-catch-all (rr5; expected VIOLATION:Inv_CatchAllOnce): Fault 6: pass-over drops catchAllEntered on reused catch-all, allowing a second catch-all visit.",
+   "comment": "rr-df-drops-catch-all (rr6; expected VIOLATION:Inv_CatchAllOnce): Fault 6: pass-over drops catchAllEntered on reused catch-all, allowing a second catch-all visit.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -5232,7 +6324,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_CatchAllOnce"
@@ -5254,10 +6352,10 @@
   "expected": "VIOLATION:Inv_CopyAtomic",
   "deadlock": true,
   "note": "Fault 7: run row commits before reused visit copies exist.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-copy-not-atomic (rr5; expected VIOLATION:Inv_CopyAtomic): Fault 7: run row commits before reused visit copies exist.",
+   "comment": "rr-df-copy-not-atomic (rr6; expected VIOLATION:Inv_CopyAtomic): Fault 7: run row commits before reused visit copies exist.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -5314,7 +6412,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_CopyAtomic"
@@ -5336,10 +6440,10 @@
   "expected": "VIOLATION:Inv_OriginRan",
   "deadlock": true,
   "note": "Fault 8: gen-2 copy points to intermediate copy #2 instead of flattening via COALESCE to #1.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-origin-is-copy (rr5; expected VIOLATION:Inv_OriginRan): Fault 8: gen-2 copy points to intermediate copy #2 instead of flattening via COALESCE to #1.",
+   "comment": "rr-df-origin-is-copy (rr6; expected VIOLATION:Inv_OriginRan): Fault 8: gen-2 copy points to intermediate copy #2 instead of flattening via COALESCE to #1.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -5396,7 +6500,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_OriginRan"
@@ -5418,10 +6528,10 @@
   "expected": "VIOLATION:Inv_NoCopyFromDeleted",
   "deadlock": true,
   "note": "Fault 9: copy reads source without FOR SHARE and commits after a deleter soft-deleted #2.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-no-source-lock (rr5; expected VIOLATION:Inv_NoCopyFromDeleted): Fault 9: copy reads source without FOR SHARE and commits after a deleter soft-deleted #2.",
+   "comment": "rr-df-no-source-lock (rr6; expected VIOLATION:Inv_NoCopyFromDeleted): Fault 9: copy reads source without FOR SHARE and commits after a deleter soft-deleted #2.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -5478,7 +6588,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_NoCopyFromDeleted"
@@ -5500,10 +6616,10 @@
   "expected": "VIOLATION:Inv_PinnedChoice",
   "deadlock": true,
   "note": "Fault 10: resumed Start after claim crash repicks latestRev instead of rerunPin.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-repick-on-resume (rr5; expected VIOLATION:Inv_PinnedChoice): Fault 10: resumed Start after claim crash repicks latestRev instead of rerunPin.",
+   "comment": "rr-df-repick-on-resume (rr6; expected VIOLATION:Inv_PinnedChoice): Fault 10: resumed Start after claim crash repicks latestRev instead of rerunPin.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -5560,7 +6676,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_PinnedChoice"
@@ -5582,10 +6704,10 @@
   "expected": "VIOLATION:Inv_NoConsentReuse",
   "deadlock": true,
   "note": "Fault 11: agent Start bypasses owner consent check past a reused answered approval.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-agent-reuses-approval (rr5; expected VIOLATION:Inv_NoConsentReuse): Fault 11: agent Start bypasses owner consent check past a reused answered approval.",
+   "comment": "rr-df-agent-reuses-approval (rr6; expected VIOLATION:Inv_NoConsentReuse): Fault 11: agent Start bypasses owner consent check past a reused answered approval.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -5642,7 +6764,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_NoConsentReuse"
@@ -5664,10 +6792,10 @@
   "expected": "VIOLATION:Inv_TotalFromFirstNew",
   "deadlock": true,
   "note": "Fault 12: copied receive row keeps source deadline_at instead of clearing it to NULL.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-copy-keeps-deadline (rr5; expected VIOLATION:Inv_TotalFromFirstNew): Fault 12: copied receive row keeps source deadline_at instead of clearing it to NULL.",
+   "comment": "rr-df-copy-keeps-deadline (rr6; expected VIOLATION:Inv_TotalFromFirstNew): Fault 12: copied receive row keeps source deadline_at instead of clearing it to NULL.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -5724,7 +6852,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_TotalFromFirstNew"
@@ -5746,10 +6880,10 @@
   "expected": "VIOLATION:Inv_NoWorkOnDiverge",
   "deadlock": true,
   "note": "Fault 13: cut guard inserts a pending row before failing rerun_diverged.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-diverge-inserts (rr5; expected VIOLATION:Inv_NoWorkOnDiverge): Fault 13: cut guard inserts a pending row before failing rerun_diverged.",
+   "comment": "rr-df-diverge-inserts (rr6; expected VIOLATION:Inv_NoWorkOnDiverge): Fault 13: cut guard inserts a pending row before failing rerun_diverged.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -5806,7 +6940,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_NoWorkOnDiverge"
@@ -5828,10 +6968,10 @@
   "expected": "VIOLATION:Inv_CarriedWereWaiting",
   "deadlock": true,
   "note": "Fault 14: inbox carry copies a message that arrived after the cut, ignoring accepted_at/expires_at.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-carry-late-message (rr5; expected VIOLATION:Inv_CarriedWereWaiting): Fault 14: inbox carry copies a message that arrived after the cut, ignoring accepted_at/expires_at.",
+   "comment": "rr-df-carry-late-message (rr6; expected VIOLATION:Inv_CarriedWereWaiting): Fault 14: inbox carry copies a message that arrived after the cut, ignoring accepted_at/expires_at.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -5888,7 +7028,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_CarriedWereWaiting"
@@ -5909,11 +7055,11 @@
   "properties": [],
   "expected": "VIOLATION:Inv_InboxCarryExact",
   "deadlock": true,
-  "note": "Task 6a-TLA+ fault (old filter, consumed_by IS NULL): drops a waiting message that #2's dropped receive had read.",
-  "batch": "rr5",
+  "note": "Task 6a-TLA+ fault (old filter, consumed_by IS NULL): drops a waiting message that #2's dropped receive had read. Enables only Inv_InboxCarryExact.",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-inbox-drops-dropped-reader (rr5; expected VIOLATION:Inv_InboxCarryExact): Task 6a-TLA+ fault (old filter, consumed_by IS NULL): drops a waiting message that #2's dropped receive had read.",
+   "comment": "rr-df-inbox-drops-dropped-reader (rr6; expected VIOLATION:Inv_InboxCarryExact): Task 6a-TLA+ fault (old filter, consumed_by IS NULL): drops a waiting message that #2's dropped receive had read. Enables only Inv_InboxCarryExact.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -5970,7 +7116,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_InboxCarryExact"
@@ -5991,11 +7143,11 @@
   "properties": [],
   "expected": "VIOLATION:Inv_InboxCarryExact",
   "deadlock": true,
-  "note": "Task 6a-TLA+ fault (old filter, accepted_at < cut): treats a message accepted exactly at the cut as late.",
-  "batch": "rr5",
+  "note": "Task 6a-TLA+ fault: models the old loss of a message accepted exactly at the cut as accepted_at < cut (the old SQL used <= with a cut truncated to the millisecond). Enables only Inv_InboxCarryExact.",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-inbox-drops-equal-cut (rr5; expected VIOLATION:Inv_InboxCarryExact): Task 6a-TLA+ fault (old filter, accepted_at < cut): treats a message accepted exactly at the cut as late.",
+   "comment": "rr-df-inbox-drops-equal-cut (rr6; expected VIOLATION:Inv_InboxCarryExact): Task 6a-TLA+ fault: models the old loss of a message accepted exactly at the cut as accepted_at < cut (the old SQL used <= with a cut truncated to the millisecond). Enables only Inv_InboxCarryExact.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -6052,7 +7204,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_InboxCarryExact"
@@ -6073,11 +7231,11 @@
   "properties": [],
   "expected": "VIOLATION:Inv_InboxCarryExact",
   "deadlock": true,
-  "note": "Task 6a-TLA+ fault (expires_at >= cut): carries a message that expires exactly at the cut.",
-  "batch": "rr5",
+  "note": "Task 6a-TLA+ fault (expires_at >= cut): carries a message that expires exactly at the cut. Enables only Inv_InboxCarryExact; Inv_CarriedWereWaiting would also catch this overshoot if enabled.",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-inbox-keeps-expired-at-cut (rr5; expected VIOLATION:Inv_InboxCarryExact): Task 6a-TLA+ fault (expires_at >= cut): carries a message that expires exactly at the cut.",
+   "comment": "rr-df-inbox-keeps-expired-at-cut (rr6; expected VIOLATION:Inv_InboxCarryExact): Task 6a-TLA+ fault (expires_at >= cut): carries a message that expires exactly at the cut. Enables only Inv_InboxCarryExact; Inv_CarriedWereWaiting would also catch this overshoot if enabled.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"inbox\"",
@@ -6134,10 +7292,280 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_InboxCarryExact"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rr-df-inbox-notice-by-time",
+  "module": "WorkflowRerun",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "rr-df-inbox-notice-by-time.cfg",
+  "invariants": [
+   "Inv_InboxCarryExact"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_InboxCarryExact",
+  "deadlock": true,
+  "note": "Fix wave R3 fault (I-INBOX): the ordinary time arm loses only its contract discriminator (contract <> WorkflowEnded@1), so a stray child's notice inside the time window is carried. Enables only Inv_InboxCarryExact; Inv_CarriedWereWaiting would also catch this overshoot if enabled.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "rr-df-inbox-notice-by-time (rr6; expected VIOLATION:Inv_InboxCarryExact): Fix wave R3 fault (I-INBOX): the ordinary time arm loses only its contract discriminator (contract <> WorkflowEnded@1), so a stray child's notice inside the time window is carried. Enables only Inv_InboxCarryExact; Inv_CarriedWereWaiting would also catch this overshoot if enabled.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "1",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "FALSE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "TRUE",
+    "CarryNoticeByTime": "TRUE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
+   },
+   "invariants": [
+    "Inv_InboxCarryExact"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rr-df-inbox-carry-compares-copy-time",
+  "module": "WorkflowRerun",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "rr-df-inbox-carry-compares-copy-time.cfg",
+  "invariants": [
+   "Inv_NoWaitingLostAcrossGenerations"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_NoWaitingLostAcrossGenerations",
+  "deadlock": true,
+  "note": "Fix wave R3 fault (RR-1, the code before origin_accepted_at): the cut is compared with a carried row's accepted_at (#2's copy time), so a message that waited at a cut inside #2's copied prefix is lost. Enables only Inv_NoWaitingLostAcrossGenerations; Inv_InboxCarryExact would also catch this loss if enabled. Not observable in generation 1.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "rr-df-inbox-carry-compares-copy-time (rr6; expected VIOLATION:Inv_NoWaitingLostAcrossGenerations): Fix wave R3 fault (RR-1, the code before origin_accepted_at): the cut is compared with a carried row's accepted_at (#2's copy time), so a message that waited at a cut inside #2's copied prefix is lost. Enables only Inv_NoWaitingLostAcrossGenerations; Inv_InboxCarryExact would also catch this loss if enabled. Not observable in generation 1.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "2",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "FALSE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "TRUE",
+    "CarryComparesCopyTime": "TRUE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
+   },
+   "invariants": [
+    "Inv_NoWaitingLostAcrossGenerations"
+   ],
+   "properties": [],
+   "deadlock": true
+  }
+ },
+ {
+  "id": "rr-df-run-end-clock-at-begin",
+  "module": "WorkflowRerun",
+  "group": "fault",
+  "spec": "Spec",
+  "config": "rr-df-run-end-clock-at-begin.cfg",
+  "invariants": [
+   "Inv_AcceptedBeforeEnd"
+  ],
+  "properties": [],
+  "expected": "VIOLATION:Inv_AcceptedBeforeEnd",
+  "deadlock": true,
+  "note": "Fix wave R3 fault (MSG-1, the code before the fix): #2's end stamps finished_at with now(), its transaction's start, so an input accepted while the end waited for the session lock is after the end. Enables only Inv_AcceptedBeforeEnd; Inv_InboxCarryExact would also catch the lost message if enabled.",
+  "batch": "rr6",
+  "head": "design",
+  "tlc": {
+   "comment": "rr-df-run-end-clock-at-begin (rr6; expected VIOLATION:Inv_AcceptedBeforeEnd): Fix wave R3 fault (MSG-1, the code before the fix): #2's end stamps finished_at with now(), its transaction's start, so an input accepted while the end waited for the session lock is after the end. Enables only Inv_AcceptedBeforeEnd; Inv_InboxCarryExact would also catch the lost message if enabled.",
+   "spec": "Spec",
+   "constants": {
+    "SourceKind": "\"inbox\"",
+    "Mode": "\"run_again\"",
+    "Target": "\"same\"",
+    "Generations": "1",
+    "Actor": "\"owner\"",
+    "MaxVisits": "2",
+    "StepLimit": "5",
+    "StartVars": "FALSE",
+    "InputHashMismatch": "FALSE",
+    "AllowDeleters": "FALSE",
+    "AllowOwnerEnd": "FALSE",
+    "AllowClaimCrash": "FALSE",
+    "AllowCtrlCmds": "FALSE",
+    "AllowRetry": "FALSE",
+    "AllowCan": "FALSE",
+    "FitCheck": "TRUE",
+    "Guard": "TRUE",
+    "CheckInputHash": "TRUE",
+    "CheckCopyCoord": "TRUE",
+    "PlanBudget": "TRUE",
+    "FlatOrigin": "TRUE",
+    "AtomicCopy": "TRUE",
+    "ApprovalGate": "TRUE",
+    "StartsDecided": "FALSE",
+    "CopyKeepsIds": "FALSE",
+    "OrdinalsRestart": "FALSE",
+    "DropsCatchAll": "FALSE",
+    "NoSourceLock": "FALSE",
+    "RepickOnResume": "FALSE",
+    "CopyKeepsDeadline": "FALSE",
+    "DivergeInserts": "FALSE",
+    "CarryLateMessage": "FALSE",
+    "CarryDropsDroppedReader": "FALSE",
+    "CarryDropsEqualCut": "FALSE",
+    "CarryKeepsExpiredAtCut": "FALSE",
+    "LockNewBeforeOwner": "FALSE",
+    "SupplyNever": "FALSE",
+    "SuppliedOutcome": "\"again\"",
+    "SupplyNotePresent": "TRUE",
+    "AllowRetrySupplyChange": "FALSE",
+    "AutoPicked": "FALSE",
+    "ReqModeContinue": "FALSE",
+    "AllowResumeAfterCrash": "TRUE",
+    "AllowShellSweeper": "FALSE",
+    "AllowPostSweepStart": "FALSE",
+    "AllowSupplyOnForbiddenStep": "FALSE",
+    "StartsSupplied": "FALSE",
+    "AllowUndeclaredSupplyOutcome": "FALSE",
+    "IgnoreSupplyNever": "FALSE",
+    "IgnoreMissingSupplyNote": "FALSE",
+    "RepickSuppliedOnRetry": "FALSE",
+    "SkipGr1CutBack": "FALSE",
+    "SkipParentEndCancel": "FALSE",
+    "SkipImmediateRefusalCleanup": "FALSE",
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "TRUE",
+    "EndClock": "\"begin\""
+   },
+   "invariants": [
+    "Inv_AcceptedBeforeEnd"
    ],
    "properties": [],
    "deadlock": true
@@ -6156,10 +7584,10 @@
   "expected": "DEADLOCK",
   "deadlock": true,
   "note": "Fault 15: copy locks #2/#3 before owner row, causing TLC deadlock with OwnerEnded.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-lock-new-before-owner (rr5; expected DEADLOCK): Fault 15: copy locks #2/#3 before owner row, causing TLC deadlock with OwnerEnded.",
+   "comment": "rr-df-lock-new-before-owner (rr6; expected DEADLOCK): Fault 15: copy locks #2/#3 before owner row, causing TLC deadlock with OwnerEnded.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -6216,7 +7644,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK"
@@ -6238,10 +7672,10 @@
   "expected": "VIOLATION:Inv_PassOverOnChain",
   "deadlock": true,
   "note": "Fault 16 (B1/S1/m1): pass-over hit ignores copied row's route/predecessor mismatch.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-copy-hit-ignores-pred (rr5; expected VIOLATION:Inv_PassOverOnChain): Fault 16 (B1/S1/m1): pass-over hit ignores copied row's route/predecessor mismatch.",
+   "comment": "rr-df-copy-hit-ignores-pred (rr6; expected VIOLATION:Inv_PassOverOnChain): Fault 16 (B1/S1/m1): pass-over hit ignores copied row's route/predecessor mismatch.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"catchall\"",
@@ -6298,7 +7732,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_PassOverOnChain"
@@ -6320,10 +7760,10 @@
   "expected": "VIOLATION:Inv_FirstNewAtCut",
   "deadlock": true,
   "note": "Fault 17 (B1): cut guard ignores same-IR input/carry hash mismatch at same KV rev.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-ignores-input-hash (rr5; expected VIOLATION:Inv_FirstNewAtCut): Fault 17 (B1): cut guard ignores same-IR input/carry hash mismatch at same KV rev.",
+   "comment": "rr-df-ignores-input-hash (rr6; expected VIOLATION:Inv_FirstNewAtCut): Fault 17 (B1): cut guard ignores same-IR input/carry hash mismatch at same KV rev.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -6380,7 +7820,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_FirstNewAtCut"
@@ -6402,10 +7848,10 @@
   "expected": "VIOLATION:Inv_FirstNewAtCut",
   "deadlock": true,
   "note": "Fault 18 (I6): continue mode with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-continue-no-guard (rr5; expected VIOLATION:Inv_FirstNewAtCut): Fault 18 (I6): continue mode with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
+   "comment": "rr-df-continue-no-guard (rr6; expected VIOLATION:Inv_FirstNewAtCut): Fault 18 (I6): continue mode with FitCheck=FALSE and Guard=FALSE admits wrong step at cut.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -6462,7 +7908,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_FirstNewAtCut"
@@ -6507,6 +7959,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -6516,10 +7970,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Supply mode on SNode(2) -> SNode(3) -> TNode with deleters, claim crash + retry payload conflict check, commands, retry, CAN.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-supply-loop (rr5; expected PASS): Supply mode on SNode(2) -> SNode(3) -> TNode with deleters, claim crash + retry payload conflict check, commands, retry, CAN.",
+   "comment": "rr.design-supply-loop (rr6; expected PASS): Supply mode on SNode(2) -> SNode(3) -> TNode with deleters, claim crash + retry payload conflict check, commands, retry, CAN.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -6576,7 +8030,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -6608,6 +8068,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -6653,6 +8115,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -6662,10 +8126,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Supply mode on visit 1 (0 reused visits, SNode(1) supplied -> SNode(2) -> TNode).",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-supply-first (rr5; expected PASS): Supply mode on visit 1 (0 reused visits, SNode(1) supplied -> SNode(2) -> TNode).",
+   "comment": "rr.design-supply-first (rr6; expected PASS): Supply mode on visit 1 (0 reused visits, SNode(1) supplied -> SNode(2) -> TNode).",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"supply_first\"",
@@ -6722,7 +8186,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -6754,6 +8224,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -6799,6 +8271,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -6808,10 +8282,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Supply mode routing directly from supplied SNode(2) to terminal TNode.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-supply-to-terminal (rr5; expected PASS): Supply mode routing directly from supplied SNode(2) to terminal TNode.",
+   "comment": "rr.design-supply-to-terminal (rr6; expected PASS): Supply mode routing directly from supplied SNode(2) to terminal TNode.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -6868,7 +8342,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -6900,6 +8380,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -6945,6 +8427,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -6954,10 +8438,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "S2f: supply mode with reroute_supply target (FitCheck=FALSE, Guard=TRUE) fails rerun_diverged with 0 post-cut work.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-supply-diverge (rr5; expected PASS): S2f: supply mode with reroute_supply target (FitCheck=FALSE, Guard=TRUE) fails rerun_diverged with 0 post-cut work.",
+   "comment": "rr.design-supply-diverge (rr6; expected PASS): S2f: supply mode with reroute_supply target (FitCheck=FALSE, Guard=TRUE) fails rerun_diverged with 0 post-cut work.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -7014,7 +8498,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -7046,6 +8536,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -7091,6 +8583,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -7100,10 +8594,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Supply on approval step refused cleanly and claim shell soft-deleted immediately.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-supply-refused-approval (rr5; expected PASS): Supply on approval step refused cleanly and claim shell soft-deleted immediately.",
+   "comment": "rr.design-supply-refused-approval (rr6; expected PASS): Supply on approval step refused cleanly and claim shell soft-deleted immediately.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -7160,7 +8654,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -7192,6 +8692,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -7237,6 +8739,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -7246,10 +8750,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Supply on step with supply: never refused cleanly and claim shell soft-deleted immediately.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-supply-refused-never (rr5; expected PASS): Supply on step with supply: never refused cleanly and claim shell soft-deleted immediately.",
+   "comment": "rr.design-supply-refused-never (rr6; expected PASS): Supply on step with supply: never refused cleanly and claim shell soft-deleted immediately.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -7306,7 +8810,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -7338,6 +8848,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -7383,6 +8895,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -7392,10 +8906,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "S2a + R2-M1: G-R1 top-level spawn cut-back, G-R2 wind-down, observable Sweeper bare-shell collection without OwnerEnd, and quiescence.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-gr1-top-spawn (rr5; expected PASS): S2a + R2-M1: G-R1 top-level spawn cut-back, G-R2 wind-down, observable Sweeper bare-shell collection without OwnerEnd, and quiescence.",
+   "comment": "rr.design-gr1-top-spawn (rr6; expected PASS): S2a + R2-M1: G-R1 top-level spawn cut-back, G-R2 wind-down, observable Sweeper bare-shell collection without OwnerEnd, and quiescence.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"spawn\"",
@@ -7452,7 +8966,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -7484,6 +9004,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -7529,6 +9051,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -7538,10 +9062,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "S2a: G-R1 lifts cancelled parallel-lane spawn to enclosing PNode; Inv_AutoPickNoCancelledReuse & Inv_QuiescentNoLive hold.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-gr1-lane-spawn (rr5; expected PASS): S2a: G-R1 lifts cancelled parallel-lane spawn to enclosing PNode; Inv_AutoPickNoCancelledReuse & Inv_QuiescentNoLive hold.",
+   "comment": "rr.design-gr1-lane-spawn (rr6; expected PASS): S2a: G-R1 lifts cancelled parallel-lane spawn to enclosing PNode; Inv_AutoPickNoCancelledReuse & Inv_QuiescentNoLive hold.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"spawn_lane\"",
@@ -7598,7 +9122,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -7630,6 +9160,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -7675,6 +9207,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -7684,10 +9218,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "I2/R2-N3: auto-pick with explicit mode='continue' (ReqModeContinue=TRUE) skips G-R1 cut-back, reuses SPNode, and matches rerun.ts scope.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-gr1-explicit-continue (rr5; expected PASS): I2/R2-N3: auto-pick with explicit mode='continue' (ReqModeContinue=TRUE) skips G-R1 cut-back, reuses SPNode, and matches rerun.ts scope.",
+   "comment": "rr.design-gr1-explicit-continue (rr6; expected PASS): I2/R2-N3: auto-pick with explicit mode='continue' (ReqModeContinue=TRUE) skips G-R1 cut-back, reuses SPNode, and matches rerun.ts scope.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"spawn\"",
@@ -7744,7 +9278,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -7776,6 +9316,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -7821,6 +9363,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -7830,10 +9374,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "R2-M1: full observable Sweeper-vs-admission & late-retry race (AdvanceClaimGrace in any pre-admission phase; no startPhase oracle; losing late retry ends refused_workflow_deleted).",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-sweeper-admission-race (rr5; expected PASS): R2-M1: full observable Sweeper-vs-admission & late-retry race (AdvanceClaimGrace in any pre-admission phase; no startPhase oracle; losing late retry ends refused_workflow_deleted).",
+   "comment": "rr.design-sweeper-admission-race (rr6; expected PASS): R2-M1: full observable Sweeper-vs-admission & late-retry race (AdvanceClaimGrace in any pre-admission phase; no startPhase oracle; losing late retry ends refused_workflow_deleted).",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -7890,7 +9434,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -7922,6 +9472,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -7967,6 +9519,8 @@
    "Inv_TotalFromFirstNew",
    "Inv_CarriedWereWaiting",
    "Inv_InboxCarryExact",
+   "Inv_NoWaitingLostAcrossGenerations",
+   "Inv_AcceptedBeforeEnd",
    "Inv_TakeOnce"
   ],
   "properties": [
@@ -7976,10 +9530,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "M8: combines AllowOwnerEnd=TRUE and AllowShellSweeper=TRUE to verify Prop_SweepRequiresLockAndNoRun holds even while OwnerEnd is parked at locked_def.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.design-sweeper-admission-owner-race (rr5; expected PASS): M8: combines AllowOwnerEnd=TRUE and AllowShellSweeper=TRUE to verify Prop_SweepRequiresLockAndNoRun holds even while OwnerEnd is parked at locked_def.",
+   "comment": "rr.design-sweeper-admission-owner-race (rr6; expected PASS): M8: combines AllowOwnerEnd=TRUE and AllowShellSweeper=TRUE to verify Prop_SweepRequiresLockAndNoRun holds even while OwnerEnd is parked at locked_def.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -8036,7 +9590,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "CoreSafety",
@@ -8068,6 +9628,8 @@
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce"
    ],
    "properties": [
@@ -8097,10 +9659,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (supply on SNode(2)): reaches resumedAtCut, completes, and reaches Quiescent.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-supply-reaches-cut (rr5; expected PASS): Strong liveness (supply on SNode(2)): reaches resumedAtCut, completes, and reaches Quiescent.",
+   "comment": "rr.live-supply-reaches-cut (rr6; expected PASS): Strong liveness (supply on SNode(2)): reaches resumedAtCut, completes, and reaches Quiescent.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -8157,7 +9719,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -8192,10 +9760,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "Strong liveness (supply on visit 1, 0 reused): reaches resumedAtCut, completes, and reaches Quiescent.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-supply-first (rr5; expected PASS): Strong liveness (supply on visit 1, 0 reused): reaches resumedAtCut, completes, and reaches Quiescent.",
+   "comment": "rr.live-supply-first (rr6; expected PASS): Strong liveness (supply on visit 1, 0 reused): reaches resumedAtCut, completes, and reaches Quiescent.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"supply_first\"",
@@ -8252,7 +9820,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -8286,10 +9860,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "S2f liveness: supply divergence fails rerun_diverged with 0 post-cut work and reaches Quiescent.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-supply-diverge (rr5; expected PASS): S2f liveness: supply divergence fails rerun_diverged with 0 post-cut work and reaches Quiescent.",
+   "comment": "rr.live-supply-diverge (rr6; expected PASS): S2f liveness: supply divergence fails rerun_diverged with 0 post-cut work and reaches Quiescent.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -8346,7 +9920,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -8381,10 +9961,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "S2b + R2-M1 liveness: G-R1 + G-R2 + SweeperCollectClaimShell (without OwnerEnd) always reaches Quiescent.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-quiesces-gr1-sweeper (rr5; expected PASS): S2b + R2-M1 liveness: G-R1 + G-R2 + SweeperCollectClaimShell (without OwnerEnd) always reaches Quiescent.",
+   "comment": "rr.live-quiesces-gr1-sweeper (rr6; expected PASS): S2b + R2-M1 liveness: G-R1 + G-R2 + SweeperCollectClaimShell (without OwnerEnd) always reaches Quiescent.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"spawn\"",
@@ -8441,7 +10021,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -8477,10 +10063,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "S2a/S2b liveness: lane-spawn G-R1 + SweeperCollectClaimShell (without OwnerEnd) always reaches Quiescent.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-quiesces-lane-spawn (rr5; expected PASS): S2a/S2b liveness: lane-spawn G-R1 + SweeperCollectClaimShell (without OwnerEnd) always reaches Quiescent.",
+   "comment": "rr.live-quiesces-lane-spawn (rr6; expected PASS): S2a/S2b liveness: lane-spawn G-R1 + SweeperCollectClaimShell (without OwnerEnd) always reaches Quiescent.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"spawn_lane\"",
@@ -8537,7 +10123,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -8572,10 +10164,10 @@
   "expected": "PASS",
   "deadlock": true,
   "note": "R2-M1 liveness: concurrent Sweeper-vs-admission & late retry always resolves cleanly to admitted or refused_workflow_deleted and reaches Quiescent.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr.live-sweeper-admission-race (rr5; expected PASS): R2-M1 liveness: concurrent Sweeper-vs-admission & late retry always resolves cleanly to admitted or refused_workflow_deleted and reaches Quiescent.",
+   "comment": "rr.live-sweeper-admission-race (rr6; expected PASS): R2-M1 liveness: concurrent Sweeper-vs-admission & late retry always resolves cleanly to admitted or refused_workflow_deleted and reaches Quiescent.",
    "spec": "LiveSpec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -8632,7 +10224,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "TypeOK",
@@ -8660,10 +10258,10 @@
   "expected": "VIOLATION:Wit_NoSupplyDownstreamRead",
   "deadlock": true,
   "note": "Supply witness 1: supply replaces SNode(2), routes to SNode(3), downstream reads supplied output, run completes.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-supply-downstream-read (rr5; expected VIOLATION:Wit_NoSupplyDownstreamRead): Supply witness 1: supply replaces SNode(2), routes to SNode(3), downstream reads supplied output, run completes.",
+   "comment": "wit.rr-no-supply-downstream-read (rr6; expected VIOLATION:Wit_NoSupplyDownstreamRead): Supply witness 1: supply replaces SNode(2), routes to SNode(3), downstream reads supplied output, run completes.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -8720,7 +10318,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoSupplyDownstreamRead"
@@ -8742,10 +10346,10 @@
   "expected": "VIOLATION:Wit_NoSupplyFirstVisit",
   "deadlock": true,
   "note": "Supply witness 2: supply on visit 1 (reusedSet = {}) passes over SNode(1) and completes.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-supply-first-visit (rr5; expected VIOLATION:Wit_NoSupplyFirstVisit): Supply witness 2: supply on visit 1 (reusedSet = {}) passes over SNode(1) and completes.",
+   "comment": "wit.rr-no-supply-first-visit (rr6; expected VIOLATION:Wit_NoSupplyFirstVisit): Supply witness 2: supply on visit 1 (reusedSet = {}) passes over SNode(1) and completes.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"supply_first\"",
@@ -8802,7 +10406,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoSupplyFirstVisit"
@@ -8824,10 +10434,10 @@
   "expected": "VIOLATION:Wit_NoSupplyToTerminal",
   "deadlock": true,
   "note": "Supply witness 3 (S2h): supply routes directly from V' to TNode, stamps resumedAtCut, and completes.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-supply-to-terminal (rr5; expected VIOLATION:Wit_NoSupplyToTerminal): Supply witness 3 (S2h): supply routes directly from V' to TNode, stamps resumedAtCut, and completes.",
+   "comment": "wit.rr-no-supply-to-terminal (rr6; expected VIOLATION:Wit_NoSupplyToTerminal): Supply witness 3 (S2h): supply routes directly from V' to TNode, stamps resumedAtCut, and completes.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -8884,7 +10494,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoSupplyToTerminal"
@@ -8906,10 +10522,10 @@
   "expected": "VIOLATION:Wit_NoSupplyRefusedStepType",
   "deadlock": true,
   "note": "Supply witness 4: supply on approval step is refused before admission.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-supply-refused-step-type (rr5; expected VIOLATION:Wit_NoSupplyRefusedStepType): Supply witness 4: supply on approval step is refused before admission.",
+   "comment": "wit.rr-no-supply-refused-step-type (rr6; expected VIOLATION:Wit_NoSupplyRefusedStepType): Supply witness 4: supply on approval step is refused before admission.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -8966,7 +10582,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoSupplyRefusedStepType"
@@ -8988,10 +10610,10 @@
   "expected": "VIOLATION:Wit_NoLeakQuiescence",
   "deadlock": true,
   "note": "Supply witness 5 (S2b + 10:24 PST): reaches Quiescent without OwnerEnd after SweeperCollectClaimShell, G-R1 cut-back, G-R2 wind-down, and carried inbox settlement.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-leak-quiescence (rr5; expected VIOLATION:Wit_NoLeakQuiescence): Supply witness 5 (S2b + 10:24 PST): reaches Quiescent without OwnerEnd after SweeperCollectClaimShell, G-R1 cut-back, G-R2 wind-down, and carried inbox settlement.",
+   "comment": "wit.rr-no-leak-quiescence (rr6; expected VIOLATION:Wit_NoLeakQuiescence): Supply witness 5 (S2b + 10:24 PST): reaches Quiescent without OwnerEnd after SweeperCollectClaimShell, G-R1 cut-back, G-R2 wind-down, and carried inbox settlement.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"spawn\"",
@@ -9048,7 +10670,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoLeakQuiescence"
@@ -9070,10 +10698,10 @@
   "expected": "VIOLATION:Wit_NoLateRetryAfterSweep",
   "deadlock": true,
   "note": "Supply witness 6 (R2-M1): claim crashes, grace elapses, Sweeper collects shell, late retry sees soft_deleted under newLock and ends refused_workflow_deleted with runStatus=none.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "wit.rr-no-late-retry-after-sweep (rr5; expected VIOLATION:Wit_NoLateRetryAfterSweep): Supply witness 6 (R2-M1): claim crashes, grace elapses, Sweeper collects shell, late retry sees soft_deleted under newLock and ends refused_workflow_deleted with runStatus=none.",
+   "comment": "wit.rr-no-late-retry-after-sweep (rr6; expected VIOLATION:Wit_NoLateRetryAfterSweep): Supply witness 6 (R2-M1): claim crashes, grace elapses, Sweeper collects shell, late retry sees soft_deleted under newLock and ends refused_workflow_deleted with runStatus=none.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -9130,7 +10758,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Wit_NoLateRetryAfterSweep"
@@ -9152,10 +10786,10 @@
   "expected": "VIOLATION:Inv_SupplyAllowedStepOnly",
   "deadlock": true,
   "note": "Supply fault 1: allows supply on approval step ANode.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-supply-on-approval (rr5; expected VIOLATION:Inv_SupplyAllowedStepOnly): Supply fault 1: allows supply on approval step ANode.",
+   "comment": "rr-df-supply-on-approval (rr6; expected VIOLATION:Inv_SupplyAllowedStepOnly): Supply fault 1: allows supply on approval step ANode.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -9212,7 +10846,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_SupplyAllowedStepOnly"
@@ -9234,10 +10874,10 @@
   "expected": "VIOLATION:Inv_SuppliedNeverRuns",
   "deadlock": true,
   "note": "Supply fault 2 (S2g): controller starts effect/agent session for supplied visit V'.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-starts-supplied (rr5; expected VIOLATION:Inv_SuppliedNeverRuns): Supply fault 2 (S2g): controller starts effect/agent session for supplied visit V'.",
+   "comment": "rr-df-starts-supplied (rr6; expected VIOLATION:Inv_SuppliedNeverRuns): Supply fault 2 (S2g): controller starts effect/agent session for supplied visit V'.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -9294,7 +10934,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_SuppliedNeverRuns"
@@ -9316,10 +10962,10 @@
   "expected": "VIOLATION:Inv_SuppliedOutcomeDeclared",
   "deadlock": true,
   "note": "Supply fault 3: admits undeclared supplied outcome.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-supply-undeclared-outcome (rr5; expected VIOLATION:Inv_SuppliedOutcomeDeclared): Supply fault 3: admits undeclared supplied outcome.",
+   "comment": "rr-df-supply-undeclared-outcome (rr6; expected VIOLATION:Inv_SuppliedOutcomeDeclared): Supply fault 3: admits undeclared supplied outcome.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -9376,7 +11022,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_SuppliedOutcomeDeclared"
@@ -9398,10 +11050,10 @@
   "expected": "VIOLATION:Inv_SupplyAllowedStepOnly",
   "deadlock": true,
   "note": "Supply fault 4: ignores supply: never opt-out.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-ignores-supply-never (rr5; expected VIOLATION:Inv_SupplyAllowedStepOnly): Supply fault 4: ignores supply: never opt-out.",
+   "comment": "rr-df-ignores-supply-never (rr6; expected VIOLATION:Inv_SupplyAllowedStepOnly): Supply fault 4: ignores supply: never opt-out.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -9458,7 +11110,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_SupplyAllowedStepOnly"
@@ -9480,10 +11138,10 @@
   "expected": "VIOLATION:Inv_SuppliedOutcomeDeclared",
   "deadlock": true,
   "note": "Supply fault 5 (S2e): admits supply without required note.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-supply-no-note (rr5; expected VIOLATION:Inv_SuppliedOutcomeDeclared): Supply fault 5 (S2e): admits supply without required note.",
+   "comment": "rr-df-supply-no-note (rr6; expected VIOLATION:Inv_SuppliedOutcomeDeclared): Supply fault 5 (S2e): admits supply without required note.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -9540,7 +11198,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_SuppliedOutcomeDeclared"
@@ -9562,10 +11226,10 @@
   "expected": "VIOLATION:Inv_PinnedChoice",
   "deadlock": true,
   "note": "Supply fault 6 (S2d): retry after claim crash admits changed supplied payload instead of pinned digest.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-retry-changes-supplied (rr5; expected VIOLATION:Inv_PinnedChoice): Supply fault 6 (S2d): retry after claim crash admits changed supplied payload instead of pinned digest.",
+   "comment": "rr-df-retry-changes-supplied (rr6; expected VIOLATION:Inv_PinnedChoice): Supply fault 6 (S2d): retry after claim crash admits changed supplied payload instead of pinned digest.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -9622,7 +11286,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_PinnedChoice"
@@ -9644,10 +11314,10 @@
   "expected": "VIOLATION:Inv_AutoPickNoCancelledReuse",
   "deadlock": true,
   "note": "Supply fault 7 (S2a): auto-pick skips G-R1 cut-back over cancelled top-level spawn.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-gr1-skip (rr5; expected VIOLATION:Inv_AutoPickNoCancelledReuse): Supply fault 7 (S2a): auto-pick skips G-R1 cut-back over cancelled top-level spawn.",
+   "comment": "rr-df-gr1-skip (rr6; expected VIOLATION:Inv_AutoPickNoCancelledReuse): Supply fault 7 (S2a): auto-pick skips G-R1 cut-back over cancelled top-level spawn.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"spawn\"",
@@ -9704,7 +11374,13 @@
     "SkipGr1CutBack": "TRUE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_AutoPickNoCancelledReuse"
@@ -9726,10 +11402,10 @@
   "expected": "VIOLATION:Inv_AutoPickNoCancelledReuse",
   "deadlock": true,
   "note": "Supply fault 7b (S2a): auto-pick skips G-R1 lift over cancelled parallel-lane spawn.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-gr1-lane-skip (rr5; expected VIOLATION:Inv_AutoPickNoCancelledReuse): Supply fault 7b (S2a): auto-pick skips G-R1 lift over cancelled parallel-lane spawn.",
+   "comment": "rr-df-gr1-lane-skip (rr6; expected VIOLATION:Inv_AutoPickNoCancelledReuse): Supply fault 7b (S2a): auto-pick skips G-R1 lift over cancelled parallel-lane spawn.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"spawn_lane\"",
@@ -9786,7 +11462,13 @@
     "SkipGr1CutBack": "TRUE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_AutoPickNoCancelledReuse"
@@ -9808,10 +11490,10 @@
   "expected": "VIOLATION:Inv_QuiescentNoLive",
   "deadlock": true,
   "note": "Supply fault 8 (S2b): #2's end fails to cancel old spawn child; caught by Inv_QuiescentNoLive (no deadlock).",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-skip-parent-end-cancel (rr5; expected VIOLATION:Inv_QuiescentNoLive): Supply fault 8 (S2b): #2's end fails to cancel old spawn child; caught by Inv_QuiescentNoLive (no deadlock).",
+   "comment": "rr-df-skip-parent-end-cancel (rr6; expected VIOLATION:Inv_QuiescentNoLive): Supply fault 8 (S2b): #2's end fails to cancel old spawn child; caught by Inv_QuiescentNoLive (no deadlock).",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"spawn\"",
@@ -9868,7 +11550,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "TRUE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_QuiescentNoLive"
@@ -9890,10 +11578,10 @@
   "expected": "VIOLATION:Inv_RefusedClaimDeletedAtOnce",
   "deadlock": true,
   "note": "Supply fault 9 (S2c): post-claim refusal fails to soft-delete claim shell immediately.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-refused-shell-not-deleted (rr5; expected VIOLATION:Inv_RefusedClaimDeletedAtOnce): Supply fault 9 (S2c): post-claim refusal fails to soft-delete claim shell immediately.",
+   "comment": "rr-df-refused-shell-not-deleted (rr6; expected VIOLATION:Inv_RefusedClaimDeletedAtOnce): Supply fault 9 (S2c): post-claim refusal fails to soft-delete claim shell immediately.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"approval\"",
@@ -9950,7 +11638,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "TRUE",
-    "SweeperSkipsNewLockOrRecheck": "FALSE"
+    "SweeperSkipsNewLockOrRecheck": "FALSE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_RefusedClaimDeletedAtOnce"
@@ -9972,10 +11666,10 @@
   "expected": "VIOLATION:Inv_AdmittedNotSwept",
   "deadlock": true,
   "note": "Supply fault 10 (R2-M1): keeps grace enabled and skips ONLY newLock / under-lock no-run re-check in SweeperCollectClaimShell.",
-  "batch": "rr5",
+  "batch": "rr6",
   "head": "design",
   "tlc": {
-   "comment": "rr-df-sweeper-deletes-active-claim (rr5; expected VIOLATION:Inv_AdmittedNotSwept): Supply fault 10 (R2-M1): keeps grace enabled and skips ONLY newLock / under-lock no-run re-check in SweeperCollectClaimShell.",
+   "comment": "rr-df-sweeper-deletes-active-claim (rr6; expected VIOLATION:Inv_AdmittedNotSwept): Supply fault 10 (R2-M1): keeps grace enabled and skips ONLY newLock / under-lock no-run re-check in SweeperCollectClaimShell.",
    "spec": "Spec",
    "constants": {
     "SourceKind": "\"loop\"",
@@ -10032,7 +11726,13 @@
     "SkipGr1CutBack": "FALSE",
     "SkipParentEndCancel": "FALSE",
     "SkipImmediateRefusalCleanup": "FALSE",
-    "SweeperSkipsNewLockOrRecheck": "TRUE"
+    "SweeperSkipsNewLockOrRecheck": "TRUE",
+    "StrayNotice": "FALSE",
+    "CarryNoticeByTime": "FALSE",
+    "CutVisitCopied": "FALSE",
+    "CarryComparesCopyTime": "FALSE",
+    "SourceEndRace": "FALSE",
+    "EndClock": "\"locked\""
    },
    "invariants": [
     "Inv_AdmittedNotSwept"

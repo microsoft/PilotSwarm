@@ -56,7 +56,13 @@
       "SkipGr1CutBack",
       "SkipParentEndCancel",
       "SkipImmediateRefusalCleanup",
-      "SweeperSkipsNewLockOrRecheck"
+      "SweeperSkipsNewLockOrRecheck",
+      "StrayNotice",
+      "CarryNoticeByTime",
+      "CutVisitCopied",
+      "CarryComparesCopyTime",
+      "SourceEndRace",
+      "EndClock"
     ],
     "lists": "block",
     "deadlockFirst": false

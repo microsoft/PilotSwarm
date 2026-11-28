@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1 + supply + generated inbox, batch rr5).
+"""Writes cases.tsv, cases.json and tlc-templates.json for WorkflowRerun (I7 v1 + supply + generated inbox + fix wave R3, batch rr6).
 The .cfg files are generated from these by run-tlc.sh / check-packet.sh (../../tlc_cases.py)."""
 import json
 import os as _os
@@ -8,7 +8,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import tlc_cases  # docs/formal/tlc_cases.py
 
-BATCH = "rr5"
+BATCH = "rr6"
 M = "WorkflowRerun"
 
 
@@ -72,6 +72,12 @@ def c(
     skip_parent_end_cancel=False,
     skip_immediate_refusal_cleanup=False,
     sweeper_skips_new_lock_or_recheck=False,
+    stray_notice=False,
+    carry_notice_by_time=False,
+    cut_visit_copied=False,
+    carry_compares_copy_time=False,
+    source_end_race=False,
+    end_clock="locked",
 ):
     return dict(
         SourceKind=q(source_kind),
@@ -129,6 +135,12 @@ def c(
         SkipParentEndCancel=skip_parent_end_cancel,
         SkipImmediateRefusalCleanup=skip_immediate_refusal_cleanup,
         SweeperSkipsNewLockOrRecheck=sweeper_skips_new_lock_or_recheck,
+        StrayNotice=stray_notice,
+        CarryNoticeByTime=carry_notice_by_time,
+        CutVisitCopied=cut_visit_copied,
+        CarryComparesCopyTime=carry_compares_copy_time,
+        SourceEndRace=source_end_race,
+        EndClock=q(end_clock),
     )
 
 
@@ -162,6 +174,8 @@ ALL_SAFE_INVS = [
     "Inv_TotalFromFirstNew",
     "Inv_CarriedWereWaiting",
     "Inv_InboxCarryExact",
+    "Inv_NoWaitingLostAcrossGenerations",
+    "Inv_AcceptedBeforeEnd",
     "Inv_TakeOnce",
 ]
 SAFE_PROPS = ["Prop_NoAdmissionAfterTerminal", "Prop_SweepRequiresLockAndNoRun"]
@@ -266,6 +280,39 @@ CASES = [
         "PASS",
         True,
         "Generated #2 inbox (m1, m2 + reused spawn notice, every accept/expire/reader shape: 1,728 inboxes): #3 carries exactly the messages a fresh run at the cut would see; total wait anchor resets.",
+    ),
+    (
+        "rr.design-inbox-notices",
+        "design",
+        "Spec",
+        c(source_kind="inbox", stray_notice=True, allow_deleters=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "Fix wave R3 (I-INBOX): generated #2 inbox of m1, the reused spawn's notice and a stray child's WorkflowEnded@1 notice (1,728 inboxes): a notice is carried only for a reused spawn, whatever its times, never through the ordinary time window.",
+    ),
+    (
+        "rr.design-inbox-gen2-copied",
+        "design",
+        "Spec",
+        c(source_kind="inbox", generations=2, cut_visit_copied=True, allow_deleters=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "Fix wave R3 (RR-1): #3 cuts at a visit #2 copied from #1; #2's rows were carried from #1 (stored accepted_at = copy time, origin_accepted_at = first acceptance; 216 inboxes): #3 carries exactly the messages that waited at that cut in #1's history.",
+    ),
+    (
+        "rr.design-inbox-run-end-race",
+        "design",
+        "Spec",
+        c(source_kind="inbox", source_end_race=True),
+        ALL_SAFE_INVS,
+        SAFE_PROPS,
+        "PASS",
+        True,
+        "Fix wave R3 (MSG-1): #2's end transaction races an acceptance into #2 for #2's session lock; the end reads the clock after its locks, so an input #2 accepted is not after #2's end and the run-end cut carries it.",
     ),
     (
         "rr.design-gen2",
@@ -671,6 +718,39 @@ CASES = [
         "Task 6a-TLA+ witness: an admitted re-run leaves behind an unconsumed message that expires exactly at the cut.",
     ),
     (
+        "wit.rr-no-stray-notice-left",
+        "witness",
+        "Spec",
+        c(source_kind="inbox", stray_notice=True),
+        ["Wit_NoStrayNoticeLeft"],
+        [],
+        "VIOLATION:Wit_NoStrayNoticeLeft",
+        True,
+        "Fix wave R3 witness (I-INBOX): an admitted re-run leaves behind an unread stray child's WorkflowEnded@1 notice inside the ordinary time window.",
+    ),
+    (
+        "wit.rr-no-carry-across-generations",
+        "witness",
+        "Spec",
+        c(source_kind="inbox", generations=2, cut_visit_copied=True),
+        ["Wit_NoCarryAcrossGenerations"],
+        [],
+        "VIOLATION:Wit_NoCarryAcrossGenerations",
+        True,
+        "Fix wave R3 witness (RR-1): with #3's cut inside #2's copied prefix, a message carried through two generations is carried, taken by #3's new receive, and the run completes.",
+    ),
+    (
+        "wit.rr-no-raced-accept-carried",
+        "witness",
+        "Spec",
+        c(source_kind="inbox", source_end_race=True),
+        ["Wit_NoRacedAcceptCarried"],
+        [],
+        "VIOLATION:Wit_NoRacedAcceptCarried",
+        True,
+        "Fix wave R3 witness (MSG-1): #2's end begins before m_late's acceptance reads the clock, and m_late is still carried, taken by #3's new receive, and the run completes.",
+    ),
+    (
         "wit.rr-no-pinned-resume",
         "witness",
         "Spec",
@@ -867,7 +947,7 @@ CASES = [
         [],
         "VIOLATION:Inv_InboxCarryExact",
         True,
-        "Task 6a-TLA+ fault (old filter, consumed_by IS NULL): drops a waiting message that #2's dropped receive had read.",
+        "Task 6a-TLA+ fault (old filter, consumed_by IS NULL): drops a waiting message that #2's dropped receive had read. Enables only Inv_InboxCarryExact.",
     ),
     (
         "rr-df-inbox-drops-equal-cut",
@@ -878,7 +958,7 @@ CASES = [
         [],
         "VIOLATION:Inv_InboxCarryExact",
         True,
-        "Task 6a-TLA+ fault (old filter, accepted_at < cut): treats a message accepted exactly at the cut as late.",
+        "Task 6a-TLA+ fault: models the old loss of a message accepted exactly at the cut as accepted_at < cut (the old SQL used <= with a cut truncated to the millisecond). Enables only Inv_InboxCarryExact.",
     ),
     (
         "rr-df-inbox-keeps-expired-at-cut",
@@ -889,7 +969,40 @@ CASES = [
         [],
         "VIOLATION:Inv_InboxCarryExact",
         True,
-        "Task 6a-TLA+ fault (expires_at >= cut): carries a message that expires exactly at the cut.",
+        "Task 6a-TLA+ fault (expires_at >= cut): carries a message that expires exactly at the cut. Enables only Inv_InboxCarryExact; Inv_CarriedWereWaiting would also catch this overshoot if enabled.",
+    ),
+    (
+        "rr-df-inbox-notice-by-time",
+        "fault",
+        "Spec",
+        c(source_kind="inbox", stray_notice=True, carry_notice_by_time=True),
+        ["Inv_InboxCarryExact"],
+        [],
+        "VIOLATION:Inv_InboxCarryExact",
+        True,
+        "Fix wave R3 fault (I-INBOX): the ordinary time arm loses only its contract discriminator (contract <> WorkflowEnded@1), so a stray child's notice inside the time window is carried. Enables only Inv_InboxCarryExact; Inv_CarriedWereWaiting would also catch this overshoot if enabled.",
+    ),
+    (
+        "rr-df-inbox-carry-compares-copy-time",
+        "fault",
+        "Spec",
+        c(source_kind="inbox", generations=2, cut_visit_copied=True, carry_compares_copy_time=True),
+        ["Inv_NoWaitingLostAcrossGenerations"],
+        [],
+        "VIOLATION:Inv_NoWaitingLostAcrossGenerations",
+        True,
+        "Fix wave R3 fault (RR-1, the code before origin_accepted_at): the cut is compared with a carried row's accepted_at (#2's copy time), so a message that waited at a cut inside #2's copied prefix is lost. Enables only Inv_NoWaitingLostAcrossGenerations; Inv_InboxCarryExact would also catch this loss if enabled. Not observable in generation 1.",
+    ),
+    (
+        "rr-df-run-end-clock-at-begin",
+        "fault",
+        "Spec",
+        c(source_kind="inbox", source_end_race=True, end_clock="begin"),
+        ["Inv_AcceptedBeforeEnd"],
+        [],
+        "VIOLATION:Inv_AcceptedBeforeEnd",
+        True,
+        "Fix wave R3 fault (MSG-1, the code before the fix): #2's end stamps finished_at with now(), its transaction's start, so an input accepted while the end waited for the session lock is after the end. Enables only Inv_AcceptedBeforeEnd; Inv_InboxCarryExact would also catch the lost message if enabled.",
     ),
     (
         "rr-df-lock-new-before-owner",
