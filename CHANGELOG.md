@@ -102,6 +102,15 @@ earlier cycles are above: a visit decided by its time limit or a cancel (its
 Stop ends its turn unsaved), and a recovery that starts a fresh conversation
 (a corrupted transcript, a missing snapshot).
 
+### Portal transcript
+
+- When queued canvas button presses are merged by the session queue with each
+  other or with typed user messages in the same turn, the transcript now splits
+  same-sender turns in order into canvas-action cards and ordinary user messages
+  instead of rendering the raw `[canvas-action] {...}` JSON as chat text.
+  Cross-sender merged turns (whether flagged with `mergedMessages` or carrying
+  unattributed `[FROM:]` headers) stay unsplit.
+
 ### Decision cleanups
 
 - For an unanswered yes-or-no Decision call, a Workflow test report now
