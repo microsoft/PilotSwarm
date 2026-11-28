@@ -22,19 +22,21 @@ import { refuseDefinitionFromInsideWorkflow, updateWorkflowForPerson, workflowCo
 
 const ROOT = { childSessionId: "node-owner", nodeExecutionId: "nx-1", workflowSessionId: "W", controllingSessionId: "P", distance: 0 };
 
-test("the MCP filters and the permission gate: any server's spawn_workflow, update_workflow, workflow_definition and create_session_for_workflow, nothing else", () => {
+test("the MCP filters and the permission gate: any server's spawn_workflow, update_workflow, workflow_definition, create_session_for_workflow and send_workflow_input, nothing else", () => {
     assert.deepEqual(workflowDefinitionMcpToolFilters(["pilotswarm", "github"]), [
         "mcp:pilotswarm-spawn_workflow", "pilotswarm-spawn_workflow", "mcp:pilotswarm-update_workflow", "pilotswarm-update_workflow",
         "mcp:pilotswarm-workflow_definition", "pilotswarm-workflow_definition",
         "mcp:pilotswarm-create_session_for_workflow", "pilotswarm-create_session_for_workflow",
+        "mcp:pilotswarm-send_workflow_input", "pilotswarm-send_workflow_input",
         "mcp:github-spawn_workflow", "github-spawn_workflow", "mcp:github-update_workflow", "github-update_workflow",
         "mcp:github-workflow_definition", "github-workflow_definition",
         "mcp:github-create_session_for_workflow", "github-create_session_for_workflow",
+        "mcp:github-send_workflow_input", "github-send_workflow_input",
     ]);
     assert.deepEqual(workflowDefinitionMcpToolFilters([]), []);
     const seen = [];
     const gate = workflowDefinitionMcpPermission((request, extra) => { seen.push([request, extra]); return { kind: "approve-once" }; });
-    for (const toolName of ["update_workflow", "spawn_workflow", "workflow_definition", "create_session_for_workflow"]) {
+    for (const toolName of ["update_workflow", "spawn_workflow", "workflow_definition", "create_session_for_workflow", "send_workflow_input"]) {
         assert.deepEqual(gate({ kind: "mcp", serverName: "any", toolName, toolTitle: toolName, readOnly: false }, "x"),
             { kind: "reject", feedback: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT });
     }
