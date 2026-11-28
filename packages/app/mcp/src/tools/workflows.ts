@@ -20,6 +20,9 @@ const WORKFLOW_SKILL_MCP_NOTE =
     + WORKFLOW_MCP_GAP_WORKAROUND;
 
 const RERUN_FROM_KEYS = ["workflow_id", "execution_id", "mode", "result", "note"];
+const RERUN_SUPPLY_NOTE_MAX_CHARS = 2000;
+// Text PostgreSQL stores as given (the SDK's isStorableText): no NUL and no lone surrogate.
+const UNSTORABLE_TEXT = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const RERUN_PLAN_KEYS = ["execution_id", "mode", "revision", "outcome"];
 const READ_SELECTORS = ["run_id", "cursor", "execution_id", "limit", "kv_revision", "kv_key", "agent_versions", "definition_revision", "step_input"] as const;
 
@@ -70,6 +73,24 @@ function rerunFromArg(args: Record<string, unknown>)
     const extra = Object.keys(value).filter(key => !RERUN_FROM_KEYS.includes(key));
     if (extra.length) throw refused(`rerun_from takes ${RERUN_FROM_KEYS.join(", ")}; leave out ${extra.join(", ")}.`);
     if (typeof value.workflow_id !== "string" || !value.workflow_id.trim()) throw refused("rerun_from.workflow_id must name an ended Workflow.");
+    // Review H3: a supplied result and note, checked as Start checks them (design §6.3), before update attaches anything.
+    if (value.mode !== "supply" && (value.result != null || value.note != null)) {
+        throw refused("rerun_from.result and rerun_from.note are only allowed when mode is 'supply'.");
+    }
+    if (value.mode === "supply") {
+        const result = value.result;
+        if (!result || typeof result !== "object" || Array.isArray(result)) throw refused("mode 'supply' requires result: { outcome, output? }.");
+        const extraResult = Object.keys(result).filter(key => key !== "outcome" && key !== "output");
+        if (extraResult.length) throw refused(`rerun_from.result takes outcome and output; leave out ${extraResult.join(", ")}.`);
+        const outcome = (result as Record<string, unknown>).outcome;
+        if (typeof outcome !== "string" || !outcome.trim() || UNSTORABLE_TEXT.test(outcome)) {
+            throw refused("rerun_from.result.outcome must be a non-empty string.");
+        }
+        const note = value.note;
+        if (typeof note !== "string" || !note.trim() || UNSTORABLE_TEXT.test(note) || [...note].length > RERUN_SUPPLY_NOTE_MAX_CHARS) {
+            throw refused(`mode 'supply' requires a non-blank note of at most ${RERUN_SUPPLY_NOTE_MAX_CHARS} characters explaining how the result was verified.`);
+        }
+    }
     const inputs = args.inputs;
     if (inputs !== undefined && !(inputs && typeof inputs === "object" && Object.keys(inputs).length === 0)) {
         throw refused("A re-run takes the source Workflow's inputs: omit inputs with rerun_from.");
@@ -469,9 +490,10 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     execution_id: z.string().optional().describe("The visit to re-run from; omit to re-run from the failed step"),
                     mode: z.enum(["run_again", "continue", "supply"]).optional()
                         .describe("run_again: run the step again; continue: keep the step's result and go on; supply: give a script or agent step's result"),
-                    result: z.object({ outcome: z.string(), output: z.unknown().optional() }).optional()
-                        .describe("supply: the step's result, checked in the external system"),
-                    note: z.string().max(2000).optional().describe("supply only: the evidence you checked"),
+                    // Review H3: result and note pass the wire as given; the handler checks them as Start does (400 RERUN_ARGUMENT_REFUSED).
+                    result: z.unknown().optional()
+                        .describe("supply: the step's result { outcome, output? }, checked in the external system"),
+                    note: z.unknown().optional().describe("supply only: the evidence you checked (at most 2,000 characters)"),
                 }).passthrough().optional()
                     .describe("start: re-run an ended Workflow from a step, reusing the steps before it. Omit inputs and workspace; the "
                         + "revision defaults to the source Workflow's. Over MCP a re-run never reuses an answered approval (403 RERUN_APPROVAL_REUSED)"),

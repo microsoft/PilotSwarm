@@ -5,7 +5,7 @@
  * Web API mode (`startWebEnv`, the portal in this process):
  *   - run_again (source-revision default, then a fixed revision), continue and supply; key replay and 409 OPERATION_CONFLICT;
  *   - read_workflow: rerun_plan, visit.reused, visit.supplied, run.rerunOf and view.reruns; read_workflow_skill workflow-rerun;
- *   - 400 RERUN_ARGUMENT_REFUSED and 400 WORKFLOW_READ_INVALID;
+ *   - 400 RERUN_ARGUMENT_REFUSED (including a malformed supplied result or note, review H3) and 400 WORKFLOW_READ_INVALID;
  *   - OQ5: an answered approval is never reused over MCP (403 RERUN_APPROVAL_REUSED; rerun_plan allowed: false), while the
  *     owner's direct (non-MCP) plan may reuse it;
  *   - OQ1: the web owner's token without originating_session_id inherits the source's tool grant (grant: "inherited"); with
@@ -235,6 +235,15 @@ async function runModeFlow(modeLabel, stdioOpts, principal) {
         assert.equal(replay.replayed, true);
         assert.equal(replay.workflowId, supplied.workflowId);
         await refused("workflow_definition", { ...supplyArgs, rerun_from: { ...supplyArgs.rerun_from, note: "Another note." } }, "OPERATION_CONFLICT", 409);
+        // Review H3: a malformed supplied result or note reaches the handler over the wire and is refused 400 RERUN_ARGUMENT_REFUSED;
+        // nothing starts (step 7 lists exactly the re-runs above).
+        for (const rerun_from of [
+            { ...supplyArgs.rerun_from, result: { ...supplyArgs.rerun_from.result, verified: true } },
+            { ...supplyArgs.rerun_from, result: { output: { fixed: "supplied" } } },
+            { ...supplyArgs.rerun_from, note: "😀".repeat(2001) },
+        ]) {
+            await refused("workflow_definition", { ...supplyArgs, key: `malformed-${randomUUID()}`, rerun_from }, "RERUN_ARGUMENT_REFUSED", 400);
+        }
         const suppliedView = await ended(supplied.workflowId);
         assert.equal(suppliedView.run.outcome, "succeeded");
         assert.equal(visit(suppliedView, "finish").supplied.note, "Checked in the external system.");

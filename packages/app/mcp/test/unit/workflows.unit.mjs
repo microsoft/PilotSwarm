@@ -17,6 +17,9 @@
 //
 // No DB, no SDK client connection: `mgmt` is a fake, or the SDK's own getter over a stand-in. Run after `npm run build:mcp`.
 import assert from "node:assert/strict";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { PilotSwarmManagementClient, WebPilotSwarmManagementClient } from "pilotswarm-sdk";
 import { registerWorkflowTools } from "../../dist/src/tools/workflows.js";
 import { registerCapabilityTools } from "../../dist/src/tools/capabilities.js";
@@ -960,6 +963,52 @@ console.log("✅ Phase 4 MCP workflow tools unit suite passed");
         });
         assert.equal(res.isError, undefined, "empty inputs are no inputs");
         assert.equal("inputs" in calls.at(-1)[2], false);
+    }
+
+    // (i) Review H3: over the MCP wire (the McpServer's own schema parsing), a malformed supplied result or note reaches the
+    //     handler, which refuses it as Start does (400 RERUN_ARGUMENT_REFUSED) before anything is read, updated or started; the
+    //     note's limit counts characters, not UTF-16 code units.
+    {
+        const { mgmt, calls } = rerunMgmt();
+        const server = new McpServer({ name: "rerun-wire-test", version: "1.0.0" });
+        registerWorkflowTools(server, { workflowCommands: true, workflowTestMode: false, mgmt });
+        const client = new Client({ name: "rerun-wire-client", version: "1.0.0" });
+        const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+        await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+        const answer = (res) => { try { return JSON.parse(res.content[0].text); } catch { return res.content?.[0]?.text; } };
+        const supply = (rerun) => client.callTool({ name: "workflow_definition", arguments: {
+            operation: "start", owner_session_id: OWNER_SID, update: true, key: "k-h3",
+            rerun_from: { workflow_id: SOURCE, execution_id: "nx-2", mode: "supply", result: { outcome: "ok", output: { fqdn: "a.db" } },
+                note: "Checked in the portal.", ...rerun },
+        } });
+        try {
+            for (const [label, rerun] of [
+                ["an extra key in result", { result: { outcome: "ok", output: { fqdn: "a.db" }, verified: true } }],
+                ["a result without outcome", { result: { output: { fqdn: "a.db" } } }],
+                ["a blank outcome", { result: { outcome: " " } }],
+                ["an outcome that is not text", { result: { outcome: 7 } }],
+                ["a result that is not an object", { result: "ok" }],
+                ["a note of 2,001 characters", { note: "😀".repeat(2001) }],
+                ["a note that is not text", { note: { checked: true } }],
+                ["a result outside supply", { mode: "run_again" }],
+            ]) {
+                const res = await supply(rerun);
+                assert.equal(res.isError, true, label);
+                assert.deepEqual(answer(res), { error: answer(res)?.error, code: "RERUN_ARGUMENT_REFUSED", status: 400, session_id: OWNER_SID }, label);
+                assert.equal(typeof answer(res).error, "string", label);
+                assert.deepEqual(calls, [], `${label}: no read, package update or Start`);
+            }
+            // A well-formed supply, with a note of 2,000 characters (4,000 UTF-16 code units), goes through the wire whole.
+            const note = "😀".repeat(2000);
+            const started = answer(await supply({ note }));
+            assert.equal(started.operation, "start");
+            assert.deepEqual(calls.map(c => c[0]), ["read", "readDef", "updatePkg", "start"]);
+            assert.deepEqual(calls.at(-1)[2].rerunFrom, { workflowId: SOURCE, executionId: "nx-2", mode: "supply",
+                result: { outcome: "ok", output: { fqdn: "a.db" } }, note });
+        } finally {
+            await client.close();
+            await server.close();
+        }
     }
 
     // (d) rerun_plan: alone, outcome only, viaMcp; the plan is the read's answer (allowed: false over MCP for an approval).
