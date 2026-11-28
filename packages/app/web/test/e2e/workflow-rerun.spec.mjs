@@ -691,7 +691,7 @@ for (const [label, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
         await expect(start).toBeDisabled();
         await sheet.getByLabel("Why *").fill("Engineering confirmed ownership.");
         await start.click();
-        expect(state.starts[0].rerunFrom).toEqual({ workflowId: W2, executionId: "nx-provision-1", mode: "supply",
+        await expect.poll(() => state.starts[0]?.rerunFrom).toEqual({ workflowId: W2, executionId: "nx-provision-1", mode: "supply",
             result: { outcome: "engineering" }, note: "Engineering confirmed ownership." });
         expect(errors).toEqual([]);
     });
