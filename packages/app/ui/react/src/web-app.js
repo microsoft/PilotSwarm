@@ -1378,6 +1378,253 @@ export function computeAnchoredScrollTop(
         : Math.min(maxScroll, offsetPixels);
 }
 
+const SCROLL_ANCHOR_LEAF_SELECTOR = ".ps-line, .ps-chat-card-line, .ps-md-code-block, .ps-chat-table tbody tr, .ps-system-notice-summary";
+
+function scrollAnchorDirectKey(child) {
+    if (!child || child.nodeType !== 1) return "";
+    if (child.dataset?.scrollKey) return `sk:${child.dataset.scrollKey}`;
+    if (child.dataset?.clientMessageId) return `msg:${child.dataset.clientMessageId}`;
+    if (child.dataset?.taskGroup) return `sk:native:${child.dataset.taskGroup}`;
+    return "";
+}
+
+function scrollAnchorChildKey(child) {
+    const direct = scrollAnchorDirectKey(child);
+    if (direct) return direct;
+    if (!child || child.nodeType !== 1) return "";
+    const text = String(child.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    return `txt:${text.slice(0, 120)}`;
+}
+
+function firstVisibleIndexByRect(elements, thresholdY) {
+    let low = 0;
+    let high = elements.length - 1;
+    let found = -1;
+    while (low <= high) {
+        const mid = (low + high) >> 1;
+        const rect = elements[mid].getBoundingClientRect();
+        if (rect.bottom > thresholdY) {
+            found = mid;
+            high = mid - 1;
+        } else {
+            low = mid + 1;
+        }
+    }
+    return found;
+}
+
+function hasClass(el, name) {
+    if (!el) return false;
+    if (el.classList?.contains) return el.classList.contains(name);
+    return typeof el.className === "string" && el.className.split(/\s+/).includes(name);
+}
+
+function isCollapsibleOrNestedScroller(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = String(el.tagName || "").toUpperCase();
+    // Finalized answers render in a non-collapsible <details class="... is-final">
+    // whose viewport is unclipped flow; every other <details> (activity runs,
+    // native tasks, tool calls, saved Agent updates) resets closed on remount.
+    if (tag === "DETAILS" && !hasClass(el, "is-final")) return true;
+    if (
+        hasClass(el, "ps-activity-run-viewport")
+        || hasClass(el, "ps-native-task-calls")
+        || hasClass(el, "ps-system-notice-body")
+    ) {
+        return true;
+    }
+    if (hasClass(el, "ps-assistant-preview-viewport") && !hasClass(el.parentElement, "is-final")) {
+        return true;
+    }
+    return false;
+}
+
+function scrollAnchorLeaves(blockEl) {
+    if (!blockEl || typeof blockEl.querySelectorAll !== "function") return [];
+    // Collapsible top-level blocks (activity runs, non-final previews, native
+    // task groups) reset their disclosure state and inner scroll position on
+    // remount; keep the anchor on the outer block itself.
+    if (isCollapsibleOrNestedScroller(blockEl)) return [];
+    const list = blockEl.querySelectorAll(SCROLL_ANCHOR_LEAF_SELECTOR);
+    if (!list || list.length === 0) return [];
+    const safe = [];
+    for (const leaf of list) {
+        let unsafe = false;
+        for (let cur = leaf; cur && cur !== blockEl; cur = cur.parentElement) {
+            if (isCollapsibleOrNestedScroller(cur)) {
+                unsafe = true;
+                break;
+            }
+        }
+        if (!unsafe) safe.push(leaf);
+    }
+    return safe;
+}
+
+function isRenderedAnchorTarget(el, rect) {
+    if (!el || !rect || rect.height <= 0) return false;
+    if (typeof el.getClientRects === "function" && el.getClientRects().length === 0) return false;
+    return true;
+}
+
+export function captureScrollAnchor(node) {
+    if (!node) return null;
+    const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+    if (maxScroll <= 0) return null;
+    const nodeTop = node.getBoundingClientRect().top;
+    const thresholdY = nodeTop + 6;
+    const children = Array.from(node.children || []);
+    const startIdx = firstVisibleIndexByRect(children, thresholdY);
+    let anchorEl = null;
+    let anchorKey = "";
+    let anchorIdx = -1;
+    if (startIdx >= 0) {
+        for (let i = startIdx; i < children.length; i += 1) {
+            const child = children[i];
+            const rect = child.getBoundingClientRect();
+            if (!isRenderedAnchorTarget(child, rect) || rect.bottom <= thresholdY) continue;
+            const key = scrollAnchorChildKey(child);
+            if (!key) continue;
+            anchorEl = child;
+            anchorKey = key;
+            anchorIdx = i;
+            break;
+        }
+    }
+    if (!anchorEl) {
+        return {
+            key: "",
+            occurrence: 0,
+            leafIndex: -1,
+            offsetPx: 0,
+            ratio: 0,
+            blockOffsetPx: 0,
+            blockRatio: 0,
+            scrollTop: Math.round(node.scrollTop),
+        };
+    }
+    let occurrence = 0;
+    const directKey = scrollAnchorDirectKey(anchorEl);
+    if (directKey) {
+        for (let i = 0; i < anchorIdx; i += 1) {
+            if (scrollAnchorDirectKey(children[i]) === directKey) occurrence += 1;
+        }
+    } else {
+        for (let i = 0; i < anchorIdx; i += 1) {
+            if (scrollAnchorChildKey(children[i]) === anchorKey) occurrence += 1;
+        }
+    }
+    const blockRect = anchorEl.getBoundingClientRect();
+    const blockOffsetPx = Math.round(blockRect.top - nodeTop);
+    const blockRatio = blockOffsetPx < 0 && blockRect.height > 0
+        ? Math.max(0, Math.min(1, Math.round(((-blockOffsetPx) / blockRect.height) * 1000) / 1000))
+        : 0;
+    let targetEl = anchorEl;
+    let targetRect = blockRect;
+    let leafIndex = -1;
+    const leaves = scrollAnchorLeaves(anchorEl);
+    if (leaves.length > 1) {
+        const leafStart = firstVisibleIndexByRect(leaves, thresholdY);
+        if (leafStart >= 0) {
+            for (let i = leafStart; i < leaves.length; i += 1) {
+                const rect = leaves[i].getBoundingClientRect();
+                if (isRenderedAnchorTarget(leaves[i], rect) && rect.bottom > thresholdY) {
+                    targetEl = leaves[i];
+                    targetRect = rect;
+                    leafIndex = i;
+                    break;
+                }
+            }
+        }
+    }
+    const offsetPx = targetEl === anchorEl ? blockOffsetPx : Math.round(targetRect.top - nodeTop);
+    const ratio = targetEl === anchorEl
+        ? blockRatio
+        : (offsetPx < 0 && targetRect.height > 0
+            ? Math.max(0, Math.min(1, Math.round(((-offsetPx) / targetRect.height) * 1000) / 1000))
+            : 0);
+    return {
+        key: anchorKey,
+        occurrence,
+        leafIndex,
+        offsetPx,
+        ratio,
+        blockOffsetPx,
+        blockRatio,
+        scrollTop: Math.round(node.scrollTop),
+    };
+}
+
+export function resolveAnchoredScrollTop(node, anchor, scrollOffset, scrollMode) {
+    if (!node) return 0;
+    const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+    if (scrollMode === "bottom") {
+        const offsetPixels = Math.max(0, Number(scrollOffset) || 0) * SCROLL_ROW_HEIGHT;
+        return Math.max(0, maxScroll - offsetPixels);
+    }
+    if (anchor && typeof anchor === "object") {
+        if (anchor.key) {
+            const children = Array.from(node.children || []);
+            const isDirect = anchor.key.startsWith("sk:") || anchor.key.startsWith("msg:");
+            const targetOccurrence = anchor.occurrence || 0;
+            let matchedEl = null;
+            let seen = 0;
+            for (const child of children) {
+                const key = isDirect ? scrollAnchorDirectKey(child) : scrollAnchorChildKey(child);
+                if (key !== anchor.key) continue;
+                if (seen === targetOccurrence) {
+                    matchedEl = child;
+                    break;
+                }
+                seen += 1;
+            }
+            if (matchedEl) {
+                const nodeTop = node.getBoundingClientRect().top;
+                let targetEl = null;
+                let targetRect = null;
+                let offsetPx = 0;
+                let ratio = 0;
+                if (Number.isInteger(anchor.leafIndex) && anchor.leafIndex >= 0) {
+                    const leaves = scrollAnchorLeaves(matchedEl);
+                    const candidate = leaves[anchor.leafIndex];
+                    const candidateRect = candidate?.getBoundingClientRect();
+                    if (isRenderedAnchorTarget(candidate, candidateRect)) {
+                        targetEl = candidate;
+                        targetRect = candidateRect;
+                        offsetPx = Number(anchor.offsetPx) || 0;
+                        ratio = Number(anchor.ratio) || 0;
+                    }
+                }
+                if (!targetEl) {
+                    const blockRect = matchedEl.getBoundingClientRect();
+                    if (isRenderedAnchorTarget(matchedEl, blockRect)) {
+                        targetEl = matchedEl;
+                        targetRect = blockRect;
+                        offsetPx = Number.isFinite(Number(anchor.blockOffsetPx))
+                            ? Number(anchor.blockOffsetPx)
+                            : (Number(anchor.offsetPx) || 0);
+                        ratio = Number.isFinite(Number(anchor.blockRatio))
+                            ? Number(anchor.blockRatio)
+                            : 0;
+                    }
+                }
+                if (targetEl && targetRect) {
+                    const desiredTopOffset = offsetPx < 0 && ratio > 0 && targetRect.height > 0
+                        ? -Math.round(ratio * targetRect.height)
+                        : offsetPx;
+                    const delta = (targetRect.top - nodeTop) - desiredTopOffset;
+                    return Math.max(0, Math.min(maxScroll, node.scrollTop + delta));
+                }
+            }
+        }
+        if (Number.isFinite(Number(anchor.scrollTop))) {
+            return Math.max(0, Math.min(maxScroll, Number(anchor.scrollTop)));
+        }
+    }
+    return computeAnchoredScrollTop(node, scrollOffset, scrollMode, false);
+}
+
 function scrollLineIdentity(line) {
     if (!line) return "";
     if (line.kind === "runs") return line.runs?.map((run) => run?.text || "").join("") || "";
@@ -1418,13 +1665,27 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     // and clamps nextScrollTop downward). The flag tells onScroll to
     // ignore the matching scroll event after we set scrollTop ourselves.
     const programmaticScrollRef = React.useRef(null);
-    const previousViewportStateRef = React.useRef({
-        scrollMode,
-        scrollOffset,
-    });
+    // Start unsynced (null) so a freshly mounted pane restores its saved
+    // scroll position/anchor instead of treating the fresh DOM's scrollTop=0
+    // as a paused position to preserve.
+    const previousViewportStateRef = React.useRef(null);
     const previousContentRef = React.useRef(null);
+    const pendingMountAnchorRef = React.useRef(null);
+    const mountedSessionIdRef = React.useRef(historySessionId);
+    mountedSessionIdRef.current = historySessionId;
     const historyScrollRef = React.useRef(null);
     React.useEffect(() => () => { historyScrollRef.current = null; }, []);
+    React.useLayoutEffect(() => () => {
+        const node = ref.current;
+        const sessionId = mountedSessionIdRef.current || controller.getState().sessions.activeSessionId;
+        if (!node || paneKey !== "chat" || !stickyBottom || !sessionId || pendingMountAnchorRef.current) return;
+        if (node.dataset?.sessionId && node.dataset.sessionId !== sessionId) return;
+        if (controller.getState().ui.followBottom?.chat !== false) return;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        if (maxScroll <= 0 || isScrollViewportAtBottom(node)) return;
+        const anchor = captureScrollAnchor(node);
+        if (anchor) controller.setChatScrollAnchor?.(sessionId, anchor);
+    }, [controller, paneKey, ref, stickyBottom]);
     const [topPullDistance, setTopPullDistance] = React.useState(0);
     const [loadingHistorySessionId, setLoadingHistorySessionId] = React.useState(null);
     React.useEffect(() => { setTopPullDistance(0); }, [historySessionId]);
@@ -1474,10 +1735,13 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         const lastLine = scrollBoundaryIdentity(normalizedLines, true);
         const previousContent = previousContentRef.current;
         let historyScroll = historyScrollRef.current;
-        const activeSessionId = controller.getState().sessions.activeSessionId;
+        const activeSessionId = historySessionId || controller.getState().sessions.activeSessionId;
         if (historyScroll && historyScroll.sessionId !== activeSessionId) {
             historyScrollRef.current = null;
             historyScroll = null;
+        }
+        if (pendingMountAnchorRef.current && pendingMountAnchorRef.current.sessionId !== activeSessionId) {
+            pendingMountAnchorRef.current = null;
         }
         const oldestSeq = controller.getState().history.bySessionId.get(activeSessionId)?.events?.[0]?.seq;
         const pageArrived = historyScroll && !historyScroll.applied && oldestSeq < historyScroll.oldestSeq;
@@ -1513,37 +1777,99 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             || (now - (interaction.lastUserScrollAt || 0)) < TOUCH_MOMENTUM_GRACE_MS;
         const isEchoOffset = interaction.lastDispatchedOffset != null
             && Math.abs((Number(scrollOffset) || 0) - interaction.lastDispatchedOffset) < 2;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        const savedChatAnchor = paneKey === "chat" && stickyBottom && activeSessionId
+            ? controller.getChatScrollAnchor?.(activeSessionId) || null
+            : null;
+        const sameSession = previousViewportState != null
+            && previousViewportState.sessionId === activeSessionId;
+        const widthChanged = previousContent != null
+            && Number.isFinite(previousContent.clientWidth)
+            && Math.abs(node.clientWidth - previousContent.clientWidth) > 1;
+        // Wait for scrollable content before finalizing an initial paused
+        // restore so an empty loading frame does not lock scrollTop at 0.
+        if (
+            previousViewportState === null
+            && stickyBottom
+            && scrollMode === "top"
+            && maxScroll <= 0
+            && (savedChatAnchor != null || (Number(scrollOffset) || 0) > 0)
+        ) {
+            previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight, clientWidth: node.clientWidth };
+            return;
+        }
+        const restorePendingAnchor = Boolean(
+            pendingMountAnchorRef.current
+            && pendingMountAnchorRef.current.sessionId === activeSessionId
+            && stickyBottom
+            && scrollMode === "top"
+            && !interacting
+            && maxScroll > 0,
+        );
+        const restoreInitialPaused = Boolean(
+            previousViewportState === null
+            && stickyBottom
+            && scrollMode === "top"
+            && maxScroll > 0
+            && (savedChatAnchor != null || (Number(scrollOffset) || 0) > 0),
+        );
+        const restoreOnSessionSwitch = Boolean(
+            previousViewportState !== null
+            && !sameSession
+            && stickyBottom
+            && scrollMode === "top"
+            && maxScroll > 0
+            && savedChatAnchor != null,
+        );
+        const restoreOnWidthResize = Boolean(
+            sameSession
+            && widthChanged
+            && stickyBottom
+            && scrollMode === "top"
+            && !interaction.touching
+            && maxScroll > 0
+            && savedChatAnchor != null,
+        );
+        const useAnchorRestore = restoreInitialPaused || restorePendingAnchor || restoreOnSessionSwitch || restoreOnWidthResize;
         const preservePausedStickyScroll = stickyBottom
             && scrollMode === "top"
+            && sameSession
             && previousViewportState?.scrollMode === "top"
-            && previousViewportState?.scrollOffset === scrollOffset;
+            && previousViewportState?.scrollOffset === scrollOffset
+            && !useAnchorRestore;
         // A backward page inserts DOM above the reader. Top-anchored paused
         // state normally preserves scrollTop, which would push the same visible
         // message down by the inserted height. Compensate with the measured DOM
         // height delta. Appended live text keeps the old scrollTop unchanged.
-        const prependedWhilePaused = !historyScroll && stickyBottom
+        const prependedWhilePaused = !historyScroll && !useAnchorRestore && stickyBottom
             && previousContent?.lastLine === lastLine
             && previousContent?.firstLine !== firstLine
             && node.scrollHeight > previousContent.scrollHeight
             && (preservePausedStickyScroll || node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX);
         if (
-            !pageArrived && !prependedWhilePaused
+            !pageArrived && !prependedWhilePaused && !useAnchorRestore
             && interacting
             && !(stickyBottom && scrollMode === "bottom" && !interaction.touching
                 && previousContent && previousContent.scrollHeight !== node.scrollHeight)
+            && sameSession
             && scrollMode === previousViewportState?.scrollMode
             && (scrollOffset === previousViewportState?.scrollOffset || isEchoOffset)
         ) {
-            previousViewportStateRef.current = { scrollMode, scrollOffset };
-            previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
+            previousViewportStateRef.current = { sessionId: activeSessionId, scrollMode, scrollOffset };
+            previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight, clientWidth: node.clientWidth };
             return;
         }
+        const activeAnchor = restorePendingAnchor
+            ? pendingMountAnchorRef.current.anchor
+            : savedChatAnchor;
         const nextScrollTop = pageArrived ? pageScrollTop : prependedWhilePaused
             ? Math.max(0, Math.min(
                 node.scrollTop + (node.scrollHeight - previousContent.scrollHeight),
-                node.scrollHeight - node.clientHeight,
+                maxScroll,
             ))
-            : computeAnchoredScrollTop(node, scrollOffset, scrollMode, preservePausedStickyScroll);
+            : useAnchorRestore
+                ? resolveAnchoredScrollTop(node, activeAnchor, scrollOffset, scrollMode)
+                : computeAnchoredScrollTop(node, scrollOffset, scrollMode, preservePausedStickyScroll);
         if (Math.abs(node.scrollTop - nextScrollTop) > PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
             const pendingProgrammaticScroll = { target: nextScrollTop };
             programmaticScrollRef.current = pendingProgrammaticScroll;
@@ -1555,8 +1881,37 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
                     programmaticScrollRef.current = null;
                 }
             });
+            // A keyboard or programmatic paused scroll (Home, PageUp, j/k)
+            // suppresses onScroll; recapture the fresh DOM anchor so a later
+            // width resize or session switch stays on the new position.
+            if (
+                paneKey === "chat"
+                && stickyBottom
+                && activeSessionId
+                && scrollMode === "top"
+                && !useAnchorRestore
+                && !pageArrived
+                && !prependedWhilePaused
+                && !preservePausedStickyScroll
+                && maxScroll > 0
+                && !isScrollViewportAtBottom(node)
+            ) {
+                const freshAnchor = captureScrollAnchor(node);
+                if (freshAnchor) controller.setChatScrollAnchor?.(activeSessionId, freshAnchor);
+            }
         }
-        if ((pageArrived || prependedWhilePaused) && paneKey && typeof controller.updatePaneScrollFromViewport === "function") {
+        if ((restoreInitialPaused || restoreOnSessionSwitch) && savedChatAnchor && !pendingMountAnchorRef.current) {
+            // Re-apply the same anchor if measured column width settles on the
+            // next paint after mount; any user scroll/touch clears it at once.
+            const settling = { sessionId: activeSessionId, anchor: savedChatAnchor };
+            pendingMountAnchorRef.current = settling;
+            window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+                if (pendingMountAnchorRef.current === settling) {
+                    pendingMountAnchorRef.current = null;
+                }
+            }));
+        }
+        if ((pageArrived || prependedWhilePaused || restoreOnWidthResize) && paneKey && typeof controller.updatePaneScrollFromViewport === "function") {
             // The measured DOM compensation above is the new durable paused
             // position. Persist it too: otherwise switching sessions and back
             // reapplies the pre-page offset and moves the reader by the full
@@ -1564,16 +1919,35 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             const rowOffset = Math.max(0, nextScrollTop) / SCROLL_ROW_HEIGHT;
             userScrollRef.current.lastDispatchedOffset = rowOffset;
             controller.updatePaneScrollFromViewport(paneKey, rowOffset, { atBottom: false });
+            if ((pageArrived || prependedWhilePaused) && paneKey === "chat" && activeSessionId) {
+                const updatedAnchor = captureScrollAnchor(node);
+                if (updatedAnchor) controller.setChatScrollAnchor?.(activeSessionId, updatedAnchor);
+            }
         }
         previousViewportStateRef.current = {
+            sessionId: activeSessionId,
             scrollMode,
             scrollOffset,
         };
-        previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
-    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision, tailRevision]);
+        previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight, clientWidth: node.clientWidth };
+    }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision, tailRevision, historySessionId, paneKey, controller]);
 
     const dispatchScrollOffset = useFrameCoalescedCallback((offset) => {
         controller.dispatch({ type: "ui/scroll", pane: paneKey, offset });
+    });
+
+    // Coalesce anchor capture to at most once per animation frame during
+    // momentum scrolling so rapid scroll events never churn the store; the
+    // unmount layout cleanup still captures synchronously before teardown.
+    const scheduleChatAnchorCapture = useFrameCoalescedCallback((sessionId) => {
+        const node = ref.current;
+        if (!node || !sessionId || paneKey !== "chat" || !stickyBottom) return;
+        if (node.dataset?.sessionId && node.dataset.sessionId !== sessionId) return;
+        if (controller.getState().ui.followBottom?.chat !== false) return;
+        const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+        if (maxScroll <= 0 || isScrollViewportAtBottom(node)) return;
+        const anchor = captureScrollAnchor(node);
+        if (anchor) controller.setChatScrollAnchor?.(sessionId, anchor);
     });
 
     const onScroll = React.useCallback(() => {
@@ -1596,6 +1970,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             programmaticScrollRef.current = null;
         }
         userScrollRef.current.lastUserScrollAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+        pendingMountAnchorRef.current = null;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
         // When the pane has no scrollable content (transient loading state
         // that briefly collapses the body to one line), the browser auto-
@@ -1605,13 +1980,21 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         // the desired scroll position from preserved state.
         if (maxScroll <= 0) return;
         if (stickyBottom && typeof controller.updatePaneScrollFromViewport === "function") {
+            const atBottom = isScrollViewportAtBottom(node);
             const rowOffset = Math.max(0, node.scrollTop) / SCROLL_ROW_HEIGHT;
             userScrollRef.current.lastDispatchedOffset = rowOffset;
             controller.updatePaneScrollFromViewport(
                 paneKey,
                 rowOffset,
-                { atBottom: isScrollViewportAtBottom(node) },
+                { atBottom },
             );
+            if (paneKey === "chat") {
+                const sessionId = mountedSessionIdRef.current || controller.getState().sessions.activeSessionId;
+                if (sessionId) {
+                    if (atBottom) controller.setChatScrollAnchor?.(sessionId, null);
+                    else scheduleChatAnchorCapture(sessionId);
+                }
+            }
             // Pausing bottom-follow changes chat to top-anchored scroll state,
             // but reaching the DOM's actual top must still arm backward CMS
             // paging. Keep this next to the native measurement so the history
@@ -1633,7 +2016,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         if (paneKey === "chat" && scrollMode === "bottom" && node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
             controller.armChatTopHistoryLoad?.();
         }
-    }, [controller, dispatchScrollOffset, paneKey, ref, scrollMode, stickyBottom]);
+    }, [controller, dispatchScrollOffset, paneKey, ref, scheduleChatAnchorCapture, scrollMode, stickyBottom]);
 
     const requestHistoryPage = React.useCallback(() => {
         const node = ref.current;
@@ -1690,6 +2073,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const touchPullRef = React.useRef({ startY: null, lastY: null, distance: 0 });
     const onTouchStart = React.useCallback((event) => {
         userScrollRef.current.touching = true;
+        pendingMountAnchorRef.current = null;
         if (historyScrollRef.current?.applied) historyScrollRef.current = null;
         const node = ref.current;
         touchPullRef.current = {
@@ -1884,8 +2268,10 @@ function ChatActivityRun({ calls }) {
         if (open && viewport && followRef.current) viewport.scrollTop = viewport.scrollHeight;
     }, [open, calls.length, updateKey]);
 
+    const runKey = calls[0]?.callKey || latest.callKey || "";
     return React.createElement("details", {
         className: `ps-native-tasks ps-activity-run${latestFailed ? " is-failed" : active ? " is-working" : " is-done"}`,
+        "data-scroll-key": runKey ? `calls:${runKey}` : undefined,
         open,
         onToggle: (event) => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); },
     },
@@ -4347,6 +4733,7 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
 
     return React.createElement("details", {
         className: `ps-system-notice ps-assistant-preview${line.final ? " is-final" : ""}`,
+        "data-scroll-key": line.previewKey ? `preview:${line.previewKey}` : undefined,
         open: expanded,
         onToggle: (event) => {
             if (event.target === event.currentTarget && !line.final) setOpen(event.currentTarget.open);
@@ -4434,6 +4821,7 @@ const TurnControlItem = React.memo(function TurnControlItem({ control, theme }) 
         return React.createElement("div", {
             className: "ps-control-item is-stop",
             "data-testid": "control-stop",
+            "data-scroll-key": seq ? `control:stop:${seq}` : undefined,
             "data-control-seq": seq,
             "data-outcome": outcome,
             "data-actor-kind": control.actorKind,
@@ -4445,6 +4833,7 @@ const TurnControlItem = React.memo(function TurnControlItem({ control, theme }) 
     return React.createElement("div", {
         className: "ps-control-item is-steer",
         "data-testid": "control-steer",
+        "data-scroll-key": seq ? `control:steer:${seq}` : undefined,
         "data-control-seq": seq,
         "data-outcome": outcome,
         "data-actor-kind": control.actorKind,
@@ -4539,6 +4928,7 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
             if (block.type === "card") {
                 return React.createElement("section", {
                     key: `card:${block.cardKey || index}`,
+                    "data-scroll-key": block.cardKey ? `card:${block.cardKey}` : undefined,
                     className: "ps-chat-card",
                     style: { "--ps-chat-card-accent": resolveColor(theme, block.borderColor) || "var(--ps-border)" },
                 },
@@ -18550,8 +18940,15 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         })
         : null;
 
+    const mobileArtifactOverlayActive = mobile
+        && filesFullscreenActive
+        && !state.adminVisible;
+
     if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement(Toolbar, { controller, mobile: false, moa, viewNavigation }),
+        !moa?.active && mobileArtifactOverlayActive
+            ? React.createElement(MobileArtifactOverlay, { controller })
+            : null,
         React.createElement(ModalLayer, { controller }),
         React.createElement(MotdOverlay, { controller, mobile }));
     return React.createElement(ControllerContext.Provider, { value: controller },
@@ -18598,11 +18995,11 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 ? React.createElement(AdminConsolePanel, { controller, mobile, navigation: mobileAdminNavigation })
                 : state.budgetOpen
                     ? React.createElement(ProviderBudgetView, { controller })
-                    : (filesFullscreenActive
+                    : (filesFullscreenActive && !mobile
                         ? fullscreenWorkspace
                         : (mobile ? mobileContent : desktopWorkspace)),
             mobileCanvasLayer),
-        mobile && filesFullscreenActive && !state.adminVisible
+        mobileArtifactOverlayActive
             ? React.createElement(MobileArtifactOverlay, { controller })
             : null,
         React.createElement(ModalLayer, { controller }),

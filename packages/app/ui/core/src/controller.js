@@ -6758,11 +6758,15 @@ export class PilotSwarmUiController {
         if (Number.isFinite(createdAt) && Date.now() - createdAt > PRESENTED_ARTIFACT_FRESHNESS_MS) {
             return false;
         }
+        const revealKey = event?.seq != null ? `${sessionId}:${event.seq}` : null;
+        if (revealKey && this.revealedPresentedArtifacts?.has(revealKey)) return false;
+        if (revealKey) (this.revealedPresentedArtifacts ||= new Set()).add(revealKey);
 
-        // Same destination a user click reaches: the artifact reader, with the
-        // chat still beside it. `fullscreen` from the tool means "give it the
-        // whole window" and stays the phone/fullscreen path.
-        const fullscreen = event?.data?.fullscreen === true;
+        // Same destination a user click reaches: desktop gets the reader column
+        // (unless fullscreen was explicitly requested), while a phone always
+        // presents in its full-viewport overlay rather than mutating desktop
+        // column state.
+        const fullscreen = event?.data?.fullscreen === true || Boolean(this.mobileView);
         this.revealArtifact(sessionId, filename, fullscreen
             ? { fullscreen: true }
             : { pane: true }).catch(() => {});
@@ -11238,17 +11242,22 @@ export class PilotSwarmUiController {
         fullscreen = false,
         pane = false,
         preserveSession = false,
+        origin = "chat",
     } = {}) {
         const resolvedSessionId = sessionId || this.getState().sessions.activeSessionId;
         const name = String(filename || "").trim();
         if (!resolvedSessionId || !name) return false;
 
-        // Capture the list's current selection BEFORE we move it, so backing
-        // out of a chat-opened preview leaves the artifact list untouched.
+        // Capture the list's current selection, phone pane, and inspector tab
+        // BEFORE we move anything, so backing out of a chat-opened preview
+        // leaves the artifact list and Diagnostics tab untouched.
+        const priorState = this.getState();
         this.dispatch({
             type: "files/previewOrigin",
-            origin: "chat",
-            restoreArtifactId: this.getState().files.selectedArtifactId || null,
+            origin,
+            restoreArtifactId: origin === "chat" ? (priorState.files.selectedArtifactId || null) : null,
+            restoreMobilePane: origin === "chat" && this.mobileView ? (this.mobileView.get?.() || "workspace") : null,
+            restoreInspectorTab: origin === "chat" && !pane ? (priorState.ui.inspectorTab || null) : null,
         });
 
         if (!preserveSession && this.getState().sessions.activeSessionId !== resolvedSessionId) {
@@ -11278,11 +11287,11 @@ export class PilotSwarmUiController {
             const wasHidden = Boolean(this.getCurrentLayout()?.rightHidden);
             if (wasHidden) this.expandRightColumn();
             this.dispatch({ type: "files/pane", open: true, restoresToHidden: wasHidden });
-        } else {
-            // Focus the inspector, not just the tab. On desktop this makes j/k
-            // drive the artifact list immediately; on mobile the visible pane is
-            // derived from focusRegion, so without this the preview would open on
-            // a pane the user cannot see.
+        } else if (!fullscreen || !this.mobileView) {
+            // Focus the inspector on TUI and desktop web so Esc / v / j / k
+            // drive the fullscreen or inline Files preview. Skip only for a
+            // phone overlay (this.mobileView present), where inspector focus
+            // switches mobilePane away from chat onto the Files list.
             this.setFocus("inspector");
         }
         await this.ensureFilesForSession(resolvedSessionId, { force }).catch(() => null);
@@ -11363,6 +11372,8 @@ export class PilotSwarmUiController {
         }
 
         const restoreId = state.files.restoreArtifactId;
+        const restoreMobilePane = state.files.restoreMobilePane || "workspace";
+        const restoreInspectorTab = state.files.restoreInspectorTab;
         if (restoreId) {
             const slash = String(restoreId).indexOf("/");
             if (slash > 0) {
@@ -11375,7 +11386,13 @@ export class PilotSwarmUiController {
         } else {
             this.dispatch({ type: "files/select", sessionId: null, filename: null });
         }
+        if (restoreInspectorTab && restoreInspectorTab !== state.ui.inspectorTab) {
+            this.dispatch({ type: "ui/inspectorTab", inspectorTab: restoreInspectorTab });
+        }
         this.dispatch({ type: "files/previewOrigin", origin: null });
+        if (this.mobileView && this.mobileView.get?.() !== restoreMobilePane) {
+            this.mobileView.set(restoreMobilePane);
+        }
         // Dispatch the focus DIRECTLY rather than via setFocus: that runs the
         // region through normalizeFocusRegion, which falls back to order[0]
         // when the region is missing from the current layout's focus order —
@@ -13844,6 +13861,15 @@ export class PilotSwarmUiController {
                 : options.atBottom !== undefined
                     ? Boolean(options.atBottom)
                     : nextOffset >= maxOffset;
+            // Keyboard / programmatic chat scroll moves away from whatever DOM
+            // anchor a prior native scroll captured; drop it so a subsequent
+            // resize or session switch cannot snap back to the stale anchor.
+            if (pane === "chat" && !options.fromViewport) {
+                const activeSessionId = state.sessions?.activeSessionId;
+                if (activeSessionId && state.ui.chatScrollAnchorBySession?.[activeSessionId] != null) {
+                    this.dispatch({ type: "ui/chatScrollAnchor", sessionId: activeSessionId, anchor: null });
+                }
+            }
             this.dispatch({ type: "ui/followBottom", pane, followBottom });
             this.dispatch({ type: "ui/scroll", pane, offset: followBottom ? 0 : nextOffset });
             return nextOffset;
@@ -13860,6 +13886,17 @@ export class PilotSwarmUiController {
             return;
         }
         this.scrollPaneTo(pane, offset);
+    }
+
+    setChatScrollAnchor(sessionId, anchor) {
+        const resolved = sessionId || this.getState().sessions.activeSessionId;
+        if (!resolved) return;
+        this.dispatch({ type: "ui/chatScrollAnchor", sessionId: resolved, anchor: anchor || null });
+    }
+
+    getChatScrollAnchor(sessionId = this.getState().sessions.activeSessionId) {
+        if (!sessionId) return null;
+        return this.getState().ui.chatScrollAnchorBySession?.[sessionId] || null;
     }
 
     /**
