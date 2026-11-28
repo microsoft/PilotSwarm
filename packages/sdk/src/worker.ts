@@ -8,7 +8,7 @@ import { workflowTestModeFromEnv } from "./workflow/test-mode-switch.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
-import { SessionManager, packageAgentKey, agentOwnerKey, type AgentCopyEntry, type AgentPromptEntry } from "./session-manager.js";
+import { SessionManager, packageAgentKey, agentOwnerKey, DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS, type AgentCopyEntry, type AgentPromptEntry } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -159,6 +159,32 @@ export function resolveWorkerTurnTimeoutMs(
         return parseNonNegativeInt(explicitValue) ?? DEFAULT_TURN_TIMEOUT_MS;
     }
     return parseNonNegativeInt(envValue) ?? DEFAULT_TURN_TIMEOUT_MS;
+}
+
+/**
+ * @internal Resolve the idle-runtime stop delay: explicit option > deployment env > SDK default (0 = never).
+ * Only a whole number of milliseconds is accepted; anything else ("30s", "1e3", -1) is ignored with a warning.
+ */
+export function resolveCopilotClientIdleStopMs(
+    explicitValue: unknown,
+    envValue: unknown = process.env.PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS,
+): number {
+    const strict = (raw: unknown): number | undefined => {
+        if (typeof raw === "number") return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : undefined;
+        if (typeof raw === "string" && /^\s*\d+\s*$/.test(raw)) return Math.min(Number(raw.trim()), Number.MAX_SAFE_INTEGER);
+        return undefined;
+    };
+    const [raw, name] = explicitValue !== undefined
+        ? [explicitValue, "copilotClientIdleStopMs"]
+        : [envValue, "PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS"];
+    if (raw === undefined || raw === null || raw === "") return DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS;
+    const ms = strict(raw);
+    if (ms !== undefined) return ms;
+    console.warn(
+        `[PilotSwarmWorker] ignoring ${name}=${JSON.stringify(raw)}: expected a whole number of milliseconds (0 disables); ` +
+        `using the default ${DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS} ms.`,
+    );
+    return DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS;
 }
 
 export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
@@ -388,6 +414,7 @@ export class PilotSwarmWorker {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
             turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
+            copilotClientIdleStopMs: resolveCopilotClientIdleStopMs(options.copilotClientIdleStopMs),
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
@@ -485,6 +512,7 @@ export class PilotSwarmWorker {
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: this.config.turnTimeoutMs,
                 turnInactivityTimeoutMs: options.turnInactivityTimeoutMs,
+                copilotClientIdleStopMs: this.config.copilotClientIdleStopMs,
             },
             effectiveSessionStateDir,
         );
@@ -920,7 +948,7 @@ export class PilotSwarmWorker {
             `[worker] runtime storage provider=${storage.runtime.provider}, enhancedFacts=${enhancedFactStore ? "on" : "off"}, graph=${this.graphStore ? "on" : "off"}; ` +
             `postgres pools: duroxidePgPoolMax=${process.env.DUROXIDE_PG_POOL_MAX ?? "(unset)"}, ` +
             `cmsPoolMax=${cmsPoolMax}, factsPoolMax=${factsPoolMax}; ` +
-            `turnTimeoutMs=${this.config.turnTimeoutMs}`,
+            `turnTimeoutMs=${this.config.turnTimeoutMs}, copilotClientIdleStopMs=${this.config.copilotClientIdleStopMs}`,
         );
         this.sessionManager.setFactStore(this.factStore);
         this.sessionManager.setGraphStore(this.graphStore);

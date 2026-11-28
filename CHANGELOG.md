@@ -4,6 +4,35 @@
 
 **Upgrade: deploy the workers.** No migration and no orchestration version.
 
+### Idle Copilot runtimes stop
+
+A worker now stops a pooled Copilot runtime after 30 seconds with no session
+and no short-lived user, such as a model list (#331). The next session for
+that key starts a fresh runtime and resumes from its saved state. Set
+`copilotClientIdleStopMs` or `PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS` to change
+the period, or `0` to keep idle runtimes; see
+[configuration](docs/developer/reference/configuration.md). A client the caller
+supplied is never stopped for being idle.
+
+### Session teardown ends tool shells
+
+**Behavior change:** a background shell no longer survives its session's
+eviction, dehydrate, complete, cancel or delete, or its worker's shutdown.
+Every teardown of a warm session now cancels the session's shells. Before,
+only workspace sessions, a user Stop and Workflow script tasks did, and
+stopping a runtime never did. Except on Windows, the worker also kills the
+processes each shell left behind, and signals a pid only while it still
+belongs to the process it recorded. A shutdown still lets the runtime's stop
+end a running turn, and kills the shells after it. Killed orphans are reaped
+only when the container runs a reaping init, such as `tini`, as PID 1. The
+default agent prompts say so. See
+[the design](docs/architecture/orchestration/design.md#idle-copilot-runtimes-and-tool-shells).
+
+### Title summaries are bounded
+
+Writing a session's title summary now gives up after 60 seconds instead of
+waiting forever, and always stops its Copilot client.
+
 ### Decision cleanups
 
 - For an unanswered yes-or-no Decision call, a Workflow test report now

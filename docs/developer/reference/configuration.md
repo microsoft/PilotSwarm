@@ -46,6 +46,7 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 # PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 # PILOTSWARM_WORKER_CONCURRENCY=2
 # PILOTSWARM_TURN_TIMEOUT_MS=1200000
+# PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS=30000
 ```
 
 > **Provider types and models** are declared in `.model_providers.json`, usually
@@ -321,6 +322,17 @@ Duroxide runtime concurrency, and process-wide worker limits.
   Sets the wall-clock cap for one Copilot turn across the worker deployment.
   Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
   `PilotSwarmWorker({ turnTimeoutMs })` option takes precedence over the env var.
+- `PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS`
+  Stops a pooled Copilot runtime (one `copilot` process per credential,
+  transport and workspace root) after it has had no session and no
+  short-lived user, such as a model list, for this many ms. The next session
+  for that key starts a fresh runtime. Default: `30000`. `0` keeps idle
+  runtimes. The value must be a whole number of milliseconds; anything else
+  (`30s`, `1e3`, `-1`) logs a warning and uses the default. Values above
+  `2147483647` (about 24.8 days) are capped there. The
+  `PilotSwarmWorker({ copilotClientIdleStopMs })` option takes precedence. It
+  is parsed the same way, except that a number is rounded down, and an
+  invalid option falls back to the default, not to the env var.
 - Duroxide lock settings. Each has a matching `PilotSwarmWorker` option
   (`workerLockTimeoutMs`, `workerLockRenewalBufferMs`, `orchestratorLockTimeoutMs`,
   `orchestratorLockRenewalBufferMs`, `sessionLockTimeoutMs`,
@@ -346,6 +358,7 @@ PILOTSWARM_FACTS_PG_POOL_MAX=3
 PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 PILOTSWARM_WORKER_CONCURRENCY=2
 PILOTSWARM_TURN_TIMEOUT_MS=1200000
+PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS=30000
 PILOTSWARM_WORKER_LOCK_TIMEOUT_MS=10000
 PILOTSWARM_ORCHESTRATOR_LOCK_TIMEOUT_MS=60000
 PILOTSWARM_ORCHESTRATOR_LOCK_RENEWAL_BUFFER_MS=45000
@@ -484,6 +497,7 @@ new PilotSwarmWorker({
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
+    copilotClientIdleStopMs: 30_000, // stop an unused pooled Copilot runtime after this long; 0 keeps it
     workflowScripts: { enabled: true },  // run workflow script states; on by default (env PILOTSWARM_WORKFLOW_SCRIPTS=0 turns them off)
 
     // Blob storage for session dehydration
@@ -499,7 +513,9 @@ new PilotSwarmWorker({
   PostgreSQL pool sizing and Duroxide concurrency are intentionally **not** part
   of `PilotSwarmWorkerOptions`; configure them with the env vars above. Turn
   timeout supports both layers: the explicit constructor option wins, then
-  `PILOTSWARM_TURN_TIMEOUT_MS`, then the 20-minute SDK default.
+  `PILOTSWARM_TURN_TIMEOUT_MS`, then the 20-minute SDK default. The idle
+  runtime stop works the same way: `copilotClientIdleStopMs`, then
+  `PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS`, then 30 seconds.
 
 ## Enhanced Facts & Knowledge Graph (optional)
 

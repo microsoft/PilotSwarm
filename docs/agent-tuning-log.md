@@ -6,6 +6,17 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-11-24 — Background shells end with the session's warm state
+
+- **Agent:** `default` (base v1) `1.24.0` to `1.25.0`, and the base v2 prompt.
+- **Model tested:** none; the change states a lifetime rule.
+- **Observed behavior:** the prompts did not say that background shells end
+  when the session's warm state is torn down or the session is cancelled
+  (issue 331).
+- **Expected behavior:** after a wait, the agent checks that such a process
+  still runs and restarts it if needed.
+- **Validation:** prompt contract suites only; no live model test.
+
 ## 2026-09-22 — Maintainer PR comment command
 
 - **Agent:** repository `pilotswarm-release`, `2.2.0` to `2.3.0`.

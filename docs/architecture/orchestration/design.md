@@ -821,6 +821,72 @@ persistence availability, wait duration, and `idleTimeout`. Short waits keep the
 worker warm; longer waits release it. An input question enters the same hold
 window after any configured grace period.
 
+### Idle Copilot runtimes and tool shells
+
+A worker keeps one Copilot client, and so one `copilot` runtime process, per
+credential, transport and workspace root. A runtime is in use while a warm
+session runs on it or a short-lived caller holds a lease on it: a model list,
+a session delete, a session's open (its create or resume, with any hydration
+or state reset), or the dehydrate retry. Leases are counted; the runtime stays
+until the last one is released.
+
+**Idle stop.** When a runtime has had no sessions and no leases for
+`copilotClientIdleStopMs` (default 30 s; see
+[configuration](../../developer/reference/configuration.md)), the worker
+removes it from the pool, then calls `stop()`. If `stop()` fails or outlasts
+the shutdown deadline, it calls `forceStop()`. The next session for that key
+starts a fresh runtime and resumes from its committed snapshot.
+
+- A session that moves to another key releases the old one.
+- A client the caller supplied is never stopped for being idle.
+- A model's vision lookup uses the session's runtime, or the key it last ran
+  on, and skips a runtime that is stopping or has exited.
+- The orchestration does not change. A runtime goes idle only after a
+  teardown has dropped its last warm session, usually in the eviction sweep.
+
+**Teardown.** Every teardown of a warm session cancels its background tasks
+(`rpc.tasks.cancel`) before it destroys the session: a dehydrate, an idle
+eviction, a destroy (complete, cancel or delete), the invalidation of a dead
+or replaced session, a state reset, an epoch start and a model rebind.
+Stopping a runtime does not end them, because a tool shell runs in its own
+process session (`setsid`). So a detached shell no longer survives an
+eviction, a dehydrate or a shutdown.
+
+Except on Windows, the worker also kills what each shell left behind:
+
+- Before the cancel, it records the shell's pid, the start time the kernel
+  reports for it, and its process session (Linux) or process group.
+- After the cancel, it sends `SIGKILL` to that session or group. If the
+  runtime does not confirm the cancel (CLI 1.0.83 answers `cancelled: false`
+  after an abort), it also kills the shell and its descendants.
+- It signals a pid only while that pid has the recorded start time, and
+  nothing when the start time cannot be read.
+- A session's cancels are sent together, so one that never answers holds
+  back neither the others nor the kills.
+- One deadline covers a teardown's cancels and disconnect: 20 s, or 5 s when
+  the runtime may be gone (after a lost connection). Nothing is signalled
+  after it.
+- An eviction sweep tears down up to eight sessions at a time.
+
+This also works when the worker is PID 1 of its container, as in the deploy
+images. A killed process whose parent has gone is reaped only if PID 1 is a
+reaping init, such as `tini` or `docker run --init`. Otherwise it stays a
+zombie, which holds only its PID slot.
+
+**Shutdown.** A running turn must still be ended by `CopilotClient.stop()`,
+which aborts it so the attempt saves nothing. Cancelling its shells first
+would end the turn's tool call before that. So a shutdown lists and records
+each warm session's shells (bounded at 5 s), stops the runtimes, and kills
+each runtime's listed shells as soon as that runtime has stopped. These kills
+have no deadline.
+
+**Not covered.** These need support in the Copilot runtime:
+
+- a shell started between the shutdown's list and the stop;
+- a process that starts its own session;
+- a daemon left by a shell that had ended before the teardown (the runtime
+  reports the shell completed, so the worker never saw it run).
+
 ### Lossy handoff
 
 After connection-loss retry exhaustion, a persisted session records a lossy

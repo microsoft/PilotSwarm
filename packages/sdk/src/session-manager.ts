@@ -16,10 +16,11 @@ import { FeatureFlagError, isAlwaysOn, type FeatureOwner } from "./feature-flags
 import { createDecideTool, createDecisionCatalogReader, DECIDE_TOOL_NAME, type DecideToolHost, type DecisionCatalogSnapshot } from "./decision-tools.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
-import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
+import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility, stopCopilotClient } from "./copilot-client.js";
 import { CopilotRuntimeMonitor, COPILOT_RUNTIME_EXIT_MARKER, describeCopilotRuntimeExit, transportLossMessage, type CopilotRuntimeExit } from "./copilot-runtime-monitor.js";
 import { runtimeMetrics } from "./runtime-metrics.js";
 import { ManagedSession } from "./managed-session.js";
+import { killListedShells, type ListedShell } from "./process-tree.js";
 import { isPinnedAgentPackageId, pinnedAgentPackageId } from "./agent-package-pins.js";
 import { readWorkflowPackagePins, refuseLostWorkflowTool, retryWorkflowPackageCheck, withoutWorkflowPackageCheck, workflowUnavailableToolMessages, WorkflowPackageCheckError, type WorkflowCapabilitySnapshot, type WorkflowToolLabels } from "./workflow/package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
@@ -95,6 +96,15 @@ const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 const UNPUBLISHED_DESTROY_DEADLINE_MS = 5_000;
 /** The once-per-process warning that a stdio client started with no runtime bound to it (review S7). */
 let runtimeUnclaimedWarned = false;
+/**
+ * Idle runtime stop (#331): how long a pooled Copilot runtime may run with no
+ * warm session and no short-lived user before it is stopped. The worker's
+ * default; 0 disables the stop. A SessionManager built without a value never
+ * stops idle runtimes.
+ */
+export const DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS = 30_000;
+/** Bound on listing each warm session's background shells at shutdown, before its runtime stops. */
+const SHUTDOWN_TASK_CANCEL_DEADLINE_MS = 5_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
 
 export class SessionLockAcquireTimeoutError extends Error {
@@ -442,6 +452,12 @@ export interface WorkerDefaults {
     turnTimeoutMs?: number;
     /** Turn inactivity watchdog in ms. 0 = disabled; undefined = 5-minute default. */
     turnInactivityTimeoutMs?: number;
+    /**
+     * Stop a pooled Copilot runtime after it has served no warm session and no
+     * short-lived user for this long, in ms. 0 = never; undefined = 0 here (the
+     * worker resolves its own default, DEFAULT_COPILOT_CLIENT_IDLE_STOP_MS).
+     */
+    copilotClientIdleStopMs?: number;
 }
 
 /** Resolve every part of a bound agent using the same authorized package copy. */
@@ -815,6 +831,12 @@ const WORKSPACE_RELEASE_DEADLINE_MS = 20_000;
 /** Bound on the task cancel a V4 Stop runs before it waits for the turn to unwind. */
 const STOP_TASK_CANCEL_DEADLINE_MS = 1_500;
 
+/** How many sessions an eviction sweep tears down at once. */
+const EVICTION_SWEEP_CONCURRENCY = 8;
+
+/** The longest delay setTimeout honours (2^31 - 1 ms). */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 function withWorkspaceDeadline<T>(work: Promise<T>, what: string, ms = WORKSPACE_RELEASE_DEADLINE_MS): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
@@ -1087,6 +1109,28 @@ export class SessionManager {
      */
     private readonly stdioClients = new WeakSet<CopilotClient>();
     /**
+     * Idle runtime stop (#331). A pooled client is in use while a warm session
+     * is bound to it (warmSessionClients, counted per client object, so a
+     * client shared by several keys is counted once) or while a short-lived
+     * user holds a lease (model discovery, a reset's deleteSession, a session
+     * being opened). When both reach zero, its idle timer starts. When the
+     * timer fires and the client is still unused, the client leaves the pool
+     * before it is stopped (retiringClients), so no caller can take a client
+     * that is being stopped; the next user creates a fresh one.
+     */
+    private warmSessionClients = new Map<string, CopilotClient>();
+    private clientLeases = new Map<CopilotClient, number>();
+    private clientIdleTimers = new Map<CopilotClient, ReturnType<typeof setTimeout>>();
+    private idleDueClients = new Set<CopilotClient>();
+    private retiringClients = new WeakSet<CopilotClient>();
+    /** Clients installed through the `client` setter: the caller owns them, so they are never stopped when idle. */
+    private pinnedClients = new WeakSet<CopilotClient>();
+    /** Pooled clients whose start succeeded. One that never started holds no session (#331). */
+    private startedClients = new WeakSet<CopilotClient>();
+    /** The idle-stop pass in progress; passes never overlap, and a request during one runs another after it. */
+    private clientRetirement: Promise<void> | null = null;
+    private clientRetirementRequested = false;
+    /**
      * Backward-compat accessor for the default-token CopilotClient.
      *
      * The internal pool is keyed by transport and GitHub Copilot token (so
@@ -1113,6 +1157,7 @@ export class SessionManager {
             if (token) providerTokens.add(token);
         }
         if (value) {
+            this.pinnedClients.add(value);
             this.clients.set("", value);
             this.clients.set(BYOK_CLIENT_PREFIX, value);
             if (this.githubToken) this.clients.set(this.githubToken, value);
@@ -1517,15 +1562,24 @@ export class SessionManager {
             };
         }
 
-        // Consult the catalog on the client that will serve this session's
-        // turns. Prefer the recorded binding; on a cold worker the gate runs
-        // before getOrCreate records one, so fall through to the same
-        // per-user/system key resolution getOrCreate itself performs. Only a
-        // session with no per-user key lands on the worker-default client.
+        // Consult the catalog on the client that serves this session's turns:
+        // its warm client, else the client of its recorded key, else the key
+        // getOrCreate itself resolves (on a cold worker the gate runs before
+        // getOrCreate records one). The catalog cache is keyed by that pool
+        // key. A session never falls back to the worker-default client: its
+        // token is the one the image blobs ride out on.
         let client: CopilotClient | undefined;
         let cacheKey = "";
         if (opts?.sessionId) {
             let key = this.sessionClientKeys.get(opts.sessionId);
+            const warm = this.warmSessionClients.get(opts.sessionId);
+            const warmKey = warm && !this.runtimeMonitor.isLost(warm) && !this.retiringClients.has(warm)
+                ? this._poolKeyOf(warm, key)
+                : undefined;
+            if (warmKey !== undefined) {
+                client = warm;
+                key = warmKey;
+            }
             if (key == null) {
                 try {
                     const normalizedRef = this.normalizeModelRef(modelRef || undefined);
@@ -1535,28 +1589,35 @@ export class SessionManager {
                 }
             }
             cacheKey = key;
-            try {
-                client = await this.ensureClientForKey(key);
-            } catch {
-                client = undefined;
+            if (!client) {
+                try {
+                    client = await this.ensureClientForKey(key);
+                    while (this.retiringClients.has(client)) client = await this.ensureClientForKey(key);
+                } catch {
+                    client = undefined;
+                }
             }
-        }
-        if (!client) {
+        } else {
             client = this.client;
-            cacheKey = "";
         }
         if (!client) return { modelId: sdkModelName, known: false, vision: false };
 
         const now = Date.now();
         let cache = this.modelCatalogCaches.get(cacheKey);
         if (!cache || now - cache.fetchedAt > 5 * 60 * 1000) {
+            // Held while the runtime starts and the catalog is read, so the idle stop cannot stop it (#331).
+            const releaseClient = this._leaseClient(client);
             try {
+                // A pooled client is started by its first use; this lookup may be that use.
+                await this._startClient(client);
                 const models = await client.listModels();
                 cache = { fetchedAt: now, models: models as any[] };
                 this.modelCatalogCaches.set(cacheKey, cache);
             } catch {
                 // Keep a stale cache if we have one; otherwise report unknown.
                 if (!cache) return { modelId: sdkModelName, known: false, vision: false };
+            } finally {
+                releaseClient();
             }
         }
         const entry = cache.models.find((m) => m?.id === sdkModelName)
@@ -1838,6 +1899,9 @@ export class SessionManager {
         } : undefined);
         this.clients.set(clientKey, created);
         this.stdioClients.add(created);
+        // Its first user leases it before the next turn of the event loop; a
+        // client nobody takes is stopped once idle like any other.
+        this._noteClientMaybeIdle(created);
         return created;
     }
 
@@ -1874,10 +1938,12 @@ export class SessionManager {
                     { expectRuntime: this.stdioClients.has(client) },
                 );
             })
+            .then(() => { this.startedClients.add(client); })
             .catch((error: unknown) => {
                 for (const [key, pooled] of this.clients) {
                     if (pooled === client) this.clients.delete(key);
                 }
+                this._clearClientIdle(client);
                 // The start failed because the client's runtime exited (review S6): name it a transport loss, so the
                 // turn takes the orchestration's connection-closed retry on a fresh client, not its generic retry.
                 if (this.runtimeMonitor.isLost(client)) {
@@ -1921,6 +1987,8 @@ export class SessionManager {
             + `In-flight turns: [${inFlight.join(", ")}]; idle warm sessions: [${idle.join(", ")}].`);
         runtimeMetrics().copilotRuntime(exit.duringStartup ? "during_startup" : "after_startup");
         this._evictClient(client);
+        // Out of the pool, it is never stopped for idleness: it is force-stopped here.
+        this._clearClientIdle(client);
         if (typeof client.forceStop === "function") {
             void Promise.resolve().then(() => client.forceStop()).catch(() => {});
         }
@@ -1964,6 +2032,169 @@ export class SessionManager {
         return starting
             ? starting.then(() => client.resumeSession(sessionId, config))
             : client.resumeSession(sessionId, config);
+    }
+
+    // ─── Idle runtime stop (#331) ────────────────────────────
+
+    /** The idle period before an unused pooled runtime is stopped; 0 when the stop is off. At most a timer's limit. */
+    private get clientIdleStopMs(): number {
+        const ms = this.workerDefaults.copilotClientIdleStopMs;
+        // Node runs a longer timer after 1 ms (TimeoutOverflowWarning), which would stop every runtime once idle.
+        return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? Math.min(ms, MAX_TIMER_DELAY_MS) : 0;
+    }
+
+    /** Hold `client` in use until the returned release runs. The release is idempotent. */
+    private _leaseClient(client: CopilotClient): () => void {
+        this.clientLeases.set(client, (this.clientLeases.get(client) ?? 0) + 1);
+        this._clearClientIdle(client);
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            const left = (this.clientLeases.get(client) ?? 1) - 1;
+            if (left > 0) this.clientLeases.set(client, left);
+            else this.clientLeases.delete(client);
+            this._noteClientMaybeIdle(client);
+        };
+    }
+
+    /** Record a warm session and the client it runs on. A client it leaves may become idle. */
+    private _setWarmSession(sessionId: string, managed: ManagedSession, client: CopilotClient): void {
+        const previous = this.warmSessionClients.get(sessionId);
+        this.sessions.set(sessionId, managed);
+        this.warmSessionClients.set(sessionId, client);
+        this._clearClientIdle(client);
+        if (previous && previous !== client) this._noteClientMaybeIdle(previous);
+    }
+
+    /** True while a warm session runs on `client` or a short-lived user holds a lease on it. */
+    private _clientInUse(client: CopilotClient): boolean {
+        if ((this.clientLeases.get(client) ?? 0) > 0) return true;
+        for (const bound of this.warmSessionClients.values()) {
+            if (bound === client) return true;
+        }
+        return false;
+    }
+
+    private _clearClientIdle(client: CopilotClient): void {
+        const timer = this.clientIdleTimers.get(client);
+        if (timer) clearTimeout(timer);
+        this.clientIdleTimers.delete(client);
+        this.idleDueClients.delete(client);
+    }
+
+    private _isPooled(client: CopilotClient): boolean {
+        for (const pooled of this.clients.values()) {
+            if (pooled === client) return true;
+        }
+        return false;
+    }
+
+    /** A pool key of `client`, `preferred` when it maps to it; undefined when the client left the pool. */
+    private _poolKeyOf(client: CopilotClient, preferred?: string): string | undefined {
+        if (preferred !== undefined && this.clients.get(preferred) === client) return preferred;
+        for (const [key, pooled] of this.clients) {
+            if (pooled === client) return key;
+        }
+        return undefined;
+    }
+
+    /** Start `client`'s idle timer when it is pooled, stoppable, not caller-owned and unused. */
+    private _noteClientMaybeIdle(client: CopilotClient | undefined): void {
+        const ms = this.clientIdleStopMs;
+        if (!ms || !client || typeof client.stop !== "function") return;
+        if (this.pinnedClients.has(client) || this.retiringClients.has(client)) return;
+        if (this.clientIdleTimers.has(client) || this.idleDueClients.has(client)) return;
+        if (this._clientInUse(client) || !this._isPooled(client)) return;
+        const timer = setTimeout(() => {
+            if (this.clientIdleTimers.get(client) !== timer) return;
+            this.clientIdleTimers.delete(client);
+            this.idleDueClients.add(client);
+            void this.stopIdleClients();
+        }, ms);
+        timer.unref?.();
+        this.clientIdleTimers.set(client, timer);
+    }
+
+    /**
+     * @internal Stop every pooled runtime whose idle period has passed and
+     * that is still unused. Passes never overlap; a call during a pass runs
+     * one more pass after it. Never rejects.
+     */
+    stopIdleClients(): Promise<void> {
+        if (this.clientRetirement) {
+            this.clientRetirementRequested = true;
+            return this.clientRetirement;
+        }
+        const pass: Promise<void> = (async () => {
+            do {
+                this.clientRetirementRequested = false;
+                await this._stopIdleClientsOnce();
+            } while (this.clientRetirementRequested);
+        })()
+            .catch((error: unknown) => {
+                console.warn(`[SessionManager] idle Copilot runtime stop failed: ${error instanceof Error ? error.message : String(error)}`);
+            })
+            .finally(() => {
+                if (this.clientRetirement === pass) this.clientRetirement = null;
+            });
+        this.clientRetirement = pass;
+        return pass;
+    }
+
+    private async _stopIdleClientsOnce(): Promise<void> {
+        const stopping: CopilotClient[] = [];
+        for (const client of [...this.idleDueClients]) {
+            this.idleDueClients.delete(client);
+            if (this.retiringClients.has(client) || this.pinnedClients.has(client) || this._clientInUse(client)) continue;
+            if (this.clientStarts.has(client)) {
+                // Still starting for a user that has not leased it yet: look again after another idle period.
+                this._noteClientMaybeIdle(client);
+                continue;
+            }
+            // Leave the pool first, in this synchronous step: from here on no
+            // caller can take this client, and the next user of its key starts
+            // a fresh one. Model catalog caches stay; they are only caches.
+            let pooled = false;
+            for (const [key, value] of this.clients) {
+                if (value !== client) continue;
+                this.clients.delete(key);
+                pooled = true;
+            }
+            if (!pooled) continue;
+            this.retiringClients.add(client);
+            stopping.push(client);
+        }
+        if (stopping.length === 0) return;
+        console.log(`[SessionManager] stopping ${stopping.length} idle Copilot runtime(s) after ${this.clientIdleStopMs} ms with no sessions`);
+        await Promise.all(stopping.map(client => this._stopClient(client)));
+    }
+
+    /**
+     * Stop a client, forcing its local process to stop when stop() fails or is late. Never throws. Its runtime's exit
+     * is expected, so the runtime monitor does not report it as a lost runtime (issue 329).
+     */
+    private _stopClient(client: CopilotClient): Promise<void> {
+        this.runtimeMonitor.markStopping(client);
+        return stopCopilotClient(client, COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS, "[SessionManager]");
+    }
+
+    /** The client for `sessionId`'s key, leased so the idle stop cannot stop it while the caller uses it. */
+    private async _leasedClientForSession(sessionId: string): Promise<{ client: CopilotClient; release: () => void }> {
+        let client = await this._ensureClientForSession(sessionId);
+        while (this.retiringClients.has(client)) client = await this._ensureClientForSession(sessionId);
+        return { client, release: this._leaseClient(client) };
+    }
+
+    /**
+     * Whether `client`'s runtime is running, after any start in progress. A
+     * pooled client that never started (a fresh one after an idle stop) holds
+     * no session, so a reset skips its delete; the files go regardless.
+     */
+    private async _clientStarted(client: CopilotClient): Promise<boolean> {
+        if (typeof client.start !== "function" || this.pinnedClients.has(client)) return true;
+        await this.clientStarts.get(client)?.catch(() => {});
+        return this.startedClients.has(client) && !this.runtimeMonitor.isLost(client);
     }
 
     /**
@@ -2061,7 +2292,7 @@ export class SessionManager {
     private async _resetSessionState(sessionId: string): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
-            await this._cancelWorkspaceShells(sessionId, existing, "a state reset");
+            await this._cancelSessionShells(sessionId, existing, "a state reset");
             try {
                 await existing.destroy();
             } catch {}
@@ -2069,8 +2300,12 @@ export class SessionManager {
         }
 
         try {
-            const client = await this._ensureClientForSession(sessionId);
-            await client.deleteSession(sessionId);
+            const { client, release } = await this._leasedClientForSession(sessionId);
+            try {
+                if (await this._clientStarted(client)) await client.deleteSession(sessionId);
+            } finally {
+                release();
+            }
         } catch {}
 
         // After we drop the session state we no longer remember which
@@ -2100,7 +2335,7 @@ export class SessionManager {
     private async _resetSessionStateForEpoch(sessionId: string, epoch: number): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
-            await this._cancelWorkspaceShells(sessionId, existing, "an epoch reset");
+            await this._cancelSessionShells(sessionId, existing, "an epoch reset");
             try {
                 await existing.destroy();
             } catch {}
@@ -2108,8 +2343,12 @@ export class SessionManager {
         }
 
         try {
-            const client = await this._ensureClientForSession(sessionId);
-            await client.deleteSession(sessionId);
+            const { client, release } = await this._leasedClientForSession(sessionId);
+            try {
+                if (await this._clientStarted(client)) await client.deleteSession(sessionId);
+            } finally {
+                release();
+            }
         } catch {}
 
         this.sessionClientKeys.delete(sessionId);
@@ -2220,12 +2459,14 @@ export class SessionManager {
         ]);
 
         let reclaimed = 0;
-        for (const sessionId of candidates) {
-            if (this.sessionLocks.has(sessionId)) continue; // busy — never race a turn
-            if (this.isTurnCut(sessionId)) continue; // a cut turn: the next worker must see this worker as a dead holder
+        // Teardowns run side by side, a few at a time (review 377 SF-6): one hung CLI holds back only its own session.
+        // Each still runs under its session lock, and a session another pass holds is skipped.
+        const sweepOne = async (sessionId: string): Promise<void> => {
+            if (this.sessionLocks.has(sessionId)) return; // busy — never race a turn
+            if (this.isTurnCut(sessionId)) return; // a cut turn: the next worker must see this worker as a dead holder
             const sessionDir = path.join(this.sessionStateDir, sessionId);
             const lastTouched = this.sessionLastTouchedAt.get(sessionId);
-            if (lastTouched == null || now - lastTouched < evictAfterMs) continue;
+            if (lastTouched == null || now - lastTouched < evictAfterMs) return;
 
             try {
                 await this._withSessionLock(sessionId, "eviction", async () => {
@@ -2240,7 +2481,7 @@ export class SessionManager {
                         // for a release that never ran (section 4.5).
                         await this.releaseWorkspace(sessionId, { reason: "eviction", workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(), lockHeld: true });
                     } else if (existing) {
-                        try { await existing.destroy(); } catch {}
+                        await this._cancelAndDisconnect(sessionId, existing, "an eviction");
                         this._forgetWarmSession(sessionId);
                     }
                     if (!dirExists) {
@@ -2288,7 +2529,11 @@ export class SessionManager {
                 const message = error instanceof Error ? error.message : String(error);
                 console.warn(`[SessionManager] eviction sweep skipped ${sessionId}: ${message}`);
             }
-        }
+        };
+        const queue = [...candidates];
+        await Promise.all(Array.from({ length: Math.min(EVICTION_SWEEP_CONCURRENCY, queue.length) }, async () => {
+            for (let sessionId = queue.shift(); sessionId !== undefined; sessionId = queue.shift()) await sweepOne(sessionId);
+        }));
 
         // Reap crash-orphaned hydrate temp roots (finally blocks don't run
         // on SIGKILL). They are dot-prefixed and never legitimate sessions.
@@ -2405,11 +2650,15 @@ export class SessionManager {
             workflowAgentTools?: WorkflowAgentToolContext },
     ): Promise<ManagedSession> {
         const open = async () => {
+            // Leases on the client being opened, released once it is warm (or the open failed).
+            const leases: Array<() => void> = [];
             try {
-                return await this._getOrCreateUnlocked(sessionId, serializableConfig, options);
+                return await this._getOrCreateUnlocked(sessionId, serializableConfig, options, leases);
             } catch (error) {
                 if (!this.sessions.has(sessionId)) this._forgetWarmSession(sessionId);
                 throw error;
+            } finally {
+                for (const release of leases) release();
             }
         };
         if (!options?.lockHeld) {
@@ -2428,6 +2677,7 @@ export class SessionManager {
         serializableConfig: SerializableSessionConfig,
         options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; workflowTools?: WorkflowToolBinding;
             workflowAgentTools?: WorkflowAgentToolContext },
+        leases?: Array<() => void>,
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
         let agentBinding: WorkflowToolBinding | null = null;
@@ -2801,12 +3051,16 @@ export class SessionManager {
                     `copilot credential or provider transport changed; recycling warm session onto new client`,
                     { trace },
                 );
-                await this._cancelWorkspaceShells(sessionId, existingWarm, "a client change");
+                await this._cancelSessionShells(sessionId, existingWarm, "a client change");
                 try { await existingWarm.destroy(); } catch {}
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        let client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        // A client taken from the pool cannot be retiring, but one stopped
+        // between that and this point must not be used: take a fresh one.
+        while (this.retiringClients.has(client)) client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        leases?.push(this._leaseClient(client));
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -3571,7 +3825,7 @@ export class SessionManager {
                 `[SessionManager] the Copilot runtime of warm session ${sessionId} exited; ` +
                 `dropping the warm session and resuming it on a fresh runtime.`,
             );
-            await this._cancelWorkspaceShells(sessionId, existing, "a runtime loss");
+            await this._cancelSessionShells(sessionId, existing, "a runtime loss");
             try { await existing.destroy(); } catch {}
             this._forgetWarmSession(sessionId);
         } else if (existing) {
@@ -3583,12 +3837,14 @@ export class SessionManager {
                     `discarding it and creating a fresh session.`,
                 );
                 await this._resetSessionState(sessionId);
+                // The reset forgets the client binding; this turn still runs on `client`.
+                this.sessionClientKeys.set(sessionId, desiredClientKey);
             } else if (epochStart) {
                 console.warn(
                     `[SessionManager] epoch-start for ${sessionId} (epoch ${transcriptEpoch}); ` +
                     `discarding the warm Copilot session of the previous epoch.`,
                 );
-                await this._cancelWorkspaceShells(sessionId, existing, "an epoch start");
+                await this._cancelSessionShells(sessionId, existing, "an epoch start");
                 await existing.destroy();
                 this._forgetWarmSession(sessionId);
             } else if (bindingChanged || inheritedPolicyChanged || existing.requiresModelRebind(config)) {
@@ -3596,7 +3852,7 @@ export class SessionManager {
                     `[SessionManager] model or agent configuration changed for ${sessionId}; ` +
                     `disconnecting warm Copilot session so it can resume with the updated configuration.`,
                 );
-                await this._cancelWorkspaceShells(sessionId, existing, "a rebind");
+                await this._cancelSessionShells(sessionId, existing, "a rebind");
                 await existing.destroy();
                 this._forgetWarmSession(sessionId);
             } else {
@@ -3642,6 +3898,7 @@ export class SessionManager {
                     `discarding it and creating a fresh session.`,
                 );
                 await this._resetSessionState(sessionId);
+                this.sessionClientKeys.set(sessionId, desiredClientKey);
             }
 
             copilotSession = await this._createCopilotSession(client, sessionConfig);
@@ -3656,6 +3913,7 @@ export class SessionManager {
                 { trace },
             );
             await this._resetSessionStateForEpoch(sessionId, transcriptEpoch);
+            this.sessionClientKeys.set(sessionId, desiredClientKey);
             copilotSession = await this._createCopilotSession(client, sessionConfig);
             // Birth marker: the preamble's epoch invariant refuses to trust a
             // markerless dir under epoch >= 1, so stamp the incarnation the
@@ -3741,7 +3999,7 @@ export class SessionManager {
             rootSessionId: catalogRow?.rootSessionId ?? null,
             agentId: effectiveSerializableConfig.agentIdentity ?? null,
         }));
-        this.sessions.set(sessionId, managed);
+        this._setWarmSession(sessionId, managed, client);
         if (bindingRecord) this.workflowBindingRecords.set(sessionId, bindingRecord);
         if (snapshotRecord) this.workflowSnapshots.set(sessionId, snapshotRecord);
         this.workflowParentConfigs.set(sessionId, workflowParentConfig);
@@ -3783,6 +4041,11 @@ export class SessionManager {
     private _forgetWarmSession(sessionId: string): void {
         this.sessions.get(sessionId)?.closeWorkflowTools();
         this.sessions.delete(sessionId);
+        // Releases the session's client: when it was the client's last user
+        // (or the session moved to another key), its idle timer starts.
+        const boundClient = this.warmSessionClients.get(sessionId);
+        this.warmSessionClients.delete(sessionId);
+        this._noteClientMaybeIdle(boundClient);
         this.workflowBindingRecords.delete(sessionId);
         this.workflowSnapshots.delete(sessionId);
         this.workflowParentConfigs.delete(sessionId);
@@ -3803,29 +4066,77 @@ export class SessionManager {
     async dropWarmSession(sessionId: string): Promise<void> {
         const existing = this.sessions.get(sessionId);
         if (existing) {
-            await this._cancelWorkspaceShells(sessionId, existing, "a hydrate");
+            await this._cancelSessionShells(sessionId, existing, "a hydrate");
             try { await existing.destroy(); } catch {}
         }
         this._forgetWarmSession(sessionId);
     }
 
     /**
-     * Session workspaces: stop the background shells of a warm workspace
-     * session before its handle is dropped. A resumed handle does not see
-     * them (CLI 1.0.83: tasks.list() is empty after disconnect and resume),
-     * so no later release could find them, and they would keep writing into
-     * the checkout (review R2). One deadline covers the cancel: a CLI frozen
-     * by a hung mount must not hold the caller (review R9). Never throws.
+     * Stop a warm session's background shells and agent tasks before its
+     * handle is dropped (dehydrate, eviction, destroy, invalidation, reset,
+     * rebind, hydrate, client change; a shutdown lists and kills them around
+     * the stop instead, _listSessionShells). disconnect() and the
+     * client's stop() leave them running: a tool shell runs in its own
+     * session (setsid) and outlives the runtime. A resumed handle does not
+     * see them either (CLI 1.0.83: tasks.list() is empty after disconnect and
+     * resume), so no later teardown could find them (review R2; #331). One
+     * deadline covers the cancel: a CLI frozen by a hung mount must not hold
+     * the caller (review R9), and a cancel still running after it signals
+     * nothing more. Never throws.
      */
-    private async _cancelWorkspaceShells(sessionId: string, managed: ManagedSession | undefined, reason: string): Promise<number> {
-        if (!managed?.getWorkspaceState().workspace) return 0;
+    private async _cancelSessionShells(
+        sessionId: string,
+        managed: ManagedSession | undefined,
+        reason: string,
+        deadlineMs = WORKSPACE_RELEASE_DEADLINE_MS,
+    ): Promise<number> {
+        if (!managed || typeof managed.cancelBackgroundTasks !== "function") return 0;
         try {
-            const cancelled = await withWorkspaceDeadline(managed.cancelBackgroundTasks(), "task cancel");
+            const deadline = Date.now() + deadlineMs;
+            const cancelled = await withWorkspaceDeadline(managed.cancelBackgroundTasks({ deadline }), "task cancel", deadlineMs);
             if (cancelled > 0) emitSessionManagerTrace(sessionId, `cancelled ${cancelled} background task(s) before ${reason}`);
             return cancelled;
         } catch (error: unknown) {
             emitSessionManagerTrace(sessionId, `background tasks not cancelled before ${reason}: ${normalizeError(error).message}`, { level: "warn" });
             return 0;
+        }
+    }
+
+    /**
+     * _cancelSessionShells, then the handle's disconnect, under one deadline (review 377 SF-6): a CLI that is live but
+     * hung costs the caller that deadline once, not once for the cancel and again for the disconnect. Past it, the
+     * disconnect settles in the background and the caller drops the handle anyway. Never throws.
+     */
+    private async _cancelAndDisconnect(
+        sessionId: string,
+        managed: ManagedSession,
+        reason: string,
+        deadlineMs = WORKSPACE_RELEASE_DEADLINE_MS,
+    ): Promise<void> {
+        const deadline = Date.now() + deadlineMs;
+        await this._cancelSessionShells(sessionId, managed, reason, deadlineMs);
+        const disconnecting = Promise.resolve().then(() => managed.destroy());
+        try {
+            await withWorkspaceDeadline(disconnecting, "disconnect", Math.max(0, deadline - Date.now()));
+        } catch (error: unknown) {
+            disconnecting.catch(() => {});
+            emitSessionManagerTrace(sessionId, `disconnect before ${reason} not confirmed: ${normalizeError(error).message}`, { level: "warn" });
+        }
+    }
+
+    /**
+     * A worker shutdown's half of _cancelSessionShells: list a warm session's running shells without stopping them, so
+     * that CopilotClient.stop stays the first thing to end a running model turn (shutdown). The caller kills them once
+     * the runtime has stopped (killListedShells). Never throws: an error or the deadline gives an empty list.
+     */
+    private async _listSessionShells(sessionId: string, managed: ManagedSession, reason: string, deadlineMs: number): Promise<ListedShell[]> {
+        if (typeof managed.listBackgroundShells !== "function") return [];
+        try {
+            return await withWorkspaceDeadline(managed.listBackgroundShells(), "task list", deadlineMs);
+        } catch (error: unknown) {
+            emitSessionManagerTrace(sessionId, `background shells not listed before ${reason}: ${normalizeError(error).message}`, { level: "warn" });
+            return [];
         }
     }
 
@@ -3922,7 +4233,9 @@ export class SessionManager {
             }
         }
 
-        // Phase 1: Destroy the in-memory session (with retries)
+        // Phase 1: Destroy the in-memory session (with retries). Its background
+        // shells outlive disconnect() and the runtime, so stop them first (#331).
+        await this._cancelSessionShells(sessionId, this.sessions.get(sessionId), "a dehydrate");
         for (let attempt = 1; attempt <= DESTROY_MAX_RETRIES; attempt++) {
             const session = this.sessions.get(sessionId);
             if (!session) break; // No in-memory session — nothing to destroy
@@ -3945,8 +4258,11 @@ export class SessionManager {
                 if (attempt < DESTROY_MAX_RETRIES) {
                     // Re-create the session from local files so we can try destroy again.
                     if (fs.existsSync(sessionDir)) {
+                        let releaseClient: (() => void) | undefined;
                         try {
-                            const client = await this._ensureClientForSession(sessionId);
+                            const leased = await this._leasedClientForSession(sessionId);
+                            releaseClient = leased.release;
+                            const client = leased.client;
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await this._resumeCopilotSession(client, sessionId, {
                                 tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
@@ -3967,12 +4283,14 @@ export class SessionManager {
                                     agentId: config.agentIdentity ?? null,
                                 }));
                             }
-                            this.sessions.set(sessionId, managed);
+                            this._setWarmSession(sessionId, managed, client);
                             // Brief pause before retry
                             await sleep(500 * attempt);
                         } catch {
                             // Can't resume — session files may be corrupt. Fall through.
                             break;
+                        } finally {
+                            releaseClient?.();
                         }
                     } else {
                         break; // No local files — can't retry
@@ -4188,14 +4506,19 @@ export class SessionManager {
             // hung mount never answers, and the caller holds the session lock
             // (review R9). The handle is dropped either way.
             try {
+                const deadlineMs = opts.deadlineMs ?? WORKSPACE_RELEASE_DEADLINE_MS;
+                const deadline = Date.now() + deadlineMs;
                 await withWorkspaceDeadline((async () => {
                     try {
-                        cancelled = await managed.cancelBackgroundTasks();
+                        cancelled = await managed.cancelBackgroundTasks({ deadline });
                     } catch (error: unknown) {
-                        detail = `task cancel: ${normalizeError(error).message}`;
+                        // The cancel gives up at the deadline itself (review 377 SF-6).
+                        detail = Date.now() >= deadline
+                            ? `task cancel did not finish within ${deadlineMs} ms`
+                            : `task cancel: ${normalizeError(error).message}`;
                     }
                     try { await managed.destroy(); } catch { /* the handle is dropped either way */ }
-                })(), "task cancel and disconnect", opts.deadlineMs);
+                })(), "task cancel and disconnect", deadlineMs);
             } catch (error: unknown) {
                 detail = [detail, normalizeError(error).message].filter(Boolean).join("; ");
             }
@@ -4340,7 +4663,10 @@ export class SessionManager {
             return this._withSessionLock(sessionId, "destroySession", () => this.destroySession(sessionId, { lockHeld: true }));
         }
         try {
-            await this.sessions.get(sessionId)?.destroy();
+            const existing = this.sessions.get(sessionId);
+            // Tool shells outlive disconnect() and the runtime (#331).
+            await this._cancelSessionShells(sessionId, existing, "a destroy");
+            await existing?.destroy();
         } finally {
             this._forgetWarmSession(sessionId);
             this.sessionApplicationTools.delete(sessionId);
@@ -4370,9 +4696,10 @@ export class SessionManager {
      * local/session-store state. Used when the underlying Copilot session
      * becomes invalid and we want the next getOrCreate() to resume/hydrate it.
      *
-     * `destroyDeadlineMs` bounds the wait for the handle's disconnect: past
-     * it the handle is forgotten anyway and its disconnect settles in the
-     * background (issue 329: its runtime connection is gone).
+     * `destroyDeadlineMs` bounds the shell cancel and the wait for the
+     * handle's disconnect together: past it the handle is forgotten anyway
+     * and its disconnect settles in the background (issue 329: its runtime
+     * connection is gone).
      */
     async invalidateWarmSession(sessionId: string, options?: { lockHeld?: boolean; destroyDeadlineMs?: number }): Promise<void> {
         if (!options?.lockHeld) {
@@ -4382,17 +4709,14 @@ export class SessionManager {
         if (!session) return;
         // Review RT-F1-L1: an invalidated handle is forgotten whatever fails on the way, so it is never reused.
         try {
-            await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
-            const destroying = session.destroy().catch(() => {});
+            // A runtime that is gone answers the cancel at once ("Session is disconnected"); the deadline bounds the rest.
+            // One deadline covers the cancel and the disconnect together (review 377 C-4).
             const deadlineMs = options?.destroyDeadlineMs;
             if (deadlineMs && deadlineMs > 0) {
-                let timer: ReturnType<typeof setTimeout> | undefined;
-                await Promise.race([
-                    destroying,
-                    new Promise<void>((resolve) => { timer = setTimeout(resolve, deadlineMs); }),
-                ]).finally(() => { if (timer) clearTimeout(timer); });
+                await this._cancelAndDisconnect(sessionId, session, "an invalidation", deadlineMs);
             } else {
-                await destroying;
+                await this._cancelSessionShells(sessionId, session, "an invalidation");
+                await session.destroy().catch(() => {});
             }
         } finally {
             this._forgetWarmSession(sessionId);
@@ -4526,6 +4850,16 @@ export class SessionManager {
         const clients = [...new Set(this.clients.values())];
         this.clients.clear();
         this.clientStarts = new WeakMap();
+        // Idle stop (#331): no timer outlives this pool; a stop pass already
+        // running is awaited below with the rest.
+        for (const timer of this.clientIdleTimers.values()) clearTimeout(timer);
+        this.clientIdleTimers.clear();
+        this.idleDueClients.clear();
+        const warmClients = new Map(this.warmSessionClients);
+        this.warmSessionClients.clear();
+        this.clientLeases.clear();
+        const retiring = this.clientRetirement;
+        const warmSessions = [...this.sessions];
         for (const session of this.sessions.values()) session.closeWorkflowTools();
         this.sessions.clear();
         this.workflowParentAgentTools.clear();
@@ -4538,28 +4872,39 @@ export class SessionManager {
         this.workflowSnapshots.clear();
         this.promptSectionDigests.clear();
         this.sessionClientKeys.clear();
-        // Each process gets the same deadline concurrently; one stuck client
-        // cannot block another or multiply the worker's termination budget.
-        // This is final cleanup only, not the individual-session eviction path.
-        await Promise.all(clients.map(async (client) => {
-            this.runtimeMonitor.markStopping(client);
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            try {
-                const errors = await Promise.race([
-                    client.stop(),
-                    new Promise<never>((_, reject) => {
-                        timer = setTimeout(() => reject(new Error("Copilot shutdown timed out")), COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS);
-                    }),
-                ]);
-                if (errors?.length) throw errors[0];
-            } catch {
-                console.warn("[SessionManager] Copilot did not shut down cleanly; forcing its local process to stop.");
-                try { await client.forceStop(); }
-                catch { console.warn("[SessionManager] Copilot force-stop failed."); }
-            } finally {
-                if (timer) clearTimeout(timer);
-            }
-        }));
+        // Tool shells run in their own session and outlive client.stop() (#331). A cancel here would end a running
+        // turn's tool call before the stop does, and its model run would go on to another step (M3b). So shutdown
+        // only lists each warm session's shells here, with one short deadline, and kills them after the stop.
+        // Each client runs its own list, stop and kill, so one stuck or slow stop never delays the kills of another
+        // client's shells (review 377 SF-7); every stop has the same deadline. A session not bound to a client of
+        // this pool is listed before any stop and killed after all of them, as before. This is final cleanup only,
+        // not the individual-session eviction path.
+        const sessionsOf = new Map<CopilotClient | undefined, Array<[string, ManagedSession]>>();
+        for (const [sessionId, managed] of warmSessions) {
+            const bound = warmClients.get(sessionId);
+            const owner = bound && clients.includes(bound) ? bound : undefined;
+            sessionsOf.set(owner, [...(sessionsOf.get(owner) ?? []), [sessionId, managed]]);
+        }
+        const listShells = (own: Array<[string, ManagedSession]>) => Promise.all(own.map(([sessionId, managed]) =>
+            this._listSessionShells(sessionId, managed, "a worker shutdown", SHUTDOWN_TASK_CANCEL_DEADLINE_MS)));
+        const killShells = (own: Array<[string, ManagedSession]>, shells: ListedShell[][]) => own.forEach(([sessionId, managed], index) => {
+            const ended = killListedShells(shells[index], { host: managed.processHost });
+            if (ended > 0) emitSessionManagerTrace(sessionId, `ended ${ended} background shell(s) after a worker shutdown`);
+        });
+        const unbound = sessionsOf.get(undefined) ?? [];
+        const unboundShells = listShells(unbound);
+        const stops = clients.map(async (client) => {
+            const own = sessionsOf.get(client) ?? [];
+            const [shells] = await Promise.all([listShells(own), unboundShells]);
+            await this._stopClient(client);
+            killShells(own, shells);
+        });
+        const unboundKill = (async () => {
+            const shells = await unboundShells;
+            await Promise.all(stops);
+            killShells(unbound, shells);
+        })();
+        await Promise.all([...stops, unboundKill, retiring]);
     }
 
     /**

@@ -1774,6 +1774,16 @@ export interface PilotSwarmWorkerOptions {
     turnInactivityTimeoutMs?: number;
 
     /**
+     * How long a pooled Copilot runtime (one `copilot` process per credential,
+     * transport and workspace root) may sit with no warm session and no
+     * short-lived user (a model list, a session delete) before the worker
+     * stops it, in milliseconds. The next session for that key starts a fresh
+     * runtime and resumes from its saved state. 0 = never stop idle runtimes;
+     * undefined = PILOTSWARM_COPILOT_CLIENT_IDLE_STOP_MS or 30 seconds.
+     */
+    copilotClientIdleStopMs?: number;
+
+    /**
      * Base directory for local session state files.
      * Default: `~/.copilot/session-state`.
      */
