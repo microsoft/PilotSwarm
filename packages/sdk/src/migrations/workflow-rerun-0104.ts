@@ -1,6 +1,7 @@
 /**
  * Migration 0104 — Workflow re-run from a chosen visit (run_again, continue, supply):
- * run-level link/guard columns and visit-level reused/supplied provenance columns.
+ * run-level link/guard columns, visit-level reused/supplied provenance columns, and the first acceptance time of a
+ * carried inbox message (workflow_inbox.origin_accepted_at).
  *
  * Uses `steps` (individually autocommitted, idempotent statements) so:
  *   1. Step 1 adds the nullable columns and `CHECK (...) NOT VALID` constraints under a bounded 5 s lock_timeout
@@ -146,6 +147,11 @@ BEGIN
     END IF;
 END
 $nodes_check$;
+
+-- Review RR-1: a carried inbox row keeps the time its message was first accepted (copied visits keep their entry times),
+-- so a re-run that cuts inside a re-run's copied prefix compares like with like. NULL for a message accepted into its run.
+ALTER TABLE ${s}.workflow_inbox
+    ADD COLUMN IF NOT EXISTS origin_accepted_at TIMESTAMPTZ;
 COMMIT;
 `,
         `

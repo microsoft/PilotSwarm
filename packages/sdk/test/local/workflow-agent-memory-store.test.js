@@ -96,7 +96,8 @@ describe("I1 D-2: the record of a continued visit whose conversation was lost af
                 childSessionId: child, cycle: 2, reason: "reply_limit" }]);
             // The next cycle's turn reads its own cycle and the lost ones before it; the lost visit itself reads none.
             const v3 = await visitOf(h, run, 3, child);
-            expect(await h.store.readAgentCyclesLostBefore(child, v3.nodeExecutionId)).toEqual({ cycle: 3, lost: [2] });
+            // Cycle 1 was decided by its time limit (no report: not known to have run) and cycle 2 was lost: nothing is above.
+            expect(await h.store.readAgentCyclesLostBefore(child, v3.nodeExecutionId)).toEqual({ cycle: 3, lost: [2], savedEarlier: 0 });
             expect(await h.store.readAgentCyclesLostBefore(child, v2.nodeExecutionId)).toEqual({ cycle: 0, lost: [] });
             expect(await h.store.readAgentCyclesLostBefore(randomUUID(), v3.nodeExecutionId)).toBeNull();
             // A run that ended has no later cycle: nothing is recorded.

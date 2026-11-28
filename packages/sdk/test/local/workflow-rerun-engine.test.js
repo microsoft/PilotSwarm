@@ -287,6 +287,11 @@ states:
   fail_end: { type: terminal, outcome: failed }
 `;
 
+/** CONTINUED_AGENT_KV_YAML, with a cycle that times out routed to the next cycle (review I-2 residual). */
+const CONTINUED_AGENT_TIMEOUT_YAML = CONTINUED_AGENT_KV_YAML
+    .replace("name: rerun-continued-agent-kv", "name: rerun-continued-agent-timeout")
+    .replace("unavailable: bump,", "unavailable: bump, timed_out: bump,");
+
 /**
  * A worker runtime with the Workflow activities and a fake agent host. It records every prompt, every live
  * workflow.endAgent call and its result or error, and keeps the registered activities for direct calls. Set
@@ -863,14 +868,18 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
             const p4 = promptsSeen[1];
             expect(p4.childSessionId).toBe(p3.childSessionId);
             expect(p4.prompt).toContain("CYCLE 4");
-            // I-2: normal K+2 prompt appends Design §5.4 pre-cut sentence
-            expect(p4.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; their summary is in cycle 3's prompt above.");
+            // I-2 residual: cycle 3's loss was recorded before cycle 4's prompt was built (the controller collects cycle 3 and
+            // runs bump first), so cycle 4 does not point to cycle 3's prompt: it carries the pre-cut summary again.
+            expect(p4.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 3's conversation was lost, "
+                + "rerunRecap in the JSON carries their summary again.");
+            expect(JSON.parse(p4.prompt.split("\n")[1]).rerunRecap).toEqual(p3Json.rerunRecap);
 
             // I-2: S7 readAgentCyclesLostBefore includes firstSessionCycle & re-carried rerunRecap when K+1 is lost
             const lostInfo = await store.readAgentCyclesLostBefore(p4.childSessionId, p4.nodeExecutionId);
             expect(lostInfo).toEqual({
                 cycle: 4,
                 lost: [3],
+                savedEarlier: 0,
                 firstSessionCycle: 3,
                 preCutCount: 2,
                 recapCycle: 3,
@@ -931,7 +940,7 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
                 nodeExecutionId: p5.nodeExecutionId, childSessionId: p5.childSessionId, reason: "not_committed",
             })).recorded).toBe(true);
             const lost6 = await store.readAgentCyclesLostBefore(p6.childSessionId, p6.nodeExecutionId);
-            expect(lost6).toEqual({ cycle: 6, lost: [5], firstSessionCycle: 5, preCutCount: 2, recapCycle: 5, rerunRecap: p3Json.rerunRecap });
+            expect(lost6).toEqual({ cycle: 6, lost: [5], savedEarlier: 0, firstSessionCycle: 5, preCutCount: 2, recapCycle: 5, rerunRecap: p3Json.rerunRecap });
             const rewrittenP6 = workflowAgentCycleMemoryLostPrompt(p6.prompt, lost6.cycle, lost6.lost, lost6);
             expect(rewrittenP6).toContain("The conversation of cycle 5 is not available");
             expect(rewrittenP6).not.toContain("other earlier cycles");
@@ -1143,7 +1152,7 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
             expect(spawnControl.refuseNext).toBe(false);
             expect(prompts.filter(p => p.runId === skipped.runId && p.refused).map(p => p.childSessionId)).toEqual([k2.childSessionId]);
             expect(k2.prompt).toContain("CYCLE 4");
-            expect(k2.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 3 did not run in this session, "
+            expect(k2.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 3 did not finish in this session, "
                 + "rerunRecap in the JSON carries their summary.");
             const k2Json = promptJson(k2);
             expect(k2Json.rerunRecap.visits.map(v => [v.visit, v.source])).toEqual([[1, "reused"], [2, "supplied"]]);
@@ -1157,6 +1166,96 @@ describe("Task 5: End-to-end I7 pass-over engine (unchanged 1.3.0 controller)", 
             expect(k3.prompt).not.toContain("cycle 3's prompt above");
             expect(Object.hasOwn(promptJson(k3), "rerunRecap")).toBe(false);
             await finish(skipped, k3);
+        });
+    });
+
+    /** A supply re-run of CONTINUED_AGENT_TIMEOUT_YAML's loop_agent#2 (K = 2 pre-cut cycles), with helpers for its prompts. */
+    const withTimeoutRerun = (fn) => withFakeAgentRuntime(getEnv(), async (ctx) => {
+        const { store, client, h } = ctx;
+        const ownerSessionId = randomUUID();
+        await h.catalog.createSession(ownerSessionId, { owner: OWNER });
+        const saved = await saveSessionWorkflowDefinition(h, {
+            ownerSessionId, name: "rerun-continued-agent-timeout", yaml: CONTINUED_AGENT_TIMEOUT_YAML, expected: null, actor: OWNER_ACTOR,
+            operationId: `save-agto-${randomUUID()}`,
+        });
+        expect(saved.receipt.valid).toBe(true);
+        const defId = saved.receipt.definitionId;
+        const src = await seedKvContinuedSource(getEnv(), h, client, defId, ownerSessionId);
+        const rerun = operation => startSessionWorkflowDefinition(h, {
+            ownerSessionId, definition: { definitionId: defId }, inputs: {}, actor: OWNER_ACTOR, owner: OWNER,
+            operationId: `${operation}-${randomUUID()}`,
+            rerunFrom: { workflowId: src.workflowId, executionId: src.v2, mode: "supply", result: { outcome: "more", output: { rescued: true } }, note: "Manual rescue of cycle 2" },
+        });
+        const promptJson = prompt => JSON.parse(prompt.prompt.split("\n")[1]);
+        const recapVisits = json => json.rerunRecap.visits.map(v => [v.visit, v.source]);
+        const finish = async (started, prompt) => {
+            await store.completeNode(prompt.nodeExecutionId, { outcome: "done", resultKind: "business", valueText: '{"done":true}', winner: "agent" }, {
+                sessionId: started.workflowId, events: [],
+            });
+            expect((await waitRunTerminal(store, started.runId)).status).toBe("completed");
+        };
+        await fn({ ...ctx, rerun, promptJson, recapVisits, finish });
+    });
+
+    it("re-carries the pre-cut recap after a cycle whose prompt was queued but timed out before it finished (I-2 residual a)", { timeout: testTime.ms(240_000) }, async () => {
+        await withTimeoutRerun(async ({ store, prompts, rerun, promptJson, recapVisits, finish }) => {
+            // (a) K+1 (cycle 3) gets its prompt queued in the session (its spawn is recorded), then times out before its turn
+            // finishes (winner controller). Cycle 4 reuses the session, but nothing shows the recap is in its conversation:
+            // cycle 4 carries the recap itself instead of pointing to cycle 3's prompt.
+            const queued = await rerun("start-agto-queued");
+            const q3 = await nextPromptOf(store, prompts, queued.runId);
+            expect(q3.prompt).toContain("cycle 3");
+            const spawnDeadline = Date.now() + 30_000;
+            while ((await store.readAgentInvocation(q3.nodeExecutionId))?.spawnedAt == null && Date.now() < spawnDeadline) {
+                await new Promise(r => setTimeout(r, 50));
+            }
+            expect((await store.readAgentInvocation(q3.nodeExecutionId))?.spawnedAt).toBeTruthy();
+            const timedOut = await store.completeNode(q3.nodeExecutionId, {
+                outcome: "timed_out", resultKind: "runtime_error", winner: "controller",
+                valueText: canonicalJson({ code: "timed_out", message: "The agent did not complete the state before its deadline." }),
+            }, { sessionId: queued.workflowId, events: [] });
+            expect(timedOut.won).toBe(true);
+            const q4 = await nextPromptOf(store, prompts, queued.runId, 1);
+            expect(q4.childSessionId).toBe(q3.childSessionId);
+            expect(q4.prompt).toContain("CYCLE 4");
+            expect(q4.prompt).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 3 did not finish in this session, "
+                + "rerunRecap in the JSON carries their summary.");
+            expect(q4.prompt).not.toContain("cycle 3's prompt above");
+            expect(recapVisits(promptJson(q4))).toEqual([[1, "reused"], [2, "supplied"]]);
+            await finish(queued, q4);
+        });
+    });
+
+    it("re-carries the pre-cut recap after the first cycle that ran lost its conversation, and claims no other earlier cycle is above (I-2 residual b)", { timeout: testTime.ms(240_000) }, async () => {
+        await withTimeoutRerun(async ({ store, prompts, spawnControl, rerun, promptJson, recapVisits, finish }) => {
+            // (b) Cycle 3's spawn is refused; cycle 4 is the session's first prompt (it carries the recap), runs, and loses its
+            // conversation. Cycle 5 carries the recap again and claims no other earlier conversation is above: cycle 3 never
+            // ran and cycle 4's conversation was lost.
+            spawnControl.refuseNext = true;
+            const refused = await rerun("start-agto-refused-lost");
+            const k4 = await nextPromptOf(store, prompts, refused.runId);
+            expect(k4.prompt).toContain("CYCLE 4");
+            expect(recapVisits(promptJson(k4))).toEqual([[1, "reused"], [2, "supplied"]]);
+            await store.completeNode(k4.nodeExecutionId, { outcome: "more", resultKind: "business", valueText: '{"c":4}', winner: "agent" }, {
+                sessionId: refused.workflowId, events: [],
+            });
+            expect((await store.recordAgentCycleMemoryLost({
+                nodeExecutionId: k4.nodeExecutionId, childSessionId: k4.childSessionId, reason: "not_committed",
+            })).recorded).toBe(true);
+            const k5 = await nextPromptOf(store, prompts, refused.runId, 1);
+            expect(k5.childSessionId).toBe(k4.childSessionId);
+            expect(k5.prompt).toContain("CYCLE 5");
+            const lost5 = await store.readAgentCyclesLostBefore(k5.childSessionId, k5.nodeExecutionId);
+            const seen5 = workflowAgentCycleMemoryLostPrompt(k5.prompt, lost5.cycle, lost5.lost, lost5);
+            expect(seen5).toContain("The conversation of cycle 4 is not available");
+            expect(seen5).not.toContain("other earlier cycles");
+            expect(lost5).toMatchObject({ cycle: 5, lost: [4], firstSessionCycle: 3, preCutCount: 2, recapCycle: 4, savedEarlier: 0 });
+            expect(lost5.rerunRecap).toEqual(promptJson(k4).rerunRecap);
+            expect(seen5).not.toContain("prompt above");
+            expect(seen5).toContain("Cycles 1 to 2 were reused or supplied before this re-run started; because cycle 4's conversation was lost, "
+                + "rerunRecap in the JSON carries their summary again.");
+            expect(JSON.parse(seen5.split("\n")[1]).rerunRecap).toEqual(promptJson(k4).rerunRecap);
+            await finish(refused, k5);
         });
     });
 

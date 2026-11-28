@@ -396,7 +396,18 @@ test("I7 re-run prompts: K+1 recap wording (singular/reused/supplied/mixed/omitt
     assert.deepEqual(JSON.parse(lostC5OnC6.split("\n")[1]).rerunRecap, recapPayload);
     // When no earlier cycle of this session reached it (cycles 3 and 4 never ran here), cycle 5 carries the summary itself.
     const notRun = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 5, preCutCount: 2, notRunInSession: { from: 3, to: 4 }, rerunRecap: recapPayload });
-    assert.ok(notRun.split("\n")[0].includes("because cycles 3 and 4 did not run in this session, rerunRecap in the JSON carries their summary."));
+    assert.ok(notRun.split("\n")[0].includes("because cycles 3 and 4 did not finish in this session, rerunRecap in the JSON carries their summary."));
+    // I-2 residual: the cycle that carried the summary lost its conversation before this prompt was built: carried again.
+    const recapLost = workflowAgentCyclePrompt({ ...INVOCATION, ...CYCLE, cycle: 5, preCutCount: 2, recapLostCycle: 4, rerunRecap: recapPayload });
+    assert.ok(recapLost.split("\n")[0].includes("because cycle 4's conversation was lost, rerunRecap in the JSON carries their summary again."));
+    assert.ok(!recapLost.includes("prompt above"));
+    assert.deepEqual(JSON.parse(recapLost.split("\n")[1]).rerunRecap, recapPayload);
+    // I-2 residual: the other earlier cycles are said to be above only when a saved conversation of this session exists.
+    const noneSaved = workflowAgentCycleMemoryLostPrompt(recapLost, 5, [4], { firstSessionCycle: 3, savedEarlier: 0, preCutCount: 2, recapCycle: 4, rerunRecap: recapPayload });
+    assert.ok(noneSaved.split("\n")[0].includes("The conversation of cycle 4 is not available"));
+    assert.ok(!noneSaved.includes("other earlier cycles"));
+    const oneSaved = workflowAgentCycleMemoryLostPrompt(k2Cycle5, 5, [4], { firstSessionCycle: 3, savedEarlier: 1, preCutCount: 2 });
+    assert.ok(oneSaved.split("\n")[0].includes("What you did in the other earlier cycles is above."));
     assert.deepEqual(JSON.parse(notRun.split("\n")[1]).rerunRecap, recapPayload);
 });
 

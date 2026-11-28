@@ -3074,13 +3074,14 @@ export class WorkflowStore {
      * R2-S6: count and distinct contract names of inbox messages that a re-run will carry into #3,
      * using the exact predicate of copyRerunInboxIn without reading message payload bodies. `keptSourceIds` are the source
      * visits the re-run keeps (reused, including lane visits, and a supplied visit): a message one of them consumed is not
-     * carried; one consumed only by a dropped visit is (Design §5.4).
+     * carried; one consumed only by a dropped visit is (Design §5.4). It has no default: `[]` is right only when the re-run
+     * keeps no source visit.
      */
     async summarizeRerunCarriedInbox(
         runId: string,
         cut: RerunInboxCut,
         reusedSpawnChildIds: readonly string[],
-        keptSourceIds: readonly string[] = [],
+        keptSourceIds: readonly string[],
         client?: PoolClient,
     ): Promise<{ count: number; contracts: string[] }> {
         const runner = client ?? this.pool;
@@ -3091,7 +3092,7 @@ export class WorkflowStore {
               WHERE run_id = $1
                 AND (consumed_by IS NULL OR NOT (consumed_by = ANY($5::text[])))
                 AND (
-                    (accepted_at <= $2::timestamptz AND expires_at > $2::timestamptz)
+                    (contract <> $3 AND COALESCE(origin_accepted_at, accepted_at) <= $2::timestamptz AND expires_at > $2::timestamptz)
                     OR (contract = $3 AND sender_session_id = ANY($4::text[]))
                 )
               GROUP BY contract
@@ -3359,27 +3360,31 @@ export class WorkflowStore {
     }
 
     /**
-     * Copies eligible waiting inbox messages + unconsumed WorkflowEnded@1 child notices from source run #2 into #3
-     * in seq ASC order with fresh message_id / operation_id and restarted TTL (`now() + (expires_at - accepted_at)`).
-     * A waiting message is one accepted by the cut and unexpired at it, and not consumed by a source visit #3 keeps (Design
-     * §5.4, review D-I2): one consumed only by a dropped visit waits again for that visit's re-run.
+     * Copies eligible waiting inbox messages + the WorkflowEnded@1 notices of reused spawn children from source run #2 into
+     * #3 in seq ASC order with fresh message_id / operation_id and restarted TTL (`now() + (expires_at - accepted_at)`).
+     * A waiting message is an ordinary one (never a WorkflowEnded@1 notice: review I-INBOX) accepted by the cut and unexpired
+     * at it, and not consumed by a source visit #3 keeps (Design §5.4, review D-I2): one consumed only by a dropped visit
+     * waits again for that visit's re-run. A carried row keeps its first acceptance time in origin_accepted_at (review
+     * RR-1): copied visits keep their entry times, so a later re-run that cuts inside this run's copied prefix compares
+     * that time, not the copy's, with the cut.
      */
     private async copyRerunInboxIn(client: PoolClient, newWorkflowSessionId: string, newRunId: string, rerun: RerunAdmissionSpec): Promise<void> {
         const cutAt = await this.resolveRerunInboxCut(client, rerun.sourceRunId, rerun.inboxCutAt);
         await client.query(
             `INSERT INTO ${this.t.inbox} (
                 message_id, workflow_session_id, run_id, sender_session_id, operation_id, contract, correlation, payload,
-                request_sha256, accepted_at, expires_at, consumed_by, consumed_at
+                request_sha256, accepted_at, expires_at, consumed_by, consumed_at, origin_accepted_at
              )
              SELECT
                 'msg-' || substr(encode(sha256(convert_to($2 || ':' || s.message_id, 'UTF8')), 'hex'), 1, 36),
                 $1, $2, s.sender_session_id, 'rerun-carry:' || s.message_id, s.contract, s.correlation, s.payload,
-                s.request_sha256, now(), now() + GREATEST(s.expires_at - s.accepted_at, interval '1 second'), NULL, NULL
+                s.request_sha256, now(), now() + GREATEST(s.expires_at - s.accepted_at, interval '1 second'), NULL, NULL,
+                COALESCE(s.origin_accepted_at, s.accepted_at)
                FROM ${this.t.inbox} s
               WHERE s.run_id = $3
                 AND (s.consumed_by IS NULL OR NOT (s.consumed_by = ANY($7::text[])))
                 AND (
-                    (s.accepted_at <= $4::timestamptz AND s.expires_at > $4::timestamptz)
+                    (s.contract <> $5 AND COALESCE(s.origin_accepted_at, s.accepted_at) <= $4::timestamptz AND s.expires_at > $4::timestamptz)
                     OR (s.contract = $5 AND s.sender_session_id = ANY($6::text[]))
                 )
               ORDER BY s.seq ASC`,
@@ -3899,22 +3904,24 @@ export class WorkflowStore {
         if (repaired) marks.repaired = true;
         // requestedBy was not recorded with the request; it is attributed from the entry point named here.
         if (input.attributedFrom !== undefined) marks.attributedFrom = input.attributedFrom;
+        // Review MSG-1: the end time is read after the caller's locks (lockedClockText), as endRunIn reads it.
+        const at = await this.lockedClockText(client);
         const { rows } = await client.query(
             `UPDATE ${this.t.runs}
                 SET status = 'cancelled', terminal_node_id = NULL, terminal_outcome = NULL, terminal_output = NULL, terminal_error = $2,
-                    paused_from = NULL, updated_at = now(), finished_at = now()
+                    paused_from = NULL, updated_at = now(), finished_at = $3::timestamptz
               WHERE run_id = $1 RETURNING *`,
             // SF-6 verification: the reason is a person's or an agent's text; its secrets are hidden before it is stored.
             [run.runId, redactWorkflowErrorText(canonicalJson({ code: "cancelled", message: redactThenClip(input.reason, 4_000), details: {
                 command, requestedBy: input.requestedBy, ...marks,
-            } }), canonicalJson)]);
+            } }), canonicalJson), at]);
         // No node execution exists before begin; one that did would lose to the cancel, as when the controller cancels.
         await client.query(
             `UPDATE ${this.t.nodes}
                 SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
-                    winner = 'cancel', completed_at = now()
+                    winner = 'cancel', completed_at = $3::timestamptz
               WHERE run_id = $1 AND state = 'pending'`,
-            [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." })]);
+            [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." }), at]);
         await this.recordLiveTerminalOutcomeIn(client, run.runId);
         await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
             runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks, ...(input.actor ? { actor: actorJson(input.actor) } : {}),
@@ -4647,6 +4654,15 @@ export class WorkflowStore {
         const { rows } = await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1 FOR UPDATE`, [runId]);
         if (!rows[0]) throw new WorkflowStoreError("RUN_NOT_FOUND", `Workflow run ${runId} does not exist.`);
         return runFrom(rows[0]);
+    }
+
+    /**
+     * The store's clock, read in the caller's transaction after its locks, as exact SQL text (a JavaScript Date keeps only
+     * milliseconds). now() is the transaction's start, which can be earlier than a write that committed while it waited.
+     */
+    private async lockedClockText(client: PoolClient): Promise<string> {
+        const { rows } = await client.query(`SELECT clock_timestamp()::text AS at`);
+        return str(rows[0], "at");
     }
 
     /**
@@ -7732,31 +7748,45 @@ export class WorkflowStore {
     /**
      * Phase 3 I7, review I-2: the earlier visits of a run's state `stateId` that went to agent session `childSessionId`, before
      * visit `nodeExecutionId`, numbered among the state's visits in the run as readAgentVisitsBefore orders them (1 for the
-     * run's first live visit): the first of them (null when none), and the first whose prompt is known to have reached the
-     * session (its spawn was recorded, or its agent reported its result; null when none). A session's visits are
-     * consecutive: a state moves to a new session and never back.
+     * run's first live visit). A session's visits are consecutive: a state moves to a new session and never back.
+     * - `first`: the first of them (null when none).
+     * - `firstRan`: the first whose turn is known to have run, because its agent reported its result (winner agent); null
+     *   when none. A recorded spawn is not that evidence: it says the prompt was queued, not that its turn ran (review I-2
+     *   residual). Its prompt is the first of the session that carried the pre-cut recap.
+     * - `firstRanLost`: whether `firstRan`'s conversation was lost after its report (it is in `lostNodeExecutionIds`).
+     * - `saved`: how many of them ran and were not lost, so their conversation is in the session.
      */
-    async readAgentSessionVisitsBefore(runId: string, stateId: string, childSessionId: string, nodeExecutionId: string)
-        : Promise<{ first: number | null; firstReached: number | null }> {
+    async readAgentSessionVisitsBefore(runId: string, stateId: string, childSessionId: string, nodeExecutionId: string,
+        lostNodeExecutionIds: readonly string[])
+        : Promise<{ first: number | null; firstRan: number | null; firstRanLost: boolean; saved: number }> {
         const { rows } = await this.pool.query(
             `WITH ranked AS (
-                 SELECT i.node_execution_id, i.child_session_id, (i.spawned_at IS NOT NULL OR n.winner = 'agent') AS reached,
+                 SELECT i.node_execution_id, i.child_session_id, (n.winner IS NOT DISTINCT FROM 'agent') AS ran,
                         row_number() OVER (ORDER BY COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id)::int AS visit
                    FROM ${this.t.agentInvocations} i
                    JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
                    ${this.parallelJoinSql("n", "p")}
                   WHERE i.run_id = $1 AND n.node_id = $2
+             ), mine AS (
+                 SELECT r.node_execution_id, r.ran, r.visit, (r.node_execution_id = ANY($5::text[])) AS lost
+                   FROM ranked r
+                  WHERE r.child_session_id = $3
+                    AND r.visit < (SELECT c.visit FROM ranked c WHERE c.node_execution_id = $4)
+             ), first_ran AS (
+                 SELECT m.visit, m.lost FROM mine m WHERE m.ran ORDER BY m.visit LIMIT 1
              )
-             SELECT min(r.visit)::int AS first, (min(r.visit) FILTER (WHERE r.reached))::int AS first_reached
-               FROM ranked r
-              WHERE r.child_session_id = $3
-                AND r.visit < (SELECT c.visit FROM ranked c WHERE c.node_execution_id = $4)`,
-            [runId, stateId, childSessionId, nodeExecutionId],
+             SELECT (SELECT min(m.visit) FROM mine m)::int AS first,
+                    (SELECT f.visit FROM first_ran f)::int AS first_ran,
+                    COALESCE((SELECT f.lost FROM first_ran f), FALSE) AS first_ran_lost,
+                    (SELECT count(*) FROM mine m WHERE m.ran AND NOT m.lost)::int AS saved`,
+            [runId, stateId, childSessionId, nodeExecutionId, [...lostNodeExecutionIds]],
         );
         const row = rows[0];
         return {
             first: row && row.first !== null ? int(row, "first") : null,
-            firstReached: row && row.first_reached !== null ? int(row, "first_reached") : null,
+            firstRan: row && row.first_ran !== null ? int(row, "first_ran") : null,
+            firstRanLost: row?.first_ran_lost === true,
+            saved: row ? int(row, "saved") : 0,
         };
     }
 
@@ -7907,35 +7937,38 @@ export class WorkflowStore {
      * Review D-2: for the turn of visit `nodeExecutionId` of continued session `childSessionId`, its cycle and the earlier cycles
      * of that session whose conversation was lost after their report. Null when the visit is not that session's.
      * `firstSessionCycle` (given when it is not 1) is this session's first cycle: earlier cycles ran in an ended session or
-     * (a re-run, Phase 3 I7) were reused or supplied, so none of them is above. In a re-run with pre-cut cycles 1..K
-     * (`preCutCount`), the first cycle whose prompt reached this session carried their summary (review I-2): when that cycle
+     * (a re-run, Phase 3 I7) were reused or supplied, so none of them is above. `savedEarlier` counts the earlier cycles of
+     * this session whose conversation is above: their agent reported a result (the turn ran) and it was not lost (review I-2
+     * residual; a cycle refused or timed out before it reported is not counted). In a re-run with pre-cut cycles 1..K
+     * (`preCutCount`), the first cycle of this session that ran carried their summary (review I-2): when that cycle
      * (`recapCycle`) was lost, `rerunRecap` carries the summary again.
      */
     async readAgentCyclesLostBefore(childSessionId: string, nodeExecutionId: string)
-        : Promise<{ cycle: number; lost: number[]; firstSessionCycle?: number; preCutCount?: number; recapCycle?: number;
-            rerunRecap?: WorkflowRerunRecapPayload } | null> {
+        : Promise<{ cycle: number; lost: number[]; savedEarlier?: number; firstSessionCycle?: number; preCutCount?: number;
+            recapCycle?: number; rerunRecap?: WorkflowRerunRecapPayload } | null> {
         const invocation = await this.readAgentInvocation(nodeExecutionId);
         if (!invocation || invocation.childSessionId !== childSessionId) return null;
-        const lost = [...(await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).entries()]
-            .filter(([id, item]) => id !== nodeExecutionId && item.childSessionId === childSessionId).map(([, item]) => item.cycle);
+        const lostOfSession = [...(await this.readAgentCycleMemoryLost(invocation.workflowSessionId)).entries()]
+            .filter(([id, item]) => id !== nodeExecutionId && item.childSessionId === childSessionId);
+        const lost = lostOfSession.map(([, item]) => item.cycle);
         if (lost.length === 0) return { cycle: 0, lost };
         const node = await this.readNodeExecution(nodeExecutionId);
         if (!node) return null;
         const [{ count }, preCutCount, inSession] = await Promise.all([
             this.readAgentVisitsBefore(invocation.runId, node.nodeId, nodeExecutionId),
             this.countReusedAgentVisits(invocation.runId, node.nodeId),
-            this.readAgentSessionVisitsBefore(invocation.runId, node.nodeId, childSessionId, nodeExecutionId),
+            this.readAgentSessionVisitsBefore(invocation.runId, node.nodeId, childSessionId, nodeExecutionId, lostOfSession.map(([id]) => id)),
         ]);
         const cycle = preCutCount + count + 1;
         const firstSessionCycle = inSession.first !== null ? preCutCount + inSession.first : cycle;
-        const recapCycle = inSession.firstReached !== null ? preCutCount + inSession.firstReached : null;
+        const recapCycle = inSession.firstRan !== null ? preCutCount + inSession.firstRan : null;
         let rerunRecap: WorkflowRerunRecapPayload | undefined;
-        if (preCutCount > 0 && recapCycle !== null && lost.includes(recapCycle)) {
+        if (preCutCount > 0 && recapCycle !== null && inSession.firstRanLost) {
             const preCut = await this.readReusedAgentVisits(invocation.runId, node.nodeId);
             rerunRecap = { omitted: preCut.omitted, visits: preCut.visits };
         }
         return {
-            cycle, lost,
+            cycle, lost, savedEarlier: inSession.saved,
             ...(firstSessionCycle !== 1 ? { firstSessionCycle } : {}),
             ...(preCutCount > 0 ? { preCutCount } : {}),
             ...(rerunRecap ? { recapCycle: recapCycle!, rerunRecap } : {}),
@@ -8642,13 +8675,17 @@ export class WorkflowStore {
         terminalNode?: { nodeExecutionId: string; result: NodeResultInput } | null;
         projection?: SessionProjection;
     }): Promise<WorkflowRunRow> {
+        // Review MSG-1: the end time is the store's clock read after the session and run locks, as an input's acceptance and a
+        // visit's entry read it, never now() (this transaction's start): an input accepted while this end waited for the locks
+        // was accepted before the run ended, so a re-run that cuts at the run's end carries it.
+        const at = await this.lockedClockText(client);
         const { rows } = await client.query(
             `UPDATE ${this.t.runs}
                 SET status = $2, terminal_node_id = $3, terminal_outcome = $4, terminal_output = $5, terminal_error = $6,
-                    paused_from = NULL, updated_at = now(), finished_at = now()
+                    paused_from = NULL, updated_at = now(), finished_at = $7::timestamptz
               WHERE run_id = $1 RETURNING *`,
             [run.runId, input.status, input.terminalNodeId, input.terminalOutcome, input.outputText,
-                input.errorText === null ? null : redactWorkflowErrorText(input.errorText, canonicalJson)]);
+                input.errorText === null ? null : redactWorkflowErrorText(input.errorText, canonicalJson), at]);
         if (input.terminalNode) {
             const { result } = input.terminalNode;
             await client.query(
@@ -8656,16 +8693,16 @@ export class WorkflowStore {
                     SET state = 'completed', outcome = $2, result_kind = $3,
                         output = CASE WHEN $3 = 'business' THEN $4 END,
                         error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
-                        winner = $5, completed_at = now()
+                        winner = $5, completed_at = $7::timestamptz
                   WHERE node_execution_id = $1 AND run_id = $6 AND state = 'pending'`,
-                [input.terminalNode.nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner, run.runId]);
+                [input.terminalNode.nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner, run.runId, at]);
         }
         await client.query(
             `UPDATE ${this.t.nodes}
                 SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
-                    winner = $3, completed_at = now()
+                    winner = $3, completed_at = $4::timestamptz
               WHERE run_id = $1 AND state = 'pending'`,
-            [run.runId, canonicalJson({ code: "cancelled", message: input.endPending.message }), input.endPending.winner]);
+            [run.runId, canonicalJson({ code: "cancelled", message: input.endPending.message }), input.endPending.winner, at]);
         await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
         await this.recordLiveTerminalOutcomeIn(client, run.runId);
         await this.project(client, input.projection, run);

@@ -120,7 +120,7 @@ import {
 
 export { promptSafeJson };
 import {
-    COMPLETE_WORKFLOW_NODE_TOOL, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, workflowAgentPreCutMemorySentence,
+    COMPLETE_WORKFLOW_NODE_TOOL, WORKFLOW_AGENT_CYCLE_MEMORY_WORDS, workflowAgentPreCutMemorySentence, workflowAgentPreCutRecapLostSentence,
 } from "./agent-node-service.js";
 import {
     matchTestFixture, storedTestFixtures, testResultFor, toolCallResultOf, WORKFLOW_TEST_POLL_MS, workflowTestAnsweredProjection,
@@ -1813,17 +1813,22 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
         const now = (await pinnedKv(node.kvRevision)) ?? {};
         const before = (previous ? await pinnedKv(previous.kvRevision) : null) ?? {};
         const endedSessionId = last.childSessionId !== invocation.childSessionId ? last.childSessionId : null;
-        // Review I-2: in a re-run, the pre-cut summary is in the prompt of the first cycle that reached this session. A later
-        // cycle points to that cycle; when no earlier cycle of this session reached it, this cycle carries the summary itself.
+        // Review I-2: in a re-run, the pre-cut summary is in the prompt of the first cycle of this session whose turn ran (its
+        // agent reported a result; a queued prompt is not enough: review I-2 residual). A later cycle points to that cycle
+        // while its conversation is saved; when no earlier cycle of this session ran, or the one that carried the summary lost
+        // its conversation, this cycle carries the summary itself.
         let recapCycle: number | null = null;
+        let recapLostCycle: number | null = null;
         let notRunInSession: { from: number; to: number } | null = null;
         if (preCutCount > 0 && endedSessionId === null) {
-            const inSession = await store.readAgentSessionVisitsBefore(runId, node.nodeId, invocation.childSessionId, invocation.nodeExecutionId);
-            if (inSession.firstReached !== null) recapCycle = preCutCount + inSession.firstReached;
-            else notRunInSession = { from: preCutCount + (inSession.first ?? earlier), to: preCutCount + earlier };
+            const lostIds = [...(await store.readAgentCycleMemoryLost(invocation.workflowSessionId)).keys()];
+            const inSession = await store.readAgentSessionVisitsBefore(runId, node.nodeId, invocation.childSessionId, invocation.nodeExecutionId, lostIds);
+            if (inSession.firstRan === null) notRunInSession = { from: preCutCount + (inSession.first ?? earlier), to: preCutCount + earlier };
+            else if (inSession.firstRanLost) recapLostCycle = preCutCount + inSession.firstRan;
+            else recapCycle = preCutCount + inSession.firstRan;
         }
         let preCutSummary: Pick<WorkflowAgentRerunRecap, "count" | "reusedCount" | "suppliedCount" | "omitted" | "visits"> | null = null;
-        if (preCutCount > 0 && (endedSessionId !== null || notRunInSession !== null)) {
+        if (preCutCount > 0 && (endedSessionId !== null || notRunInSession !== null || recapLostCycle !== null)) {
             const preCut = await store.readReusedAgentVisits(runId, node.nodeId);
             preCutSummary = {
                 count: preCut.count, reusedCount: preCut.reusedCount, suppliedCount: preCut.suppliedCount,
@@ -1842,6 +1847,7 @@ export function registerWorkflow(runtime: WorkflowActivityRuntime, deps: Workflo
                     rerunRecapSummary: preCutSummary,
                 } : {}),
                 ...(recapCycle !== null ? { recapCycle } : {}),
+                ...(recapLostCycle !== null ? { recapLostCycle } : {}),
                 ...(notRunInSession !== null ? { notRunInSession } : {}),
             },
             rerunRecap: null,
@@ -4869,11 +4875,16 @@ export interface WorkflowAgentCycle {
     rerunRecap?: WorkflowRerunRecapPayload;
     /** Phase 3 I7: full pre-cut recap counts used to phrase reused vs supplied on the restart path. */
     rerunRecapSummary?: Pick<WorkflowAgentRerunRecap, "count" | "reusedCount" | "suppliedCount" | "omitted" | "visits">;
-    /** Phase 3 I7, review I-2: the cycle of this session whose prompt carries the pre-cut summary (the first that reached it). */
+    /** Phase 3 I7, review I-2: the cycle of this session whose prompt carries the pre-cut summary (the first whose turn ran). */
     recapCycle?: number;
     /**
-     * Phase 3 I7, review I-2: the earlier cycles of this session, none of which reached it (each ended before its prompt
-     * was sent); this cycle's prompt carries the pre-cut summary itself.
+     * Phase 3 I7, review I-2 residual: the cycle of this session that carried the pre-cut summary and whose conversation was
+     * lost after its report; this cycle's prompt carries the summary again.
+     */
+    recapLostCycle?: number;
+    /**
+     * Phase 3 I7, review I-2: the earlier cycles of this session, none of which finished with its agent's result (its prompt
+     * was refused, or queued and decided without it: review I-2 residual); this cycle's prompt carries the pre-cut summary itself.
      */
     notRunInSession?: { from: number; to: number };
 }
@@ -4892,22 +4903,26 @@ export function workflowAgentCyclePrompt(invocation: Omit<Parameters<typeof work
         stateId: invocation.stateId, controllingParentSessionId: invocation.controllingSessionId,
         input: invocation.input, inputSchema: invocation.inputSchema, variables: invocation.variables, changedVariables: invocation.changedVariables,
         previousResult: invocation.previous,
-        ...(invocation.notRunInSession && invocation.rerunRecap ? { rerunRecap: invocation.rerunRecap as unknown as JsonValue } : {}),
+        ...((invocation.notRunInSession || invocation.recapLostCycle !== undefined) && invocation.rerunRecap
+            ? { rerunRecap: invocation.rerunRecap as unknown as JsonValue } : {}),
         outcomes: invocation.outcomes, outputSchema: invocation.outputSchema, schemas: invocation.schemas,
         deadline: invocation.deadlineAt,
     });
     const task = invocation.task.source === "prompt" ? invocation.task.prompt
         : `Apply your role (agent ${invocation.task.name}${invocation.task.package ? ` from package ${invocation.task.package}` : ""}) to the input above.`;
     const notRun = invocation.notRunInSession && invocation.rerunRecap ? invocation.notRunInSession : null;
+    const recapLost = !notRun && invocation.recapLostCycle !== undefined && invocation.rerunRecap ? invocation.recapLostCycle : null;
     const notRunWords = notRun
-        ? (notRun.from === notRun.to ? `cycle ${notRun.from} did not run` : `cycles ${formatCycleNumbers(cycleRange(notRun.from, notRun.to))} did not run`)
+        ? (notRun.from === notRun.to ? `cycle ${notRun.from} did not finish` : `cycles ${formatCycleNumbers(cycleRange(notRun.from, notRun.to))} did not finish`)
         : "";
     const preCutSentence = preCutCount > 0
         ? (notRun
             ? (preCutCount === 1
                 ? ` Cycle 1 was reused or supplied before this re-run started; because ${notRunWords} in this session, rerunRecap in the JSON carries its summary.`
                 : ` Cycles 1 to ${preCutCount} were reused or supplied before this re-run started; because ${notRunWords} in this session, rerunRecap in the JSON carries their summary.`)
-            : workflowAgentPreCutMemorySentence(preCutCount, invocation.recapCycle ?? preCutCount + 1))
+            : recapLost !== null
+                ? workflowAgentPreCutRecapLostSentence(preCutCount, recapLost)
+                : workflowAgentPreCutMemorySentence(preCutCount, invocation.recapCycle ?? preCutCount + 1))
         : "";
     return `[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE ${invocation.cycle}. This is cycle ${invocation.cycle} of the same workflow state in this run, `
         + WORKFLOW_AGENT_CYCLE_MEMORY_WORDS + preCutSentence + " Work on this cycle's input and the variables as they are now; "

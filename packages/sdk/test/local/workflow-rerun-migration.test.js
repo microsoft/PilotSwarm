@@ -271,6 +271,15 @@ describe("migration 0104: workflow_rerun", () => {
                     "supplied_from_workflow_session_id",
                     "supplied_note",
                 ]);
+                // Review RR-1: a carried inbox row keeps its first acceptance time.
+                const inboxCols = await query(
+                    `SELECT data_type, is_nullable FROM information_schema.columns
+                      WHERE table_schema = $1 AND table_name = 'workflow_inbox' AND column_name = 'origin_accepted_at'`,
+                    [targetSchema],
+                );
+                expect(inboxCols.rows, `${targetSchema} workflow_inbox.origin_accepted_at`).toEqual([
+                    { data_type: "timestamp with time zone", is_nullable: "YES" },
+                ]);
             }
             // Self-upgraded schema matches fresh schema catalog (tables, columns, constraints, indexes).
             expect(snapshotDifferences(catalog(await schemaSnapshot(query, selfUpgraded)), catalog(await schemaSnapshot(query, fresh)))).toEqual({});
@@ -281,6 +290,7 @@ describe("migration 0104: workflow_rerun", () => {
                 await query(`CREATE SCHEMA ${qIdent(special)}`);
                 await query(`CREATE TABLE ${qIdent(special)}.workflow_runs (run_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
                 await query(`CREATE TABLE ${qIdent(special)}.workflow_node_executions (node_execution_id TEXT PRIMARY KEY, state TEXT NOT NULL, deadline_at TIMESTAMPTZ, winner TEXT, result_kind TEXT, effect_attempts INTEGER NOT NULL DEFAULT 0)`);
+                await query(`CREATE TABLE ${qIdent(special)}.workflow_inbox (message_id TEXT PRIMARY KEY)`);
                 for (const stepSql of workflowRerunMigration(special)) await query(stepSql);
                 for (const stepSql of workflowRerunMigration(special)) await query(stepSql);
             }
@@ -537,6 +547,7 @@ describe("migration 0104: workflow_rerun", () => {
             await pool.query(`CREATE SCHEMA ${qIdent(schema)}`);
             await pool.query(`CREATE TABLE ${qIdent(schema)}.workflow_runs (run_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
             await pool.query(`CREATE TABLE ${qIdent(schema)}.workflow_node_executions (node_execution_id TEXT PRIMARY KEY, state TEXT NOT NULL, deadline_at TIMESTAMPTZ, winner TEXT, result_kind TEXT, effect_attempts INTEGER NOT NULL DEFAULT 0)`);
+            await pool.query(`CREATE TABLE ${qIdent(schema)}.workflow_inbox (message_id TEXT PRIMARY KEY)`);
         };
         const upgrader = new pg.Client(pgPoolConfig(getEnv().store));
         await upgrader.connect();

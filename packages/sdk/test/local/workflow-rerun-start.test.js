@@ -181,6 +181,41 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
 
+const THREE_STEP_YAML = `
+apiVersion: pilotswarm.dev/v1
+kind: Workflow
+metadata: { name: rerun-three-step-wf, version: "1.0.0" }
+limits: { maxNodeExecutions: 30 }
+initial: step1
+states:
+  step1:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: step2 } }
+  step2:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: step3 } }
+  step3:
+    type: script
+    source: 'await setResult("ok", {});'
+    transition: { next: { ok: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+/** Wait until a backend is blocked by `blockerPid` (pg_blocking_pids) and return the blocked backend's pid. */
+async function blockedBy(pool, blockerPid, timeoutMs = 20_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const { rows } = await pool.query(
+            "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) ORDER BY pid LIMIT 1", [blockerPid]);
+        if (rows[0]) return rows[0].pid;
+        await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw new Error(`no backend blocked by ${blockerPid} within ${timeoutMs} ms`);
+}
+
 function deferHost(client) {
     const store = client._catalog.workflowStore();
     return {
@@ -976,6 +1011,138 @@ describe("Task 4d: startSessionWorkflowDefinition rerunFrom, source-rev default,
                 expect(await h.store.summarizeRerunCarriedInbox(srcR.runId, { sourceRunEnd: true }, [], [srcR.ids["first#1"]]))
                     .toEqual({ count: 4, contracts: ["Note@1"] });
             } finally {
+                await pool.end();
+            }
+        });
+    });
+
+    it("carries a message that waited at a cut inside a re-run's copied prefix, with its TTL restarted again (RR-1: #1 -> #2 -> #3)", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            const ttlMs = 3_600_000;
+            const seedNote = async (src, n, acceptedMs) => {
+                const opId = `seed-note-${n}-${randomUUID()}`;
+                await pool.query(
+                    `INSERT INTO ${s}.workflow_inbox (
+                        message_id, workflow_session_id, run_id, sender_session_id, operation_id, request_sha256,
+                        contract, correlation, payload, accepted_at, expires_at
+                     ) VALUES ($1,$2,$3,$4,$5,$6,'Note@1','null',$7,$8::timestamptz,$9::timestamptz)`,
+                    [
+                        `msg-${randomUUID()}`, src.workflowId, src.runId, src.ownerSessionId, opId, sha256Hex(opId),
+                        canonicalJson({ n }), new Date(acceptedMs).toISOString(), new Date(acceptedMs + ttlMs).toISOString(),
+                    ],
+                );
+            };
+            const carried = async (runId) => (await pool.query(
+                `SELECT (payload::jsonb->>'n')::int AS n, EXTRACT(EPOCH FROM (expires_at - now()))::float8 AS ttl_left_s
+                   FROM ${s}.workflow_inbox WHERE run_id = $1 AND contract = 'Note@1' ORDER BY seq`,
+                [runId],
+            )).rows;
+            const start = (src, operationId, rerunFrom) => startSessionWorkflowDefinition(h, {
+                ownerSessionId: src.ownerSessionId, definition: { definitionId: src.definitionId }, inputs: {}, actor: OWNER_ACTOR, owner: OWNER,
+                operationId, rerunFrom: { workflowId: src.workflowId, ...rerunFrom },
+            });
+            try {
+                // #1: step1 (0 ms), step2 (1,000 ms), step3 failed (2,000 ms). Note 1 was accepted while step1 ran (500 ms), note 2
+                // while step2 ran (1,500 ms); nobody read either.
+                const src1 = await seedEndedSessionWorkflow(h, {
+                    yaml: THREE_STEP_YAML,
+                    visits: [
+                        { nodeId: "step1", ordinal: 1, nodeType: "script", outcome: "ok", resultKind: "business", output: {}, enteredMs: 0, completedMs: 400 },
+                        { nodeId: "step2", ordinal: 1, nodeType: "script", arrivalRoute: "ok", outcome: "ok", resultKind: "business", output: {}, enteredMs: 1_000, completedMs: 1_400 },
+                        { nodeId: "step3", ordinal: 1, nodeType: "script", arrivalRoute: "ok", outcome: "execution_failed", resultKind: "runtime_error", enteredMs: 2_000, completedMs: 2_400 },
+                    ],
+                });
+                await seedNote(src1, 1, src1.baseMs + 500);
+                await seedNote(src1, 2, src1.baseMs + 1_500);
+
+                // #2 = run_again of #1 from step3: it copies step1 and step2 (with their #1 entry times) and carries both notes.
+                const r2 = await start(src1, "rr1-gen2", { executionId: src1.ids["step3#1"], mode: "run_again" });
+                expect((await carried(r2.runId)).map(r => r.n)).toEqual([1, 2]);
+                await pool.query(`UPDATE ${s}.workflow_runs SET status = 'failed', finished_at = now() WHERE run_id = $1`, [r2.runId]);
+                const r2Nodes = await h.store.listNodeExecutions(r2.runId);
+                const copiedStep1 = r2Nodes.find(n => n.nodeId === "step1");
+                const copiedStep2 = r2Nodes.find(n => n.nodeId === "step2");
+                expect(copiedStep1?.reusedFromExecutionId).toBe(src1.ids["step1#1"]);
+                expect(copiedStep2?.reusedFromExecutionId).toBe(src1.ids["step2#1"]);
+                const src2 = { ...src1, workflowId: r2.workflowId, runId: r2.runId };
+
+                // #3 = run_again of #2 from its copied step2: the cut is that visit's entry (1,000 ms in #1's time). Note 1 waited
+                // there, in #1 and in #2's copied history; note 2 was accepted after it. The copy restarts note 1's TTL again.
+                const r3 = await start(src2, "rr1-gen3-run-again", { executionId: copiedStep2.nodeExecutionId, mode: "run_again" });
+                const r3Notes = await carried(r3.runId);
+                expect(r3Notes.map(r => r.n)).toEqual([1]);
+                expect(r3Notes[0].ttl_left_s).toBeGreaterThan(ttlMs / 1000 - 60);
+                expect(r3Notes[0].ttl_left_s).toBeLessThanOrEqual(ttlMs / 1000);
+                expect(await h.store.summarizeRerunCarriedInbox(r2.runId, { enteredAtOf: copiedStep2.nodeExecutionId }, [], [copiedStep1.nodeExecutionId]))
+                    .toEqual({ count: 1, contracts: ["Note@1"] });
+
+                // continue from #2's copied step1 cuts at the first dropped root visit (the copied step2): the same carry.
+                const r3c = await start(src2, "rr1-gen3-continue", { executionId: copiedStep1.nodeExecutionId, mode: "continue" });
+                expect((await carried(r3c.runId)).map(r => r.n)).toEqual([1]);
+            } finally {
+                await pool.end();
+            }
+        });
+    });
+
+    it("ends a run no earlier than an input it accepted while the end waited for the session lock, so the run-end cut carries it (MSG-1)", { timeout: testTime.ms(120_000) }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = deferHost(client);
+            const pool = new pg.Pool(pgPoolConfig(getEnv().store));
+            const holder = new pg.Client(pgPoolConfig(getEnv().store));
+            const s = `"${getEnv().cmsSchema.replace(/"/g, '""')}"`;
+            await holder.connect();
+            try {
+                // An active run (step1 ok, step2 timed out) that a re-run will continue from its last visit, cutting at its end.
+                const src = await seedEndedSessionWorkflow(h, { leaveActive: true });
+                // A transaction holds the run row. Input acceptance A takes the session locks, then waits for the run row. The
+                // run's end E begins (its now() is read here) and waits for the session lock A holds. A then reads the store's
+                // clock after its locks and commits; E ends the run after it.
+                await holder.query("BEGIN");
+                await holder.query(`SELECT 1 FROM ${s}.workflow_runs WHERE run_id = $1 FOR UPDATE`, [src.runId]);
+                const holderPid = (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+                const accept = h.store.acceptInput({
+                    workflowSessionId: src.workflowId, runId: src.runId, messageId: `msg-${randomUUID()}`, senderSessionId: src.ownerSessionId,
+                    operationId: "msg1-raced-note", requestSha256: sha256Hex("msg1-raced-note"), contract: "Note@1", correlationText: "null",
+                    payloadText: canonicalJson({ n: 1 }), ttlSeconds: 3_600,
+                    limits: { maxUnconsumed: 100, maxUnconsumedPerSender: 20, maxPerSenderPerWindow: 60, windowSeconds: 600 },
+                });
+                const acceptPid = await blockedBy(pool, holderPid);
+                const finish = h.store.finishRun({
+                    runId: src.runId, status: "failed", terminalNodeId: null, terminalOutcome: null, outputText: null,
+                    errorText: canonicalJson({ code: "execution_failed", message: "step2 failed" }),
+                    endPending: { winner: "controller", message: "The run ended." },
+                });
+                await blockedBy(pool, acceptPid);
+                await holder.query("SELECT pg_sleep(0.05)");
+                await holder.query("COMMIT");
+                const [accepted, ended] = await Promise.all([accept, finish]);
+                expect(accepted.replayed).toBe(false);
+                expect(ended.ended).toBe(true);
+
+                // continue from the last visit cuts at the source run's end: the input the run accepted is carried.
+                const rerun = await startSessionWorkflowDefinition(h, {
+                    ownerSessionId: src.ownerSessionId, definition: { definitionId: src.definitionId }, inputs: {}, actor: OWNER_ACTOR, owner: OWNER,
+                    operationId: "msg1-continue-last", rerunFrom: { workflowId: src.workflowId, executionId: src.ids["step2#1"], mode: "continue" },
+                });
+                const { rows: notes } = await pool.query(
+                    `SELECT payload FROM ${s}.workflow_inbox WHERE run_id = $1 AND contract = 'Note@1' ORDER BY seq`, [rerun.runId]);
+                expect(notes.map(r => JSON.parse(r.payload).n)).toEqual([1]);
+                expect(await h.store.summarizeRerunCarriedInbox(src.runId, { sourceRunEnd: true }, [], [src.ids["step1#1"], src.ids["step2#1"]]))
+                    .toEqual({ count: 1, contracts: ["Note@1"] });
+                const { rows: [times] } = await pool.query(
+                    `SELECT i.accepted_at <= r.finished_at AS accepted_before_end
+                       FROM ${s}.workflow_inbox i JOIN ${s}.workflow_runs r ON r.run_id = i.run_id
+                      WHERE i.run_id = $1 AND i.operation_id = 'msg1-raced-note'`,
+                    [src.runId],
+                );
+                expect(times.accepted_before_end).toBe(true);
+            } finally {
+                await holder.query("ROLLBACK").catch(() => {});
+                await holder.end();
                 await pool.end();
             }
         });
