@@ -32,7 +32,7 @@ import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLock
 import { workflowAgentSessionContinues } from "./agent-ids.js";
 import { approvalOwnerIn, recordApprovalIn, WorkflowApprovalStore } from "./approval.js";
 import { workflowControllerFeatures } from "./controller-features.js";
-import { computeSessionLevel } from "./input-policy.js";
+import { effectiveLevelDetail } from "./input-policy.js";
 
 /**
  * PostgreSQL persistence for workflow (tables from migration 0088).
@@ -826,8 +826,10 @@ export type WorkflowAgentCompletionResult =
  */
 export interface WorkflowLineage {
     sessionId: string;
-    /** Its distance from the root (0 for a root); null when its lineage is cyclic, has a missing parent, or is deeper than any allowed. */
+    /** Its effective level from the segment root (0 for a root/system session); null when its lineage is cyclic, has a missing parent, or is deeper than any allowed. */
     level: number | null;
+    /** True when the active delegation segment (at or below its root/system reset) contains at least one Workflow session. */
+    hasWorkflow: boolean;
     /**
      * The nearest of the session and its ancestors that is an agent state's
      * child (distance 0: the session itself), with that state's workflow and
@@ -1891,7 +1893,7 @@ export class WorkflowStore {
 
     /** Stage 2.1: the session-owned Workflow Definitions (migration 0088), on this store's pool and schema. */
     get sessionDefinitions(): SessionDefinitionStore {
-        if (!this.definitionStore) this.definitionStore = new SessionDefinitionStore(this.pool, this.schema);
+        if (!this.definitionStore) this.definitionStore = new SessionDefinitionStore(this.pool, this.schema, id => this.readWorkflowLineage(id));
         return this.definitionStore;
     }
     private readonly t: {
@@ -4883,12 +4885,22 @@ export class WorkflowStore {
         sendExchangeId?: string | null;
         /** True only for runtime-generated WorkflowEnded@1 notices: bypasses the 100-message inbox cap and rate limit. */
         bypassInboxLimits?: boolean;
+        /** True only for host-authenticated person senders (`person:*`): skips sender session lookup while keeping full inbox limits. */
+        trustedPersonSender?: boolean;
     }): Promise<{ receipt: WorkflowInputReceipt; replayed: boolean; run: WorkflowRunRow }> {
         if (!Number.isSafeInteger(input.ttlSeconds) || input.ttlSeconds < 1) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${input.messageId} has an invalid ttl.`);
         }
+        if (input.trustedPersonSender === true) {
+            if (input.bypassInboxLimits === true || Boolean(input.sendExchangeId) || !input.senderSessionId.startsWith("person:")) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT",
+                    "trustedPersonSender requires a person: sender without bypassInboxLimits or sendExchangeId.");
+            }
+        }
         return this.idempotentTransaction(async client => {
-            const decided = await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
+            const decided = input.trustedPersonSender === true
+                ? { live: await this.lockLiveSession(client, input.workflowSessionId), authority: "allowed" as const, senderParentSessionId: null }
+                : await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
             if (!decided.live) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             const { rows: priorRows } = await client.query(
                 `SELECT run_id, request_sha256, receipt, contract FROM ${this.t.inbox}
@@ -6604,6 +6616,12 @@ export class WorkflowStore {
         } : null;
     }
 
+    /** Join enclosing parallel execution `parallelAlias` from a branch node's `scope_id` (`<parallelNx>#<index>`), NULL for root (I8). */
+    private parallelJoinSql(nodeAlias: string, parallelAlias: string): string {
+        return `LEFT JOIN ${this.t.nodes} ${parallelAlias} ON ${parallelAlias}.run_id = ${nodeAlias}.run_id `
+            + `AND ${parallelAlias}.node_execution_id = CASE WHEN strpos(${nodeAlias}.scope_id, '#') > 1 THEN split_part(${nodeAlias}.scope_id, '#', 1) ELSE NULL END`;
+    }
+
     /**
      * A session's workflow lineage (design 03 human-input denial and depth;
      * R13, R16): one recursive read of the session rows from the session up
@@ -6616,30 +6634,33 @@ export class WorkflowStore {
         if (!storableId(sessionId)) return null;
         const lineageSql = (withInvocations: boolean) => `
             WITH RECURSIVE lineage AS (
-                SELECT session_id, parent_session_id, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
+                SELECT session_id, parent_session_id, ${withInvocations ? "session_kind, " : ""}is_system, 0 AS distance, deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1
                 UNION ALL
-                SELECT parent.session_id, parent.parent_session_id, lineage.distance + 1, parent.deleted_at IS NOT NULL
+                SELECT parent.session_id, parent.parent_session_id, ${withInvocations ? "parent.session_kind, " : ""}parent.is_system, lineage.distance + 1, parent.deleted_at IS NOT NULL
                   FROM ${this.t.sessions} parent JOIN lineage ON parent.session_id = lineage.parent_session_id
                  WHERE lineage.distance < ${WORKFLOW_LINEAGE_MAX_DEPTH}
             )
-            SELECT lineage.session_id, lineage.parent_session_id, lineage.distance, lineage.deleted,
+            SELECT lineage.session_id, lineage.parent_session_id, ${withInvocations ? "lineage.session_kind, " : ""}lineage.is_system, lineage.distance, lineage.deleted,
                    ${withInvocations ? "invocation.node_execution_id, invocation.workflow_session_id, invocation.controlling_session_id"
                        : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
               FROM lineage
               ${withInvocations ? `LEFT JOIN LATERAL (
                   -- One row per lineage session (review RT-4): a session that continues has one invocation per visit, and
-                  -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest.
+                  -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest (composite
+                  -- rank (COALESCE(p.ordinal, 0), n.ordinal) across outer-loop parallel re-entries, I8).
                   SELECT i.node_execution_id, i.workflow_session_id, i.controlling_session_id
                     FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                    ${this.parallelJoinSql("n", "p")}
                    WHERE i.child_session_id = lineage.session_id
-                   ORDER BY COALESCE(n.state = 'pending', false) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC
+                   ORDER BY COALESCE(n.state = 'pending', false) DESC, COALESCE(p.ordinal, 0) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC
                    LIMIT 1) invocation ON true` : ""}
              ORDER BY lineage.distance`;
         let rows: Row[];
         try {
             ({ rows } = await this.pool.query(lineageSql(true), [sessionId]));
         } catch (error) {
-            if ((error as { code?: unknown })?.code !== "42P01") throw error;
+            const code = (error as { code?: unknown })?.code;
+            if (code !== "42P01" && code !== "42703") throw error;
             ({ rows } = await this.pool.query(lineageSql(false), [sessionId]));
         }
         if (!rows[0]) return null;
@@ -6656,12 +6677,14 @@ export class WorkflowStore {
                     controllingSessionId: strOrNull(row, "controlling_session_id"), distance: int(row, "distance") };
             }
         }
-        const level = cyclic ? null : computeSessionLevel(rows.map(row => ({
+        const detail = cyclic ? null : effectiveLevelDetail(rows.map(row => ({
             sessionId: str(row, "session_id"),
             parentSessionId: strOrNull(row, "parent_session_id"),
+            isWorkflow: strOrNull(row, "session_kind") === "workflow",
+            isSystem: row.is_system === true,
             isAgentStep: strOrNull(row, "node_execution_id") !== null,
         })));
-        return { sessionId, level, agentRoot, deleted: rows[0].deleted === true };
+        return { sessionId, level: detail?.level ?? null, hasWorkflow: detail?.hasWorkflow ?? false, agentRoot, deleted: rows[0].deleted === true };
     }
 
     /**
@@ -6801,13 +6824,16 @@ export class WorkflowStore {
 
     /**
      * The newest invocation whose child agent session is `childSessionId` (a session that continues has one per visit), or
-     * null. Newest by the visit's ordinal (review PRR-3: the database clock can step back between two visits), then time.
+     * null. Newest by composite (COALESCE(p.ordinal, 0), n.ordinal) rank (PRR-3 + I8: clock-skew-immune and monotonic
+     * across outer-loop parallel re-entries), then time.
      */
     async readAgentInvocationByChild(childSessionId: string): Promise<WorkflowAgentInvocation | null> {
         if (!storableId(childSessionId)) return null;
         const { rows } = await this.pool.query(
             `SELECT i.* FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
-              WHERE i.child_session_id = $1 ORDER BY n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId]);
+               ${this.parallelJoinSql("n", "p")}
+              WHERE i.child_session_id = $1
+              ORDER BY COALESCE(p.ordinal, 0) DESC, n.ordinal DESC NULLS LAST, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId]);
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
     }
 
@@ -6864,8 +6890,9 @@ export class WorkflowStore {
             if (ids.length === 0) return null;
             const { rows } = await this.pool.query(
                 `SELECT i.node_execution_id, n.state FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                   ${this.parallelJoinSql("n", "p")}
                   WHERE i.child_session_id = $1 AND i.node_execution_id = ANY($2::text[])
-                  ORDER BY (n.state = 'pending') DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
+                  ORDER BY (n.state = 'pending') DESC, COALESCE(p.ordinal, 0) DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
             return rows[0] ? { id: str(rows[0], "node_execution_id"), open: str(rows[0], "state") === "pending" } : null;
         };
         const own = await visitsOf(promptClientMessageIds.map(workflowVisitOfPromptId).filter((id): id is string => id !== null));
@@ -6933,11 +6960,14 @@ export class WorkflowStore {
         const { rows } = await this.pool.query(
             `SELECT count(*) OVER () AS visits, i.* FROM ${this.t.agentInvocations} i
                JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+               ${this.parallelJoinSql("n", "p")}
               WHERE i.run_id = $1 AND n.node_id = $2
-                AND ($3::text IS NULL OR (n.ordinal, i.created_at, i.node_execution_id) <
-                     (SELECT bn.ordinal, b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b
-                        JOIN ${this.t.nodes} bn ON bn.node_execution_id = b.node_execution_id WHERE b.node_execution_id = $3))
-              ORDER BY n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
+                AND ($3::text IS NULL OR (COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id) <
+                     (SELECT COALESCE(bp.ordinal, 0), bn.ordinal, b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b
+                        JOIN ${this.t.nodes} bn ON bn.node_execution_id = b.node_execution_id
+                        ${this.parallelJoinSql("bn", "bp")}
+                       WHERE b.node_execution_id = $3))
+              ORDER BY COALESCE(p.ordinal, 0) DESC, n.ordinal DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
         return rows[0] ? { count: int(rows[0], "visits"), previous: agentInvocationFrom(rows[0]) } : { count: 0, previous: null };
     }
 
@@ -7004,7 +7034,9 @@ export class WorkflowStore {
     async listAgentInvocationsOfState(runId: string, stateId: string, limit = 1_000): Promise<WorkflowAgentInvocation[]> {
         const { rows } = await this.pool.query(
             `SELECT i.* FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
-              WHERE i.run_id = $1 AND n.node_id = $2 ORDER BY n.ordinal, i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
+               ${this.parallelJoinSql("n", "p")}
+              WHERE i.run_id = $1 AND n.node_id = $2
+              ORDER BY COALESCE(p.ordinal, 0), n.ordinal, i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
         return rows.map(agentInvocationFrom);
     }
 

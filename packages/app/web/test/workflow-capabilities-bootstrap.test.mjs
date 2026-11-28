@@ -80,7 +80,7 @@ test("a deployment as configured today advertises reads and a person's commands 
             schema: 1,
             enabled: true,
             decision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
-            apiVersion: "pilotswarm.dev/v1", read: true, create: false, input: false,
+            apiVersion: "pilotswarm.dev/v1", read: true, validate: true, skills: true, card: true, create: false, input: false,
             commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
         });
         // The advertised refusal is the adapter's own: a person's command to this deployment changes nothing and gets it.
@@ -108,6 +108,7 @@ test("with a person's commands on, it advertises the controller version and the 
                 const { workflows } = await h.bootstrap();
                 assert.deepEqual(workflows.commands, { available: true, controllerVersion, operations }, JSON.stringify(config));
                 assert.equal(workflows.read, true);
+                assert.equal(workflows.input, true, JSON.stringify(config));
                 // Review SF-D5: the server's word that test mode is on, only then.
                 assert.equal(workflows.testMode, config.workflowCommands.testMode === true ? true : undefined, JSON.stringify(config));
                 assert.ok(!workflows.commands.operations.includes("recover"), "recover stays the agent's");

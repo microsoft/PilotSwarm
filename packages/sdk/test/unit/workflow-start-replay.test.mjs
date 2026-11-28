@@ -30,8 +30,9 @@ function hostWith(pinnedBy, { yaml = null, running = 0, requests = false } = {})
         nestingLevel: async () => 0,
     };
     // PRS-002: these sessions are in no Workflow (the definitions guard reads the lineage first).
-    const store = new Proxy({ sessionDefinitions, readWorkflowLineage: async () => null, readDefinition: async () => (pinnedBy === "row"
-        ? { workflowSessionId: "w", parentSessionId: "chat", state: "published", sessionDefinitionId: "def-1", sessionRevision: 1 } : null) },
+    const store = new Proxy({ sessionDefinitions, readWorkflowLineage: async () => ({ sessionId: "chat", level: 0, hasWorkflow: false, agentRoot: null, deleted: false }),
+        readDefinition: async () => (pinnedBy === "row"
+            ? { workflowSessionId: "w", parentSessionId: "chat", state: "published", sessionDefinitionId: "def-1", sessionRevision: 1 } : null) },
     { get: (target, name) => { if (name in target) return target[name]; throw new Error(`store.${String(name)} was used`); } });
     const catalog = new Proxy({ getSessionCreationConfig: async () => (pinnedBy === "claim"
         ? { workflow: { fingerprint: 1, requestSha256: "x", operationId: "start:op", sessionPin: { definitionId: "def-1", revision: 1 } } } : null) },

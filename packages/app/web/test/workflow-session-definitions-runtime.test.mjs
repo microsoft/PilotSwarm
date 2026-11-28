@@ -259,3 +259,107 @@ test("PRS-002: the HTTP save of an agent step's session is refused with the huma
         await close();
     }
 });
+
+test("delete route returns 409 DEFINITION_IN_USE with spawn-referencing Workflow name, number, spawn states, and details", async () => {
+    const { runtime } = harness();
+    const refusal = new WorkflowStoreError(
+        "DEFINITION_IN_USE",
+        "leaf-wf is named by an active Workflow's spawn state: parent-wf #1 (wf-parent-1; spawn state: launch_leaf). Stop or cancel it first, or wait for it to end, then delete leaf-wf.",
+        {
+            definitionId: "def-leaf",
+            workflowSessionIds: ["wf-parent-1"],
+            referencedBy: [{ workflowSessionId: "wf-parent-1", name: "parent-wf", number: 1, spawnStates: ["launch_leaf"] }],
+        },
+    );
+    const store = {
+        readWorkflowLineage: async () => null,
+        sessionDefinitions: {
+            readStoredOperation: async () => null,
+            deleteDefinition: async () => { throw refusal; },
+        },
+    };
+    const mgmt = Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
+        config: { workflowCommands: {} },
+        _ensureStarted() {},
+        _catalog: { getSession: async (sessionId) => ({ sessionId, sessionKind: "agent", deletedAt: null, owner }), workflowStore: () => store },
+        _artifactStore: null,
+        _duroxideClient: null,
+    });
+    runtime.transport.deleteSessionWorkflowDefinition = (sessionId, request, options) =>
+        PilotSwarmManagementClient.prototype.deleteSessionWorkflowDefinition.call(mgmt, sessionId, request, options);
+    const { transport, close } = await serve(runtime);
+    try {
+        let caught = null;
+        try {
+            await transport("alice").deleteSessionWorkflowDefinition("shared", { definitionId: "def-leaf", operationId: "op-del-spawn-ref" });
+        } catch (error) { caught = error; }
+        assert.equal(caught?.status, 409);
+        assert.equal(caught?.code, "DEFINITION_IN_USE");
+        assert.match(String(caught?.message), /parent-wf #1/);
+        assert.match(String(caught?.message), /launch_leaf/);
+        assert.match(String(caught?.message), /stop or cancel/i);
+        assert.deepEqual(caught?.details, {
+            definitionId: "def-leaf",
+            workflowSessionIds: ["wf-parent-1"],
+            referencedBy: [{ workflowSessionId: "wf-parent-1", name: "parent-wf", number: 1, spawnStates: ["launch_leaf"] }],
+        });
+    } finally {
+        await close();
+    }
+});
+
+test("Task 3: PortalRuntime dispatches validateWorkflowDefinition, readWorkflowSkills, readSessionWorkflowCard (session:manage enforced), and forwards name + originatingSessionId", async () => {
+    const { runtime, calls } = harness();
+    runtime.transport.validateWorkflowDefinition = async (yaml) => { calls.push(["validate", yaml]); return { valid: true, name: "x", errors: [], warnings: [], graph: {}, inputsSchema: null }; };
+    runtime.transport.readWorkflowSkills = async (opts) => { calls.push(["skills", opts]); return { skills: [{ name: "workflow-authoring", description: "d" }] }; };
+    runtime.transport.readSessionWorkflowCard = async (sessionId, ref) => { calls.push(["card", sessionId, ref]); return { name: ref.name, card: "ok" }; };
+    runtime.transport.copySessionWorkflowDefinition = async (sessionId, request, options) => { calls.push(["copy", sessionId, request, options]); return { operation: "save", revision: 1 }; };
+    runtime.transport.updateSessionWorkflowPackage = async (sessionId, request, options) => { calls.push(["update-pkg", sessionId, request, options]); return { operation: "attach", revision: 2 }; };
+
+    // validate & skills (authed)
+    const val = await runtime.call("validateWorkflowDefinition", { yaml: "y" }, as("bob"));
+    assert.equal(val.valid, true);
+    assert.deepEqual(calls.at(-1), ["validate", "y"]);
+
+    const sk = await runtime.call("readWorkflowSkills", { name: "workflow-authoring" }, as("bob"));
+    assert.ok(sk.skills);
+    assert.deepEqual(calls.at(-1), ["skills", { name: "workflow-authoring" }]);
+
+    // readSessionWorkflowCard: owner allowed, unreadable -> 404 NOT_FOUND, non-owner share-reader -> 403 FORBIDDEN even with enforce=false
+    const card = await runtime.call("readSessionWorkflowCard", { sessionId: "shared", name: "demo/echo" }, as("alice"));
+    assert.equal(card.name, "demo/echo");
+    await assert.rejects(
+        runtime.call("readSessionWorkflowCard", { sessionId: "s1", name: "demo/echo" }, as("bob")),
+        (err) => err.status === 404 && err.code === "NOT_FOUND",
+    );
+    runtime.authz = { ...runtime.authz, enforce: false };
+    await assert.rejects(
+        runtime.call("readSessionWorkflowCard", { sessionId: "shared", name: "demo/echo" }, as("bob")),
+        (err) => err.status === 403 && err.code === "FORBIDDEN",
+    );
+    runtime.authz = { ...runtime.authz, enforce: true };
+
+    // Forwarding name + originatingSessionId from body (never from authContext)
+    await runtime.call("saveSessionWorkflowDefinition", { sessionId: "shared", name: "w", yaml: "y", operationId: "op-1", originatingSessionId: "orig-1" }, as("alice"));
+    assert.equal(calls.at(-1)[3].originatingSessionId, "orig-1");
+
+    await runtime.call("startSessionWorkflowDefinition", { sessionId: "shared", name: "w", operationId: "op-2", originatingSessionId: "orig-2" }, as("alice"));
+    assert.equal(calls.at(-1)[2].name, "w");
+    assert.equal(calls.at(-1)[3].originatingSessionId, "orig-2");
+
+    await runtime.call("deleteSessionWorkflowDefinition", { sessionId: "shared", name: "w", operationId: "op-3", originatingSessionId: "orig-3" }, as("alice"));
+    assert.equal(calls.at(-1)[2].name, "w");
+    assert.equal(calls.at(-1)[3].originatingSessionId, "orig-3");
+
+    await runtime.call("copySessionWorkflowDefinition", { sessionId: "shared", name: "pkg/w", operationId: "op-4", originatingSessionId: "orig-4" }, as("alice"));
+    assert.equal(calls.at(-1)[2].name, "pkg/w");
+    assert.equal(calls.at(-1)[3].originatingSessionId, "orig-4");
+
+    await runtime.call("updateSessionWorkflowPackage", { sessionId: "shared", name: "pkg/w", operationId: "op-5", originatingSessionId: "orig-5" }, as("alice"));
+    assert.equal(calls.at(-1)[2].name, "pkg/w");
+    assert.equal(calls.at(-1)[3].originatingSessionId, "orig-5");
+
+    runtime.transport.createSessionForWorkflow = async (ref, opts) => { calls.push(["createForWf", ref, opts]); return { sessionId: "c1", workflowRef: ref, title: "t" }; };
+    await runtime.call("createSessionForWorkflow", { ref: "demo/echo", originatingSessionId: "orig-6" }, as("alice"));
+    assert.equal(calls.at(-1)[2].originatingSessionId, "orig-6");
+});

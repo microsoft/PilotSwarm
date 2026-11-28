@@ -19,6 +19,7 @@ every save is a new revision, and a Workflow runs the revision it started with.
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
 | `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `decision_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
+| `delete` | `name` or `definition_id`, `operation_id?` | Delete an own def (refused for package defs, active runs, or active `spawn` refs). |
 | `test` | `name` or `definition_id`, `revision?`, `inputs`, `vars?`, `fixtures`, `agent_models?`, `decision_models?`, `expect?`, `test_id?` | A test report. |
 | `card` | `name` (`<package>/<name>`) | A package definition's interface card. |
 
@@ -54,13 +55,10 @@ every save is a new revision, and a Workflow runs the revision it started with.
   without a record; `"none"` keeps neither. Every node shares it; one writer;
   nodes cannot change it. Real-agent tests use `"none"`.
 - Start checks literal `callTool("name", ...)` names against the grant it
-  captures. A missing, excluded or ambiguous tool refuses the start
-  (`WORKFLOW_TOOLS_UNAVAILABLE`) before a Workflow is created. Attach or
-  enable the named tool, then start again.
-- Dynamic names (`callTool(variable, ...)`), indirect calls and source
-  that cannot be analyzed are not checked statically (Start warns about
-  dynamic or unanalyzed direct calls); every actual call is checked at run
-  time. Static checks do not predict which branches run.
+  captures. Missing/excluded/ambiguous tools refuse Start
+  (`WORKFLOW_TOOLS_UNAVAILABLE`); attach or enable them first.
+- Dynamic/indirect `callTool` names are unchecked at Start (Start warns);
+  every actual call is checked at run time.
 - Scripts may call `draw_canvas`, `update_canvas`, `show_canvas`, `read_canvas`
   and `canvas_kv`, not `publish_canvas_app` or `find_canvas_app`. Pass
   `session_id: "parent"` (or an ancestor): a Workflow has no canvas. `slot` is
@@ -137,9 +135,8 @@ A fixture is `{ operation?, tool or state, arguments?, visit?, response:
   nodes are refused. No live provider call, provider budget charge, or
   inference. No fallback: an unavailable/stale default refuses the test. A
   missing or mismatched fixture leaves the call unanswered.
-- A test send returns `{ mocked: true, interceptionId, recipientSessionId,
-  contract, value }`, not a live receipt. Use defaults for receipt fields
-  (e.g. `${input.exchangeId ?? null}`) or the binding fails.
+- Test sends return `{ mocked: true, interceptionId, recipientSessionId,
+  contract, value }`; default receipt fields (`${input.exchangeId ?? null}`).
 - `kind: error` takes `{ code, message }` (a runtime code such as
   `execution_failed`), or `kind: cancel`; a receive takes only success.
 
@@ -229,9 +226,8 @@ saved once per `operation_id`. A receive state that waits takes it now;
 otherwise it stays, in order, until a receive state takes it or its time
 passes, even if a receive elapsed first. You may send to the Workflows you
 created, and to your user's when your session is that user's; a receive may
-require a sender. The receipt: `messageId`, `requestSha256`,
-`payloadSha256`, `acceptedAt`, `expiresAt` and `claimedBy` (the receive
-state that took it, or null).
+require a sender. Receipt: `messageId`, `requestSha256`, `payloadSha256`, `acceptedAt`,
+`expiresAt`, `claimedBy`.
 
 ## respond_session_request
 
@@ -302,6 +298,7 @@ Workflow scripts (`callTool("child_workflows", ...)`) and direct agent steps onl
 | Code | Meaning |
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
+| `DEFINITION_IN_USE` | Active Workflow runs it or its `spawn` state names it (including parallel lanes/child Workflows). Never stop/cancel on your own; ask first or wait. |
 | `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks. Read the named state/tool; attach the missing tool. Nothing started. |
 | `REVISION_STALE` | Another save won. Read the newest revision and redo your change. |
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |

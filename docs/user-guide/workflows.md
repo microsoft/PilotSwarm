@@ -333,9 +333,11 @@ graph, timeline and panels:
   shows only its last result.
 - **Agent nodes remember by default.** An agent node that is visited again in
   a loop continues the same agent session, so it remembers earlier visits. Ask
-  for "a fresh agent each time" when you want independent answers. Inside a
-  For each, and in named parallel branches, each item always gets its own
-  agent session.
+  for "a fresh agent each time" when you want independent answers. Inside
+  named parallel branches, `session: new` is the default, and you can set
+  `session: continue` to keep one agent session per branch and state across
+  intra-branch and outer-loop cycles. Inside a For each, each item always gets
+  its own agent session (`session: new` only).
 - **Parallel scripts need free worker slots.** Each running script holds one
   of a worker's slots (`PILOTSWARM_WORKER_CONCURRENCY`, 2 by default). With
   fewer slots than parallel checks, the checks run in turn, not all at once.
@@ -407,6 +409,76 @@ skills. People then find it in the new-session picker.
   next Workflow. Workflows that already started keep the version they started
   with.
 
+## How deep can sessions and Workflows go?
+
+**In one sentence:** nothing goes past level 2. Each sub-agent or Workflow is
+one level below whoever started it, but the first Workflow in a chain is free,
+and an agent step sits at its Workflow's level.
+
+**The rules, and why each one exists:**
+
+1. **Your session is level 0. Each sub-agent, and each Workflow, is one level
+   below whoever started it.**
+   *Why:* each level of delegation adds cost, and the further a session is from
+   you, the harder it is to see what it does and why. Counting levels keeps the
+   tree small enough to read.
+2. **Nothing goes past level 2:** not sub-agents, not Workflows, not agent
+   steps. You can have helpers, and your helpers can have helpers; those cannot
+   delegate again.
+   *Why:* two levels cover the patterns that work: a lead, its specialists, and
+   their short-lived helpers. Deeper chains cost more and lose track of the
+   original request more than they help.
+3. **The first Workflow in a chain does not count.**
+   *Why:* a Workflow runs no model. It is a container you can audit, not a
+   thinker. Putting work into a Workflow should not cost you a level of
+   delegation. Only the first one is free, so nesting Workflows still costs
+   levels. Workflows may nest up to three deep.
+4. **A Workflow's agent step is at its Workflow's level.**
+   *Why:* the step is the Workflow doing its own work, not handing work to
+   someone else. Counting it would use up a level for nothing.
+
+   *In practice:*
+   - an agent step in a top-level Workflow sits at level 0 and can delegate two
+     levels down, the same as your own session;
+   - an agent step in a child Workflow sits at level 1 and can delegate one
+     level down (for example, an issue-batch coder starting a level-2 reviewer);
+   - an agent step whose Workflow is already at level 2 (such as a third nested
+     Workflow, or a Workflow started by a level-2 sub-agent) sits at level 2
+     and cannot delegate further.
+5. **Nothing inside a Workflow can start, change or save a Workflow.**
+   *Why:* a Workflow's shape comes from its definition, which you can read and
+   review before it runs. If agents could grow new Workflows from the inside,
+   the run would no longer match what you approved. Child Workflows are
+   declared in the definition, with `spawn` steps.
+6. **An agent step's tool list applies to every sub-agent under it.**
+   *Why:* delegating must not be a way around the limits that the Workflow's
+   author set.
+7. **Width is limited too:**
+   - at most 50 sub-agents and Workflows running at once per session;
+   - per Workflow: 64 branches in one parallel step with 16 running at once,
+     100 steps, and 1,000 step visits by default (10,000 at most).
+
+   *Why:* depth limits do not stop fan-out. These limits bound cost and load.
+8. **Platform system sessions (and their system children) start again at level 0.**
+   *Why:* they are platform services, such as the Sweeper, not part of your
+   delegation chain. Your depth must not block them.
+9. **Native tasks have no level and cannot delegate.**
+   *Why:* a native task is a helper inside one turn of its parent, not a
+   session of its own. Work that runs long belongs in a durable sub-agent.
+
+**How each kind of session gets its level, for reference:**
+
+| Session | Level |
+|---|---|
+| Your session | 0 |
+| A sub-agent | its parent's level + 1 |
+| The first Workflow in a chain | the same level as whoever started it (free) |
+| Any later Workflow, including a child from a `spawn` step | its starter's level + 1 |
+| A Workflow's agent step | the same level as its Workflow |
+| A platform system session (all-system ancestry) | starts again at 0 |
+| A native task | not a session, so no level |
+| Anything | refused above level 2 |
+
 
 # Part 2: Other ways to work with Workflows
 
@@ -423,10 +495,11 @@ an MCP client and from the terminal. Two facts hold everywhere:
 
 | | Portal | SDK and HTTP API | MCP server | Terminal UI |
 |---|---|---|---|---|
-| Write and save a definition | Ask the session, or edit the YAML | Ask the session, or `saveSessionWorkflowDefinition` | Ask the session (`send_and_wait`) | Ask the session, or `e` |
-| Start it | **Start…** | Ask the session, or `startSessionWorkflowDefinition` | Ask the session | `S` |
+| Write and save a definition | Ask the session, or edit the YAML | Ask the session, or `saveSessionWorkflowDefinition` | `read_workflow_skill` + `workflow_definition` (`validate`, `save`), or ask the session | Ask the session, or `e` |
+| Start it | **Start…** | Ask the session, or `startSessionWorkflowDefinition` | `list_creatable_workflows` + `create_session_for_workflow`, or `workflow_definition` `start` | `S` |
 | Watch it | Graph, Log, timeline | `readWorkflow`, `getSessionEvents` | `read_workflow` | `w` |
 | Pause, resume, stop, cancel, variables | Header buttons, **Variables** | `updateWorkflow` | `update_workflow` | `p` `r` `s` `c`, `v` `V` |
+| Send typed input to a `receive` step | — | `sendWorkflowInput` (`POST /api/v1/sessions/:sessionId/workflow/inputs`) | `send_workflow_input` | — |
 | Answer its request | Answer the session | Send the session a prompt | `send_and_wait` to the session | Answer the session |
 
 ## 2.1 The SDK
@@ -448,9 +521,10 @@ client with these Workflow methods. Results are plain JSON objects.
 | `readSessionWorkflowDefinition(ownerSessionId, { definitionId \| name, revision? })` | One revision: its YAML, graph and errors. |
 | `saveSessionWorkflowDefinition(ownerSessionId, { name, yaml, definitionId?, expectedRevision?, operationId })` | Saves a new revision. The receipt has `definitionId`, `revision`, `valid` and `diagnostics`. To save over a definition, give `definitionId` and `expectedRevision`. |
 | `startSessionWorkflowDefinition(ownerSessionId, { definitionId, revision?, inputs?, vars?, notifyParent?, agentModels?, decisionModels?, runAgainOf?, operationId })` | Starts a new Workflow, by default from the newest valid revision. Returns `workflowId` (the Workflow's session) and `runId`. `notifyParent: false` stops the owning session from being told when it ends. |
-| `copySessionWorkflowDefinition`, `updateSessionWorkflowPackage`, `deleteSessionWorkflowDefinition` | **Make a copy** of a package definition, take its newer version for the next Workflow, and delete a definition (refused while one of its Workflows runs). |
+| `copySessionWorkflowDefinition`, `updateSessionWorkflowPackage`, `deleteSessionWorkflowDefinition` | **Make a copy** of a package definition, take its newer version for the next Workflow, and delete a definition (refused while one of its Workflows runs or an active Workflow's `spawn` state names it). |
 | `readWorkflow(workflowId, options?)` | A Workflow: its graph, runs, each step's visits and results, variables, and the controls the caller may use (`personCommands`). |
 | `updateWorkflow(workflowId, command)` | A person's control. `command` is `{ operation, operation_id, ... }`, with `operation` one of `pause`, `resume`, `stop` (with `grace_seconds`, 0 to 3,600), `cancel` (with an optional `reason`) or `set_vars` (with `set`, `delete` and `expected_kv_revision`). |
+| `sendWorkflowInput(workflowId, input)` | Deliver a typed contract message to a Workflow waiting at an open `receive` step. `input` is `{ contract, payload, correlation?, operationId, ttlSeconds?, runId? }` (`payload` <= 256 KiB, max depth 64; `correlation` <= 4 KiB). Idempotent by `(workflowId, sender, operationId)`; refuses `from:`-bound-only contracts (`409 UNSUPPORTED_CONTRACT`), calls declaring an originating session (`403 FORBIDDEN`), and agent-controlled child Workflows (`403 WORKFLOW_HUMAN_INPUT_DENIED`). |
 | `listCreatableWorkflows()` | The package Workflows the caller can make a session for. |
 
 **Which saved revision ran?** `readWorkflow` (and the agent's
@@ -591,22 +665,28 @@ pilotswarm auth login --api-url https://portal.example.com   # on an Entra deplo
 pilotswarm-mcp --api-url https://portal.example.com
 ```
 
-It has two Workflow tools:
+It exposes six Workflow tools (and projects `session_kind: "agent" | "workflow"` on every `list_sessions` row):
 
 | Tool | What it does |
 |---|---|
+| `list_creatable_workflows` | List ready-made packaged Workflows (`<package>/<name>`) available to start on this deployment. |
+| `create_session_for_workflow` | Create a coordinating chat agent session for a packaged `<package>/<name>` Workflow (greets and asks for inputs; call `workflow_definition` `start` with `name: "<package>/<name>"` and `inputs` on the returned session to start directly). |
+| `read_workflow_skill` | List packaged Workflow authoring skills (omit `name`) or read one skill's Markdown guide by `name` (start with `workflow-authoring`). |
+| `workflow_definition` | Validate (`validate`, no session or DB write needed), `list`, `read`, inspect package `card`, `save`, `start`, `delete`, or `copy` session Workflow Definitions on an `owner_session_id` (created via `create_session`). Pass `key` (preferred) or `operation_id` on `start`, a fresh `operation_id` on `save`/`delete`/`copy`, and `workspace: "none"` when starting on a fresh 0-turn session. |
 | `read_workflow` | Read a Workflow: `session_id` (the Workflow's), and optionally `run_id`, `limit` and `cursor` for older pages. |
-| `update_workflow` | A person's control: `session_id` and `command` (`{ operation, operation_id, ... }`, as for `updateWorkflow` above). Owner or admin only. |
+| `update_workflow` | A person's control: `session_id` and `command` (`{ operation, operation_id, ... }`, as for `updateWorkflow` above). Owner or admin only. Approval steps (`approval_respond`) remain portal-only and are refused over MCP. |
 
-The MCP server has no tools to list, save or start definitions, or to answer
-a request. Do those by talking to the owning session with `send_and_wait`.
-For example, to start a Workflow, check on it and stop it:
+To run a packaged Workflow, call `list_creatable_workflows` and then
+`create_session_for_workflow { ref: "<package>/<name>" }`, then talk to the
+coordinating session with `send_and_wait`.
 
-1. `send_and_wait` with the owner's `session_id` and the message "Start
-   release-readiness and tell me its Workflow id."
-2. `read_workflow` with that id as `session_id`: the run's status and steps.
-3. `update_workflow` with `session_id` and `command: { operation: "stop",
-   operation_id: "stop-1", grace_seconds: 60 }`.
+To write and run your own Workflow directly from an MCP client:
+
+1. Call `read_workflow_skill { name: "workflow-authoring" }` for the YAML guide.
+2. Call `create_session {}` to create a top-level `owner_session_id`.
+3. Call `workflow_definition { operation: "validate", yaml }` to check the YAML without writing a revision.
+4. Call `workflow_definition { operation: "save", owner_session_id, name, yaml, operation_id }` and then `workflow_definition { operation: "start", owner_session_id, name, inputs, workspace: "none", key }`. Note that person starts have no captured session tool grant (literal `callTool` requirements fail with `409 WORKFLOW_TOOLS_UNAVAILABLE` and scripts that call `callTool` emit `WORKFLOW_PERSON_START_NO_TOOL_BINDING`; have the session's agent start definitions whose scripts need session tools).
+5. Poll `read_workflow { session_id: "<workflowId>" }` for progress and output, and control runs with `update_workflow`. To answer a Workflow `request` step, message `owner_session_id` with `send_and_wait`.
 
 ## 2.4 The terminal UI
 
@@ -678,7 +758,7 @@ tool, `enable_workflows`. Turning them on adds the tools below and about
 | Tool | Who has it | Use it to |
 |---|---|---|
 | `enable_workflows` | A session with Workflows off | Turn Workflows on. |
-| `workflow_definition` | A session with Workflows on, not inside a Workflow | `list`, `read`, `save`, `start`, `test` and `card` this session's definitions. |
+| `workflow_definition` | A session with Workflows on, not inside a Workflow | `list`, `read`, `save`, `start`, `test`, `card` and `delete` this session's definitions. |
 | `read_workflow` | A session with Workflows on | Read one Workflow. |
 | `update_workflow` | A session with Workflows on, not inside a Workflow | Control one Workflow. |
 | `send_workflow_input` | A session with Workflows on | Give a waiting `receive` step a typed message. |
@@ -703,15 +783,19 @@ One tool for this session's definitions, chosen by `operation`:
 | `read` | One definition (`definition_id` or `name`, optional `revision`): its revisions, and the shown revision's YAML and errors. |
 | `save` | Save a new revision (`name`, `yaml`). Over an existing definition, give `definition_id` and `expected_revision`. A revision with errors is saved, but cannot start. |
 | `start` | Start a new Workflow from the newest valid revision, or `revision`: `inputs`, optional `vars`, `agent_models`, `decision_models` and `notify_on_completion`. For a package Workflow (`<package>/<name>`), `update: true` takes its newer version. |
+| `delete` | Delete one of this session's own definitions (`definition_id` or `name`, optional `operation_id`), ending any running tests of it. Refused for package definitions (`DEFINITION_LOCKED`) and while any Workflow of it is active or any active Workflow of the session (including spawned child Workflows and parallel lanes) runs a revision whose `spawn` state names it (`DEFINITION_IN_USE`). |
 | `test` | Run a revision with prepared answers (`fixtures`) on a hidden test bench, and report its path. `test_id` reads a test that is still running. |
 | `card` | A package Workflow's card: its inputs, an example, its outcomes and what it asks. |
 
 Errors to fix and retry: `DEFINITION_INVALID` (the revision cannot start),
 `REVISION_REQUIRED` (the name exists: read it first), `REVISION_STALE`
 (someone saved since you read), `DEFINITION_LOCKED` (a package definition),
+`DEFINITION_IN_USE` (an active Workflow runs the definition or names it in a `spawn` state; ask the person — they stop or cancel it first, or wait for it to end),
 `WORKFLOW_SCRIPTS_DISABLED` (this deployment runs no scripts) and
 `CHILD_LIMIT` (the session runs 50 sub-agents and Workflows already).
-Deleting a definition, and copying a package one, are a person's actions.
+Copying a package definition is a person's action. Deleting one of this
+session's own definitions works from `workflow_definition` `delete` or from the
+Workflow tab; finished Workflows keep their pinned revision copies.
 
 ### `read_workflow`
 
@@ -1062,9 +1146,11 @@ admitted controller version.
 - **Scripts run at least once.** A lost worker lock runs a script again from
   its start. Make tool calls safe to repeat, or check before you change
   something.
-- **Agent steps:** `session: continue` (the default outside a For each) keeps
+- **Agent steps:** `session: continue` (the default outside parallel states;
+  explicit opt-in inside named `branches:`) keeps
   one agent session across a state's visits, so it remembers earlier
-  visits. `session: new` gives each visit a fresh one. Give an agent state an
+  visits. `session: new` gives each visit a fresh one (the default in named
+  `branches:` and the only choice inside `forEach`). Give an agent state an
   `outputSchema`, a `timeoutSeconds` and, when it needs no tools, `tools:
   none`.
 - **An agent that lives long and sleeps:** keep `session: continue`, do one
@@ -1090,6 +1176,11 @@ admitted controller version.
 - **A session must have had a turn** before its Workflow sends to it or asks it
   something; otherwise that step fails as `unavailable`. A session that saved
   the definition itself always has.
+- **Depth stops at level 2.** Nothing goes past level 2: each sub-agent or
+  Workflow is one level below whoever started it, the first Workflow in a chain
+  is free, and an agent step sits at its Workflow's level (so Workflows may
+  nest three deep, and a child Workflow's agent step can spawn a level-2
+  sub-agent). See [How deep can sessions and Workflows go?](#how-deep-can-sessions-and-workflows-go).
 - **Quote errors.** When a save, start or run fails, give the person the
   actual code and message. Keep the first failure's evidence; do not change
   the definition and rerun until it passes unless the person asks.

@@ -30,6 +30,109 @@ with `child_workflows` `read` `full_output: true`. Saving now warns
 `WORKFLOW_ENDED_WHOLE_OUTPUT` where a child's whole output reaches one of those
 limits as it arrived.
 
+**Behaviour change for `workflow_definition`.** `workflow_definition` (and the Web API it uses) now refuses a `definition_id` together with a different `name` with `WORKFLOW_COMMAND_INVALID`; before, the id won.
+
+- **Typed Workflow `receive` input across SDK, Web API, and MCP:** Added
+  `sendWorkflowInput` on `PilotSwarmManagementClient`,
+  `WebPilotSwarmManagementClient`, `HttpApiTransport`, and `NodeSdkTransport`,
+  exposed `POST /api/v1/sessions/:sessionId/workflow/inputs` (`session:manage`,
+  enforced even when ownership enforcement is off), advertised
+  `workflows.input: true` in `GET /api/v1/bootstrap` (and fail-closed
+  `workflow_tools.input` in MCP `get_capabilities`), and added the MCP
+  `send_workflow_input` tool (accepting `workflow_id` or `session_id`, refusing
+  conflicts with `400`, calls declaring an originating session with
+  `403 FORBIDDEN`, `from:`-bound-only contracts with `409 UNSUPPORTED_CONTRACT`,
+  enforcing the engine's 256 KiB / depth-64 payload and 4 KiB correlation caps,
+  and adding `send_workflow_input` to `WORKFLOW_DEFINITION_MCP_TOOLS`). Reuses the single
+  `workflow_inbox` table, lock order, and idempotency/rate-limit rules with
+  canonical `person:*` sender IDs and zero SQL migrations.
+
+### Workflows over MCP
+
+An external LLM connected only through `pilotswarm-mcp` can now discover and
+start packaged Workflows, read the deployment's packaged Workflow authoring
+skills on demand, distinguish Workflow sessions in `list_sessions`, and
+validate, author, save, start, copy, read, and delete session Workflow
+Definitions in both direct and Web API modes — with zero SQL migrations and no
+session orchestration or Workflow controller version changes:
+
+- **SDK & Web API:** Exported `compileWorkflow`, `scriptToolRequirements`, and
+  pure no-write `validateWorkflowYaml` from `pilotswarm-sdk`; added SDK
+  validation warning `WORKFLOW_SCRIPT_CONTEXT_VARS` when script states read
+  `context.vars` instead of `context.kv`; moved `createSessionForWorkflow`
+  (preserving S2SF-F3 delete-on-attach-failure and separate `principal` vs
+  `owner`) onto `PilotSwarmManagementClient` and `WebPilotSwarmManagementClient`;
+  added `readWorkflowSkills` (`GET /api/v1/workflow-definitions/skills`),
+  `validateWorkflowDefinition` (`POST /api/v1/workflow-definitions/validate`),
+  and `readSessionWorkflowCard` (`GET /api/v1/sessions/:sessionId/workflow-definitions/card`,
+  enforced `session:manage`); added name-based lookup with receipt-first
+  `operation_id` replay safety across `start`, `delete` (sharing
+  `resolveDeleteTarget`), `copy`, and `updateSessionWorkflowPackage`; enforced
+  SF-2 (`403 WORKFLOW_DEFINITION_TOOLS_REFUSED`) on `originatingSessionId`
+  inside a Workflow (and on `create_session_for_workflow` plus MCP-only A1
+  tool filtering).
+- **MCP Server:** Wired direct-mode `artifactStore` in `context.ts` for package
+  Workflows; projected `session_kind` on `list_sessions`; added
+  `list_creatable_workflows`, `create_session_for_workflow`,
+  `read_workflow_skill` (with MCP adaptation `note` at the top of the reply),
+  and `workflow_definition` (`validate`, `list`, `read`, `card`, `save`, `start`
+  with conditional `WORKFLOW_PERSON_START_NO_TOOL_BINDING` warning when a
+  script calls a non-`child_workflows` tool via `callTool`, `update: true`,
+  `delete`, `copy`); typed `update_workflow.command` per operation (now taking
+  only `pause`, `resume`, `stop`, `cancel`, and `set_vars`; definition
+  operations `replace_definition`, `publish`, `publish_and_start`, and `start`
+  are rejected — use `workflow_definition`); accepted `session_id` on
+  `get_agent_tree` (keeping `root_session_id` as an alias); expanded
+  `workflow_tools` capabilities and added `501 WORKFLOW_API_UNAVAILABLE`
+  fallback when `pilotswarm-mcp` is upgraded ahead of an older portal.
+
+### Workflows: `session: continue` in named parallel branches
+
+Agent states inside named parallel `branches:` may now declare `session: continue`,
+keeping one durable agent session per `(runId, stateId)` across both
+intra-branch loops and outer-loop re-entries of the enclosing `parallel` state
+(building on continued-session memory commits). Omitting `session:` inside a
+named branch still defaults to `session: new` so existing definitions recompile
+unchanged at Start; `forEach` bodies remain `session: new` only (enforced by the
+compiler and a `WORKFLOW_STORE_CORRUPT` guard on non-named branch scopes in
+`enter`). Continued-session store queries and Portal Agent Log / Node Summary
+views now rank visits by composite `(enclosing parallel ordinal, node ordinal)`
+so outer-loop re-entries that reset per-scope ordinals preserve cycle order,
+replacement numbering, and graceful-stop `Q5` semantics, and the Agent Log
+displays ` · cycle N` on re-entered forks. Previously saved invalid revisions
+that used `session: continue` in `branches:` must be saved as a new revision to
+start; worker rollouts remain stop-all.
+
+### Workflows: single level-2 depth rule (first Workflow free)
+
+All four session and Workflow depth checks (`spawn_agent` inline, Workflow
+Start / `spawn` steps, Workflow agent-step host, and fallback
+`captureSpawnToolsV1` with no session orchestration version bump) now share one
+`effectiveLevel` helper over stored lineage: nothing goes past level `2`, the
+first Workflow in a chain is free (`+0`), each later Workflow and sub-agent
+adds `+1`, an agent step sits at its Workflow's level (`+0`), and platform
+system sessions (with all-system ancestry) reset to `0`. Chains without a
+Workflow are unchanged (except all-system platform chains). A child
+Workflow's agent step now sits at level `1` and can spawn a level-`2`
+sub-agent, and Workflows may nest up to three deep (`0 -> 1 -> 2`). Refusal
+messages, `docs/user-guide/workflows.md` (*How deep can sessions and Workflows
+go?*), `docs/developer/building/workflow-sessions.md`, and the
+`workflow-limits` / `workflow-authoring` skills all state the same rule.
+
+### Workflow definition cleanup
+
+- `workflow_definition` now supports `operation: "delete"` (`definition_id` or
+  `name`, optional `operation_id`) so a session can delete its own throwaway or
+  unused definitions. Package definitions (`<package>/<name>`, locked) are
+  refused with `DEFINITION_LOCKED`, sessions inside a Workflow keep their
+  existing refusal, and definitions with active Workflows — or named by any
+  `spawn` state (including inside parallel lanes) of an active Workflow of the
+  owning session (including spawned child Workflows) — are refused across every
+  surface (agent tool, SDK management clients, Web API, and portal) with
+  `DEFINITION_IN_USE` naming the Workflows (name and number) and spawn states
+  and instructing to stop or cancel them first or wait for them to end.
+  Finished Workflows keep their pinned revision copies.
+
 ### Workflows: every session above a Workflow reads and controls it
 
 `read_workflow` and `update_workflow` now work on Workflows nested below the

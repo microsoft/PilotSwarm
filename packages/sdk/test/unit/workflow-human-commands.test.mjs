@@ -21,10 +21,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    updateWorkflowForPerson, workflowCapabilities, workflowCommandStatus, WORKFLOW_CAPABILITIES_SCHEMA, WORKFLOW_HUMAN_BRAKE_OPERATIONS,
+    parsePersonWorkflowInput, personSenderId, updateWorkflowForPerson, workflowCapabilities, workflowCommandStatus, WORKFLOW_CAPABILITIES_SCHEMA, WORKFLOW_HUMAN_BRAKE_OPERATIONS,
     WORKFLOW_HUMAN_MILESTONE_OPERATIONS, WORKFLOW_HUMAN_OPERATIONS,
 } from "../../dist/workflow/human-commands.js";
-import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../dist/workflow/input-policy.js";
+import {
+    WORKFLOW_DEFINITION_MCP_TOOLS, WORKFLOW_DEFINITION_TOOLS, WORKFLOW_HUMAN_INPUT_DENIED,
+    workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters,
+} from "../../dist/workflow/input-policy.js";
 import { WORKFLOW_API_VERSION } from "../../dist/workflow/compiler.js";
 import { WORKFLOW_CONTROLLER_VERSION } from "../../dist/workflow/runtime.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
@@ -56,9 +59,10 @@ async function rejectsWith(promise, code) {
 
 test("maps each refusal code to its HTTP status", () => {
     for (const [code, status] of [["WORKFLOW_NOT_FOUND", 404], ["RUN_NOT_FOUND", 404], ["INTERCEPTION_NOT_FOUND", 404], ["WORKFLOW_DELETED", 404],
-        ["FORBIDDEN", 403], [WORKFLOW_HUMAN_INPUT_DENIED, 403], ["WORKFLOW_COMMAND_INVALID", 400], ["WORKFLOW_YAML_INVALID", 400],
+        ["FORBIDDEN", 403], [WORKFLOW_HUMAN_INPUT_DENIED, 403], ["WORKFLOW_COMMAND_INVALID", 400], ["WORKFLOW_YAML_INVALID", 400], ["INPUT_INVALID", 400],
         ["WORKFLOW_INPUT_INVALID", 422], ["TEST_RESPONSE_INVALID", 422], ["DEFINITION_INVALID", 422], ["OPERATION_LIMIT", 429],
-        ["TEST_INTERCEPTION_LIMIT", 429], ["WORKFLOW_STORE_CORRUPT", 500], ["REVISION_CONFLICT", 409], ["OPERATION_CONFLICT", 409],
+        ["TEST_INTERCEPTION_LIMIT", 429], ["INBOX_FULL", 429], ["INBOX_RATE_LIMITED", 429], ["WORKFLOW_STORE_CORRUPT", 500],
+        ["REVISION_CONFLICT", 409], ["OPERATION_CONFLICT", 409], ["UNSUPPORTED_CONTRACT", 409],
         ["RUN_ENDED", 409], ["CONTROLLER_UNAVAILABLE", 409]]) {
         assert.equal(workflowCommandStatus(code), status, code);
     }
@@ -105,15 +109,18 @@ test("advertises the workflow support the host was configured with: a person's c
         schema: WORKFLOW_CAPABILITIES_SCHEMA,
         enabled: true,
         decision: { available: false, defaultModel: null, models: [], reason: "no_cluster_decision_default" },
-        apiVersion: WORKFLOW_API_VERSION, read: true, create: false, input: false,
+        apiVersion: WORKFLOW_API_VERSION, read: true, validate: true, skills: true, card: true, create: false, input: false,
         commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
     });
     assert.equal(off.apiVersion, "pilotswarm.dev/v1");
     assert.deepEqual(workflowCapabilities({ read: true, commands: undefined }), off);
     // Workflows are always on (owner 2026-11-08T08:03Z): `enabled` is always true, kept for an older client.
     assert.equal(workflowCapabilities({ read: false, commands: {} }).enabled, true);
-    // Without a workflow store, reads are not advertised.
+    // Without a workflow store, reads (and card) are not advertised.
     assert.equal(workflowCapabilities({ read: false, commands: null }).read, false);
+    assert.equal(workflowCapabilities({ read: false, commands: null }).card, false);
+    assert.equal(workflowCapabilities({ read: false, commands: null }).validate, true);
+    assert.equal(workflowCapabilities({ read: false, commands: null }).skills, true);
     // On: the controller and the operations every host takes: stop and, with workflow test mode on, the test operations
     // (Workflow Simplified, spec 16: test mode is hidden unless it is on).
     const milestone = workflowCapabilities({ read: true, commands: { testMode: true } }).commands;
@@ -168,4 +175,96 @@ test("a real management client takes the full engine's commands", async () => {
         config: client.config, _catalog: { workflowStore: () => ({}) } }).getWorkflowCapabilities();
     assert.equal(advertised.commands.available, true);
     assert.equal(advertised.commands.controllerVersion, WORKFLOW_CONTROLLER_VERSION);
+    assert.equal(advertised.input, true);
+});
+
+test("workflowCapabilities advertises input=true only when both read and commands are enabled", () => {
+    assert.equal(workflowCapabilities({ read: true, commands: {} }).input, true);
+    assert.equal(workflowCapabilities({ read: true, commands: null }).input, false);
+    assert.equal(workflowCapabilities({ read: false, commands: {} }).input, false);
+    assert.equal(workflowCapabilities({ read: false, commands: null }).input, false);
+});
+
+test("personSenderId encodes user and system actors collision-free and rejects invalid inputs", () => {
+    assert.equal(personSenderId({ kind: "user", provider: "entra", subject: "sub-1" }), "person:user:entra:sub-1");
+    const a = personSenderId({ kind: "user", provider: "a:b", subject: "c" });
+    const b = personSenderId({ kind: "user", provider: "a", subject: "b:c" });
+    assert.notEqual(a, b);
+    assert.equal(a, "person:user:a%3Ab:c");
+    assert.equal(b, "person:user:a:b%3Ac");
+    assert.equal(personSenderId({ kind: "system", name: "management-client" }), "person:system:management-client");
+    assert.throws(() => personSenderId({ kind: "agent", sessionId: "s-1" }), err => err.code === "FORBIDDEN");
+    assert.throws(() => personSenderId({ kind: "user", provider: "entra", subject: "bad\uD800surrogate" }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
+    assert.throws(() => personSenderId({ kind: "user", provider: "bad\uD800", subject: "sub-1" }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
+    assert.throws(() => personSenderId({ kind: "system", name: "bad\uD800" }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
+    assert.throws(() => personSenderId({ kind: "user", provider: "entra", subject: "x".repeat(520) }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
+});
+
+test("parsePersonWorkflowInput validates camelCase fields, preserves falsy payloads and untrimmed operationId", () => {
+    for (const bad of [null, [], "str", 42]) {
+        assert.throws(() => parsePersonWorkflowInput(bad), err => err.code === "WORKFLOW_COMMAND_INVALID");
+    }
+    assert.throws(() => parsePersonWorkflowInput({ contract: "Deploy@1", operationId: "op-1" }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
+    assert.throws(() => parsePersonWorkflowInput({ contract: "Deploy@1", payload: undefined, operationId: "op-1" }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
+    assert.throws(() => parsePersonWorkflowInput({ contract: "Deploy@1", payload: {}, operationId: "op-1", ttlSeconds: "60" }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
+    assert.throws(() => parsePersonWorkflowInput({ contract: "Deploy@1", payload: {}, operationId: "op\u0000bad" }),
+        err => err.code === "WORKFLOW_COMMAND_INVALID");
+    for (const payload of [null, false, 0, ""]) {
+        const parsed = parsePersonWorkflowInput({ contract: "Deploy@1", payload, operationId: " op-1 " });
+        assert.equal(parsed.payload, payload);
+        assert.equal(parsed.operationId, " op-1 ");
+        assert.equal(parsed.contract, "Deploy@1");
+        assert.equal(parsed.correlation, undefined);
+        assert.equal(parsed.ttlSeconds, null);
+        assert.equal(parsed.runId, null);
+    }
+    const full = parsePersonWorkflowInput({
+        contract: "Deploy@1",
+        payload: { ok: true },
+        correlation: { ticket: "T-1" },
+        operationId: "op-2",
+        ttlSeconds: 120,
+        runId: "run-9",
+    });
+    assert.deepEqual(full, {
+        contract: "Deploy@1",
+        payload: { ok: true },
+        correlation: { ticket: "T-1" },
+        operationId: "op-2",
+        ttlSeconds: 120,
+        runId: "run-9",
+    });
+});
+
+test("send_workflow_input is in WORKFLOW_DEFINITION_MCP_TOOLS and rejected for sessions inside a Workflow without blocking the native tool", () => {
+    assert.ok(WORKFLOW_DEFINITION_MCP_TOOLS.includes("send_workflow_input"));
+    assert.equal(WORKFLOW_DEFINITION_TOOLS.includes("send_workflow_input"), false);
+    const check = workflowDefinitionMcpPermission(() => ({ kind: "allow" }));
+    const denied = check({ kind: "mcp", toolName: "send_workflow_input" });
+    assert.equal(denied.kind, "reject");
+    assert.equal(check({ kind: "custom-tool", toolName: "send_workflow_input" }).kind, "allow");
+    assert.equal(check({ kind: "mcp", toolName: "read_workflow" }).kind, "allow");
+    const filters = workflowDefinitionMcpToolFilters(["pilotswarm"]);
+    assert.ok(filters.includes("mcp:pilotswarm-send_workflow_input"));
+    assert.ok(filters.includes("pilotswarm-send_workflow_input"));
+    assert.equal(filters.includes("send_workflow_input"), false);
+});
+
+test("PilotSwarmManagementClient.sendWorkflowInput refuses with 501 WORKFLOW_COMMANDS_UNAVAILABLE when workflowCommands is null", async () => {
+    const client = Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
+        config: { workflowCommands: null },
+        _started: true,
+        _ensureStarted() {},
+    });
+    await assert.rejects(
+        client.sendWorkflowInput("wf-1", { contract: "Deploy@1", payload: {}, operationId: "op-1" }),
+        err => err.code === "WORKFLOW_COMMANDS_UNAVAILABLE" && err.status === 501 && err.expose === true,
+    );
 });

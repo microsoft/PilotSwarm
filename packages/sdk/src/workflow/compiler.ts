@@ -733,6 +733,8 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
             "This script is too deeply nested to analyze. Its module syntax and tool requirements could not be checked; run-time checks still apply.");
         if (analysis.concurrent) diagnostics.warning("WORKFLOW_TOOLS_CONCURRENT", `${path}.source`,
             `Promise.all or Promise.allSettled may overlap this script's tool calls. ${WORKFLOW_TOOL_CONCURRENCY_MESSAGE}`);
+        if (analysis.contextVars) diagnostics.warning("WORKFLOW_SCRIPT_CONTEXT_VARS", `${path}.source`,
+            "The script context has context.kv, not context.vars (context.vars is undefined at run time). Use context.kv instead.");
     }
     let timeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS;
     if (raw.timeoutSeconds !== undefined) {
@@ -1455,8 +1457,8 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     let session: "continue" | null = null;
     if (raw.session !== undefined && raw.session !== "new") {
         if (raw.session === "continue") session = "continue";
-        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.session`, "session must be continue (one agent session across the state's visits, the default) "
-            + "or new (a new agent session for each visit, the only choice inside a For each or a parallel branch).");
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.session`, "session must be continue (one agent session across the state's visits, the default outside parallel states) "
+            + "or new (a new agent session for each visit, the only choice inside a For each).");
     }
     // FU-17: `tools: none` or a list of tool names limits what the state's agent may use; absent, it has its session's tools.
     let tools: string[] | null = null;
@@ -1828,15 +1830,15 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
             ? node.branches.map(branch => ({ id: node.id, initial: branch.initial, states: new Set(branch.states), branch: branch.name as string | null }))
             : [{ id: node.id, initial: node.body.initial, states: new Set(node.body.states), branch: null as string | null }]);
     const inBody = new Set(bodies.flatMap(body => [...body.states]));
-    // Owner decision agent-node-continue-20261106: items of a For each run side by side, so they cannot share one agent session.
+    // Owner decision agent-node-continue-20261106 & I8: items of a For each run side by side, so they cannot share one agent
+    // session; named parallel branches each have their own Workflow-unique state ids and allow explicit session: continue.
     for (const body of bodies) {
+        if (body.branch !== null) continue;
         for (const member of body.states) {
             const node = ir.nodes[member];
             if (node?.type === "agent" && node.session === "continue") {
-                diagnostics.error("WORKFLOW_FIELD_INVALID", body.branch !== null ? `states.${body.id}.branches.${body.branch}.states.${member}.session`
-                    : `states.${body.id}.body.states.${member}.session`, body.branch !== null
-                    ? `state '${member}' cannot continue its agent session: it runs inside branch '${body.branch}' of parallel state '${body.id}'. Use session: new.`
-                    : `state '${member}' cannot continue its agent session: it runs inside For each state '${body.id}', whose items run side by side and cannot share one agent session. Use session: new.`);
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `states.${body.id}.body.states.${member}.session`,
+                    `state '${member}' cannot continue its agent session: it runs inside For each state '${body.id}', whose items run side by side and cannot share one agent session. Use session: new.`);
             }
         }
     }

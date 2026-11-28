@@ -1,6 +1,6 @@
 ---
 name: workflow-limits
-description: "The size limits a Workflow run meets, in one table: inputs, state outputs, joins, carry, messages, child results, variables and script tool calls. Load when data may be large or a fan-out collects child results."
+description: "Size limits, session/Workflow depth (max level 2), and parallel continued-session rules for Workflow runs: inputs, outputs, joins, carry, messages, child results, variables, and script tool calls."
 ---
 
 # Workflow limits
@@ -51,3 +51,37 @@ reaches a join, a message or the run's output with no mapping in between.
 
 A single child whose whole output is the run's output fits: no mapping is
 needed there.
+
+## Session and Workflow depth (max level 2)
+
+Nothing goes past level 2: each sub-agent or Workflow is one level below
+whoever started it, but the first Workflow in a chain is free (`+0`), and an
+agent step sits at its Workflow's level (`+0`). Workflows may nest three deep
+(`0 -> 1 -> 2`), and platform system sessions (and their system children) start again at level `0`.
+
+| Session | Level |
+|---|---|
+| Top-level session | `0` |
+| Sub-agent | parent's level `+ 1` |
+| First Workflow in a chain | starter's level (`+0`, free) |
+| Any later Workflow (`spawn` child) | starter's level `+ 1` |
+| Workflow agent step | its Workflow's level (`+0`) |
+| Platform system session (all-system ancestry) | resets to `0` |
+| Native task | no level; cannot delegate |
+| Anything above level `2` | refused |
+
+In practice (effective levels in parentheses):
+- Top-level Workflow: `person (0) -> Workflow (0, free) -> agent step (0) -> sub-agent (1) -> sub-agent (2)` (delegates two sub-agent levels down, matching a top-level session).
+- Child Workflow: `person (0) -> batch Workflow (0, free) -> child Workflow (1) -> agent step (1) -> sub-agent (2)` (a child Workflow's agent step sits at level `1` and CAN spawn a level-`2` sub-agent with `spawn_agent`, such as an independent reviewer).
+- Level-2 Workflow: `person (0) -> W1 (0, free) -> W2 (1) -> W3 (2) -> agent step (2)`, or `person (0) -> sub (1) -> sub (2) -> W1 (2, free) -> agent step (2)` (Workflows nest three deep; a level-2 Workflow's agent step sits at level `2` and cannot delegate further).
+- Nothing inside a Workflow can save, change, or start a Workflow Definition
+  (`WORKFLOW_DEFINITION_TOOLS_REFUSED`); declare child Workflows with `spawn` steps.
+- Width limits apply alongside depth: at most 50 running sub-agents and active
+  Workflows per session; 64 parallel branches (16 concurrent), 100 states, and
+  1,000 state visits by default (10,000 max) per Workflow.
+
+## Continued agent sessions in parallel states
+
+- Named `branches:` allow explicit `session: continue` (omitting `session:` still defaults to `new`): one continued agent session per `(runId, stateId)` across both intra-branch loops and outer-loop re-entries of the enclosing `parallel` state.
+- `forEach` bodies allow `session: new` only (`session: continue` is refused because items run side by side).
+- Upgrade note: any revision saved invalid before `session: continue` in named `branches:` was allowed must be saved again as a new revision to start.

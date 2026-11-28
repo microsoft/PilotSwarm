@@ -99,7 +99,7 @@ import { workflowDefinitionFromTool } from "./workflow/definition-tool.js";
 import { createPackageWorkflowSource, manifestAgentWorkflows } from "./workflow/session-packages.js";
 import { requireWorkflowScriptsInYaml } from "./workflow/scripts-gate.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/test-agent-tools.js";
-import { SESSION_MAX_NESTING_LEVEL, sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
+import { SESSION_MAX_NESTING_LEVEL, sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, spawnNestingRefusalReason, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/input-policy.js";
 import { applyOperatorCommandToWorkflow, applySessionCommandToWorkflow } from "./workflow/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/intake.js";
 import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/intake-admission.js";
@@ -2728,7 +2728,7 @@ export function registerActivities(
         }
         // Workflow agent states: this session's stored lineage. An
         // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
-        // refusal and nests up to level 3 (design 03 human-input denial and depth), and in a test run's agent state's
+        // refusal and follows the effectiveLevel depth cap of 2 (first Workflow free, agent step +0), and in a test run's agent state's
         // subtree (design 05 agent mode real) its framework tool calls are intercepted. A session outside every agent state
         // gets none of these. A lineage or test scope that cannot be read fails the turn (it is retried): a session in an
         // agent state's subtree never runs a turn without its denial or, under a test, with live tools. Both are read before
@@ -3659,12 +3659,12 @@ export function registerActivities(
                     if (args.lock_title === true && !catalog) {
                         return "[SYSTEM: spawn_agent failed: session title storage is unavailable.]";
                     }
-                    // Workflow agent states (rule 5): an agent step is at its Workflow's level; no session nests deeper than
-                    // level 2, counted on the stored lineage. Elsewhere the ordinary limit applies.
+                    // I9 depth rule: nothing goes past level 2; first Workflow is free; an agent step is at its Workflow's level.
                     const { childNestingLevel, maxNestingLevel } = spawnNesting(input.nestingLevel ?? 0, MAX_NESTING_LEVEL, workflowLineage);
                     if (childNestingLevel > maxNestingLevel) {
-                        // Spec 14: inside a Workflow the refusal says so, with the levels, in words.
-                        return spawnNestingRefusal(childNestingLevel - 1, maxNestingLevel, workflowDefinitionToolsRefused(workflowLineage));
+                        const callerLevel = workflowLineage === null ? (input.nestingLevel ?? 0) : workflowLineage.level;
+                        const insideWorkflow = Boolean(workflowLineage?.agentRoot || workflowLineage?.hasWorkflow);
+                        return spawnNestingRefusal(callerLevel, maxNestingLevel, insideWorkflow);
                     }
 
                     // S2RT-F3: the shared budget's own count (sub-agents pending or running, and active Workflows), as Start
@@ -5969,118 +5969,132 @@ export function registerActivities(
         parentContext?: { transcriptEpoch: number; workspaceRevision: number; turnIndex?: number };
         grant?: import("./tool-grant.js").CapabilityToolGrant; tools?: import("./tool-grant.js").ToolCeiling;
         agent: ResolvedAgentDefinition | null; legacyToolNames?: boolean;
-    }) => sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
-        input.legacyToolNames === true, async () => {
-            const parent = await catalog?.getSession(input.parentSessionId);
-            if (!parent || parent.deletedAt) throw new CapabilityGrantError("The parent session is unavailable. No child was created.");
-            // Older scheduled captures lack parentConfig; never substitute the child's config or an unrestricted default.
-            const config = input.parentConfig ?? await catalog?.getSessionCreationConfig?.(input.parentSessionId);
-            if (!config) throw new CapabilityGrantError("The parent's configuration is unavailable. No child was created.");
-            const turnIndex = input.parentContext?.turnIndex ?? parent.currentIteration ?? 0;
-            const transcriptEpoch = input.parentContext?.transcriptEpoch ?? parent.transcriptEpoch ?? 0;
-            if (turnIndex <= 0 && (fs.existsSync(path.join(sessionManager.getSessionStateDir(), input.parentSessionId))
-                || await sessionStore?.exists(input.parentSessionId, transcriptEpoch))) {
-                throw new CapabilityGrantError("The parent's turn index is unavailable. Its saved conversation was not changed; no child was created.");
-            }
-            const runConfig: ManagedSessionConfig = buildRunTurnConfig(config, os.hostname(), parent.agentId ?? undefined);
-            runConfig.workflowMilestoneTurn = true;
-            runConfig.toolCompositionTurn = true;
-            if (!runConfig.workspace && (input.parentContext?.workspaceRevision ?? 0) > 0) runConfig.workspaceCleared = true;
-            if (parent.model) {
-                if (parent.reasoningEffort != null && !isReasoningEffort(parent.reasoningEffort)) {
-                    throw new CapabilityGrantError("The parent's reasoning effort is invalid. No child was created.");
-                }
-                if (parent.contextTier != null && parent.contextTier !== "default" && parent.contextTier !== "long_context") {
-                    throw new CapabilityGrantError("The parent's context tier is invalid. No child was created.");
-                }
-                runConfig.model = parent.model;
-                runConfig.reasoningEffort = parent.reasoningEffort ?? undefined;
-                runConfig.contextTier = parent.contextTier ?? undefined;
-            }
-            const boundAgent = resolveBoundAgentBackfill(runConfig, parent.agentId, userAgents);
-            if (boundAgent) {
-                runConfig.boundAgentName = boundAgent;
-                if (!runConfig.promptLayering) runConfig.promptLayering = { kind: "app-agent" };
-            }
-            runConfig.isCrawler = resolveCrawlerRole(runConfig.agentIdentity, runConfig.boundAgentName, userAgents, systemAgents);
-            runConfig.isHarvester = runConfig.isCrawler;
-            const store = catalog?.workflowStore?.();
-            const lineage = store ? await store.readWorkflowLineage(input.parentSessionId) : null;
+    }) => {
+        // I9 Check 4: enforce stored-chain effectiveLevel at the top of the capture activity (covering warm and cold
+        // parents alike) so orchestration/agents.ts stays byte-identical with no orchestration version bump.
+        const store = catalog?.workflowStore?.();
+        const lineage = store ? await store.readWorkflowLineage(input.parentSessionId) : null;
+        if (store) {
             if (lineage?.deleted) throw new CapabilityGrantError("The parent session was deleted. No child was created.");
-            const workflowAgentTools = await applyWorkflowToolContext(runConfig, lineage, store);
-            if (store) {
-                if (parent.workflowRef) runConfig.workflowContextTrigger = "lasting";
-                runConfig.workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.parentSessionId);
+            const { childNestingLevel, maxNestingLevel } = lineage === null
+                ? { childNestingLevel: SESSION_MAX_NESTING_LEVEL + 1, maxNestingLevel: SESSION_MAX_NESTING_LEVEL }
+                : spawnNesting(0, SESSION_MAX_NESTING_LEVEL, lineage);
+            if (childNestingLevel > maxNestingLevel) {
+                const callerLevel = lineage !== null && Number.isSafeInteger(lineage.level) ? lineage.level : null;
+                const insideWorkflow = Boolean(lineage?.agentRoot || lineage?.hasWorkflow);
+                throw new CapabilityGrantError(spawnNestingRefusalReason(callerLevel, maxNestingLevel, insideWorkflow));
             }
-            const provider = sessionManager.getWorkspaceProvider();
-            const defaults = await resolveWorkspaceDefaults(provider, {
-                sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
-                owner: parent.owner, isSystem: parent.isSystem,
-            }, { onError: message => activityCtx.traceInfo(`[captureSpawnTools] ${message}`) });
-            const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, defaults);
-            const workspace = withDefaults.workspace;
-            if (workspace) {
-                const request: import("./types.js").WorkspaceAttachRequest = {
-                    sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
-                    workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
-                    turnIndex, purpose: "turn",
-                };
-                const sent: import("./types.js").WorkspaceAttachRequest[] = [];
-                const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
-                    sent.push(request);
-                    sessionManager.holdWorkspaceFolders(input.parentSessionId, sent.map(request => ({
-                        root: request.workspace.root, ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
-                        ...(request.attachment ? { attachment: request.attachment } : {}),
-                        rootSessionId: request.rootSessionId, revision: request.revision, turnIndex: request.turnIndex,
-                    })));
-                };
-                const prepared = await prepareWorkspace(provider, { ...request, workspace: workingFolderOf(workspace) }, { onAttach });
-                const optionalHome = !runConfig.workspace && withDefaults.homeIsWorkingFolder && defaults?.home?.required !== true;
-                if (!prepared.ok && !optionalHome) throw new CapabilityGrantError(`The parent's workspace is unavailable (${prepared.code}: ${prepared.message}). No child was created.`);
-                if (!prepared.ok) activityCtx.traceInfo(`[captureSpawnTools] optional home unavailable: ${prepared.code} ${prepared.message}`);
-                if (prepared.ok) {
-                    const extras = workspace.extra ? await prepareWorkspaceExtras(provider, request,
-                        { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) }) : [];
-                    const bad = extras.find(extra => !extra.ok && extra.required);
-                    if (bad && !bad.ok) throw new CapabilityGrantError(`The parent's required extra folder '${bad.name}' is unavailable (${bad.code}: ${bad.message}). No child was created.`);
-                    const homeExtra = withDefaults.homeExtra ? extras.find(extra => extra.ok && extra.name === withDefaults.homeExtra) : undefined;
-                    runConfig.workspaceAttach = {
-                        root: prepared.root.name, rootPath: prepared.root.path, path: prepared.path, realPath: prepared.realPath,
-                        ...(prepared.adopt ? { adopt: prepared.adopt } : {}), ...(prepared.repo ? { repo: prepared.repo } : {}),
-                        ...(withDefaults.homeIsWorkingFolder ? { homeIsWorkingFolder: true } : {}),
-                        ...(withDefaults.defaultNames.length ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
-                        ...(homeExtra?.ok && homeExtra.adopt ? {
-                            home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
-                        } : {}),
-                        ...(prepared.readOnly ? { readOnly: true } : {}),
-                        revision: request.revision, rootSessionId: request.rootSessionId, turnIndex: request.turnIndex,
-                        ...(typeof activityCtx.sessionId === "string" ? { affinityKey: activityCtx.sessionId } : {}),
-                        extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
-                        extrasUnavailable: extras.flatMap(extra => extra.ok ? [] : [{
-                            name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
-                            code: extra.code, message: extra.message,
-                        }]),
-                    };
+        }
+        return sessionManager.captureSpawnTools(input.parentSessionId, input.childConfig, input.grant, input.tools, input.agent,
+            input.legacyToolNames === true, async () => {
+                const parent = await catalog?.getSession(input.parentSessionId);
+                if (!parent || parent.deletedAt) throw new CapabilityGrantError("The parent session is unavailable. No child was created.");
+                // Older scheduled captures lack parentConfig; never substitute the child's config or an unrestricted default.
+                const config = input.parentConfig ?? await catalog?.getSessionCreationConfig?.(input.parentSessionId);
+                if (!config) throw new CapabilityGrantError("The parent's configuration is unavailable. No child was created.");
+                const turnIndex = input.parentContext?.turnIndex ?? parent.currentIteration ?? 0;
+                const transcriptEpoch = input.parentContext?.transcriptEpoch ?? parent.transcriptEpoch ?? 0;
+                if (turnIndex <= 0 && (fs.existsSync(path.join(sessionManager.getSessionStateDir(), input.parentSessionId))
+                    || await sessionStore?.exists(input.parentSessionId, transcriptEpoch))) {
+                    throw new CapabilityGrantError("The parent's turn index is unavailable. Its saved conversation was not changed; no child was created.");
                 }
-            }
-            let epochStart = false;
-            if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
-                // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
-                const preamble = await runTurnPreamble({
-                    store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
-                    transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
-                    dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
+                const runConfig: ManagedSessionConfig = buildRunTurnConfig(config, os.hostname(), parent.agentId ?? undefined);
+                runConfig.workflowMilestoneTurn = true;
+                runConfig.toolCompositionTurn = true;
+                if (!runConfig.workspace && (input.parentContext?.workspaceRevision ?? 0) > 0) runConfig.workspaceCleared = true;
+                if (parent.model) {
+                    if (parent.reasoningEffort != null && !isReasoningEffort(parent.reasoningEffort)) {
+                        throw new CapabilityGrantError("The parent's reasoning effort is invalid. No child was created.");
+                    }
+                    if (parent.contextTier != null && parent.contextTier !== "default" && parent.contextTier !== "long_context") {
+                        throw new CapabilityGrantError("The parent's context tier is invalid. No child was created.");
+                    }
+                    runConfig.model = parent.model;
+                    runConfig.reasoningEffort = parent.reasoningEffort ?? undefined;
+                    runConfig.contextTier = parent.contextTier ?? undefined;
+                }
+                const boundAgent = resolveBoundAgentBackfill(runConfig, parent.agentId, userAgents);
+                if (boundAgent) {
+                    runConfig.boundAgentName = boundAgent;
+                    if (!runConfig.promptLayering) runConfig.promptLayering = { kind: "app-agent" };
+                }
+                runConfig.isCrawler = resolveCrawlerRole(runConfig.agentIdentity, runConfig.boundAgentName, userAgents, systemAgents);
+                runConfig.isHarvester = runConfig.isCrawler;
+                const workflowAgentTools = await applyWorkflowToolContext(runConfig, lineage, store);
+                if (store) {
+                    if (parent.workflowRef) runConfig.workflowContextTrigger = "lasting";
+                    runConfig.workflowContextOwnsCheck = () => store.sessionDefinitions.hasWorkflows(input.parentSessionId);
+                }
+                const provider = sessionManager.getWorkspaceProvider();
+                const defaults = await resolveWorkspaceDefaults(provider, {
+                    sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                    owner: parent.owner, isSystem: parent.isSystem,
+                }, { onError: message => activityCtx.traceInfo(`[captureSpawnTools] ${message}`) });
+                const withDefaults = applyWorkspaceDefaults(runConfig.workspace ?? null, defaults);
+                const workspace = withDefaults.workspace;
+                if (workspace) {
+                    const request: import("./types.js").WorkspaceAttachRequest = {
+                        sessionId: input.parentSessionId, rootSessionId: parent.rootSessionId ?? input.parentSessionId,
+                        workspace, revision: input.parentContext?.workspaceRevision || 1, workerNodeId: workerNodeId ?? os.hostname(),
+                        turnIndex, purpose: "turn",
+                    };
+                    const sent: import("./types.js").WorkspaceAttachRequest[] = [];
+                    const onAttach = (request: import("./types.js").WorkspaceAttachRequest) => {
+                        sent.push(request);
+                        sessionManager.holdWorkspaceFolders(input.parentSessionId, sent.map(request => ({
+                            root: request.workspace.root, ...(request.workspace.folder ? { folder: request.workspace.folder } : {}),
+                            ...(request.attachment ? { attachment: request.attachment } : {}),
+                            rootSessionId: request.rootSessionId, revision: request.revision, turnIndex: request.turnIndex,
+                        })));
+                    };
+                    const prepared = await prepareWorkspace(provider, { ...request, workspace: workingFolderOf(workspace) }, { onAttach });
+                    const optionalHome = !runConfig.workspace && withDefaults.homeIsWorkingFolder && defaults?.home?.required !== true;
+                    if (!prepared.ok && !optionalHome) throw new CapabilityGrantError(`The parent's workspace is unavailable (${prepared.code}: ${prepared.message}). No child was created.`);
+                    if (!prepared.ok) activityCtx.traceInfo(`[captureSpawnTools] optional home unavailable: ${prepared.code} ${prepared.message}`);
+                    if (prepared.ok) {
+                        const extras = workspace.extra ? await prepareWorkspaceExtras(provider, request,
+                            { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) }) : [];
+                        const bad = extras.find(extra => !extra.ok && extra.required);
+                        if (bad && !bad.ok) throw new CapabilityGrantError(`The parent's required extra folder '${bad.name}' is unavailable (${bad.code}: ${bad.message}). No child was created.`);
+                        const homeExtra = withDefaults.homeExtra ? extras.find(extra => extra.ok && extra.name === withDefaults.homeExtra) : undefined;
+                        runConfig.workspaceAttach = {
+                            root: prepared.root.name, rootPath: prepared.root.path, path: prepared.path, realPath: prepared.realPath,
+                            ...(prepared.adopt ? { adopt: prepared.adopt } : {}), ...(prepared.repo ? { repo: prepared.repo } : {}),
+                            ...(withDefaults.homeIsWorkingFolder ? { homeIsWorkingFolder: true } : {}),
+                            ...(withDefaults.defaultNames.length ? { defaultExtras: [...withDefaults.defaultNames] } : {}),
+                            ...(homeExtra?.ok && homeExtra.adopt ? {
+                                home: { name: homeExtra.name, path: homeExtra.attach.path, adopt: homeExtra.adopt, ...(homeExtra.repo ? { repo: homeExtra.repo } : {}) },
+                            } : {}),
+                            ...(prepared.readOnly ? { readOnly: true } : {}),
+                            revision: request.revision, rootSessionId: request.rootSessionId, turnIndex: request.turnIndex,
+                            ...(typeof activityCtx.sessionId === "string" ? { affinityKey: activityCtx.sessionId } : {}),
+                            extras: extras.flatMap(extra => extra.ok ? [extra.attach] : []),
+                            extrasUnavailable: extras.flatMap(extra => extra.ok ? [] : [{
+                                name: extra.name, root: extra.root, ...(extra.folder ? { folder: extra.folder } : {}),
+                                code: extra.code, message: extra.message,
+                            }]),
+                        };
+                    }
+                }
+                let epochStart = false;
+                if (sessionStore && supportsVersionedSnapshots(sessionStore)) {
+                    // Reconcile exactly as a turn does: legacy hydrate cannot open an epoch chain.
+                    const preamble = await runTurnPreamble({
+                        store: sessionStore, sessionStateDir: sessionManager.getSessionStateDir(), sessionId: input.parentSessionId,
+                        transcriptEpoch, expectedVersion: 0, turnKey: `capture-spawn:${input.parentSessionId}:${turnIndex}`,
+                        dropWarmSession: () => sessionManager.dropWarmSession(input.parentSessionId),
+                        trace: activityTrace(activityCtx, "captureSpawnTools"),
+                    });
+                    epochStart = preamble.kind === "fresh" && preamble.uncommittedDiscard && turnIndex > 0;
+                }
+                await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
+                    turnIndex, transcriptEpoch, lockHeld: true,
+                    ...(epochStart ? { epochStart: true } : {}),
                     trace: activityTrace(activityCtx, "captureSpawnTools"),
+                    ...(workflowAgentTools ? { workflowAgentTools } : {}),
                 });
-                epochStart = preamble.kind === "fresh" && preamble.uncommittedDiscard && turnIndex > 0;
-            }
-            await sessionManager.getOrCreate(input.parentSessionId, runConfig, {
-                turnIndex, transcriptEpoch, lockHeld: true,
-                ...(epochStart ? { epochStart: true } : {}),
-                trace: activityTrace(activityCtx, "captureSpawnTools"),
-                ...(workflowAgentTools ? { workflowAgentTools } : {}),
-            });
-        }));
+        });
+    });
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

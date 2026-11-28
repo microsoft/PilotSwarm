@@ -3,6 +3,8 @@ import {
     PilotSwarmManagementClient,
     WebPilotSwarmManagementClient,
     createManagementClient,
+    createSessionBlobStore,
+    FilesystemArtifactStore,
     createFactStoreForUrl,
     createWebFactStore,
     createGraphStoreForUrl,
@@ -14,6 +16,7 @@ import {
     ModelProviderRegistry,
     loadSkills,
     loadAgentFiles,
+    type ArtifactStore,
     type SharedManagementSurface,
     type FactStore,
     type EnhancedFactStore,
@@ -102,6 +105,11 @@ interface ServerContextBase {
      */
     originatingSessionId?: string;
     /**
+     * Workflow capability advert captured from /api/v1/bootstrap in web mode (proposed; owner to confirm),
+     * used to detect older portals that predate skills/validate/card routes.
+     */
+    workflowsAdvert?: Record<string, unknown> | null;
+    /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
      * from /auth/me and /bootstrap; direct mode is privileged (`admin`) with
@@ -165,6 +173,27 @@ export function originatingSessionIdFromEnv(env: Record<string, string | undefin
     return value && value.length <= 256 ? value : null;
 }
 
+/**
+ * Direct-mode artifact store builder, mirroring NodeSdkTransport.createArtifactStore():
+ * uses Azure Blob Storage when configured (failing fast on broken blob config) and falls back
+ * to FilesystemArtifactStore(ARTIFACT_DIR) otherwise so package Workflows work in direct mode.
+ */
+export function createDirectArtifactStore(env: Record<string, string | undefined> = process.env): ArtifactStore {
+    const sessionStateDir = (env.SESSION_STATE_DIR || "").trim() || undefined;
+    const artifactDir = (env.ARTIFACT_DIR || "").trim() || undefined;
+    try {
+        const blobStore = createSessionBlobStore(env, { sessionStateDir });
+        if (blobStore) return blobStore;
+    } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new Error(
+            `Azure Blob Storage is configured but cannot be initialized (reason: ${reason}). `
+            + "Either fix the configuration or unset AZURE_STORAGE_CONNECTION_STRING / PILOTSWARM_BLOB_USE_MANAGED_IDENTITY / PILOTSWARM_USE_MANAGED_IDENTITY / AZURE_STORAGE_ACCOUNT_URL to fall back to the local filesystem artifact store.",
+        );
+    }
+    return new FilesystemArtifactStore(artifactDir);
+}
+
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
     let client: PilotSwarmClient;
     let mgmt: SharedManagementSurface;
@@ -175,6 +204,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
     let admin = false;
     let ctxRole: string | null = null;
     let ctxAuthz = { ownershipEnforced: false, defaultVisibility: "private", systemVisibility: "read", adminScope: "unrestricted", policyVersion: 0 };
+    let workflowsAdvert: Record<string, unknown> | null = null;
     let webAgents: AgentConfig[] | null = null;
 
     if (opts.apiUrl) {
@@ -225,6 +255,9 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
                     policyVersion: Number(boot.authz.policyVersion) || 0,
                 };
             }
+            if (boot?.workflows && typeof boot.workflows === "object" && !Array.isArray(boot.workflows)) {
+                workflowsAdvert = boot.workflows as Record<string, unknown>;
+            }
         } catch {
             // leave defaults
         }
@@ -251,10 +284,18 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         // process holding DATABASE_URL is definitionally privileged.
         admin = true;
         ctxRole = "admin";
+        // Build artifactStore before starting client so a broken blob config fails fast without leaking a started client.
+        const artifactStore = createDirectArtifactStore(process.env);
+        const blobEnabled = Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING);
         client = new PilotSwarmClient({ store: opts.store });
         await client.start();
-        mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands !== undefined ? { workflowCommands: opts.workflowCommands } : {}),
-            ...workflowScriptsOptionFromEnv() });
+        mgmt = new PilotSwarmManagementClient({
+            store: opts.store,
+            blobEnabled,
+            artifactStore,
+            ...(opts.workflowCommands !== undefined ? { workflowCommands: opts.workflowCommands } : {}),
+            ...workflowScriptsOptionFromEnv(),
+        });
         await mgmt.start();
 
         // Enhanced facts + graph provisioning from HORIZON_* env — the same
@@ -371,6 +412,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         role: ctxRole,
         authz: ctxAuthz,
         workflowCommands: opts.workflowCommands !== null,
+        ...(workflowsAdvert ? { workflowsAdvert } : {}),
         // The session this server acts for, when it was started for one (review SF-2).
         ...(originatingSessionIdFromEnv() ? { originatingSessionId: originatingSessionIdFromEnv()! } : {}),
         webMode: Boolean(opts.apiUrl),

@@ -34,6 +34,9 @@ export async function workflowAdvertisement(ctx: ServerContext): Promise<Record<
  * picks up provider changes, matching worker semantics.
  */
 export function buildCapabilities(ctx: ServerContext) {
+    const advert = ctx.webMode && ctx.workflowsAdvert && typeof ctx.workflowsAdvert === "object"
+        ? ctx.workflowsAdvert
+        : null;
     return {
         mode: ctx.webMode ? "web" : "direct",
         admin: ctx.admin,
@@ -77,7 +80,15 @@ export function buildCapabilities(ctx: ServerContext) {
         // client's readWorkflow: the view, its pages and an execution's whole
         // value), and update_workflow only with the test-only option
         // workflowCommands.
-        workflow_tools: { read: true, commands: ctx.workflowCommands === true },
+        workflow_tools: {
+            read: true,
+            catalog: true,
+            session_for_workflow: true,
+            skills: advert ? Boolean(advert.skills) : true,
+            commands: ctx.workflowCommands === true,
+            definitions: ctx.workflowCommands === true && (advert ? Boolean(advert.validate && advert.card) : true),
+            input: ctx.workflowCommands === true && (ctx.webMode ? Boolean(advert?.input) : true),
+        },
     };
 }
 

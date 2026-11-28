@@ -377,7 +377,7 @@ export interface CreateWorkflowRequest {
 }
 
 /** Operation ids are stored as TEXT and compared exactly; refuse text PostgreSQL would reject or rewrite. */
-function requireOperationId(operationId: string): void {
+export function requireOperationId(operationId: string): void {
     if (typeof operationId !== "string" || !operationId.trim() || operationId.length > 256 || !isStorableText(operationId)) {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
             "operation_id must be 1-256 characters of valid Unicode text without NUL characters.");
@@ -1594,6 +1594,19 @@ export async function sendTypedWorkflowInput(host: TypedInputHost, request: Type
 }
 
 /**
+ * A person (or host-system) caller giving a Workflow run typed input over SDK, Web API, or MCP.
+ * Skips session-to-session typedInputAuthority (the caller was authorized by the host/portal as owner/admin),
+ * hides test runs when test mode is off, and refuses contracts accepted only by `from:`-bound receive steps.
+ */
+export async function sendTypedWorkflowInputForPerson(
+    host: TypedInputHost,
+    request: TypedInputRequest,
+    options: { hideTestRuns?: boolean } = {},
+): Promise<StoredOperation<WorkflowInputReceipt>> {
+    return acceptTypedInput(host, request, null, { trustedPersonSender: true, hideTestRuns: options.hideTestRuns === true });
+}
+
+/**
  * A send state's message given to its workflow recipient as typed input,
  * from the sending workflow: send_workflow_input's checks and acceptance with
  * the message's frozen contract, correlation and payload, the exchange id as
@@ -1623,18 +1636,29 @@ interface TypedInputRequest {
     operationId: string;
 }
 
-async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest, sendExchangeId: string | null)
-    : Promise<StoredOperation<WorkflowInputReceipt>> {
+async function acceptTypedInput(
+    host: TypedInputHost,
+    request: TypedInputRequest,
+    sendExchangeId: string | null,
+    options: { trustedPersonSender?: boolean; hideTestRuns?: boolean } = {},
+): Promise<StoredOperation<WorkflowInputReceipt>> {
     requireOperationId(request.operationId);
     const { workflowSessionId, senderSessionId } = request;
+    const trustedPersonSender = options.trustedPersonSender === true;
+    if (trustedPersonSender && !senderSessionId.startsWith("person:")) {
+        throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "trustedPersonSender requires a person: senderSessionId.");
+    }
     const definition = await host.store.readDefinition(workflowSessionId);
     if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Session ${workflowSessionId} is not a durable Workflow.`);
     if (definition.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
     // An earlier refusal on the catalog's rows; a fresh input is decided again
     // when it is accepted, under the session locks (store.acceptInput).
-    const authority = await typedInputAuthority(host.catalog, host.store, workflowSessionId, senderSessionId);
-    if (authority !== "allowed") throw new WorkflowStoreError("FORBIDDEN", TYPED_INPUT_REFUSALS[authority]);
-    const runs = await host.store.listRuns(workflowSessionId);
+    if (!trustedPersonSender) {
+        const authority = await typedInputAuthority(host.catalog, host.store, workflowSessionId, senderSessionId);
+        if (authority !== "allowed") throw new WorkflowStoreError("FORBIDDEN", TYPED_INPUT_REFUSALS[authority]);
+    }
+    const allRuns = await host.store.listRuns(workflowSessionId);
+    const runs = options.hideTestRuns === true ? allRuns.filter(item => item.mode !== "test") : allRuns;
     const run = request.runId ? runs.find(item => item.runId === request.runId) : runs.find(item => item.mode === "live");
     if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", request.runId ? `Run ${request.runId} is not a run of this workflow.` : "This workflow has no live run to give input to.");
     if (typeof request.contract !== "string") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "contract must name a contract, such as BuildEvent@1.");
@@ -1642,14 +1666,25 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
     const contract = ir.contracts[request.contract];
     const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? (Array.isArray(node.contract) ? node.contract : [node.contract]) : []));
+    const openReceived = trustedPersonSender
+        ? new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" && node.from === null
+            ? (Array.isArray(node.contract) ? node.contract : [node.contract]) : []))
+        : received;
+    const advertisedReceives = [...openReceived].filter(c => run.mode === "test" || c !== WORKFLOW_ENDED_CONTRACT).sort();
     const listReceived = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" && Array.isArray(node.contract) ? node.contract : []));
     if (request.contract === WORKFLOW_ENDED_CONTRACT && run.mode !== "test") {
         throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `Contract '${WORKFLOW_ENDED_CONTRACT}' is reserved for the runtime and cannot be sent directly.`,
-            { receives: [...received].filter(c => c !== WORKFLOW_ENDED_CONTRACT).sort() });
+            { receives: advertisedReceives });
     }
     const builtInEndedInTest = run.mode === "test" && request.contract === WORKFLOW_ENDED_CONTRACT && received.has(WORKFLOW_ENDED_CONTRACT);
     if ((!contract && !builtInEndedInTest) || !received.has(request.contract)) {
-        throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `This workflow does not receive contract '${request.contract}'.`, { receives: [...received].sort() });
+        throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `This workflow does not receive contract '${request.contract}'.`,
+            { receives: trustedPersonSender ? advertisedReceives : [...received].sort() });
+    }
+    if (trustedPersonSender && !openReceived.has(request.contract)) {
+        throw new WorkflowStoreError("UNSUPPORTED_CONTRACT",
+            `Contract '${request.contract}' is only received from a bound session ('from:'), so a person cannot send it.`,
+            { receives: advertisedReceives });
     }
     let payloadText: string;
     try { payloadText = boundedCanonicalJson(request.payload, "The input payload"); }
@@ -1689,6 +1724,7 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
         workflowSessionId, runId: run.runId, messageId: randomUUID(), senderSessionId, operationId: request.operationId, requestSha256,
         contract: request.contract, correlationText, payloadText, ttlSeconds, limits: WORKFLOW_INBOX_LIMITS,
         ...(sendExchangeId !== null ? { sendExchangeId } : {}),
+        ...(trustedPersonSender ? { trustedPersonSender: true } : {}),
     });
     if (stored.receipt.claimedBy && ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
         await host.duroxideClient.enqueueEvent(stored.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,

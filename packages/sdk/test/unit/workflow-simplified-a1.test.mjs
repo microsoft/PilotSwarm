@@ -76,11 +76,11 @@ test("nesting refusals keep the limit and say it in words; ordinary sessions kee
     assert.equal(spawnNestingRefusal(2, 2, false),
         "[SYSTEM: spawn_agent failed — you are already at nesting level 2 (max 2). Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]");
     const inside = spawnNestingRefusal(2, 2, true);
-    assert.match(inside, /^\[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level 2 \(the top-level session is level 0\), /);
-    assert.match(inside, /sessions inside a Workflow stop at level 2\. A sub-agent would be at level 3\. Do this work yourself\.\]$/);
+    assert.match(inside, /^\[SYSTEM: spawn_agent failed — this session is at level 2, and nothing goes past level 2 /);
+    assert.match(inside, /the first Workflow in a chain is free, and an agent step sits at its Workflow's level\)\. A sub-agent here would be at level 3\. Do this work yourself\.\]$/);
     // An agent node's session at level 1 may still spawn one level (level 2); its sub-agent at level 2 may not (level 3).
-    assert.deepEqual(spawnNesting(0, 2, { sessionId: "C", level: 1, agentRoot: ROOT }), { childNestingLevel: 2, maxNestingLevel: 2 });
-    assert.deepEqual(spawnNesting(0, 2, { sessionId: "G", level: 2, agentRoot: { ...ROOT, distance: 1 } }), { childNestingLevel: 3, maxNestingLevel: 2 });
+    assert.deepEqual(spawnNesting(0, 2, { sessionId: "C", level: 1, hasWorkflow: true, agentRoot: ROOT }), { childNestingLevel: 2, maxNestingLevel: 2 });
+    assert.deepEqual(spawnNesting(0, 2, { sessionId: "G", level: 2, hasWorkflow: true, agentRoot: { ...ROOT, distance: 1 } }), { childNestingLevel: 3, maxNestingLevel: 2 });
 });
 
 test("an agent node too deep is refused in words naming its node and the levels", async () => {
@@ -91,8 +91,9 @@ test("an agent node too deep is refused in words naming its node and the levels"
     const answer = await host.spawn({ workflowSessionId: "D", childSessionId: "X", stateId: "summarize", controllingSessionId: "C",
         prompt: "p", clientMessageId: "m", task: { source: "prompt", prompt: "p" } });
     assert.equal(answer.refused.code, "forbidden");
-    assert.equal(answer.refused.message, "Node summarize cannot start its agent: its session would be at level 3 (the top-level session is level 0), "
-        + "and sessions inside a Workflow stop at level 2. Start this Workflow from a session nearer the top.");
+    assert.equal(answer.refused.message, "Node summarize cannot start its agent: its session would be at level 3, and nothing goes past level 2 "
+        + "(each sub-agent or Workflow is one level below whoever started it, the first Workflow in a chain is free, and an agent step sits at its Workflow's level). "
+        + "Start this Workflow from a session nearer the top.");
 });
 
 test("the base guidance hands prescriptive work to a Workflow (O3)", () => {

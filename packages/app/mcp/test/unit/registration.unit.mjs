@@ -138,8 +138,9 @@ const ALWAYS_TOOLS = [
     "set_session_visibility", "grant_session_share", "revoke_session_share",
     "list_session_shares", "list_known_users",
 ];
-// Workflow: the read is always there (Workflows are always on); a person's commands, update_workflow, only with the test-only option.
-const WORKFLOW_TOOLS = ["read_workflow"];
+// Workflow: discovery/read/skills/session creation are always registered; update_workflow, workflow_definition, and send_workflow_input require workflowCommands: true.
+const WORKFLOW_TOOLS = ["read_workflow", "list_creatable_workflows", "create_session_for_workflow", "read_workflow_skill"];
+const WORKFLOW_COMMAND_TOOLS = ["update_workflow", "workflow_definition", "send_workflow_input"];
 
 function expectAll(names, tools, present, label) {
     const misses = tools.filter((t) => names.has(t) !== present);
@@ -156,27 +157,27 @@ async function main() {
         expectAll(names, [...GRAPH_TOOLS, ...GRAPH_ADMIN], false, "bare ctx: no graph tools");
         expectAll(names, WEB_TOOLS, false, "bare ctx: no web-only tools");
         expectAll(names, ADMIN_TOOLS, false, "bare ctx: no admin tools");
-        expectAll(names, ["update_workflow"], false, "bare ctx: no workflow commands (test-only option)");
+        expectAll(names, WORKFLOW_COMMAND_TOOLS, false, "bare ctx: no workflow command/definition tools");
     }
 
     // 2. Fully-loaded admin web ctx: everything present.
     {
         const names = await listToolNames(makeCtx({ enhanced: true, graph: true, admin: true, web: true }));
         expectAll(names, ALWAYS_TOOLS, true, "full ctx: unconditional tools present");
-        expectAll(names, WORKFLOW_TOOLS, true, "full ctx: read_workflow present");
+        expectAll(names, WORKFLOW_TOOLS, true, "full ctx: workflow discovery/read/skill tools present");
         expectAll(names, [...ENHANCED_TOOLS, ...EMBEDDER_ADMIN], true, "full ctx: enhanced-facts tools present");
         expectAll(names, [...GRAPH_TOOLS, ...GRAPH_ADMIN], true, "full ctx: graph tools present");
         expectAll(names, WEB_TOOLS, true, "full ctx: web-only tools present");
         expectAll(names, ADMIN_TOOLS, true, "full ctx: admin tools present");
     }
 
-    // 2b. Workflows are always on: the read is registered, and the test-only option adds update_workflow.
+    // 2b. Workflows are always on: discovery/read/skill tools are always registered, and workflowCommands adds update_workflow + workflow_definition.
     {
         const names = await listToolNames(makeCtx({ enhanced: true, graph: true, admin: true, web: true }));
         expectAll(names, ALWAYS_TOOLS, true, "unconditional tools present");
-        expectAll(names, WORKFLOW_TOOLS, true, "read_workflow present");
+        expectAll(names, WORKFLOW_TOOLS, true, "workflow discovery/read/skill tools present");
         const commands = await listToolNames({ ...makeCtx(), workflowCommands: true });
-        expectAll(commands, [...WORKFLOW_TOOLS, "update_workflow"], true, "the test-only option adds update_workflow");
+        expectAll(commands, [...WORKFLOW_TOOLS, ...WORKFLOW_COMMAND_TOOLS], true, "workflowCommands adds update_workflow and workflow_definition");
     }
 
     // 3. Non-admin with providers: read tools present, [admin] subset absent.
@@ -252,6 +253,20 @@ async function main() {
                 && payload.status === 409
                 && payload.session_id === SYSTEM_ID);
         }
+    }
+
+    // 7. Task 4: Direct-mode createDirectArtifactStore falls back to filesystem and fails fast on broken blob config.
+    {
+        const { createDirectArtifactStore } = await import("../../dist/src/context.js");
+        const fsStore = createDirectArtifactStore({});
+        record("direct artifactStore: filesystem fallback non-null", Boolean(fsStore && typeof fsStore.uploadArtifact === "function"));
+        let threwBroken = false;
+        try {
+            createDirectArtifactStore({ AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=https" });
+        } catch (err) {
+            threwBroken = /Azure Blob Storage is configured but cannot be initialized/.test(String(err?.message || err));
+        }
+        record("direct artifactStore: broken blob config fails fast", threwBroken);
     }
 
     const failed = results.filter((r) => !r.ok);

@@ -79,13 +79,17 @@ describe("Start keeps spawn_agent's limits (stage 2.4)", () => {
             await h.q("UPDATE SCHEMA.workflow_runs SET status = 'completed', finished_at = now() WHERE workflow_session_id = $1", [fiftieth.workflowId]);
             expect(await h.store.sessionDefinitions.runningChildren(session)).toBe(49);
             expect((await start("start-5")).revision).toBe(1);
-            // The depth limit: a session at level 2 starts nothing.
+            // The depth limit (I9): a caller with no Workflow at level 2 starts its first Workflow at level 2 (Chain #13),
+            // while a level-3 caller or a level-2 Workflow starting a child Workflow (Chain #14) is refused WORKFLOW_NESTING_LIMIT.
             const other = randomUUID();
             await h.catalog.createSession(other, { owner: OWNER });
             const otherId = (await saveSessionWorkflowDefinition(host, { ownerSessionId: other, name: "waiter", yaml: YAML, expected: null,
                 actor: { kind: "session", sessionId: other }, operationId: "save-2", by: "session" })).receipt.definitionId;
+            const firstAtTwo = await startSessionWorkflowDefinition(host, { ownerSessionId: other, definition: { definitionId: otherId }, inputs: {}, actor: ENGINE,
+                operationId: "first-at-two", nestingLevel: 2 });
+            expect(firstAtTwo.revision).toBe(1);
             await refused(startSessionWorkflowDefinition(host, { ownerSessionId: other, definition: { definitionId: otherId }, inputs: {}, actor: ENGINE,
-                operationId: "deep", nestingLevel: 2 }), "WORKFLOW_NESTING_LIMIT");
+                operationId: "deep", nestingLevel: 3 }), "WORKFLOW_NESTING_LIMIT");
             expect((await startSessionWorkflowDefinition(host, { ownerSessionId: other, definition: { definitionId: otherId }, inputs: {}, actor: ENGINE,
                 operationId: "child-level", nestingLevel: 1 })).revision).toBe(1);
         } finally {

@@ -93,3 +93,32 @@ test("deep source reports analysis limits, not an internal error or an invented 
     assert.equal(compiled.valid, true);
     assert.ok(compiled.diagnostics.some(item => item.code === "WORKFLOW_SCRIPT_UNCHECKED" && item.severity === "warning"));
 });
+
+test("context.vars access warns and points to context.kv without failing compilation", () => {
+    for (const source of [
+        "const flag = context.vars.flag; await setResult('success', { flag });",
+        "const flag = context?.vars?.flag; await setResult('success', { flag });",
+        "const flag = context['vars'].flag; await setResult('success', { flag });",
+        "const { vars } = context; await setResult('success', { vars });",
+    ]) {
+        assert.equal(scriptToolRequirements(source).contextVars, true, source);
+        const compiled = compileWorkflow(yaml(source));
+        assert.equal(compiled.valid, true, source);
+        const warning = compiled.diagnostics.find(item => item.code === "WORKFLOW_SCRIPT_CONTEXT_VARS");
+        assert.ok(warning, source);
+        assert.equal(warning.severity, "warning");
+        assert.equal(warning.path, "states.poll.source");
+        assert.match(warning.message, /context\.kv/);
+    }
+    for (const source of [
+        "const flag = context.kv.flag; await setResult('success', { flag });",
+        "const flag = context.kv.vars; await setResult('success', { flag });",
+        "function helper(context) { return context.vars.flag; } await setResult('success', {});",
+        "const text = 'context.vars.flag'; await setResult('success', { text });",
+    ]) {
+        assert.equal(scriptToolRequirements(source).contextVars, undefined, source);
+        const compiled = compileWorkflow(yaml(source));
+        assert.equal(compiled.valid, true, source);
+        assert.equal(compiled.diagnostics.some(item => item.code === "WORKFLOW_SCRIPT_CONTEXT_VARS"), false, source);
+    }
+});

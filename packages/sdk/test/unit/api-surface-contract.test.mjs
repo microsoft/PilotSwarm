@@ -103,3 +103,11 @@ test("agent-package and worker operations stay behind management clients", () =>
     assert.doesNotMatch(mcp, /\b(?:ctx\.web|web)\.ops\.(?:listAgentPackages|uploadAgentPackage|getAgentPackage|setAgentPackage|pinAgentPackage|deleteAgentPackage|republishAgentPackage)/,
         "MCP package tools must use management methods");
 });
+
+test("Task 3: Phase 4 Workflow operations are management-owned on both direct and web clients", () => {
+    for (const name of ["createSessionForWorkflow", "validateWorkflowDefinition", "readWorkflowSkills", "readSessionWorkflowCard"]) {
+        assert.equal(operationRequiresManagementMethod(name), true, `${name} must be management-owned`);
+        assert.equal(direct.has(name), true, `direct management missing ${name}`);
+        assert.equal(web.has(name), true, `web management missing ${name}`);
+    }
+});

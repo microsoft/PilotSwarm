@@ -124,7 +124,8 @@ function requireUserPrincipal(authContext, methodName) {
 // readWorkflow is content-bearing (a run's outputs, KV, executions and
 // message previews, and the definition's revisions), so every one of its
 // selectors is gated whatever the switch says (adversarial review SF-1).
-const ENFORCED_NEW_METHODS = new Set(["updateWorkflow", "readWorkflow", "listSessionWorkflowDefinitions", "readSessionWorkflowDefinition",
+const ENFORCED_NEW_METHODS = new Set(["updateWorkflow", "sendWorkflowInput", "readWorkflow", "listSessionWorkflowDefinitions", "readSessionWorkflowDefinition",
+    "readSessionWorkflowCard",
     "saveSessionWorkflowDefinition", "startSessionWorkflowDefinition", "deleteSessionWorkflowDefinition",
     // Stage 2.3: a person's Make a copy and newer package version.
     "copySessionWorkflowDefinition", "updateSessionWorkflowPackage"]);
@@ -905,12 +906,23 @@ export class PortalRuntime {
                 const { yaml: _yaml, ...revision } = reader.revision;
                 return { ...reader, revision, viewer };
             }
+            case "readSessionWorkflowCard":
+                return this.transport.readSessionWorkflowCard(safeParams.sessionId, { name: safeParams.name });
+            case "readWorkflowSkills":
+                return this.transport.readWorkflowSkills(
+                    safeParams.name !== undefined && safeParams.name !== null ? { name: safeParams.name } : {},
+                );
+            case "validateWorkflowDefinition":
+                return this.transport.validateWorkflowDefinition(safeParams.yaml);
             case "saveSessionWorkflowDefinition":
                 return this.transport.saveSessionWorkflowDefinition(safeParams.sessionId, { name: safeParams.name, yaml: safeParams.yaml,
                     definitionId: safeParams.definitionId ?? null, expectedRevision: safeParams.expectedRevision ?? null, operationId: safeParams.operationId },
-                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? owner.email ?? null } : null });
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? owner.email ?? null } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
             case "startSessionWorkflowDefinition":
-                return this.transport.startSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
+                return this.transport.startSessionWorkflowDefinition(safeParams.sessionId, {
+                    ...(safeParams.definitionId !== undefined ? { definitionId: safeParams.definitionId } : {}),
+                    ...(safeParams.name !== undefined ? { name: safeParams.name } : {}),
                     revision: safeParams.revision ?? null, runAgainOf: safeParams.runAgainOf ?? null, inputs: safeParams.inputs ?? {},
                     vars: safeParams.vars ?? null, notifyParent: safeParams.notifyParent !== false, operationId: safeParams.operationId,
                     ...(safeParams.key !== undefined ? { key: safeParams.key } : {}),
@@ -918,27 +930,50 @@ export class PortalRuntime {
                     // OF-S2-7: agent node models chosen at start (the SDK checks them against the revision and the owning session's catalog).
                     ...(safeParams.agentModels !== undefined && safeParams.agentModels !== null ? { agentModels: safeParams.agentModels } : {}),
                     ...(safeParams.decisionModels !== undefined && safeParams.decisionModels !== null ? { decisionModels: safeParams.decisionModels } : {}) },
-                    { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
             case "deleteSessionWorkflowDefinition":
-                return this.transport.deleteSessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
+                return this.transport.deleteSessionWorkflowDefinition(safeParams.sessionId, {
+                    ...(safeParams.definitionId !== undefined ? { definitionId: safeParams.definitionId } : {}),
+                    ...(safeParams.name !== undefined ? { name: safeParams.name } : {}),
                     operationId: safeParams.operationId },
-                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? null } : null });
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? null } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
             // Stage 2.3: a person's Make a copy of a package's locked definition, and its package's newer version for the next
             // Workflow, after the session:manage gate above.
             case "copySessionWorkflowDefinition":
-                return this.transport.copySessionWorkflowDefinition(safeParams.sessionId, { definitionId: safeParams.definitionId,
+                return this.transport.copySessionWorkflowDefinition(safeParams.sessionId, {
+                    ...(safeParams.definitionId !== undefined ? { definitionId: safeParams.definitionId } : {}),
+                    ...(safeParams.name !== undefined ? { name: safeParams.name } : {}),
                     revision: safeParams.revision ?? null, operationId: safeParams.operationId },
-                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? owner.email ?? null } : null });
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? owner.email ?? null } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
             case "updateSessionWorkflowPackage":
-                return this.transport.updateSessionWorkflowPackage(safeParams.sessionId, { definitionId: safeParams.definitionId,
+                return this.transport.updateSessionWorkflowPackage(safeParams.sessionId, {
+                    ...(safeParams.definitionId !== undefined ? { definitionId: safeParams.definitionId } : {}),
+                    ...(safeParams.name !== undefined ? { name: safeParams.name } : {}),
                     operationId: safeParams.operationId },
-                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? null } : null });
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject, displayName: owner.displayName ?? null } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
             case "updateWorkflow":
                 // The session the command comes from, when the caller names one: a definition operation from inside a Workflow
                 // is refused (review SF-2).
                 return this.transport.updateWorkflow(safeParams.sessionId, safeParams.command,
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null,
                         ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
+            case "sendWorkflowInput": {
+                const input = {
+                    contract: safeParams.contract,
+                    ...(Object.hasOwn(safeParams, "payload") ? { payload: safeParams.payload } : {}),
+                    ...(safeParams.correlation !== undefined ? { correlation: safeParams.correlation } : {}),
+                    operationId: safeParams.operationId,
+                    ...(safeParams.ttlSeconds !== undefined ? { ttlSeconds: safeParams.ttlSeconds } : {}),
+                    ...(safeParams.runId !== undefined ? { runId: safeParams.runId } : {}),
+                };
+                return this.transport.sendWorkflowInput(safeParams.sessionId, input,
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
+            }
             // Session workspaces: the wait for the answer holds this request,
             // so the caller's timeout is bounded like the other long waits.
             case "setSessionWorkspace":
@@ -1177,6 +1212,7 @@ export class PortalRuntime {
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
+                    ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }

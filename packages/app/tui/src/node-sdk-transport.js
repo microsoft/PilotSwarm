@@ -1135,25 +1135,52 @@ export class NodeSdkTransport {
                 ? { provider: this.currentUser.provider, subject: this.currentUser.subject, displayName: this.currentUser.displayName ?? null } : null;
     }
 
+    async readSessionWorkflowCard(sessionId, ref) {
+        return this.mgmt.readSessionWorkflowCard(sessionId, ref);
+    }
+
+    async readWorkflowSkills(options = {}) {
+        return this.mgmt.readWorkflowSkills(options);
+    }
+
+    async validateWorkflowDefinition(yaml) {
+        return this.mgmt.validateWorkflowDefinition(yaml);
+    }
+
     async saveSessionWorkflowDefinition(sessionId, request, options = {}) {
-        return this.mgmt.saveSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+        return this.mgmt.saveSessionWorkflowDefinition(sessionId, request, {
+            principal: this._definitionPrincipal(options),
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     async startSessionWorkflowDefinition(sessionId, request, options = {}) {
-        return this.mgmt.startSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+        return this.mgmt.startSessionWorkflowDefinition(sessionId, request, {
+            principal: this._definitionPrincipal(options),
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     async deleteSessionWorkflowDefinition(sessionId, request, options = {}) {
-        return this.mgmt.deleteSessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+        return this.mgmt.deleteSessionWorkflowDefinition(sessionId, request, {
+            principal: this._definitionPrincipal(options),
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /** Stage 2.3: a person's Make a copy of a package's locked definition, and taking a package's newer version. */
     async copySessionWorkflowDefinition(sessionId, request, options = {}) {
-        return this.mgmt.copySessionWorkflowDefinition(sessionId, request, { principal: this._definitionPrincipal(options) });
+        return this.mgmt.copySessionWorkflowDefinition(sessionId, request, {
+            principal: this._definitionPrincipal(options),
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     async updateSessionWorkflowPackage(sessionId, request, options = {}) {
-        return this.mgmt.updateSessionWorkflowPackage(sessionId, request, { principal: this._definitionPrincipal(options) });
+        return this.mgmt.updateSessionWorkflowPackage(sessionId, request, {
+            principal: this._definitionPrincipal(options),
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}),
+        });
     }
 
     /** Stage 2.3 (P1): the package Workflow Definitions `viewer` can make a session for (the picker's Workflows group). */
@@ -1163,48 +1190,21 @@ export class NodeSdkTransport {
     }
 
     /**
-     * Stage 2.3 (P2, P3, D8): a session made for a package's Workflow Definition: a session with the coordinating
-     * instructions (its card and how to run it), the definition attached and locked at the package's version, its title
-     * naming it, and a first message (a system kickoff) that asks the session to greet the person and ask for the inputs it
-     * needs. The model is the one asked for, else the deployment's default (the picker offers the card's suggestion).
+     * Stage 2.3 (P2, P3, D8) / Phase 4: delegates to PilotSwarmManagementClient.createSessionForWorkflow
+     * while preserving separate principal (from owner ?? currentUser) vs owner (only when given).
      */
-    async createSessionForWorkflow(ref, { model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
-        const viewer = owner ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
-        const principal = viewer ? { provider: viewer.provider, subject: viewer.subject, displayName: viewer.displayName ?? viewer.email ?? null } : null;
-        const prepared = await this.mgmt.prepareSessionForWorkflow(ref, principal);
-        const session = await this.client.createSession({
-            ...(model ? { model } : {}),
-            ...(reasoningEffort ? { reasoningEffort } : {}),
-            ...(contextTier ? { contextTier } : {}),
-            systemMessage: prepared.systemMessage,
-            ...(owner ? { owner } : {}),
-            ...(groupId ? { groupId } : {}),
-            ...(visibility ? { visibility } : {}),
+    async createSessionForWorkflow(ref, opts = {}) {
+        if (!this.client) throw new Error("NodeSdkTransport is not started");
+        const viewer = opts?.owner ?? (this.currentUser?.provider && this.currentUser?.subject ? this.currentUser : null);
+        const principal = viewer
+            ? { provider: viewer.provider, subject: viewer.subject, displayName: viewer.displayName ?? viewer.email ?? null }
+            : null;
+        return this.mgmt.createSessionForWorkflow(ref, {
+            ...opts,
+            principal,
+            client: this.client,
+            onSession: (s) => this.sessionHandles.set(s.sessionId, s),
         });
-        this.sessionHandles.set(session.sessionId, session);
-        // Stage 2 review S2SF-F3: the attach takes exactly the package version the instructions were written from. When that
-        // version is no longer the active one (or the package is gone), nothing is attached and the session, which has had no
-        // turn, is deleted: no session is left whose instructions describe another version than the one it would run.
-        try {
-            await this.mgmt.attachSessionWorkflowPackage(session.sessionId, { ref: prepared.ref, operationId: `session-for-workflow:${session.sessionId}`,
-                coordinating: true, title: prepared.title, packageId: prepared.packageId, sha256: prepared.sha256 }, { principal });
-        } catch (error) {
-            this.sessionHandles.delete(session.sessionId);
-            await this.mgmt.deleteSession(session.sessionId).catch(() => {});
-            throw error;
-        }
-        await session.send(prepared.kickoff, {
-            bootstrap: true,
-            sender: { kind: "system", display: `${prepared.ref} kickoff`, origin: "api" },
-        });
-        const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
-        return {
-            sessionId: session.sessionId,
-            model: created?.model || null,
-            reasoningEffort: created?.reasoningEffort || reasoningEffort || undefined,
-            workflowRef: prepared.ref,
-            title: prepared.title,
-        };
     }
 
     /**
@@ -1220,6 +1220,14 @@ export class NodeSdkTransport {
             : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
         // The session the command comes from, when the portal passes one on (review SF-2).
         return this.mgmt.updateWorkflow(sessionId, command, { principal,
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
+    }
+
+    /** Workflow: deliver a typed message to a workflow session waiting at an open receive step. */
+    async sendWorkflowInput(sessionId, input, options = {}) {
+        const principal = Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
+            : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
+        return this.mgmt.sendWorkflowInput(sessionId, input, { principal,
             ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
     }
 

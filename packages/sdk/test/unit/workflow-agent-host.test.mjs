@@ -59,24 +59,42 @@ function hostOver(sessions, definitions = {}, creationConfig = null) {
     return { host, created, resolved };
 }
 
-test("a session's level counts its parents; a missing or cyclic lineage has none", async () => {
-    const sessions = rows({ C: { parentSessionId: "W" }, X: { parentSessionId: "Y" }, Y: { parentSessionId: "X" } });
+test("a session's level uses effectiveLevel (first Workflow free, platform system reset); a missing or cyclic lineage has none", async () => {
+    const sessions = rows({
+        C: { parentSessionId: "W" },
+        W2: { parentSessionId: "W", sessionKind: "workflow" },
+        W3: { parentSessionId: "W2", sessionKind: "workflow" },
+        W4: { parentSessionId: "W3", sessionKind: "workflow" },
+        SYS_ROOT: { parentSessionId: null, isSystem: true },
+        SYS_CHILD: { parentSessionId: "SYS_ROOT", isSystem: true },
+        SYS_W: { parentSessionId: "SYS_CHILD", sessionKind: "workflow" },
+        USER_SPAWNED_SYS: { parentSessionId: "C", isSystem: true },
+        X: { parentSessionId: "Y" },
+        Y: { parentSessionId: "X" },
+    });
     const get = async id => sessions[id] ?? null;
     assert.equal(await sessionLevel(get, "P"), 0);
-    assert.equal(await sessionLevel(get, "W"), 1);
-    assert.equal(await sessionLevel(get, "C"), 2);
+    assert.equal(await sessionLevel(get, "W"), 0);
+    assert.equal(await sessionLevel(get, "C"), 1);
+    assert.equal(await sessionLevel(get, "W2"), 1);
+    assert.equal(await sessionLevel(get, "W3"), 2);
+    assert.equal(await sessionLevel(get, "W4"), 3);
+    assert.equal(await sessionLevel(get, "SYS_ROOT"), 0);
+    assert.equal(await sessionLevel(get, "SYS_CHILD"), 0);
+    assert.equal(await sessionLevel(get, "SYS_W"), 0);
+    assert.equal(await sessionLevel(get, "USER_SPAWNED_SYS"), 2);
     assert.equal(await sessionLevel(get, "missing"), null);
     assert.equal(await sessionLevel(get, "X"), null);
     assert.equal(await sessionLevel(async id => (id === "Z" ? { parentSessionId: "gone" } : null), "Z"), null);
     assert.equal(SESSION_MAX_NESTING_LEVEL, 2);
 });
 
-test("an inline prompt's child is the workflow's child one level down, owned by the lineage, with the controlling agent's model", async () => {
+test("an inline prompt's child is at its Workflow's effective level (0 for a top-level Workflow), owned by the lineage, with the controlling agent's model", async () => {
     const { host, created, resolved } = hostOver(rows());
     assert.deepEqual(await host.spawn(request()), { spawned: true });
     assert.equal(resolved.length, 0);
     assert.deepEqual(created, [{
-        sessionId: "child-1", parentSessionId: "W", nestingLevel: 1, owner: OWNER, model: "azure-openai:gpt-test", reasoningEffort: "high",
+        sessionId: "child-1", parentSessionId: "W", nestingLevel: 0, owner: OWNER, model: "azure-openai:gpt-test", reasoningEffort: "high",
         title: "Workflow step: review", prompt: "[SYSTEM: wrapper]\n{}", clientMessageId: "workflow:W:run-1:agent:nx-1",
         sender: { kind: "agent", sessionId: "W", display: WORKFLOW_AGENT_PROMPT_SENDER },
     }]);
@@ -107,16 +125,46 @@ test("an agent node receives the Workflow's Start-time workspace, including pinn
 });
 
 test("a child deeper than the descendant limit, or of an unreadable lineage, is refused and nothing is created", async () => {
-    // A workflow at level 3: its agent step would be at level 3 (above max 2) and is refused.
-    const deep = hostOver(rows({ A: { parentSessionId: null }, B: { parentSessionId: "A" }, C: { parentSessionId: "B" }, D: { parentSessionId: "C" } }));
-    const refused = await deep.host.spawn(request({ workflowSessionId: "D" }));
+    // 4-deep Workflow chain P -> W1 (0) -> W2 (1) -> W3 (2) -> W4 (3): W4's step would be at level 3 (refused).
+    const chainSessions = rows({
+        W2: { parentSessionId: "W", sessionKind: "workflow" },
+        W3: { parentSessionId: "W2", sessionKind: "workflow" },
+        W4: { parentSessionId: "W3", sessionKind: "workflow" },
+    });
+    const deep = hostOver(chainSessions);
+    const refused = await deep.host.spawn(request({ workflowSessionId: "W4" }));
     assert.equal(refused.refused.code, "forbidden");
     assert.match(refused.refused.message, /level 3/);
+    assert.match(refused.refused.message, /nothing goes past level 2/);
+    assert.match(refused.refused.message, /the first Workflow in a chain is free/);
     assert.equal(deep.created.length, 0);
-    // A workflow at level 2 (e.g. a child Workflow): its agent step is at level 2, the last allowed.
-    const last = hostOver(rows({ A: { parentSessionId: null }, B: { parentSessionId: "A" }, C: { parentSessionId: "B" } }));
-    assert.deepEqual(await last.host.spawn(request({ workflowSessionId: "C" })), { spawned: true });
+    // 3-deep Workflow chain P -> W (0) -> W2 (1) -> W3 (2): W3's step sits at level 2 (last allowed).
+    const last = hostOver(chainSessions);
+    assert.deepEqual(await last.host.spawn(request({ workflowSessionId: "W3" })), { spawned: true });
     assert.equal(last.created[0].nestingLevel, 2);
+    // Soft-deleted ancestor hidden by getSession is still resolved when readLineage is supplied.
+    const softDeletedCreated = [];
+    const softDeletedHost = createWorkflowAgentNodeHost({
+        getSession: async id => (id === "W3" ? { parentSessionId: "W2-deleted", sessionKind: "workflow", owner: OWNER } : null),
+        readLineage: async id => (id === "W3" ? { sessionId: "W3", level: 2, hasWorkflow: true, agentRoot: null, deleted: false } : null),
+        resolveAgent: async () => null,
+        createChild: async spec => { softDeletedCreated.push(spec); },
+    });
+    assert.deepEqual(await softDeletedHost.spawn(request({ workflowSessionId: "W3", controllingSessionId: null })), { spawned: true });
+    assert.equal(softDeletedCreated[0].nestingLevel, 2);
+    // Unreadable or deleted workflow lineage via readLineage fails closed as unavailable before createChild.
+    for (const bad of [
+        { sessionId: "W", level: null, hasWorkflow: true, agentRoot: null, deleted: false },
+        { sessionId: "W", level: 0, hasWorkflow: true, agentRoot: null, deleted: true },
+    ]) {
+        const unreadableHost = createWorkflowAgentNodeHost({
+            getSession: async id => rows()[id] ?? null,
+            readLineage: async () => bad,
+            resolveAgent: async () => null,
+            createChild: async () => { throw new Error("not reached"); },
+        });
+        assert.equal((await unreadableHost.spawn(request())).refused?.code, "unavailable", JSON.stringify(bad));
+    }
     const lost = hostOver({});
     assert.equal((await lost.host.spawn(request())).refused.code, "unavailable");
     assert.equal(lost.created.length, 0);

@@ -227,16 +227,16 @@ describe("session: continue in the store", () => {
             expect((await store.listAgentInvocationsOfState(runId, "talk")).map(item => [item.nodeExecutionId, item.childSessionId]))
                 .toEqual([[first, agentSession], [second, agentSession]]);
             expect((await store.readAgentInvocationByChild(agentSession)).nodeExecutionId).toBe(second);
-            // RT-4: a session with two visits is one lineage row, not a cycle: level 2 (its sub-agent level 3, the workflow
-            // nesting maximum), its agent root the open visit.
+            // RT-4 / I9: a session with two visits is one lineage row, not a cycle: top-level Workflow's agent step is level 0
+            // (its sub-agent is level 1), its agent root the open visit.
             await catalog.createSession(agentSession, { parentSessionId: workflowSessionId });
             const mini = randomUUID();
             await catalog.createSession(mini, { parentSessionId: agentSession });
             const root = { childSessionId: agentSession, nodeExecutionId: second, workflowSessionId, controllingSessionId: parent };
-            expect(await store.readWorkflowLineage(agentSession)).toEqual({ sessionId: agentSession, level: 1, agentRoot: { ...root, distance: 0 }, deleted: false });
-            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 2, agentRoot: { ...root, distance: 1 }, deleted: false });
+            expect(await store.readWorkflowLineage(agentSession)).toEqual({ sessionId: agentSession, level: 0, hasWorkflow: true, agentRoot: { ...root, distance: 0 }, deleted: false });
+            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 1, hasWorkflow: true, agentRoot: { ...root, distance: 1 }, deleted: false });
             expect(spawnNesting(1, 2, await store.readWorkflowLineage(agentSession)))
-                .toEqual({ childNestingLevel: 2, maxNestingLevel: SESSION_MAX_NESTING_LEVEL });
+                .toEqual({ childNestingLevel: 1, maxNestingLevel: SESSION_MAX_NESTING_LEVEL });
             // A real-agent test's scope (workflowTestAgentScope) is the agent root's visit: the open one, not the first.
 
             // RT-5: the visits are counted in the store, with no cap. 1,001 older decided visits (copies of the first,
@@ -320,7 +320,7 @@ describe("session: continue in the store", () => {
                 nodeExecutionId: second })).toMatchObject({ kind: "accepted", receipt: { nodeExecutionId: second, outcome: "finish" } });
             expect(await store.recordAgentReminder({ childSessionId: agentSession, turn: 8, visit: second })).toMatchObject({ recorded: false, reason: "decided" });
             // With no visit open, the lineage's agent root is the newest visit, still one row.
-            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 2, agentRoot: { ...root, nodeExecutionId: second, distance: 1 }, deleted: false });
+            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 1, hasWorkflow: true, agentRoot: { ...root, nodeExecutionId: second, distance: 1 }, deleted: false });
         } finally {
             await catalog.close();
             await direct.end();

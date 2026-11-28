@@ -34,7 +34,7 @@ two (the mark, the command), so that other steps can run between them; `CheckAll
 header). `Inv_OneLive` does not count an agent session whose end command is on its way.
 `RecheckSeesEnding` says whether the spawn's check sees an agent session whose end was asked while one of its turns
 runs (the code: no, its orchestration reads Running until the turn ends). `cases.tsv`, `cases.json` and
-`tlc-templates.json` (134 cases: 89 before tf1 and i1) are written by
+`tlc-templates.json` (149 cases: 134 `WfContinuedSession` [89 before tf1 and i1] + 15 `WfBranchContinuedSession`) are written by
 
     I1_AFIX_HEAD=1e0ea856 I1_MERGE_HEAD=58e4d056 \
     G1B_HEAD=7024ef6f DRR1_HEAD=69d07073 DRR2_HEAD=5451a22e DRR1B_HEAD=7bd79a46 \
@@ -292,6 +292,29 @@ distinct states in 16 minutes. The PASS cases keep their state counts (`cc.safet
 `i1.fix-memory-live` 207,181, `i1.fix-memory-turn-fails` 53,250). A violation's count depends on when a worker finds it
 (two workers): `i1.cc-false-memory-claim` violated `Inv_NoFalseMemoryClaim` at 1,035 distinct states, the witness
 `i1.wit-loss-told` was reached at 983 and `limit.i1-turn-fails-untold` at 1,349.
+
+### Issue I8 (`session: continue` in named parallel branches)
+
+`WfBranchContinuedSession.tla` models an enclosing `parallel` state with named `branches:` that an outer loop can
+re-enter (`MaxForks = 2`, resetting per-scope `n.ordinal` to `1`), checking concurrent branch isolation, branch cuts
+(`failFast` / `join: { first: k }` / `parallel.timeoutSeconds`) racing against `completeAgentNode` CAS and `I1`'s
+post-report reply turns, owed cycle Stops resolved at run end with no re-entry, cross-fork session replacements,
+graceful stop (`run.stop`) with mixed idle/pending branches (`Q5`), and the deliberate `OrderByNodeOrdinalOnly` fault
+(bare `n.ordinal` ordering inverting fork-2 visit 1 behind fork-1 visit 2).
+
+Run on TLC 2.19 (2026-11-27, Temurin JDK 21.0.13.1, two workers): 15 of 15 `i8.*` cases as expected, no timeouts.
+
+| Case | Expected | Result |
+|---|---|---|
+| `i8.fix-two-branch-safety` | PASS | PASS, 2,700,838 distinct states (88 s) |
+| `i8.fix-two-branch-live` | PASS | PASS, 87,455 distinct states (13 s) |
+| `i8.fix-fail-branch-isolation` | PASS | PASS, 10,398 distinct states (2 s) |
+| `i8.fix-outer-loop-safety` | PASS | PASS, 644,319 distinct states (20 s) |
+| `i8.fix-outer-loop-live` | PASS | PASS, 644,319 distinct states (101 s) |
+| `i8.fix-two-branch-outer-safety` | PASS | PASS, 4,211,022 distinct states (128 s) |
+| `i8.fault-node-ordinal-only` (`OrderByNodeOrdinalOnly = TRUE`) | `Inv_MonotonicCycleOrder` violated | violated (104 distinct states) |
+| `i8.fault-node-ordinal-q5` (`OrderByNodeOrdinalOnly = TRUE`) | `Inv_StoppingKeepsActiveVisit` violated | violated (589 distinct states) |
+| `i8.wit-*` (7 non-vacuity witnesses) | reached | all 7 reached (`W_BranchLoopCommitRecall`, `W_CutPendingStopsVisit`, `W_CutAfterDoneKeepsReply`, `W_OuterForkReentry`, `W_CrossForkReplacement`, `W_StoppingMixedBranches`, `W_OwedCutThenRunEnd`) |
 
 ## How to run
 

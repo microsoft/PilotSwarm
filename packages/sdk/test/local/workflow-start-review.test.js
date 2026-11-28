@@ -207,7 +207,7 @@ describe("stage 2 review: a Start is receipt-first, and the budget of running ch
         }
     });
 
-    it("S2RT-F4: a person's Start on a session at nesting level 2 is refused with no claim, whatever depth it gives", { timeout: TIMEOUT }, async () => {
+    it("S2RT-F4 / I9: a level-2 sub-agent starts its first Workflow (Chain #13), while a level-3 session or child Workflow under it (Chain #14) is refused with no claim", { timeout: TIMEOUT }, async () => {
         const { h, host, session } = await harness();
         const env = getEnv();
         const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
@@ -216,23 +216,44 @@ describe("stage 2 review: a Start is receipt-first, and the budget of running ch
         try {
             const child = randomUUID();
             const grandchild = randomUUID();
+            const greatGrandchild = randomUUID();
             await h.catalog.createSession(child, { parentSessionId: session, owner: OWNER });
             await h.catalog.createSession(grandchild, { parentSessionId: child, owner: OWNER });
-            // Both have run a turn (no worker runs here), so a person's Start on them gets past the default-folders
-            // check: the grandchild's reaches the nesting refusal, and the child's starts.
+            await h.catalog.createSession(greatGrandchild, { parentSessionId: grandchild, owner: OWNER });
+            // All have run a turn (no worker runs here), so a person's Start on them gets past the default-folders check.
             await recordSessionRanATurn(h.catalog, child);
             await recordSessionRanATurn(h.catalog, grandchild);
+            await recordSessionRanATurn(h.catalog, greatGrandchild);
             expect(await h.store.sessionDefinitions.nestingLevel(grandchild)).toBe(2);
             expect(await h.store.sessionDefinitions.nestingLevel(child)).toBe(1);
+            expect(await h.store.sessionDefinitions.nestingLevel(greatGrandchild)).toBe(3);
+
+            // Chain #13: grandchild at level 2 with no prior Workflow starts its first Workflow at effective level 2.
             const saved = (await save(host, grandchild, YAML(30), null)).receipt;
-            const operationId = `start-${randomUUID()}`;
-            const refusal = await refused(mgmt.startSessionWorkflowDefinition(grandchild, { definitionId: saved.definitionId, operationId }, { principal: OWNER }),
+            const started = await mgmt.startSessionWorkflowDefinition(grandchild, { definitionId: saved.definitionId, operationId: `start-${randomUUID()}` }, { principal: OWNER });
+            expect(started.revision).toBe(1);
+            expect(await h.store.readWorkflowLineage(started.workflowId)).toMatchObject({ level: 2, hasWorkflow: true });
+
+            // Chain #14: a child Workflow under grandchild's level-2 Workflow would be level 3 -> refused, 0 child rows.
+            const wfRefusal = await refused(startSessionWorkflowDefinition(host, {
+                ownerSessionId: grandchild, parentSessionId: started.workflowId,
+                definition: { definitionId: saved.definitionId }, inputs: {},
+                actor: ENGINE, operationId: `start-${randomUUID()}`, nestingLevel: 0,
+            }), "WORKFLOW_NESTING_LIMIT");
+            expect(wfRefusal.message).toMatch(/^This session is at level 2, and the Workflow it starts would be at level 3\./);
+            const { rows: wfChildRows } = await h.pool.query(
+                `SELECT count(*)::int AS n FROM "${env.cmsSchema}".sessions WHERE parent_session_id = $1`, [started.workflowId]);
+            expect(wfChildRows[0].n).toBe(0);
+
+            // Level-3 session (greatGrandchild) is refused whatever nestingLevel the caller passes, leaving 0 rows.
+            const deepSaved = (await save(host, greatGrandchild, YAML(30), null)).receipt;
+            const refusal = await refused(mgmt.startSessionWorkflowDefinition(greatGrandchild, { definitionId: deepSaved.definitionId, operationId: `start-${randomUUID()}` }, { principal: OWNER }),
                 "WORKFLOW_NESTING_LIMIT");
-            expect(refusal.message).toMatch(/^This session is at nesting level 2 \(max 2\)/);
-            await refused(startSessionWorkflowDefinition(host, { ownerSessionId: grandchild, definition: { definitionId: saved.definitionId }, inputs: {},
+            expect(refusal.message).toMatch(/^This session is at level 3, and the Workflow it starts would be at level 3\./);
+            await refused(startSessionWorkflowDefinition(host, { ownerSessionId: greatGrandchild, definition: { definitionId: deepSaved.definitionId }, inputs: {},
                 actor: ENGINE, operationId: `start-${randomUUID()}`, nestingLevel: 0 }), "WORKFLOW_NESTING_LIMIT");
-            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: saved.definitionId })).toEqual([]);
-            const { rows } = await h.pool.query(`SELECT count(*)::int AS n FROM "${env.cmsSchema}".sessions WHERE parent_session_id = $1`, [grandchild]);
+            expect(await h.store.sessionDefinitions.listWorkflows({ definitionId: deepSaved.definitionId })).toEqual([]);
+            const { rows } = await h.pool.query(`SELECT count(*)::int AS n FROM "${env.cmsSchema}".sessions WHERE parent_session_id = $1`, [greatGrandchild]);
             expect(rows[0].n).toBe(0);
             // A level-1 session starts one.
             const one = (await save(host, child, YAML(30), null)).receipt;

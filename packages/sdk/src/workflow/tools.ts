@@ -304,7 +304,7 @@ async function authorizeRunControl(host: WorkflowToolHost, workflowSessionId: st
     return relation;
 }
 
-function optionalString(args: Record<string, unknown>, name: string): string | null {
+export function optionalString(args: Record<string, unknown>, name: string): string | null {
     const value = args[name];
     if (value === undefined || value === null) return null;
     if (typeof value !== "string" || !value.trim()) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} must be a non-empty string.`);
@@ -352,7 +352,7 @@ export function retainedWorkflowReadModel(workflowSessionId: string, row: { outc
     } as { [key: string]: JsonValue };
 }
 
-function requiredString(args: Record<string, unknown>, name: string): string {
+export function requiredString(args: Record<string, unknown>, name: string): string {
     const value = optionalString(args, name);
     if (value === null) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} is required.`);
     return value;
@@ -367,7 +367,7 @@ function revisionArg(args: Record<string, unknown>): number {
 }
 
 /** A JSON argument of typed input; anything that is not plain JSON is INPUT_INVALID. */
-function inputJsonArg(value: unknown, name: string): JsonValue {
+export function inputJsonArg(value: unknown, name: string): JsonValue {
     try {
         assertJsonValue(value, name);
         return value;
