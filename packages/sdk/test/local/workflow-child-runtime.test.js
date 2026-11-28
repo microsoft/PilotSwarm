@@ -14,7 +14,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { registerWorkflow, WORKFLOW_CONTROLLER_NAME } from "../../src/workflow/runtime.ts";
 import { saveSessionWorkflowDefinition, startSessionWorkflowDefinition } from "../../src/workflow/session-definitions.ts";
-import { applyOperatorCommandToWorkflow } from "../../src/workflow/service.ts";
+import { applyOperatorCommandToWorkflow, sendTypedWorkflowInput } from "../../src/workflow/service.ts";
 import { childWorkflowsFromTool, updateWorkflowFromTool } from "../../src/workflow/tools.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
@@ -653,6 +653,145 @@ ${spawn("s1", "blocked-child", "{}", "s2")}${spawn("s2", "sleep-child", "{ id: 2
                 expect((await h.waitForRunStatus(c.runId, ["cancelled"])).status).toBe("cancelled");
             }
         } finally {
+            await h.stop();
+        }
+    });
+
+    it("R9 (CW-1 real controller): T1 commits mid-spawn, cut cancels spawn visit, child ends by itself, no-from receive after fork does not take its notice", { timeout: TIMEOUT }, async () => {
+        let parentId = null;
+        let releaseChildDispatch = null;
+        let childHeldResolve = null;
+        const waitChildHeld = new Promise(resolve => { childHeldResolve = resolve; });
+        const holdChildDispatch = new Promise(resolve => { releaseChildDispatch = resolve; });
+        let heldOnce = false;
+
+        const h = await startHarness(getEnv(), {
+            wrapClient: (raw) => new Proxy(raw, {
+                get(target, prop, receiver) {
+                    if (prop === "startOrchestrationVersioned") {
+                        return async (...args) => {
+                            const instanceId = args[0];
+                            if (parentId && typeof instanceId === "string" && instanceId.startsWith("session-") && instanceId !== `session-${parentId}` && !heldOnce) {
+                                heldOnce = true;
+                                childHeldResolve();
+                                await holdChildDispatch;
+                            }
+                            return target.startOrchestrationVersioned(...args);
+                        };
+                    }
+                    const val = Reflect.get(target, prop, receiver);
+                    return typeof val === "function" ? val.bind(target) : val;
+                },
+            }),
+        });
+        try {
+            const chat = randomUUID();
+            await h.catalog.createSession(chat, { owner: OWNER });
+            const r9ParentYaml = JSON.stringify({
+                apiVersion: "pilotswarm.dev/v1", kind: "Workflow", metadata: { name: "r9-cw1", version: "1.0.0" },
+                contracts: { "Go@1": { schema: { type: "object" } } },
+                initial: "fan",
+                states: {
+                    fan: {
+                        type: "parallel", join: { first: 1 },
+                        branches: {
+                            fast: {
+                                initial: "go_wait",
+                                states: {
+                                    go_wait: { type: "messaging", mode: "receive", contract: "Go@1", wait: { seconds: 60 }, transition: { next: { received: "f_done", elapsed: "f_fail", failure: "f_fail" } } },
+                                    f_done: { type: "terminal", outcome: "succeeded", output: { win: true } },
+                                    f_fail: { type: "terminal", outcome: "failed" },
+                                },
+                            },
+                            slow: {
+                                initial: "s_spawn",
+                                states: {
+                                    s_spawn: { type: "spawn", definition: "sleep-child", inputs: { id: 9, seconds: 1 }, transition: { next: { started: "s_hold", failure: "s_fail" } } },
+                                    s_hold: { type: "wait", seconds: 600, transition: { next: { elapsed: "s_done" } } },
+                                    s_done: { type: "terminal", outcome: "succeeded" },
+                                    s_fail: { type: "terminal", outcome: "failed" },
+                                },
+                            },
+                        },
+                        transition: { next: { joined: "after_recv", blocked: "after_recv", failure: "failed" } },
+                    },
+                    after_recv: {
+                        type: "messaging", mode: "receive", contract: "WorkflowEnded@1", wait: { seconds: 4 },
+                        transition: { next: { received: "took_cut_child", elapsed: "stayed_clean", failure: "failed" } },
+                    },
+                    took_cut_child: { type: "terminal", outcome: "failed", output: { bug: "took-cut-child", notice: "${input}" } },
+                    stayed_clean: { type: "terminal", outcome: "succeeded", output: { clean: true } },
+                    failed: { type: "terminal", outcome: "failed" },
+                },
+            });
+            await saveSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, name: "sleep-child", yaml: SLEEP_CHILD_YAML, expected: null,
+                actor: { kind: "session", sessionId: chat }, operationId: "save-r9-child", by: "session",
+            });
+            const saved = await saveSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, name: "r9-cw1", yaml: r9ParentYaml, expected: null,
+                actor: { kind: "session", sessionId: chat }, operationId: "save-r9-parent", by: "session",
+            });
+            expect(saved.receipt.valid, JSON.stringify(saved.receipt.diagnostics)).toBe(true);
+
+            const p = await startSessionWorkflowDefinition(h.host, {
+                ownerSessionId: chat, definition: { name: "r9-cw1" }, inputs: {},
+                actor: ENGINE, operationId: "start-r9", owner: OWNER,
+            });
+            parentId = p.workflowId;
+
+            // 1) Wait until child T1 commit succeeded AND child controller start is held mid-spawn.
+            await waitChildHeld;
+            const [child] = await h.waitChildren(p.workflowId, 1);
+            const spawnBefore = (await h.q("SELECT node_execution_id, state FROM SCHEMA.workflow_node_executions WHERE run_id = $1 AND node_id = 's_spawn'", [p.runId]))[0];
+            expect(spawnBefore.state).toBe("pending");
+
+            // 2) Wait for fast branch's go_wait to be pending, then trigger Go@1 so fast wins and cuts slow mid-spawn.
+            {
+                const deadline = Date.now() + 20_000;
+                while (Date.now() < deadline) {
+                    const rows = await h.q("SELECT state FROM SCHEMA.workflow_node_executions WHERE run_id = $1 AND node_id = 'go_wait'", [p.runId]);
+                    if (rows.some(r => r.state === "pending")) break;
+                    await new Promise(r => setTimeout(r, 50));
+                }
+            }
+            await sendTypedWorkflowInput(h.host, {
+                workflowSessionId: p.workflowId, senderSessionId: chat, runId: null,
+                contract: "Go@1", correlation: {}, payload: {}, ttlSeconds: null, operationId: "go-r9",
+            });
+
+            // 3) Wait until parent is sitting on after_recv (no-from WorkflowEnded@1 receive) and s_spawn is cancelled.
+            {
+                const deadline = Date.now() + 25_000;
+                while (Date.now() < deadline) {
+                    const rows = await h.q("SELECT state FROM SCHEMA.workflow_node_executions WHERE run_id = $1 AND node_id = 'after_recv'", [p.runId]);
+                    if (rows.some(r => r.state === "pending")) break;
+                    await new Promise(r => setTimeout(r, 50));
+                }
+            }
+            expect((await h.store.readNodeExecution(spawnBefore.node_execution_id))?.outcome).toBe("cancelled");
+
+            // 4) Release child controller dispatch -> child runs 1s, completes on its own, and delivers WorkflowEnded@1 to parent.
+            releaseChildDispatch();
+            expect((await h.waitForRunStatus(child.runId, ["completed"], 25_000)).status).toBe("completed");
+            {
+                const deadline = Date.now() + 20_000;
+                while (Date.now() < deadline) {
+                    const rows = await h.q("SELECT message_id FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND sender_session_id = $2", [p.runId, child.workflowSessionId]);
+                    if (rows.length > 0) break;
+                    await new Promise(r => setTimeout(r, 50));
+                }
+            }
+
+            // 5) Parent's no-from after_recv must NOT take the cut child's notice; it must elapse cleanly to stayed_clean.
+            const parentEnd = await h.waitForRunStatus(p.runId, ["completed", "failed"], 25_000);
+            expect(parentEnd.status, JSON.stringify(parentEnd.terminalOutput)).toBe("completed");
+            expect(parentEnd.terminalOutput).toEqual({ clean: true });
+            const inboxRows = await h.q("SELECT consumed_by FROM SCHEMA.workflow_inbox WHERE run_id = $1 AND sender_session_id = $2", [p.runId, child.workflowSessionId]);
+            expect(inboxRows).toHaveLength(1);
+            expect(inboxRows[0].consumed_by).toBeNull();
+        } finally {
+            releaseChildDispatch?.();
             await h.stop();
         }
     });

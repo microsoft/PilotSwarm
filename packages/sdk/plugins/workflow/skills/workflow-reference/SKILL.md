@@ -36,7 +36,7 @@ Schema fields: inline, or `$ref` to `schemas`.
 A binding is one whole string `"${root.path}"` or `"${root.path ?? <JSON literal>}"`.
 Roots: `inputs`, `input`, `kv`, `runtime` (`runtime.error`), `branch`
 (`branch.item`, `branch.index`; `branch.name` in named branches; branch
-states only), `states` (`${states.<id>.output}`: latest result of `<id>` — failed visits
+states only), `states` (`${states.<id>.output}`: latest result of `<id>`; failed visits
 don't replace it; same branch or root only, else compile error; `null` if none;
 frozen at entry). Path segments: `.name`,
 `[index]`, `["any key"]`. A template is any JSON value whose strings may be
@@ -76,7 +76,7 @@ Owner consent: load `workflow-approval`. Agents cannot answer it.
 | `timeoutSeconds` | 1 to 3,600; default 300. |
 | `input` | Optional template; default: the arrived value. |
 | `inputSchema`, `outputSchema` | Optional. |
-| `outcomes` | Optional list; default: its routes that are not runtime routes. |
+| `outcomes` | Optional list; default: its non-runtime routes. |
 
 Output: the `setResult` output. Errors: `invalid_input`, `invalid_output`
 (undeclared outcome, non-JSON or mismatched output), `execution_failed`
@@ -134,7 +134,7 @@ the other is null), `attempts`, `deliveredAt` (UTC). Errors:
 
 | Field | Rule |
 |---|---|
-| `contract` | Required. Its contract declares `response`. |
+| `contract` | Required; must declare `response`. |
 | `recipient` | Required, as for send. |
 | `timeoutSeconds` | Required. 1 to 86,400, or one binding. |
 | `correlate` | Optional template object. |
@@ -199,7 +199,7 @@ See workflow-tools for merge rules.
 | `timeoutSeconds` | Required. 1 to 86,400, or one binding. |
 | `input` | Optional template; checked against `inputSchema`. |
 | `inputSchema`, `outputSchema` | Optional. |
-| `outcomes` | Optional list of business outcomes; default: its routes that are not runtime routes. |
+| `outcomes` | Optional business outcomes; default: its non-runtime routes. |
 | `session` | Optional. `continue` (default outside parallel) or `new`. Named `branches:` default `new` (`continue` allowed); `forEach` only `new`. |
 | `tools` | `none`/tool names: the whole subtree's ceiling (plus `complete_workflow_node`). |
 | `requiredTools` | Optional 1-16 exact tool names; call each per visit. See workflow-tools. |
@@ -244,7 +244,7 @@ with the package revision.
 | `forEach` | One binding that gives a list, or a list; at most 64 items. |
 | `branches` | Instead of `forEach` and `body`: `{ <name>: { initial, states, input? } }`, 1 to 64, each its own graph from its `initial` and `input` (default: the arrived value). `concurrency` defaults to their number; above 16, set it. |
 | `concurrency` | 1 to 16; default 1. |
-| `join` | Optional: `all` (default; `all_required` is the same) or `{ first: k }`, k from 1 to 64 and at most the items of a literal list. |
+| `join` | Optional: `all` (default; alias `all_required`) or `{ first: k }`, k from 1 to 64 and at most the items of a literal list. |
 | `failFast` | Optional boolean (default false): cancels the other branches once the join can no longer succeed. |
 | `timeoutSeconds` | Optional state time limit, 1 to 86400 or one binding; needs a `timed_out` route. |
 | `inputSchema` | Optional: checks the whole list. |
@@ -271,7 +271,7 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
 
 ### spawn
 
-`definition` (name or `<package>/<name>`), `inputs` (object), `revision` (fixed int; else newest), `agentModels`, `carry`; `started` outputs `{ workflowId, runId, definition, revision }`. Child end: `WorkflowEnded@1` `{ workflowId, runId, definition, revision, spawnedBy, status, outcome, stateId, output, outputTruncated, error }` to an active parent, no correlation: match with `from: "${states.<spawn>.output.workflowId}"` (never `correlate:`) and a `wait`. `status`: `completed` (`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`; `outcome`: the terminal state's, else `null`. Over ~190 KiB, `output` is left out (`outputTruncated`); `child_workflows` `read` `full_output: true` gets it. Never declare or `send` it. Parent end cancels children; direct delete sends no notice (use `cancel`/`stop`).
+`definition` (name or `<package>/<name>`), `inputs` (object), `revision` (fixed int; else newest), `agentModels`, `carry`; `started` outputs `{ workflowId, runId, definition, revision }`. Child end: `WorkflowEnded@1` `{ workflowId, runId, definition, revision, spawnedBy, status, outcome, stateId, output, outputTruncated, error }` to an active parent, no correlation: match with `from: "${states.<spawn>.output.workflowId}"` (never `correlate:`) and a `wait`. `status`: `completed` (`outcome` `succeeded` or `blocked`), `failed`, `cancelled` or `stopped`; `outcome`: the terminal state's, else `null`. Over ~190 KiB, `output` is left out (`outputTruncated`); `child_workflows` `read` `full_output: true` gets it. Never declare or `send` it. A receive with no `from` does not take a cut branch's child end; name it with `from` or give the receive a `wait`. Parent end cancels children; direct delete sends no notice (`cancel`/`stop` do).
 Fan-out: keep only what you need from each child; size limits: `workflow-limits`.
 
 ### terminal
@@ -304,13 +304,13 @@ Fan-out: keep only what you need from each child; size limits: `workflow-limits`
 | script | Restarts (`context.attempt` above 1), including tools: make effects safe to repeat. Canvas: absolute ticks and `put`s; a `CONFLICT` where `get` shows your value is success; draw once, then tick. |
 | decision | Attempts 1–2 call the provider; attempt 3 records `unavailable`. First stored result wins. |
 | spawn | Keyed Start (`spawn:<nodeExecutionId>`): retries replay the same child, never a second. |
-| agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones are refused. |
+| agent | Same session, no repeated prompt. First accepted `complete_workflow_node` decides; later ones refused. |
 | send | Agents may get duplicates (recent ids deduplicate). Workflows take it once. |
 | request | At least once, one id. First answer decides; none after deadline. |
 | receive | Takes each message once, in the order the run accepted it. |
 | wait | Elapses once, by the store's clock. |
 
-- **Timers.** Deadlines are durable from start; restarts and pauses do not stop them.
+- **Timers.** Deadlines are durable from start; restarts and pauses don't stop them.
 - **Pause / Stop / Cancel.** Pause holds new admissions; stop drains active work until grace expiry; cancel/delete end pending work and active child Workflows.
 - **Failure.** Errors route by code, then `failure`, then `catchAll` once, else fail the run.
 - **Versions.** Started revisions and agent pins stay fixed; only variables (`set_vars`) change.

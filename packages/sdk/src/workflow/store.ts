@@ -3,7 +3,7 @@ import type { CapabilityToolGrant } from "../tool-grant.js";
 import { carrySnapshotText, readCarrySnapshot } from "./carry.js";
 import {
     AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, STATE_TIMEOUT_MAX_SECONDS, WORKFLOW_ENDED_CONTRACT,
-    WORKFLOW_API_VERSION, WORKFLOW_MAX_YAML_BYTES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
+    WORKFLOW_API_VERSION, WORKFLOW_MAX_NODE_EXECUTIONS, WORKFLOW_MAX_YAML_BYTES, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
     type WorkflowIRClockWait, type WorkflowIRNode,
 } from "./compiler.js";
 import { computeCronAtNextFire } from "../cron-at.js";
@@ -24,9 +24,9 @@ import {
 } from "./intake.js";
 import {
     BRANCH_CANCEL_WINNERS, BRANCH_CANCEL_WINNER_VALUES, branchCancelError, branchCancelReasonOf, branchScopeIds, branchScopeNameList, branchScopeNames,
-    parallelBlockedResult, parallelBranchEnd, parallelJoinedOutput,
-    parallelBranchStates, parallelSuccesses, parallelTimeoutResult, parallelVerdict, parseBranchScope, type BranchCancelReason, type ParallelBranchState,
-    type ParallelCommit,
+    parallelBlockedResult, parallelBranchCut, parallelBranchEnd, parallelBranchMetaState, parallelJoinedOutput,
+    parallelBranchStates, parallelSuccesses, parallelTimeoutResult, parallelVerdict, parseBranchScope, type BranchCancelReason, type ParallelBranchNodeMeta,
+    type ParallelBranchState, type ParallelCommit,
 } from "./parallel.js";
 import { SessionDefinitionStore, requireBenchLiveLocked, requireSessionStartLocked } from "./session-definition-store.js";
 import { workflowAgentSessionContinues } from "./agent-ids.js";
@@ -611,6 +611,19 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         deadlineAt: dateOrNull(row, "deadline_at"),
         receive: receiveOf(row),
         enteredAt: date(row, "entered_at"), completedAt: dateOrNull(row, "completed_at"),
+    };
+}
+
+function nodeMetaFrom(row: Row): ParallelBranchNodeMeta {
+    const state = str(row, "state");
+    const resultKind = strOrNull(row, "result_kind");
+    if (state !== "pending" && state !== "completed") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Unknown node state ${state}.`);
+    if (resultKind !== null && resultKind !== "business" && resultKind !== "runtime_error") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Unknown result kind ${resultKind}.`);
+    return {
+        nodeExecutionId: str(row, "node_execution_id"), scopeId: str(row, "scope_id"),
+        predecessorId: strOrNull(row, "predecessor_id"), nodeId: str(row, "node_id"),
+        state, winner: strOrNull(row, "winner"), outcome: strOrNull(row, "outcome"), resultKind,
+        enteredAt: date(row, "entered_at"),
     };
 }
 
@@ -4373,18 +4386,20 @@ export class WorkflowStore {
                 }
                 if (!totalExpired) {
                     const contractsList = Array.isArray(receive.contract) ? receive.contract : [receive.contract];
-                    const { rows: messages } = await client.query(
-                        `SELECT message_id, payload, contract, sender_session_id FROM ${this.t.inbox}
-                          WHERE run_id = $1 AND consumed_by IS NULL AND contract = ANY($2::text[]) AND ($3::text IS NULL OR sender_session_id = $3)
-                            AND correlation = $4 AND expires_at > $5::timestamptz
-                          ORDER BY seq LIMIT 1 FOR UPDATE`,
-                        [input.runId, contractsList, receive.from, receive.correlationText, decidedAt]);
-                    if (messages[0]) {
-                        const contract = str(messages[0], "contract");
-                        const senderSessionId = str(messages[0], "sender_session_id");
-                        const payloadText = str(messages[0], "payload");
+                    const chosen = receive.from === null && contractsList.includes(WORKFLOW_ENDED_CONTRACT)
+                        ? await this.findEligibleReceiveMessageIn(client, run, contractsList, receive.correlationText, decidedAt)
+                        : (await client.query(
+                            `SELECT message_id, payload, contract, sender_session_id FROM ${this.t.inbox}
+                              WHERE run_id = $1 AND consumed_by IS NULL AND contract = ANY($2::text[]) AND ($3::text IS NULL OR sender_session_id = $3)
+                                AND correlation = $4 AND expires_at > $5::timestamptz
+                              ORDER BY seq LIMIT 1 FOR UPDATE`,
+                            [input.runId, contractsList, receive.from, receive.correlationText, decidedAt])).rows[0] ?? null;
+                    if (chosen) {
+                        const contract = str(chosen, "contract");
+                        const senderSessionId = str(chosen, "sender_session_id");
+                        const payloadText = str(chosen, "payload");
                         const claimedRes = receiveClaimResult(receiveIsList, contract, senderSessionId, payloadText);
-                        claim = { messageId: str(messages[0], "message_id"), payloadText, contract, senderSessionId, ...claimedRes };
+                        claim = { messageId: str(chosen, "message_id"), payloadText, contract, senderSessionId, ...claimedRes };
                         // The visit that established the totalSeconds anchor keeps its deadline_at after completion; later visits clear it on claim.
                         if (!establishedAnchor) clockDeadline = null;
                     }
@@ -4926,18 +4941,18 @@ export class WorkflowStore {
                 if (!runRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Input ${input.operationId} names a missing run.`);
                 return { receipt: parseInputReceipt(parseStoredJson(receiptText, "receipt")), replayed: true, run: runFrom(runRows[0]) };
             }
-            let trustedChildEnded = false;
+            let trustedChild: { runId: string; startOperationId: string | null } | null = null;
             if (input.bypassInboxLimits === true && input.contract === WORKFLOW_ENDED_CONTRACT
                 && input.operationId.startsWith("ended:") && decided.senderParentSessionId === input.workflowSessionId) {
                 const childRunId = input.operationId.slice("ended:".length);
                 const { rows: childRuns } = await client.query(
-                    `SELECT status FROM ${this.t.runs} WHERE run_id = $1 AND workflow_session_id = $2`,
+                    `SELECT status, start_operation_id FROM ${this.t.runs} WHERE run_id = $1 AND workflow_session_id = $2`,
                     [childRunId, input.senderSessionId]);
                 if (childRuns[0] && !ACTIVE_RUN_STATUSES.includes(str(childRuns[0], "status") as WorkflowRunStatus)) {
-                    trustedChildEnded = true;
+                    trustedChild = { runId: childRunId, startOperationId: strOrNull(childRuns[0], "start_operation_id") };
                 }
             }
-            if (decided.authority !== "allowed" && !trustedChildEnded) {
+            if (decided.authority !== "allowed" && trustedChild === null) {
                 throw new WorkflowStoreError("FORBIDDEN", TYPED_INPUT_REFUSALS[decided.authority]);
             }
             if (input.sendExchangeId) await this.requireUndecidedSend(client, { ...input, sendExchangeId: input.sendExchangeId });
@@ -4948,7 +4963,7 @@ export class WorkflowStore {
             }
             const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
             const at = str(clock[0], "at");
-            if (!trustedChildEnded) {
+            if (trustedChild === null) {
                 const { rows: counts } = await client.query(
                     `SELECT
                         (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > $4::timestamptz AND NOT (contract = $6 AND operation_id LIKE 'ended:%')))::int AS unconsumed,
@@ -4975,14 +4990,26 @@ export class WorkflowStore {
                  RETURNING ${isoUtc("accepted_at")} AS accepted_at_iso, ${isoUtc("expires_at")} AS expires_at_iso`,
                 [input.messageId, input.workflowSessionId, run.runId, input.senderSessionId, input.operationId, input.requestSha256,
                     input.contract, input.correlationText, input.payloadText, at, input.ttlSeconds]);
+            let cutChild = false;
+            if (trustedChild !== null && trustedChild.startOperationId !== null && trustedChild.startOperationId.startsWith("spawn:")) {
+                const { rows: anonWait } = await client.query(
+                    `SELECT 1 FROM ${this.t.nodes}
+                      WHERE run_id = $1 AND state = 'pending' AND node_type = 'messaging'
+                        AND (receive_contract = $2 OR $2 = ANY(string_to_array(receive_contract, ',')))
+                        AND receive_from IS NULL AND receive_correlation = $3
+                        AND (deadline_at IS NULL OR deadline_at > $4::timestamptz)
+                      LIMIT 1`,
+                    [run.runId, input.contract, input.correlationText, at]);
+                if (anonWait[0]) cutChild = await this.cutSpawnIn(client, run, trustedChild.startOperationId);
+            }
             const { rows: waiting } = await client.query(
                 `SELECT node_execution_id, receive_contract FROM ${this.t.nodes}
                   WHERE run_id = $1 AND state = 'pending' AND node_type = 'messaging'
                     AND (receive_contract = $2 OR $2 = ANY(string_to_array(receive_contract, ',')))
-                    AND (receive_from IS NULL OR receive_from = $3) AND receive_correlation = $4
+                    AND ((NOT $6::boolean AND receive_from IS NULL) OR receive_from = $3) AND receive_correlation = $4
                     AND (deadline_at IS NULL OR deadline_at > $5::timestamptz)
                   ORDER BY entered_at, node_execution_id LIMIT 1 FOR UPDATE`,
-                [run.runId, input.contract, input.senderSessionId, input.correlationText, at]);
+                [run.runId, input.contract, input.senderSessionId, input.correlationText, at, cutChild]);
             let claimed: WorkflowNodeExecutionRow | null = null;
             let claimedResult: { outcome: string; valueText: string } | null = null;
             if (waiting[0]) {
@@ -8115,6 +8142,154 @@ export class WorkflowStore {
             if (row.completed_at !== null) committed.set(str(row, "node_execution_id"), { rank: Number(row.commit_rank), inTime: row.in_time === true });
         }
         return parallelBranchStates(ir, node.nodeExecutionId, total, rows.map(row => nodeFrom(row)), committed, notStarted);
+    }
+
+    /**
+     * Whether a child Workflow end notice (`ended:<childRunId>` from `senderSessionId`)
+     * belongs to a cut parallel branch of `run`. Runs inside the caller's transaction
+     * (which already holds `run`'s session and run locks) without locking any child row
+     * or reading/deserializing any branch payload columns.
+     */
+    private async cutChildIn(
+        client: PoolClient,
+        run: WorkflowRunRow,
+        childRunId: string,
+        senderSessionId: string,
+        cache?: { ir?: WorkflowIR; branchCut: Map<string, boolean> },
+    ): Promise<boolean> {
+        const { rows: childRows } = await client.query(
+            `SELECT r.start_operation_id, r.status
+               FROM ${this.t.runs} r
+               JOIN ${this.t.sessions} s ON s.session_id = r.workflow_session_id
+              WHERE r.run_id = $1
+                AND r.workflow_session_id = $2
+                AND s.parent_session_id = $3`,
+            [childRunId, senderSessionId, run.workflowSessionId]);
+        if (!childRows[0] || ACTIVE_RUN_STATUSES.includes(str(childRows[0], "status") as WorkflowRunStatus)) return false;
+        return this.cutSpawnIn(client, run, strOrNull(childRows[0], "start_operation_id"), cache);
+    }
+
+    /**
+     * Classify whether `startOperationId` (`spawn:<nx>`) started a child inside a cut
+     * parallel branch of `run`, reading only scalar branch metadata (cut-winner existence,
+     * terminal existence, and the last visit's routing fields) — never branch payloads.
+     */
+    private async cutSpawnIn(
+        client: PoolClient,
+        run: WorkflowRunRow,
+        startOperationId: string | null,
+        cache?: { ir?: WorkflowIR; branchCut: Map<string, boolean> },
+    ): Promise<boolean> {
+        if (startOperationId === null || !startOperationId.startsWith("spawn:")) return false;
+        const spawnNodeExecutionId = startOperationId.slice("spawn:".length);
+        const { rows: spawnRows } = await client.query(
+            `SELECT scope_id FROM ${this.t.nodes}
+              WHERE node_execution_id = $1 AND run_id = $2 AND node_type = 'spawn'`,
+            [spawnNodeExecutionId, run.runId]);
+        if (!spawnRows[0]) return false;
+        const scopeId = str(spawnRows[0], "scope_id");
+        const scope = parseBranchScope(scopeId);
+        if (scope === null) return false;
+        if (cache?.branchCut.has(scopeId)) return cache.branchCut.get(scopeId)!;
+        const { rows } = await client.query(
+            `WITH scope_nodes AS (
+                SELECT node_execution_id, scope_id, predecessor_id, node_id, node_type,
+                       state, winner, outcome, result_kind, entered_at
+                  FROM ${this.t.nodes}
+                 WHERE run_id = $1 AND scope_id = $2
+             ),
+             referenced AS (
+                SELECT DISTINCT predecessor_id AS id
+                  FROM scope_nodes
+                 WHERE predecessor_id IS NOT NULL
+             )
+             SELECT
+                (SELECT state FROM ${this.t.nodes}
+                  WHERE node_execution_id = $3 AND run_id = $1 AND node_type = 'parallel') AS fork_state,
+                EXISTS (SELECT 1 FROM scope_nodes WHERE state = 'completed' AND winner = ANY($4::text[])) AS has_cut_winner,
+                EXISTS (SELECT 1 FROM scope_nodes WHERE node_type = 'terminal') AS has_terminal,
+                last.node_execution_id,
+                last.scope_id,
+                last.predecessor_id,
+                last.node_id,
+                last.state,
+                last.winner,
+                last.outcome,
+                last.result_kind,
+                last.entered_at
+               FROM (
+                SELECT s.*
+                  FROM scope_nodes s
+                  LEFT JOIN referenced r ON r.id = s.node_execution_id
+                 ORDER BY (r.id IS NULL) DESC, s.entered_at DESC, s.node_execution_id DESC
+                 LIMIT 1
+               ) last`,
+            [run.runId, scopeId, scope.parallelNodeExecutionId, BRANCH_CANCEL_WINNER_VALUES]);
+        const row = rows[0];
+        if (!row || row.fork_state === null) return false;
+        let cut: boolean;
+        if (row.has_cut_winner === true) {
+            cut = true;
+        } else if (str(row, "fork_state") !== "completed" || row.has_terminal === true) {
+            cut = false;
+        } else {
+            const ir = cache?.ir ?? await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256);
+            if (cache) cache.ir = ir;
+            cut = parallelBranchCut(parallelBranchMetaState(ir, [nodeMetaFrom(row)]), true, false);
+        }
+        cache?.branchCut.set(scopeId, cut);
+        return cut;
+    }
+
+    /**
+     * Oldest unclaimed inbox message eligible for a senderless receive that lists
+     * WorkflowEnded@1: skips end notices whose child belongs to a cut parallel branch,
+     * scanning in bounded pages up to the run's inbox + node-execution cap and locking
+     * only the chosen row FOR UPDATE.
+     */
+    private async findEligibleReceiveMessageIn(
+        client: PoolClient,
+        run: WorkflowRunRow,
+        contractsList: string[],
+        correlationText: string,
+        decidedAt: string,
+    ): Promise<Row | null> {
+        const maxScan = WORKFLOW_INBOX_LIMITS.maxUnconsumed + WORKFLOW_MAX_NODE_EXECUTIONS;
+        const pageSize = 200;
+        const cache: { ir?: WorkflowIR; branchCut: Map<string, boolean> } = { branchCut: new Map() };
+        let scanned = 0;
+        let lastSeq: string | null = null;
+        while (scanned < maxScan) {
+            const limit = Math.min(pageSize, maxScan - scanned);
+            const { rows } = await client.query(
+                `SELECT message_id, seq::text AS seq_text, contract, sender_session_id, operation_id
+                   FROM ${this.t.inbox}
+                  WHERE run_id = $1 AND consumed_by IS NULL AND contract = ANY($2::text[])
+                    AND correlation = $3 AND expires_at > $4::timestamptz
+                    AND ($5::bigint IS NULL OR seq > $5::bigint)
+                  ORDER BY seq LIMIT $6`,
+                [run.runId, contractsList, correlationText, decidedAt, lastSeq, limit]);
+            if (rows.length === 0) return null;
+            for (const row of rows) {
+                scanned++;
+                lastSeq = str(row, "seq_text");
+                const contract = str(row, "contract");
+                const opId = str(row, "operation_id");
+                if (contract === WORKFLOW_ENDED_CONTRACT && opId.startsWith("ended:")) {
+                    const cut = await this.cutChildIn(client, run, opId.slice("ended:".length), str(row, "sender_session_id"), cache);
+                    if (cut) continue;
+                }
+                const { rows: locked } = await client.query(
+                    `SELECT message_id, payload, contract, sender_session_id
+                       FROM ${this.t.inbox}
+                      WHERE message_id = $1 AND consumed_by IS NULL
+                      FOR UPDATE`,
+                    [str(row, "message_id")]);
+                if (locked[0]) return locked[0];
+            }
+            if (rows.length < limit) return null;
+        }
+        return null;
     }
 
     /**

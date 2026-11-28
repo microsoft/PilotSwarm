@@ -224,6 +224,12 @@ Stop ends its turn unsaved), and a recovery that starts a fresh conversation
   double quote escaped, like the other Decision migrations. Its SQL is the same
   for every schema name without a double quote, so nothing runs again.
 
+### Workflow child notices
+
+- A `receive` with no `from` no longer takes the `WorkflowEnded@1` notice of a
+  child Workflow started by a cut parallel branch; name the child with `from`
+  or give the receive a `wait`.
+
 ## 0.8.19 — 2026-11-25
 
 **Upgrade: stop every worker, the portal and the MCP server, deploy, then start
