@@ -141,6 +141,7 @@ export interface SessionWorkflowRow {
     definitionId: string;
     revision: number;
     runStatus: string | null;
+    number: number | null;
     createdAt: string;
 }
 
@@ -456,9 +457,15 @@ export class SessionDefinitionStore {
                JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id AND s.deleted_at IS NULL
               WHERE ${where}
               ORDER BY d.created_at, d.workflow_session_id`, [filter.definitionId ?? filter.ownerSessionId]);
-        return rows.map((row: Row) => ({ workflowSessionId: String(row.workflow_session_id), definitionId: String(row.session_definition_id),
-            revision: Number(row.session_revision), runStatus: row.run_status === null || row.run_status === undefined ? null : String(row.run_status),
-            createdAt: iso(row.created_at) }));
+        const counts = new Map<string, number>();
+        return rows.map((row: Row) => {
+            const definitionId = String(row.session_definition_id);
+            const runStatus = row.run_status == null ? null : String(row.run_status);
+            const number = runStatus === null ? null : (counts.get(definitionId) ?? 0) + 1;
+            if (number !== null) counts.set(definitionId, number);
+            return { workflowSessionId: String(row.workflow_session_id), definitionId, revision: Number(row.session_revision),
+                runStatus, number, createdAt: iso(row.created_at) };
+        });
     }
 
     /**

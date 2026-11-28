@@ -134,6 +134,26 @@ placed the tree). The former `groupId` field is **gone** from session DTOs:
 group membership is per-viewer state, not a property of the session. See
 [Management: session groups](#management-session-groups).
 
+Workflow overviews include ISO UTC `createdAt` and `finishedAt` on `runs[]`
+and `run`. `finishedAt` is `null` until the run ends. Definition list and
+detail responses include `workflows[].number`, the Portal's 1-based position
+among started Workflows for that definition, in creation order. The Workflow
+overview also exposes `number`. Drafts and Workflows without a numbered
+definition entry have `null`.
+
+Agent execution rows and details include `agentModel` when a spawn recorded
+the model used for that visit: `{ model, reasoningEffort, contextTier,
+source }`. This is not the start-time model choice. Variable history reads
+(`kvRevision`, with or without `kvKey`) include `kv.change` when a variable
+update produced the revision. Like `run.lastControl`, it gives the actor
+and timestamp without giving a person's sign-in identity. Approval owners,
+approval answers and Workflow event actors use the same public attribution:
+`{ by: "a person", name? }`. The signed-in owner can still answer; the
+server checks ownership against the private approval record. Typed-input
+events and inbox reads use `sender` instead of a person's `senderSessionId`.
+List-receive execution reads mask the engine's `from` field as well.
+This does not change delivery receipts, Workflow bindings, or authored payloads.
+
 ### Session sharing
 
 | Operation | Route | Access | Summary |

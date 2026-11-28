@@ -287,7 +287,7 @@ describe("I7 Task 7: rerun_plan, reused/supplied provenance and workflow_definit
                 expect(byState3.step1.supplied).toBeUndefined();
                 expect(byState3.step2.reused).toBeUndefined();
                 expect(byState3.step2.supplied).toMatchObject({ from: { workflowId: src.workflowId, runId: src.runId, executionId: src.ids.step2 },
-                    by: { kind: "user" }, note: "checked with az postgres show" });
+                    by: { by: "a person" }, note: "checked with az postgres show" });
                 expect(typeof byState3.step2.supplied.at).toBe("string");
                 expect(JSON.stringify(byState3.step2.supplied.by)).not.toContain(OWNER.subject);
                 expect(view3.run.rerunOf).toMatchObject({ workflowId: src.workflowId, runId: src.runId, executionId: src.ids.step2, mode: "supply",

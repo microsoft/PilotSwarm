@@ -739,7 +739,7 @@ describe("workflow run control on the real runtime", () => {
             const parentCancel = async (id, run) => {
                 const [cancelled] = await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.cancelled"]);
                 expect(cancelled.data).toMatchObject({ runId: run.runId, command: "cancel", attributedFrom: "update_workflow", beforeBegin: true, repaired: true,
-                    actor: { kind: "agent", sessionId: parent.parentId } });
+                    actor: { by: "another session", sessionId: parent.parentId } });
                 const shown = { operation: "cancel", at: expect.stringMatching(ISO), reason: "Cancelled before it began" };
                 expect((await parent.read(id)).run.lastControl).toEqual({ ...shown, by: "this session" });
                 expect(runControlView(await h.store.readLastRunControl(id, run.runId), randomUUID()))

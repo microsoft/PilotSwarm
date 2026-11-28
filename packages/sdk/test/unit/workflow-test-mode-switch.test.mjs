@@ -261,7 +261,8 @@ test("base guidance: with test mode off, the guidance does not mention test runs
 // (the SDK, REST and MCP reads all run readWorkflowModel): the view lists none, and its id, as a run, a cursor's run, an
 // execution's or a KV revision's, is refused exactly as an unknown run's is. With test mode on, it reads as before.
 test("server reads: with test mode off, test runs are not listed, and a test run's id is refused as an unknown one", async () => {
-    const testRun = { runId: "run-t", workflowSessionId: "wf", mode: "test", status: "completed", revision: 1, terminalOutcome: "done", kvRevision: 2 };
+    const testRun = { runId: "run-t", workflowSessionId: "wf", mode: "test", status: "completed", revision: 1, terminalOutcome: "done", kvRevision: 2,
+        createdAt: new Date("2026-01-01T00:00:00Z"), finishedAt: new Date("2026-01-01T00:00:05Z") };
     const store = {
         readDefinition: async id => (id === "wf" ? { state: "draft", semver: "1.0.0", currentRevision: 1, publishedRevision: null, publishedYamlSha256: null,
             notifyParent: false, publishedAgentPins: null } : null),
@@ -297,7 +298,8 @@ test("server reads: with test mode off, test runs are not listed, and a test run
     }
     // Off by default (no host value, no flag); on, by the host's value or the flag, the test run is listed as before.
     assert.deepEqual((await read({}, undefined)).runs, []);
-    assert.deepEqual((await read({}, true)).runs, [{ runId: "run-t", mode: "test", status: "completed", revision: 1, outcome: "done" }]);
+    assert.deepEqual((await read({}, true)).runs, [{ runId: "run-t", mode: "test", status: "completed", revision: 1, outcome: "done",
+        createdAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:05.000Z" }]);
     // Review UI-5: the view says test runs are shown only while test mode is on; off, it says nothing (hidden by default).
     assert.equal((await read({}, true)).testMode, true);
     assert.equal(Object.hasOwn(view, "testMode"), false);

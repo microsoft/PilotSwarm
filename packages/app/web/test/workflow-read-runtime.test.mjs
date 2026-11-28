@@ -200,6 +200,7 @@ async function routeHarness({ config, enforce = true, shared = [] } = {}) {
     // and the definition pins no agent.
     const run = (runId, mode, status) => ({ runId, workflowSessionId: "wf1", mode, status, revision: 1, irSha256: "i", inputs: {}, terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
         terminalOutput: null, terminalError: null, kvRevision: 0, kv: {}, controllerVersion: null, stop: null,
+        createdAt: new Date("2026-01-01T00:00:00Z"), finishedAt: status === "completed" ? new Date("2026-01-01T00:00:05Z") : null,
         testAgentMode: mode === "test" ? "mocked" : null, virtualNow: null, testScenario: null, deadlineAt: null });
     const runs = [run("run-live", "live", "running"), run("R", "live", "completed"), run("T", "test", "running")];
     const store = {
@@ -273,6 +274,22 @@ async function routeHarness({ config, enforce = true, shared = [] } = {}) {
     };
     return { runtime, adapterCalls, get, origin, close: () => new Promise((resolve) => server.close(resolve)) };
 }
+
+test("the HTTP route serializes recorded run times from the SDK reader", async () => {
+    const h = await routeHarness();
+    try {
+        const result = await h.get("/sessions/wf1/workflow?runId=R");
+        assert.equal(result.status, 200);
+        const { run, runs } = result.body.result;
+        for (const row of [run, runs.find(item => item.runId === "R")]) {
+            assert.equal(row.createdAt, "2026-01-01T00:00:00.000Z");
+            assert.equal(row.finishedAt, "2026-01-01T00:00:05.000Z");
+        }
+        assert.equal(runs.find(item => item.runId === "run-live").finishedAt, null);
+    } finally {
+        await h.close();
+    }
+});
 
 test("the HTTP route keeps an explicit empty or blank runId for the adapter's validation, after the session gate", async () => {
     const h = await routeHarness();

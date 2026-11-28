@@ -22,6 +22,7 @@ import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
 import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/store.js";
 import { canonicalJson } from "./workflow/json.js";
+import { workflowEventActorView } from "./workflow/actor-view.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -4587,7 +4588,7 @@ function rowToSessionEvent(row: any): SessionEvent {
         seq: Number(row.seq),
         sessionId: row.session_id,
         eventType: row.event_type,
-        data: row.data,
+        data: workflowEventActorView(row.event_type, row.data),
         createdAt: new Date(row.created_at),
         workerNodeId: row.worker_node_id ?? undefined,
     };

@@ -16,6 +16,7 @@ import {
     redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets,
     type WorkflowErrorRedaction,
 } from "./redact.js";
+import { workflowActorView, workflowInputEventView } from "./actor-view.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -65,7 +66,7 @@ export type WorkflowActor =
  */
 export interface WorkflowRunControl {
     operation: "pause" | "resume" | "stop" | "cancel" | "set_vars";
-    actor: WorkflowActor;
+    actor: WorkflowActor | JsonObject;
     displayName: string | null;
     at: Date;
     reason: string | null;
@@ -3463,7 +3464,7 @@ export class WorkflowStore {
                         runId: rerun.sourceRunId,
                         executionId: sup.sourceExecutionId,
                     },
-                    by: actorJson(rerun.actor),
+                    by: await this.eventActorIn(client, rerun.actor),
                     note: sup.note,
                     suppliedAt: sup.at.toISOString(),
                 })) as JsonObject,
@@ -3738,7 +3739,7 @@ export class WorkflowStore {
             await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, $2, $3, $4)`,
                 [run.runId, revision, kvText, input.operationId]);
             await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.vars_set", data: {
-                runId: run.runId, kvRevision: revision, set: Object.keys(input.set), deleted: input.delete, actor: actorJson(input.actor),
+                runId: run.runId, kvRevision: revision, set: Object.keys(input.set), deleted: input.delete, actor: await this.eventActorIn(client, input.actor),
             } }], update: { touch: true } });
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "set_vars", runId: run.runId, status: run.status, kvRevision: revision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "set_vars", input.requestSha256, receipt);
@@ -3791,7 +3792,7 @@ export class WorkflowStore {
             const updated = runFrom(rows[0]);
             await this.project(client, { sessionId: input.workflowSessionId, events: [{
                 eventType: input.pause ? "workflow.paused" : "workflow.resumed",
-                data: { runId: run.runId, actor: actorJson(input.actor), ...(input.reason ? { reason: redactThenClip(input.reason, 500) } : {}) },
+                data: { runId: run.runId, actor: await this.eventActorIn(client, input.actor), ...(input.reason ? { reason: redactThenClip(input.reason, 500) } : {}) },
             }], update: { state: updated.status === "paused" ? "waiting" : updated.status === "admitted" ? "pending" : "running", touch: true } }, run);
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: kind, runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
@@ -3852,7 +3853,7 @@ export class WorkflowStore {
                 [run.runId, input.graceSeconds, request]);
             const updated = runFrom(rows[0]);
             await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.stop_requested", data: {
-                runId: run.runId, actor: actorJson(input.actor), graceSeconds: input.graceSeconds, deadlineAt: updated.stop!.deadlineAt.toISOString(),
+                runId: run.runId, actor: await this.eventActorIn(client, input.actor), graceSeconds: input.graceSeconds, deadlineAt: updated.stop!.deadlineAt.toISOString(),
                 ...(input.reason ? { reason: redactThenClip(input.reason, 500) } : {}),
             } }], update: { touch: true } });
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "stop", runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
@@ -3952,7 +3953,8 @@ export class WorkflowStore {
             [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." }), at]);
         await this.recordLiveTerminalOutcomeIn(client, run.runId);
         await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
-            runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks, ...(input.actor ? { actor: actorJson(input.actor) } : {}),
+            runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks,
+            ...(input.actor ? { actor: await this.eventActorIn(client, input.actor) } : {}),
         } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } }, run);
         return runFrom(rows[0]);
     }
@@ -4670,6 +4672,15 @@ export class WorkflowStore {
      * nothing, and an actor of another shape is not shown.
      */
     async readLastRunControl(workflowSessionId: string, runId: string): Promise<WorkflowRunControl | null> {
+        return this.readRunControl(workflowSessionId, runId);
+    }
+
+    /** The recorded change that produced this KV revision, if any. */
+    async readKvRevisionChange(workflowSessionId: string, runId: string, revision: number): Promise<WorkflowRunControl | null> {
+        return this.readRunControl(workflowSessionId, runId, revision);
+    }
+
+    private async readRunControl(workflowSessionId: string, runId: string, revision?: number): Promise<WorkflowRunControl | null> {
         const { rows } = await this.pool.query(
             `SELECT e.event_type, e.data, e.created_at, u.display_name
                FROM ${this.t.sessionEvents} e
@@ -4678,18 +4689,25 @@ export class WorkflowStore {
               WHERE e.session_id = $1 AND e.event_type = ANY($2::text[]) AND e.data ->> 'runId' = $3
                 AND jsonb_typeof(e.data -> 'actor') = 'object'
                 AND (e.event_type <> 'workflow.cancelled' OR COALESCE(e.data ->> 'command', 'cancel') = 'cancel')
+                ${revision === undefined ? "" : "AND e.data ->> 'kvRevision' = $4"}
               ORDER BY e.seq DESC
               LIMIT 1`,
-            [workflowSessionId, Object.keys(RUN_CONTROL_EVENTS), runId]);
+            revision === undefined ? [workflowSessionId, Object.keys(RUN_CONTROL_EVENTS), runId]
+                : [workflowSessionId, ["workflow.vars_set"], runId, String(revision)]);
         const row = rows[0];
         if (!row) return null;
         const data = isJsonObject(row.data) ? row.data : {};
-        const actor = storedActor(data.actor);
+        const displayName = typeof row.display_name === "string" ? row.display_name : null;
+        const actor = workflowActorView(data.actor, null, displayName);
         const operation = RUN_CONTROL_EVENTS[str(row, "event_type")];
         if (!actor || !operation) return null;
-        const displayName = actor.kind === "user" && typeof row.display_name === "string" && row.display_name.trim()
-            ? jsonbSafeText(row.display_name.trim(), 200) : null;
         return { operation, actor, displayName, at: new Date(row.created_at), reason: typeof data.reason === "string" ? data.reason : null };
+    }
+
+    private async eventActorIn(client: PoolClient, actor: WorkflowActor | JsonValue): Promise<JsonObject | null> {
+        const { rows } = isJsonObject(actor) && actor.kind === "user" ? await client.query(
+            `SELECT display_name FROM ${this.t.users} WHERE provider = $1 AND subject = $2`, [actor.provider, actor.subject]) : { rows: [] };
+        return workflowActorView(actor, null, rows[0]?.display_name ?? null);
     }
 
     /**
@@ -5319,11 +5337,11 @@ export class WorkflowStore {
                     [claim.messageId, node.nodeExecutionId, decidedAt]);
                 if (!claimed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${claim.messageId} was claimed under its lock.`);
                 if (projection) {
-                    projection = { ...projection, events: [...(projection.events ?? []), { eventType: "workflow.state_completed", data: {
+                    projection = { ...projection, events: [...(projection.events ?? []), { eventType: "workflow.state_completed", data: workflowInputEventView({
                         runId: node.runId, nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, step: node.ordinal,
                         outcome: claim.outcome, resultKind: "business", messageId: claim.messageId, contract: claim.contract,
                         senderSessionId: claim.senderSessionId, outputPreview: jsonbSafeText(claim.valueText, 1_000),
-                    } }] };
+                    }) }] };
                 }
             }
             if (totalExpired && projection) {
@@ -5842,16 +5860,16 @@ export class WorkflowStore {
                 claimedBy: claimed ? { nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId } : null,
             };
             await client.query(`UPDATE ${this.t.inbox} SET receipt = $2 WHERE message_id = $1`, [input.messageId, canonicalJson(receipt)]);
-            const events: SessionEventRecord[] = [{ eventType: "workflow.input_accepted", data: {
+            const events: SessionEventRecord[] = [{ eventType: "workflow.input_accepted", data: workflowInputEventView({
                 runId: run.runId, messageId: input.messageId, contract: input.contract, senderSessionId: input.senderSessionId,
                 claimedBy: claimed ? claimed.nodeExecutionId : null,
-            } }];
+            }) }];
             if (claimed && claimedResult) {
-                events.push({ eventType: "workflow.state_completed", data: {
+                events.push({ eventType: "workflow.state_completed", data: workflowInputEventView({
                     runId: run.runId, nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId, step: claimed.ordinal,
                     outcome: claimedResult.outcome, resultKind: "business", messageId: input.messageId, contract: input.contract,
                     senderSessionId: input.senderSessionId, outputPreview: jsonbSafeText(claimedResult.valueText, 1_000),
-                } });
+                }) });
             }
             await this.project(client, { sessionId: input.workflowSessionId, events, update: { touch: true } });
             return { receipt, replayed: false, run };
@@ -7993,6 +8011,25 @@ export class WorkflowStore {
         return { recorded: true };
     }
 
+    /** The latest recorded spawn model for each requested visit, not the current child session's model. */
+    async readAgentSpawnedModels(workflowSessionId: string, runId: string, nodeExecutionIds: readonly string[]): Promise<Map<string, JsonObject>> {
+        const { rows } = await this.pool.query(
+            `SELECT DISTINCT ON (data ->> 'nodeExecutionId') data ->> 'nodeExecutionId' AS execution_id, data -> 'model' AS model
+               FROM ${this.t.sessionEvents}
+              WHERE session_id = $1 AND event_type = 'workflow.agent_spawned' AND data ->> 'runId' = $2
+                AND data ->> 'nodeExecutionId' = ANY($3::text[])
+                AND jsonb_typeof(data #> '{model,model}') = 'string' AND data #>> '{model,model}' <> ''
+              ORDER BY data ->> 'nodeExecutionId', seq DESC`, [workflowSessionId, runId, nodeExecutionIds]);
+        const models = new Map<string, JsonObject>();
+        for (const { execution_id, model } of rows) {
+            models.set(execution_id, { model: model.model,
+                reasoningEffort: typeof model.reasoningEffort === "string" ? model.reasoningEffort : null,
+                contextTier: typeof model.contextTier === "string" ? model.contextTier : null,
+                source: model.source === "start" ? "start" : "session" });
+        }
+        return models;
+    }
+
     /** Review D-2: the visits of Workflow `workflowSessionId` whose conversation was lost after their report, by node execution id. */
     async readAgentCycleMemoryLost(workflowSessionId: string): Promise<Map<string, WorkflowAgentMemoryLoss>> {
         const lost = new Map<string, WorkflowAgentMemoryLoss>();
@@ -8807,7 +8844,7 @@ export class WorkflowStore {
             endPending: { winner: "cancel", message: "The workflow run was cancelled." },
             projection: { sessionId: run.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
                 runId: run.runId, reason: redactThenClip(input.reason, 500), command: input.command, ...marks,
-                ...(input.actor ? { actor: actorJson(input.actor) } : {}),
+                ...(input.actor ? { actor: await this.eventActorIn(client, input.actor) } : {}),
             } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } },
         });
     }
@@ -8866,7 +8903,9 @@ export class WorkflowStore {
             const stop = run.stop;
             // SF-6 verification: the stop's reason is stored with its secrets hidden.
             const errorText = redactWorkflowErrorText(canonicalJson({ code: "stopped", message: redactThenClip(stop.reason ?? "Stopped", 4_000), details: {
-                operationId: stop.operationId, actor: stop.actor, graceSeconds: stop.graceSeconds,
+                // Older workers use the agent actor in this error to suppress a notice back to the requesting parent.
+                operationId: stop.operationId, actor: isJsonObject(stop.actor) && stop.actor.kind === "user"
+                    ? await this.eventActorIn(client, stop.actor) : stop.actor, graceSeconds: stop.graceSeconds,
                 requestedAt: stop.requestedAt.toISOString(), deadlineAt: stop.deadlineAt.toISOString(),
                 graceExpired, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 100),
             } }), canonicalJson);
@@ -9966,16 +10005,6 @@ const RUN_CONTROL_EVENTS: Readonly<Record<string, WorkflowRunControl["operation"
     "workflow.cancelled": "cancel",
     "workflow.vars_set": "set_vars",
 });
-
-/** An actor as actorJson stored it; null for any other shape. */
-function storedActor(value: unknown): WorkflowActor | null {
-    if (!isJsonObject(value)) return null;
-    const text = (key: string) => (typeof value[key] === "string" && value[key] ? value[key] as string : null);
-    if (value.kind === "agent" && text("sessionId")) return { kind: "agent", sessionId: text("sessionId")! };
-    if (value.kind === "user" && text("provider") && text("subject")) return { kind: "user", provider: text("provider")!, subject: text("subject")! };
-    if (value.kind === "system" && text("name")) return { kind: "system", name: text("name")! };
-    return null;
-}
 
 function actorJson(actor: WorkflowActor): JsonValue {
     if (actor.kind === "agent") return { kind: "agent", sessionId: actor.sessionId };
