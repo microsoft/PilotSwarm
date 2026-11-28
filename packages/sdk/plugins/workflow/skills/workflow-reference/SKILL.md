@@ -62,6 +62,7 @@ Nonterminals take `maxVisits` (1–10,000; forbids business outcome `exhausted`)
 visit N+1 skips carry/input/effect and ends at entry with `exhausted` (route
 required) and incoming value as output.
 Nonterminals except approval take `carry`: load `workflow-carry`.
+Script and agent take `supply: never`: re-runs cannot supply it.
 
 ### approval
 
@@ -82,8 +83,7 @@ Output: the `setResult` output. Errors: `invalid_input`, `invalid_output`
 (undeclared outcome, non-JSON or mismatched output), `execution_failed`
 (non-zero exit without a result), `timed_out`, `cancelled`.
 
-Await tools sequentially (`for...of`, not `Promise.all`); the runtime
-refuses overlap. Diagnostics: `workflow-tools`.
+Await tools sequentially (`for...of`, not `Promise.all`). Diagnostics: `workflow-tools`.
 
 ### wait
 
@@ -293,7 +293,6 @@ Fan-out: keep only what you need from each child; size limits: `workflow-limits`
 ## Semantics
 
 - **Durable.** The store keeps runs, visits, variables and accepted messages.
-  Worker restarts resume saved work.
 - **Order.** Starts at `initial`. Outside parallel branches, one state runs
   at a time and takes one route. Every visit counts toward
   `maxNodeExecutions`; exhaustion fails with `limit_exceeded`.
@@ -310,8 +309,8 @@ Fan-out: keep only what you need from each child; size limits: `workflow-limits`
 | receive | Takes each message once, in the order the run accepted it. |
 | wait | Elapses once, by the store's clock. |
 
-- **Timers.** Deadlines are durable from start; restarts and pauses do not stop them.
-- **Pause / Stop / Cancel.** Pause holds new admissions; stop drains active work until grace expiry; cancel/delete end pending work and active child Workflows.
+- **Timers.** Deadlines are durable; restarts and pauses do not stop them.
+- **Pause / Stop / Cancel.** Pause holds new admissions; stop drains active work until grace ends; cancel/delete end pending work and children.
 - **Failure.** Errors route by code, then `failure`, then `catchAll` once, else fail the run.
 - **Versions.** Started revisions and agent pins stay fixed; only variables (`set_vars`) change.
 

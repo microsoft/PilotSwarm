@@ -164,6 +164,11 @@ async function runModeFlow(modeLabel, stdioOpts, principal) {
         const caps = await ok("get_capabilities", {});
         if (modeLabel === "web") assert.equal(caps.workflows?.rerun, true, "web: bootstrap advertises workflows.rerun");
 
+        const skill = await ok("read_workflow_skill", { name: "workflow-rerun" });
+        assert.equal(skill.name, "workflow-rerun");
+        assert.match(skill.content, /Supply only values you checked in the external system/);
+        assert.match(skill.note, /rerun_from/);
+
         // 1. A source that fails at finish, started over MCP.
         const owner = await ownerSession(`rerun-owner-${modeLabel}`);
         const saved = await ok("workflow_definition", { operation: "save", owner_session_id: owner, name: "rerun-steps", yaml: STEPS_REV1, operation_id: `save-${owner}-1` });

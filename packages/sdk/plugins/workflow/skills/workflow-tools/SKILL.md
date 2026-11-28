@@ -15,7 +15,7 @@ every save is a new revision, and a Workflow runs the revision it started with.
 
 | Operation | Arguments | Result |
 |---|---|---|
-| `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions you may start: every one your owner can see, those your agent suggests first (`suggested`; `newerVersion` when there is one). |
+| `list` | none | Your definitions, each with its `definition_id` and current revision; under `canStart`, the package definitions your owner can see, your agent's suggestions first (`suggested`; `newerVersion` if any). |
 | `read` | `name` or `definition_id`, `revision?` (default the newest) | Its YAML, errors and the Workflows started from it. |
 | `save` | `name`, `yaml`; to change one, `definition_id` and `expected_revision` | The next revision, with its errors. |
 | `start` | `name` or `definition_id`, `revision?` (default the newest valid), `inputs`, `vars?`, `workspace?`, `notify_on_completion?` (default true), `agent_models?`, `decision_models?`, `update?`, `key?` | A new Workflow from that revision, or the original one for a repeated key. |
@@ -82,6 +82,7 @@ every save is a new revision, and a Workflow runs the revision it started with.
 - To run a change, start the new revision and tell the person it is a new
   Workflow of that revision, not an update of the running one.
   The old Workflow runs until it is stopped: ask the person whether to stop it.
+- Re-run from a step (rerun_from, rerun_plan): call load_skill with name workflow-rerun.
 - `notify_on_completion`: true when you must handle the result; false when
   the person only needs to look at the Workflow.
 - Decision gate: Save/Start require an eligible Cluster Decision Default; overrides cannot bypass it (`WORKFLOW_DECISION_MODEL_UNAVAILABLE`).
@@ -298,17 +299,17 @@ Workflow scripts (`callTool("child_workflows", ...)`) and direct agent steps onl
 | Code | Meaning |
 |---|---|
 | `DEFINITION_INVALID` | The revision has compile errors; read `diagnostics`. |
-| `DEFINITION_IN_USE` | Active Workflow runs it or its `spawn` state names it (including parallel lanes/child Workflows). Never stop/cancel on your own; ask first or wait. |
+| `DEFINITION_IN_USE` | An active Workflow runs it or a `spawn` state names it. Never stop/cancel on your own; ask first or wait. |
 | `WORKFLOW_TOOLS_UNAVAILABLE` | A literal script call needs a tool the captured grant lacks. Read the named state/tool; attach the missing tool. Nothing started. |
 | `REVISION_STALE` | Another save won. Read the newest revision and redo your change. |
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A Workflow keeps its revision; it never changes. Save a new revision with `workflow_definition`, then start it. |
 | `OPERATION_CONFLICT` | The `operation_id` belongs to another request. |
 | `LIVE_RUN_EXISTS` | This Workflow already has its live run. To run the definition again, `start` it again: each start is a new Workflow. |
-| `WORKFLOW_YAML_TOO_LARGE`, `REVISION_LIMIT` | YAML exceeds 256 KiB or the definition has 1,000 revisions. Nothing saved; shorten YAML or report the limit. |
+| `WORKFLOW_YAML_TOO_LARGE`, `REVISION_LIMIT` | YAML exceeds 256 KiB or the definition has 1,000 revisions. Nothing saved. |
 | `KV_REVISION_CONFLICT` | Read `kvRevision` again. |
 | `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
 | `WORKFLOW_STORE_UNAVAILABLE` | The store cannot be reached or has no room now; try once more, then report the error as given. |
-| `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | A script revision's only tool grant could not be handed over; nothing started. Retry Start once; if refused again, tell the person. |
+| `WORKFLOW_PARENT_CONTEXT_UNAVAILABLE` | The script tool grant could not be handed over; nothing started. Retry Start once, then tell the person. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
 | `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | `update_workflow` and `read_workflow` take this session's Workflows and their child Workflows, at any depth; an agent step only reads its own. A person changes theirs in the Workflow tab. |

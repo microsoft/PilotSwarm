@@ -32,6 +32,30 @@ limits as it arrived.
 
 **Behaviour change for `workflow_definition`.** `workflow_definition` (and the Web API it uses) now refuses a `definition_id` together with a different `name` with `WORKFLOW_COMMAND_INVALID`; before, the id won.
 
+### Workflows: re-run from a step
+
+A person or agent can start a new Workflow from an ended one at a chosen step.
+The steps before it are reused and do not run again; the source never changes.
+Modes: `run_again` (the step runs again), `continue` (it keeps its result) and
+`supply` (a top-level `script` or `agent` step does not run; the caller gives
+its checked result and a note, recorded as supplied). The revision defaults to
+the source's. Surfaces: agent tools (`workflow_definition` `start` with
+`rerun_from`, `read_workflow` `rerun_plan`), the Web API and SDK (`rerunFrom`,
+`rerunPlan`, `/bootstrap` `workflows.rerun`) and MCP (`rerun_from`,
+`rerun_plan`; MCP never reuses an answered approval). Reads show
+`visit.reused`, `visit.supplied`, `run.rerunOf` and `reruns`. The new
+`workflow-rerun` skill has the fit rules, every refusal and the v1 limits; see
+"Go on from a step that failed" in
+[the Workflows guide](docs/user-guide/workflows.md).
+
+**Upgrade: migration `0104` (stop, deploy, start).** Scale every worker, the
+portal and any Web-mode MCP deployment to `0` before `0104` is applied, then
+deploy and start them. **Rollback:** let every active re-run finish or cancel
+it first (`SELECT count(*) FROM workflow_runs WHERE rerun_of_run_id IS NOT NULL
+AND status IN ('admitted', 'running', 'paused')` must be `0`), then stop every
+worker and deploy the older release. See "Upgrading to Workflow re-run from a
+step" in [`docs/developer/deploy/aks.md`](docs/developer/deploy/aks.md).
+
 ### Workflows over MCP
 
 An external LLM connected only through `pilotswarm-mcp` can now discover and

@@ -5,6 +5,10 @@ import { WORKFLOW_READ_STATUS, workflowReadStatus } from "../../dist/workflow/re
 import { READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, readWorkflowModel, retainedWorkflowReadModel } from "../../dist/workflow/tools.js";
 import { WORKFLOW_DEFINITION_TOOL_SPEC, workflowDefinitionFromTool } from "../../dist/workflow/definition-tool.js";
 import { readWorkflowRerunPlan } from "../../dist/workflow/session-definitions.js";
+import { WORKFLOW_SKILLS_DIR } from "../../dist/workflow/guidance.js";
+import { loadSkillsSync } from "../../dist/skills.js";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 /** A host that fails the test if a refusal reads anything: every refusal here comes before any read. */
 const untouchable = new Proxy({}, { get: (_target, name) => { throw new Error(`read ${String(name)} before refusing`); } });
@@ -94,4 +98,47 @@ test("Phase 3 I7: the rerun_from and rerun_plan declarations stay small and poin
     // Prompt budget (S9): the two new declarations together stay under 1,200 bytes of schema.
     assert.ok(Buffer.byteLength(JSON.stringify(from)) + Buffer.byteLength(JSON.stringify(plan)) <= 1_200,
         `${Buffer.byteLength(JSON.stringify(from)) + Buffer.byteLength(JSON.stringify(plan))}`);
+});
+
+test("Phase 3 I7 (S9, S10): the workflow-rerun skill says what an agent needs to plan and start a re-run, within its budget", () => {
+    const skills = loadSkillsSync(WORKFLOW_SKILLS_DIR);
+    const skill = skills.find(item => item.name === "workflow-rerun");
+    assert.ok(skill, "workflow-rerun loads with the Workflow skills");
+    const file = (name) => readFileSync(path.join(WORKFLOW_SKILLS_DIR, name, "SKILL.md"));
+    assert.ok(file("workflow-rerun").byteLength <= 17_082, `workflow-rerun: ${file("workflow-rerun").byteLength} bytes`);
+    assert.ok(skill.description.length >= 80 && skill.description.length <= 220, `description: ${skill.description.length}`);
+    const text = skill.prompt.replace(/\s+/g, " ");
+    for (const want of [
+        // The three modes, the plan and the start, and what a re-run takes from its source.
+        "`run_again`", "`continue`", "`supply`", "rerun_plan", "rerun_from", "Omit `inputs` and `workspace`",
+        "The default is the source Workflow's revision", "`update: true`", "Auto-pick never picks `supply`",
+        // G-R1: the spawn cut-back runs every step after the cut again (N12).
+        "That step and every step after it run again",
+        // supply: never (N6), the verification rule (M7) and the retry rule (N7).
+        "`supply: never`", "Supply only values you checked in the external system; never invent ids; put the evidence in `note`.",
+        "pass the exact same `outcome`, `output` and `note`", "1 to 2,000 characters", "256 KiB",
+        // OQ5 and OQ1.
+        "every MCP call never reuse an answered approval", "`rerun.grant: \"inherited\"`",
+        // Counts and clocks.
+        "`maxVisits`", "`limits.maxNodeExecutions`", "`limits.timeoutSeconds`", "`wait.totalSeconds`", "(TTL)",
+        // The unread-only inbox rule (owner ruling, 27 Nov 22:35 PST).
+        "To keep a message a step already received, re-run from the step after it.", "needs a new message",
+        // v1 limits and clean-up.
+        "re-run the whole `parallel` step", "A parent and one of its spawned children cannot re-run together",
+        "5 minutes to 6 hours", "256 MiB", "An old child can still be winding down", "A re-run cancels nothing",
+        // Provenance in reads.
+        "`visit.reused`", "`visit.supplied`", "`run.rerunOf`", "`reruns`",
+    ]) assert.ok(text.includes(want), want);
+    for (let rule = 1; rule <= 10; rule += 1) assert.match(text, new RegExp(`\\bC${rule}: `), `C${rule}`);
+    for (const code of ["RERUN_ARGUMENT_REFUSED", "RERUN_VISIT_REQUIRED", "RERUN_APPROVAL_REUSED", "RERUN_VISIT_NOT_FOUND", "WORKFLOW_DELETED",
+        "RERUN_SOURCE_ACTIVE", "RERUN_SOURCE_GONE", "WORKFLOW_TOOLS_UNAVAILABLE", "OPERATION_CONFLICT", "RERUN_NOT_A_WORKFLOW",
+        "RERUN_VISIT_NOT_ALLOWED", "RERUN_SUPPLY_NOT_ALLOWED", "RERUN_SUPPLIED_RESULT_INVALID", "RERUN_INCOMPATIBLE", "RERUN_TOO_LARGE"]) {
+        assert.match(text, new RegExp(`\\| \`\\d{3} ${code}\` \\|`), `${code} has a row with its status`);
+    }
+    assert.match(text, /`404 WORKFLOW_DELETED` \| [^|]*Use a new `key` or `operation_id`/);
+    // The full skills stay within their caps, and point to the re-run skill.
+    assert.ok(file("workflow-tools").byteLength <= 20_400, `workflow-tools: ${file("workflow-tools").byteLength} bytes`);
+    assert.ok(file("workflow-reference").byteLength <= 20_430, `workflow-reference: ${file("workflow-reference").byteLength} bytes`);
+    assert.ok(file("workflow-tools").toString("utf8").includes("Re-run from a step (rerun_from, rerun_plan): call load_skill with name workflow-rerun."));
+    assert.match(file("workflow-reference").toString("utf8"), /Script and agent take `supply: never`/);
 });
